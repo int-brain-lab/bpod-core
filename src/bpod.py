@@ -218,7 +218,9 @@ class Bpod(SerialSingleton):
 
         # initialize super class
         if 'baudrate' not in kwargs:
-            kwargs['baudrate'] = 1312500
+            kwargs['baudrate'] = 12000000  # USB 1.0 Full Speed, 12Mb/s
+        if 'rtscts' not in kwargs:
+            kwargs['rtscts'] = True
         super().__init__(port=port, connect=connect, **kwargs)
         assert self._initialized is True
 
@@ -246,6 +248,10 @@ class Bpod(SerialSingleton):
         version = (v_major, self.query(b'f', '<H')[0] if v_major > 22 else 0)
         machine_str = {1: 'v0.5', 2: 'r07+', 3: 'r2.0-2.5', 4: '2+ r1.0'}[machine_type]
         pcb_rev = self.query(b'v', '<B')[0] if v_major > 22 else None
+
+        # If FSM 2.5 or 2+, set baud rate to 480Mb/s (Teensy 4.1, High Speed USB2.0)
+        if machine_type == 4 or (machine_type == 3 and pcb_rev > 4):
+            self.baudrate = 480000000
 
         # log hardware information
         logging.info('Bpod Finite State Machine ' + machine_str)
