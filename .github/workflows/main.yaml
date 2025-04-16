@@ -4,7 +4,7 @@ on: [push, workflow_dispatch]
 
 jobs:
   ruff:
-    name: Ruff & mypy
+    name: Ruff
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,16 +28,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Setup PDM
-        uses: pdm-project/setup-pdm@v4
+      - uses: pdm-project/setup-pdm@v4
         with:
           python-version: ${{ matrix.python-version }}
           cache: true
-      - name: Install dependencies
+      - name: install dependencies
         run: pdm install -dG test -dG typing
-      - name: "Static type checking: mypy"
+      - name: mypy
         run: pdm run mypy
-      - name: iblrig unit tests
+      - name: pytest
         run: pdm run pytest
       - name: coveralls.io
         uses: coverallsapp/github-action@v2
