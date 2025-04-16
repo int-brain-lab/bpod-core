@@ -1,6 +1,7 @@
 import contextlib
 import logging
 import platform
+import struct
 
 import pytest
 
@@ -23,13 +24,13 @@ class TestSerial:
         device.stub(
             name='get_firmware_version',
             receive_bytes=b'F',
-            send_bytes=(22).to_bytes(2, 'little') + (3).to_bytes(2, 'little'),
+            send_bytes=struct.pack('<HH', 22, 3),
         )
         device.stub(name='handshake', receive_bytes=b'6', send_bytes=b'5')
         device.stub(
             name='get_timestamp_transmission',
             receive_bytes=b'G',
-            send_bytes=(1).to_bytes(1, 'little'),
+            send_bytes=b'\x01',
         )
 
         device.stub(
