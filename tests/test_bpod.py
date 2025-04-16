@@ -1,7 +1,8 @@
 import logging
 import unittest
 
-from src.bpod import Bpod, SerialSingleton, SerialSingletonException
+from bpod_core.bpod import Bpod
+from bpod_core.serial_extensions import SerialSingleton, SerialSingletonException
 
 logging.basicConfig(level=logging.DEBUG)
 

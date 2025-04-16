@@ -3,14 +3,15 @@ from __future__ import annotations
 import logging
 from abc import abstractmethod
 from collections.abc import Iterator
-from importlib import metadata
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import serial
 from serial import SerialException
 from serial.threaded import Protocol, ReaderThread
 from serial.tools import list_ports
-from serial_singleton import (
+
+from bpod_core import __version__ as VERSION  # noqa: N812
+from bpod_core.serial_extensions import (
     SerialSingleton,
     SerialSingletonException,
     get_serial_number_from_port,
@@ -21,8 +22,7 @@ if TYPE_CHECKING:
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
-PROJECT_NAME = 'iblbpod'
-VERSION = metadata.version(PROJECT_NAME)
+PROJECT_NAME = 'bpod-core'
 
 
 class SerialReaderProtocolRaw(Protocol):
@@ -488,8 +488,8 @@ def find_bpod_ports() -> Iterator[str]:
     """
     for port in (p for p in list_ports.comports() if p.vid == 0x16C0):
         try:
-            with serial.Serial(port.name, timeout=0.2) as ser:
+            with serial.Serial(port.device, timeout=0.2) as ser:
                 if ser.read(1) == bytes([222]):
-                    yield port.name
+                    yield port.device
         except serial.SerialException:
             pass

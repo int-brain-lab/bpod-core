@@ -10,8 +10,8 @@ from importlib.metadata import version
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = "iblbpod"
-copyright = "2023, International Brain Laboratory"
+project = "bpod_core"
+copyright = "2025, International Brain Laboratory"
 author = "International Brain Laboratory"
 release = version(project)
 version = ".".join(release.split(".")[:3])

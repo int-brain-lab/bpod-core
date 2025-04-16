@@ -1,8 +1,7 @@
 import unittest
 
-from serial_singleton import SerialSingletonException
-
-from src.bpod import Bpod, find_bpod_ports
+from bpod_core.bpod import Bpod, find_bpod_ports
+from bpod_core.serial_extensions import SerialSingletonException
 
 bpod_port = next(find_bpod_ports(), None)
 

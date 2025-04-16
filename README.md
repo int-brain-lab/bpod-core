@@ -1,5 +1,5 @@
-bpod
-====
+bpod-core
+=========
 
 **bpod-core** is a Python package for communicating with the *Bpod* device from [*Sanworks*](https://sanworks.io/).
 
@@ -30,7 +30,6 @@ python3.10 -m venv ./venv
 source ./venv/bin/activate
 pip install --upgrade pip
 pip install -e .[DEV]
-pre-commit install
 ```
 
 This repository is adhering to the following conventions:

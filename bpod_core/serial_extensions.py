@@ -117,6 +117,59 @@ class SerialSingleton(serial.Serial):
         if port is not None:
             serial.Serial.port.fset(self, port)  # type: ignore[attr-defined]
 
+    def write_struct(self, data: Sequence[Any], format_string: str) -> int | None:
+        """
+        Write structured data to the serial port.
+
+        This method packs the provided data into a binary format according to the
+        specified format string and writes it to the serial port.
+
+        Parameters
+        ----------
+        data : Sequence[Any]
+            A sequence of data to be packed and written. The length of this sequence
+            must match the number of format specifiers in `format_string`.
+
+        format_string : str
+            A format string that specifies the layout of the data. It should be
+            compatible with the `struct` module's format specifications.
+            See https://docs.python.org/3/library/struct.html#format-characters
+
+        Returns
+        -------
+        int | None
+            The number of bytes written to the serial port, or None if the write
+            operation fails.
+        """
+        size = struct.calcsize(format_string)
+        buff = ctypes.create_string_buffer(size)
+        struct.pack_into(format_string, buff, 0, *data)
+        return super().write(buff)
+
+    def read_struct(self, format_string: str) -> tuple[Any, ...]:
+        """
+        Read structured data from the serial port.
+
+        This method reads a specified number of bytes from the serial port and
+        unpacks it into a tuple according to the provided format string.
+
+        Parameters
+        ----------
+        format_string : str
+            A format string that specifies the layout of the data to be read. It should
+            be compatible with the `struct` module's format specifications.
+            See https://docs.python.org/3/library/struct.html#format-characters
+
+        Returns
+        -------
+        tuple[Any, ...]
+            A tuple containing the unpacked data read from the serial port. The
+            structure of the tuple corresponds to the format specified in
+            `format_string`.
+        """
+        n_bytes = struct.calcsize(format_string)
+        return struct.unpack(format_string, super().read(n_bytes))
+
     def write(self, data: tuple[Sequence[Any], str] | Any) -> int | None:
         """
         Write data to the Bpod.
@@ -133,20 +186,15 @@ class SerialSingleton(serial.Serial):
             Number of bytes written to the Bpod.
         """
         if isinstance(data, tuple()):
-            size = struct.calcsize(data[1])
-            buff = ctypes.create_string_buffer(size)
-            struct.pack_into(data[1], buff, 0, *data[0])
-            return super().write(buff)
+            return self.write_struct(data=data[0], format_string=data[1])
         else:
             return super().write(self.to_bytes(data))
 
     @overload
-    def read(self, data_specifier: int = 1) -> bytes:
-        ...
+    def read(self, data_specifier: int = 1) -> bytes: ...
 
     @overload
-    def read(self, data_specifier: str) -> tuple[Any, ...]:
-        ...
+    def read(self, data_specifier: str) -> tuple[Any, ...]: ...
 
     def read(self, data_specifier=1):
         r"""
@@ -174,20 +222,17 @@ class SerialSingleton(serial.Serial):
             be unpacked into a tuple according to the specified format string.
         """
         if isinstance(data_specifier, str):
-            n_bytes = struct.calcsize(data_specifier)
-            return struct.unpack(data_specifier, super().read(n_bytes))
+            return self.read_struct(format_string=data_specifier)
         else:
-            return super().read(data_specifier)
+            return super().read(size=data_specifier)
 
     @overload
-    def query(self, query: bytes | Sequence[Any], data_specifier: int = 1) -> bytes:
-        ...
+    def query(self, query: bytes | Sequence[Any], data_specifier: int = 1) -> bytes: ...
 
     @overload
     def query(
         self, query: bytes | Sequence[Any], data_specifier: str
-    ) -> tuple[Any, ...]:
-        ...
+    ) -> tuple[Any, ...]: ...
 
     def query(self, query, data_specifier=1):
         r"""

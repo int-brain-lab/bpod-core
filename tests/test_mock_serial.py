@@ -3,7 +3,7 @@ import logging
 import platform
 import unittest
 
-from src.bpod import Bpod
+from bpod_core.bpod import Bpod
 
 with contextlib.suppress(ImportError):
     from mock_serial import MockSerial
