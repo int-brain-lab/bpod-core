@@ -20,9 +20,9 @@ from bpod_core.serial_extensions import (
 if TYPE_CHECKING:
     from _typeshed import ReadableBuffer  # noqa: F401
 
-logging.getLogger(__name__).addHandler(logging.NullHandler())
-
 PROJECT_NAME = 'bpod-core'
+
+logger = logging.getLogger(__name__)
 
 
 class SerialReaderProtocolRaw(Protocol):
@@ -34,7 +34,7 @@ class SerialReaderProtocolRaw(Protocol):
         ----------
         - transport: The transport object associated with the connection.
         """
-        print('Threaded serial reader started - ready to receive data...')
+        logger.info('Threaded serial reader started - ready to receive data ...')
 
     def data_received(self, data):
         """
@@ -54,7 +54,7 @@ class SerialReaderProtocolRaw(Protocol):
         ----------
         - exc: The exception that caused the connection loss, if any.
         """
-        logging.info(exc)  # Make sure to import 'log' and initialize it in your code
+        logger.info(exc)
 
 
 class BpodException(SerialSingletonException):
@@ -169,7 +169,7 @@ class Bpod(SerialSingleton):
             bpod_instance = Bpod()
         """
         # log version
-        logging.debug(f'{PROJECT_NAME} {VERSION}')
+        logger.debug(f'{PROJECT_NAME} {VERSION}')
 
         # try to automagically find a Bpod device
         if port is None and connect is True:
@@ -238,7 +238,7 @@ class Bpod(SerialSingleton):
 
         # try to perform handshake
         if self.handshake():
-            logging.debug('Handshake successful')
+            logger.debug('Handshake successful')
 
         # get firmware version, machine type & PCB revision
         serial_number = get_serial_number_from_port(self.port)
@@ -248,10 +248,10 @@ class Bpod(SerialSingleton):
         pcb_rev = self.query(b'v', '<B')[0] if v_major > 22 else None
 
         # log hardware information
-        logging.info('Bpod Finite State Machine ' + machine_str)
-        logging.info(f'Serial number {serial_number}') if serial_number else None
-        logging.info(f'Circuit board revision {pcb_rev}') if pcb_rev else None
-        logging.info('Firmware version {}.{}'.format(*version))
+        logger.info('Bpod Finite State Machine ' + machine_str)
+        logger.info(f'Serial number {serial_number}') if serial_number else None
+        logger.info(f'Circuit board revision {pcb_rev}') if pcb_rev else None
+        logger.info('Firmware version {}.{}'.format(*version))
 
         # get hardware self-description
         info: list[Any] = [serial_number, version, machine_type, machine_str, pcb_rev]
@@ -285,20 +285,20 @@ class Bpod(SerialSingleton):
             cls_name = f'{channel_cls.__name__.lower()}s'
             setattr(self, cls_name, NamedTuple(cls_name, types)._make(channels))
 
-        logging.debug('Configuring I/O ports')
+        logger.debug('Configuring I/O ports')
         input_dict = {b'B': 'BNC', b'V': 'Valve', b'P': 'Port', b'W': 'Wire'}
         output_dict = {b'B': 'BNC', b'V': 'Valve', b'P': 'PWM', b'W': 'Wire'}
         collect_channels(self.info.input_description_array, input_dict, Input)
         collect_channels(self.info.output_description_array, output_dict, Output)
 
-        # logging.debug("Configuring modules")
+        # logger.debug("Configuring modules")
         # self.modules = Modules(self)
 
     def close(self):
         """Disconnect the state machine and close the serial connection."""
         if not self.is_open:
             return
-        logging.debug('Disconnecting state machine')
+        logger.debug('Disconnecting state machine')
         self.write(b'Z')
         super().close()
 

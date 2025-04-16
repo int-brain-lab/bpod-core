@@ -10,6 +10,8 @@ import serial
 from serial.serialutil import to_bytes  # type: ignore[attr-defined]
 from serial.tools import list_ports
 
+logger = logging.getLogger(__name__)
+
 
 class SerialSingletonException(serial.SerialException):
     pass
@@ -35,7 +37,7 @@ class SerialSingleton(serial.Serial):
         with cls._lock:
             instance = SerialSingleton._instances.get(port, None)
             if instance is None:
-                logging.debug(f'Creating new {cls.__name__} instance on {port}')
+                logger.debug(f'Creating new {cls.__name__} instance on {port}')
                 instance = super().__new__(cls)
                 SerialSingleton._instances[port] = instance
             else:
@@ -44,7 +46,7 @@ class SerialSingleton(serial.Serial):
                     raise SerialSingletonException(
                         f'{port} is already in use by an instance of {instance_name}'
                     )
-                logging.debug(f'Using existing {instance_name} instance on {port}')
+                logger.debug(f'Using existing {instance_name} instance on {port}')
             return instance
 
     def __init__(self, port: str | None = None, connect: bool = True, **kwargs) -> None:
@@ -67,16 +69,16 @@ class SerialSingleton(serial.Serial):
         self.close()
         with self._lock:
             if self.port in SerialSingleton._instances:
-                logging.debug(f'Deleting {type(self).__name__} instance on {self.port}')
+                logger.debug(f'Deleting {type(self).__name__} instance on {self.port}')
                 SerialSingleton._instances.pop(self.port)
 
     def open(self) -> None:
         super().open()
-        logging.debug(f'Serial connection to {self.port} opened')
+        logger.debug(f'Serial connection to {self.port} opened')
 
     def close(self) -> None:
         super().close()
-        logging.debug(f'Serial connection to {self.port} closed')
+        logger.debug(f'Serial connection to {self.port} closed')
 
     @property
     def port(self) -> str | None:
