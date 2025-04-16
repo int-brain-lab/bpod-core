@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -351,7 +351,7 @@ class Bpod(SerialSingleton):
         #     self._children = modules
 
 
-class Channel:
+class Channel(ABC):
     @abstractmethod
     def __init__(self, bpod: Bpod, name: str, io_type: bytes, index: int):
         """
@@ -482,7 +482,7 @@ def find_bpod_ports() -> Iterator[str]:
     .. code-block:: python
 
         for port in Bpod.find():
-            print(f"Bpod on {port}")
+            print(f'Bpod on {port}')
         # Bpod on COM3
         # Bpod on COM6
     """
