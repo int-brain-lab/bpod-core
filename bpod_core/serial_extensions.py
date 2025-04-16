@@ -303,10 +303,12 @@ def to_bytes(data: Any) -> bytes:
         Data converted to bytestring.
     """
     match data:
-        case np.ndarray() | np.generic():
-            return data.tobytes()
+        case bytes():
+            return data
         case int():
             return bytes([data])
+        case np.ndarray() | np.generic():
+            return data.tobytes()
         case str():
             return data.encode('utf-8')
         case _ if isinstance(data, Iterable):

@@ -244,17 +244,27 @@ class Bpod(SerialSingleton):
         serial_number = get_serial_number_from_port(self.port)
         v_major, machine_type = self.query(b'F', '<2H')
         version = (v_major, self.query(b'f', '<H')[0] if v_major > 22 else 0)
-        machine_str = {1: 'v0.5', 2: 'r07+', 3: 'r2.0-2.5', 4: '2+ r1.0'}[machine_type]
+        if not (2 < machine_type < 5):
+            raise BpodException(
+                f'The Bpod on {self.port} has an unsupported hardware version.'
+            )
+        machine_str = {3: 'r2.0-2.5', 4: '2+ r1.0'}.get(machine_type, '')
         pcb_rev = self.query(b'v', '<B')[0] if v_major > 22 else None
 
         # log hardware information
-        logger.info('Bpod Finite State Machine ' + machine_str)
+        logger.info(f'Bpod Finite State Machine {machine_str}')
         logger.info(f'Serial number {serial_number}') if serial_number else None
         logger.info(f'Circuit board revision {pcb_rev}') if pcb_rev else None
         logger.info('Firmware version {}.{}'.format(*version))
 
         # get hardware self-description
-        info: list[Any] = [serial_number, version, machine_type, machine_str, pcb_rev]
+        info: list[Any] = [
+            serial_number,
+            version,
+            machine_type,
+            machine_str,
+            pcb_rev,
+        ]
         if v_major > 22:
             info.extend(self.query(b'H', '<2H6B'))
         else:

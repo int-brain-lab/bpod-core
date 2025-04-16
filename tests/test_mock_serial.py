@@ -32,7 +32,6 @@ class TestSerial:
             receive_bytes=b'G',
             send_bytes=b'\x01',
         )
-
         device.stub(
             name='get_hardware_description',
             receive_bytes=b'H',
