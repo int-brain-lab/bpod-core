@@ -240,21 +240,29 @@ class Bpod(SerialSingleton):
         if self.handshake():
             logger.debug('Handshake successful')
 
-        # get firmware version, machine type & PCB revision
-        serial_number = get_serial_number_from_port(self.port)
+        # get firmware version and machine type; assert version requirements
         v_major, machine_type = self.query(b'F', '<2H')
         version = (v_major, self.query(b'f', '<H')[0] if v_major > 22 else 0)
         if not (2 < machine_type < 5):
             raise BpodException(
-                f'The Bpod on {self.port} has an unsupported hardware version.'
+                f'The hardware version of the Bpod on {self.port} is not supported.'
             )
-        machine_str = {3: 'r2.0-2.5', 4: '2+ r1.0'}.get(machine_type, '')
+        if version < (min_version := (23, 0)):
+            raise BpodException(
+                f'The Bpod on {self.port} uses firmware v{version[0]}.{version[1]} '
+                f'which is not supported. Please update the device to '
+                f'firmware v{min_version[0]}.{min_version[1]} or later.'
+            )
+
+        # get some more hardware information
+        machine_str = {3: 'r2.0-2.5', 4: '2+ r1.0'}.get(machine_type, 'unknown')
+        serial_number = get_serial_number_from_port(self.port)
         pcb_rev = self.query(b'v', '<B')[0] if v_major > 22 else None
 
         # log hardware information
         logger.info(f'Bpod Finite State Machine {machine_str}')
         logger.info(f'Serial number {serial_number}') if serial_number else None
-        logger.info(f'Circuit board revision {pcb_rev}') if pcb_rev else None
+        logger.info(f'PCB revision {pcb_rev}') if pcb_rev else None
         logger.info('Firmware version {}.{}'.format(*version))
 
         # get hardware self-description
