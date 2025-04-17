@@ -1,9 +1,16 @@
-Welcome to bpod's documentation!
-================================
+.. include:: ../../README.md
+   :parser: myst_parser.sphinx_
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+   :maxdepth: 3
+   :hidden:
 
-   reference_index
-   release_notes
+   developer_guide
+   api
+   changelog
+
+.. toctree::
+   :caption: Links
+   :hidden:
+
+   bpod-core on GitHub <https://github.com/int-brain-lab/bpod-core>
