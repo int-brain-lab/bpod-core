@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from _typeshed import ReadableBuffer  # noqa: F401
 
 PROJECT_NAME = 'bpod-core'
-
+VID_TEENSY = 0x16C0
 logger = logging.getLogger(__name__)
 
 
@@ -254,6 +254,40 @@ class Bpod(SerialSingleton):
                 f'firmware v{min_version[0]}.{min_version[1]} or later.'
             )
 
+        # detect additional USB-serial ports
+        candidate_ports = [
+            p.device
+            for p in list_ports.comports()
+            if p.vid == VID_TEENSY and p.device != self.port
+        ]
+        for port in candidate_ports:
+            try:
+                with serial.Serial(port, timeout=0.2) as ser:
+                    if ser.read(1) == bytes([222]):
+                        candidate_ports.remove(port)
+            except serial.SerialException:
+                pass
+        for port in candidate_ports:
+            try:
+                with serial.Serial(port, timeout=0.2) as ser:
+                    self.write(b'{')
+                    if ser.read(1) == bytes([222]):
+                        print(port)
+                        candidate_ports.remove(port)
+                        continue
+            except serial.SerialException:
+                pass
+        if machine_type == 4:
+            for port in candidate_ports:
+                try:
+                    with serial.Serial(port, timeout=0.2) as ser:
+                        self.write(b'}')
+                        if ser.read(1) == bytes([223]):
+                            print(port)
+                            continue
+                except serial.SerialException:
+                    pass
+
         # get some more hardware information
         machine_str = {3: 'r2.0-2.5', 4: '2+ r1.0'}.get(machine_type, 'unknown')
         serial_number = get_serial_number_from_port(self.port)
@@ -273,13 +307,10 @@ class Bpod(SerialSingleton):
             machine_str,
             pcb_rev,
         ]
-        if v_major > 22:
-            info.extend(self.query(b'H', '<2H6B'))
-        else:
-            info.extend(self.query(b'H', '<2H5B'))
-            info.insert(-4, 3)  # max bytes per serial msg always = 3
+        info.extend(self.query(b'H', '<2H6B'))
         info.extend(self.read(f'<{info[-1]}s1B'))
-        self.info = Bpod._Info(*info, *self.read(f'<{info[-1]}s'))
+        info.extend(self.read(f'<{info[-1]}s'))
+        self.info = Bpod._Info(*info)
 
         def collect_channels(description: bytes, dictionary: dict, channel_cls: type):
             """
@@ -504,7 +535,7 @@ def find_bpod_ports() -> Iterator[str]:
         # Bpod on COM3
         # Bpod on COM6
     """
-    for port in (p for p in list_ports.comports() if p.vid == 0x16C0):
+    for port in (p for p in list_ports.comports() if p.vid == VID_TEENSY):
         try:
             with serial.Serial(port.device, timeout=0.2) as ser:
                 if ser.read(1) == bytes([222]):

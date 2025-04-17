@@ -75,6 +75,8 @@ ignore = [
   "D104",    # Missing docstring in public package
   "D105",    # Missing docstring in magic method
   "D401",    # First line of docstring should be in imperative mood
+  "PLR0912", # Too many branches
+  "PLR0915", # Too many statements
   "PLR2004", # Magic value used in comparison, consider replacing with a constant variable
 ]
 select = [
