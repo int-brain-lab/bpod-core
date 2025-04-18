@@ -182,6 +182,9 @@ class ExtendedSerial(serial.Serial):
         self.write(query)
         return self.read(data_specifier)
 
+    def validate_response(self, query, expected_response: bytes) -> bool:
+        return self.query(query) == expected_response
+
 
 class SerialSingleton(ExtendedSerial):
     _instances: dict[str | None, serial.Serial] = dict()

@@ -6,13 +6,14 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import serial
+from pydantic import validate_call
 from serial import SerialException
 from serial.tools import list_ports
 
 from bpod_core import __version__ as VERSION  # noqa: N812
 from bpod_core.serial_extensions import (
+    ExtendedSerial,
     SerialSingleton,
-    SerialSingletonException,
     get_serial_number_from_port,
 )
 
@@ -20,16 +21,117 @@ if TYPE_CHECKING:
     from _typeshed import ReadableBuffer  # noqa: F401
 
 PROJECT_NAME = 'bpod-core'
-VID_TEENSY = 0x16C0
+VIDS_BPOD = [0x16C0]  # possible vendor IDs for supported Bpod devices
+MIN_BPOD_VERSION = (23, 0)  # minimum supported firmware version
 
 logger = logging.getLogger(__name__)
 
 
-class BpodException(SerialSingletonException):
-    pass
+class BpodError(Exception):
+    """
+    Exception class for Bpod-related errors.
+
+    This exception is raised when an error specific to the Bpod device or its
+    operations occurs.
+    """
 
 
-class Bpod(SerialSingleton):
+class Bpod:
+    """Bpod class for interfacing with the Bpod Finite State Machine."""
+
+    @validate_call
+    def __init__(self, port: str | None = None):
+        # If no port was provided, try to automagically find a Bpod
+        if port is None:
+            if (port := next(find_bpod_ports(), None)) is None:
+                raise BpodError('No Bpod found')
+
+        # Assure that the provided port exists and the device could be a Bpod
+        elif (port_info := next(list_ports.grep(port), None)) is None:
+            raise BpodError(f'Port not found: {port}')
+        elif getattr(port_info, 'vid', None) not in VIDS_BPOD:
+            raise BpodError(f'Device on {port} is not a supported Bpod')
+
+        # open primary serial port
+        self.serial0 = ExtendedSerial()
+        self.serial0.port = port
+        self.open()
+
+        # get firmware version and machine type; assert version requirements
+        v_major, machine_type = self.serial0.query(b'F', '<2H')
+        version = (v_major, self.serial0.query(b'f', '<H')[0] if v_major > 22 else 0)
+        if not (2 < machine_type < 5):
+            self.close()
+            raise BpodError(
+                f'The hardware version of the Bpod on {self.port0} is not supported.'
+            )
+        if version < MIN_BPOD_VERSION:
+            self.close()
+            raise BpodError(
+                f'The Bpod on {self.port0} uses firmware v{version[0]}.{version[1]} '
+                f'which is not supported. Please update the device to '
+                f'firmware v{MIN_BPOD_VERSION[0]}.{MIN_BPOD_VERSION[1]} or later.'
+            )
+
+    def __enter__(self):
+        """Enter context."""
+        return self
+
+    def __exit__(self, type, value, traceback):
+        """Exit context and close connection."""
+        self.close()
+
+    def __del__(self):
+        self.close()
+
+    def open(self):
+        """
+        Open the connection to the Bpod.
+
+        Raises
+        ------
+        SerialException
+            If the port could not be opened.
+        BpodException
+            If the handshake fails.
+        """
+        if self.serial0.is_open:
+            return
+        self.serial0.open()
+        self._handshake()
+
+    def close(self):
+        """Close the connection to the Bpod."""
+        if hasattr(self, 'serial0') and self.serial0.is_open:
+            self.serial0.write(b'Z')
+            self.serial0.close()
+
+    def _handshake(self):
+        """
+        Perform a handshake with the Bpod.
+
+        Raises
+        ------
+        BpodException
+            If the handshake fails.
+        """
+        try:
+            self.serial0.timeout = 0.2
+            if not self.serial0.validate_response(b'6', b'5'):
+                raise BpodError(f'Handshake with device on {self.port0} failed')
+            self.serial0.timeout = None
+        except SerialException as e:
+            raise BpodError(f'Handshake with device on {self.port0} failed') from e
+        finally:
+            self.serial0.reset_input_buffer()
+        logger.debug(f'Handshake with Bpod on {self.port0} successful')
+
+    @property
+    def port0(self) -> str:
+        return self.serial0.port
+
+
+class BpodOriginal(SerialSingleton):
     """
     Class for interfacing a Bpod Finite State Machine.
 
@@ -213,11 +315,11 @@ class Bpod(SerialSingleton):
         v_major, machine_type = self.query(b'F', '<2H')
         version = (v_major, self.query(b'f', '<H')[0] if v_major > 22 else 0)
         if not (2 < machine_type < 5):
-            raise BpodException(
+            raise BpodError(
                 f'The hardware version of the Bpod on {self.port} is not supported.'
             )
         if version < (min_version := (23, 0)):
-            raise BpodException(
+            raise BpodError(
                 f'The Bpod on {self.port} uses firmware v{version[0]}.{version[1]} '
                 f'which is not supported. Please update the device to '
                 f'firmware v{min_version[0]}.{min_version[1]} or later.'
@@ -287,7 +389,7 @@ class Bpod(SerialSingleton):
         candidate_ports = [
             p.device
             for p in list_ports.comports()
-            if p.vid == VID_TEENSY and p.device != self.port
+            if p.vid in VIDS_BPOD and p.device != self.port
         ]
 
         # Exclude all uninitialized Bpods from the list
@@ -352,12 +454,12 @@ class Bpod(SerialSingleton):
             return self.query(b'6') == b'5'
         except SerialException as e:
             if raise_exception_on_fail:
-                raise BpodException('Handshake failed') from e
+                raise BpodError('Handshake failed') from e
         finally:
             self.reset_input_buffer()
 
         if raise_exception_on_fail:
-            raise BpodException('Handshake failed')
+            raise BpodError('Handshake failed')
         return False
 
     def update_modules(self):
@@ -519,9 +621,9 @@ def find_bpod_ports() -> Iterator[str]:
         # Bpod on COM3
         # Bpod on COM6
     """
-    for port in (p for p in list_ports.comports() if p.vid == VID_TEENSY):
+    for port in (p for p in list_ports.comports() if p.vid in VIDS_BPOD):
         try:
-            with serial.Serial(port.device, timeout=0.2) as ser:
+            with serial.Serial(port.device, timeout=0.15) as ser:
                 if ser.read(1) == bytes([222]):
                     yield port.device
         except serial.SerialException:
