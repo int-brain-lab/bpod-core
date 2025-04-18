@@ -1,10 +1,10 @@
-name: linting and unit-tests
+name: unit tests
 
 on: [push, workflow_dispatch]
 
 jobs:
   ruff:
-    name: Ruff
+    name: ruff
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
