@@ -3,23 +3,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from serial import SerialException
+from serial_extensions import ExtendedSerial
 
 from bpod_core.bpod import Bpod, BpodError
-
-
-class TestBpodInit:
-    @pytest.fixture
-    def mock_serial(self):
-        """Fixture to mock serial communication."""
-        mock_serial_instance = MagicMock()
-        with patch(
-            'bpod_core.bpod.ExtendedSerial', return_value=mock_serial_instance
-        ) as mock_serial:
-            yield mock_serial
-
-    @patch('bpod_core.bpod.Bpod._identify_bpod', return_value=('COM3', '12345'))
-    def test_bpod_init(self, mock_id_bpod, mock_serial):
-        Bpod()
 
 
 class TestBpodIdentifyBpod:
@@ -117,6 +103,68 @@ class TestBpodIdentifyBpod:
         with pytest.raises(BpodError, match='Port not found'):
             Bpod._identify_bpod(port='incorrect_port')
         mock_serial.assert_not_called()
+
+
+@pytest.fixture
+def mock_serial():
+    """Mock read and write methods for ExtendedSerial."""
+    last_write = b''
+    extended_serial = ExtendedSerial()
+    extended_serial.mock_responses = dict()
+
+    def write(data):
+        nonlocal last_write
+        last_write = data
+
+    def read(size):
+        nonlocal last_write
+        response = extended_serial.mock_responses.get(last_write, b'')
+        assert size == len(response)
+        return response
+
+    with (
+        patch('bpod_core.serial_extensions.serial.Serial.write', side_effect=write),
+        patch('bpod_core.serial_extensions.serial.Serial.read', side_effect=read),
+    ):
+        yield extended_serial
+
+
+class TestGetVersionInfo:
+    def test_get_version_info(self, mock_serial):
+        """Test retrieval of version info with supported firmware and hardware."""
+        mock_serial.mock_responses = {
+            b'F': b'\x17\x00\x03\x00',  # Firmware version 23, Bpod type 3
+            b'f': b'\x01\x00',  # Minor firmware version 1
+            b'v': b'\x02',  # PCB revision 2
+        }
+        bpod = MagicMock(spec=Bpod)
+        bpod.serial0 = mock_serial
+        version_info = Bpod._get_version_info(bpod)
+        assert version_info['bpod_type'] == 3
+        assert version_info['v_firmware'] == (23, 1)
+        assert version_info['v_pcb'] == 2
+
+    def test_get_version_info_unsupported_firmware(self, mock_serial):
+        """Test failure when firmware version is unsupported."""
+        mock_serial.mock_responses = {
+            b'F': b'\x14\x00\x03\x00',  # Firmware version 20, Bpod type 3
+            b'f': b'\x01\x00',  # Minor firmware version 1
+        }
+        bpod = MagicMock(spec=Bpod)
+        bpod.serial0 = mock_serial
+        with pytest.raises(BpodError, match='firmware .* is not supported'):
+            Bpod._get_version_info(bpod)
+
+    def test_get_version_info_unsupported_hardware(self, mock_serial):
+        """Test failure when hardware version is unsupported."""
+        mock_serial.mock_responses = {
+            b'F': b'\x17\x00\x02\x00',  # Firmware version 23, Bpod type 2
+            b'f': b'\x01\x00',  # Minor firmware version 1
+        }
+        bpod = MagicMock(spec=Bpod)
+        bpod.serial0 = mock_serial
+        with pytest.raises(BpodError, match='hardware .* is not supported'):
+            Bpod._get_version_info(bpod)
 
 
 class TestBpodHandshake:

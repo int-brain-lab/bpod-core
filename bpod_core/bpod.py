@@ -8,9 +8,7 @@ from serial import SerialException
 from serial.tools.list_ports import comports
 
 from bpod_core import __version__ as bpod_core_version
-from bpod_core.serial_extensions import (
-    ExtendedSerial,
-)
+from bpod_core.serial_extensions import ExtendedSerial
 
 if TYPE_CHECKING:
     from _typeshed import ReadableBuffer  # noqa: F401
