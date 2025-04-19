@@ -9,7 +9,7 @@ import numpy as np
 import serial
 from serial.serialutil import to_bytes as serial_to_bytes  # type: ignore[attr-defined]
 from serial.threaded import Protocol
-from serial.tools import list_ports
+from serial.tools.list_ports import comports
 
 logger = logging.getLogger(__name__)
 
@@ -228,9 +228,7 @@ class SerialSingleton(ExtendedSerial):
         if port is not None and connect is True:
             self.open()
 
-        self.port_info = next(
-            (p for p in list_ports.comports() if p.device == self.port), None
-        )
+        self.port_info = next((p for p in comports() if p.device == self.port), None)
 
         self._initialized = True
 
@@ -365,7 +363,7 @@ def get_port_from_serial_number(serial_number: str) -> str | None:
        The communication port of the USB serial device that matches the serial number
        provided by the user. The function will return None if no such device was found.
     """
-    port_info = list_ports.comports()
+    port_info = comports()
     port_match = next((p for p in port_info if p.serial_number == serial_number), None)
     return port_match.name if port_match else None
 
@@ -386,6 +384,6 @@ def get_serial_number_from_port(port: str | None) -> str | None:
         The serial number of the USB serial device corresponding to the provided
         communication port. Returns None if no device matches the port.
     """
-    port_info = list_ports.comports()
+    port_info = comports()
     port_match = next((p for p in port_info if p.name == port), None)
     return port_match.serial_number if port_match else None

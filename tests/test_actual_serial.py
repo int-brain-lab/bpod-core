@@ -1,9 +1,9 @@
 import pytest
 
-from bpod_core.bpod import Bpod, find_bpod_ports
+from bpod_core.bpod import Bpod, _find_idle_bpod
 from bpod_core.serial_extensions import SerialSingletonException
 
-bpod_port = next(find_bpod_ports(), None)
+bpod_port = next(_find_idle_bpod(), None)
 
 
 @pytest.mark.skipif(bpod_port is None, reason='No Bpod device found')
