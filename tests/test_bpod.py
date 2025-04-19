@@ -1,4 +1,5 @@
 import logging
+import struct
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -133,22 +134,23 @@ class TestGetVersionInfo:
     def test_get_version_info(self, mock_serial):
         """Test retrieval of version info with supported firmware and hardware."""
         mock_serial.mock_responses = {
-            b'F': b'\x17\x00\x03\x00',  # Firmware version 23, Bpod type 3
-            b'f': b'\x01\x00',  # Minor firmware version 1
-            b'v': b'\x02',  # PCB revision 2
+            b'F': struct.pack('<HH', 23, 3),  # Firmware version 23, Bpod type 3
+            b'f': struct.pack('<H', 1),  # Minor firmware version 1
+            b'v': struct.pack('<B', 2),  # PCB revision 2
         }
         bpod = MagicMock(spec=Bpod)
+        bpod._info = dict()
         bpod.serial0 = mock_serial
-        version_info = Bpod._get_version_info(bpod)
-        assert version_info['bpod_type'] == 3
-        assert version_info['v_firmware'] == (23, 1)
-        assert version_info['v_pcb'] == 2
+        Bpod._get_version_info(bpod)
+        assert bpod._info['bpod_type'] == 3
+        assert bpod._info['v_firmware'] == (23, 1)
+        assert bpod._info['v_pcb'] == 2
 
     def test_get_version_info_unsupported_firmware(self, mock_serial):
         """Test failure when firmware version is unsupported."""
         mock_serial.mock_responses = {
-            b'F': b'\x14\x00\x03\x00',  # Firmware version 20, Bpod type 3
-            b'f': b'\x01\x00',  # Minor firmware version 1
+            b'F': struct.pack('<HH', 20, 3),  # Firmware version 20, Bpod type 3
+            b'f': struct.pack('<H', 1),  # Minor firmware version 1
         }
         bpod = MagicMock(spec=Bpod)
         bpod.serial0 = mock_serial
@@ -158,8 +160,8 @@ class TestGetVersionInfo:
     def test_get_version_info_unsupported_hardware(self, mock_serial):
         """Test failure when hardware version is unsupported."""
         mock_serial.mock_responses = {
-            b'F': b'\x17\x00\x02\x00',  # Firmware version 23, Bpod type 2
-            b'f': b'\x01\x00',  # Minor firmware version 1
+            b'F': struct.pack('<HH', 23, 2),  # Firmware version 23, Bpod type 2
+            b'f': struct.pack('<H', 1),  # Minor firmware version 1
         }
         bpod = MagicMock(spec=Bpod)
         bpod.serial0 = mock_serial

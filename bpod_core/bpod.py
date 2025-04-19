@@ -48,8 +48,8 @@ class Bpod:
         self.serial0.port = port
         self.open()
 
-        # get firmware version and machine type; assert version requirements
-        self._info.update(self._get_version_info())
+        # get firmware version and machine type; enforce version requirements
+        self._get_version_info()
 
     def __enter__(self):
         """Enter context."""
@@ -133,7 +133,7 @@ class Bpod:
             raise BpodError('Device is not a supported Bpod')
         return port_info.device, port_info.serial_number
 
-    def _get_version_info(self) -> dict[str, Any]:
+    def _get_version_info(self) -> None:
         """
         Retrieve firmware version and machine type information from the Bpod.
 
@@ -171,7 +171,7 @@ class Bpod:
                 f'firmware v{MIN_BPOD_FW_VERSION[0]}.{MIN_BPOD_FW_VERSION[1]} or later.'
             )
         info_dict['v_pcb'] = self.serial0.query(b'v', '<B')[0] if v_major > 22 else None
-        return info_dict
+        self._info.update(info_dict)
 
     def _handshake(self):
         """
