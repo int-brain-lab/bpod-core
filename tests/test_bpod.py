@@ -117,26 +117,31 @@ class TestBpodIdentifyBpod:
 @pytest.fixture
 def mock_serial():
     """Mock read and write methods for ExtendedSerial."""
-    last_write = b''
     response_buffer = bytearray()
     extended_serial = ExtendedSerial()
     extended_serial.mock_responses = dict()
 
     def write(data):
-        nonlocal last_write
-        last_write = data
+        nonlocal response_buffer
+        assert data in extended_serial.mock_responses
+        response_buffer.extend(extended_serial.mock_responses.get(data, b''))
 
-    def read(size):
-        nonlocal last_write, response_buffer
-        response_buffer.extend(extended_serial.mock_responses.get(last_write, b''))
+    def read(size) -> bytes:
+        nonlocal response_buffer
         assert size <= len(response_buffer)
         response = bytes(response_buffer[:size])
         del response_buffer[:size]
         return response
 
+    def in_waiting() -> int:
+        nonlocal response_buffer
+        return len(response_buffer)
+
+    patched_object_base = 'bpod_core.serial_extensions.serial.Serial'
     with (
-        patch('bpod_core.serial_extensions.serial.Serial.write', side_effect=write),
-        patch('bpod_core.serial_extensions.serial.Serial.read', side_effect=read),
+        patch(f'{patched_object_base}.write', side_effect=write),
+        patch(f'{patched_object_base}.read', side_effect=read),
+        patch(f'{patched_object_base}.in_waiting', side_effect=in_waiting),
     ):
         yield extended_serial
 
@@ -150,12 +155,11 @@ class TestGetVersionInfo:
             b'v': struct.pack('<B', 2),  # PCB revision 2
         }
         bpod = MagicMock(spec=Bpod)
-        bpod._info = dict()
         bpod.serial0 = mock_serial
         Bpod._get_version_info(bpod)
-        assert bpod._info['bpod_type'] == 3
-        assert bpod._info['v_firmware'] == (23, 1)
-        assert bpod._info['pcb_rev'] == 2
+        assert bpod._version.firmware == (23, 1)
+        assert bpod._version.machine == 3
+        assert bpod._version.pcb == 2
 
     def test_get_version_info_unsupported_firmware(self, mock_serial):
         """Test failure when firmware version is unsupported."""
@@ -178,6 +182,79 @@ class TestGetVersionInfo:
         bpod.serial0 = mock_serial
         with pytest.raises(BpodError, match='hardware .* is not supported'):
             Bpod._get_version_info(bpod)
+
+
+class TestGetHardwareConfiguration:
+    def test_get_version_info_v23(self, mock_serial):
+        """Test retrieval of hardware configuration (firmware version 23)."""
+        mock_serial.mock_responses = {
+            b'H': struct.pack(
+                '<2H6B16s1B21s',
+                256,  # max_states
+                100,  # timer_period
+                75,  # max_serial_events
+                5,  # max_bytes_per_serial_message
+                16,  # n_global_timers
+                8,  # n_global_counters
+                16,  # n_conditions
+                16,  # n_inputs
+                b'UUUXZFFFFBBPPPPP',  # input_description
+                21,  # n_outputs
+                b'UUUXZFFFFBBPPPPPVVVVV',  # output_description
+            ),
+        }
+        bpod = MagicMock(spec=Bpod)
+        bpod.serial0 = mock_serial
+        bpod.version = MagicMock()
+        bpod.version.firmware = (23, 0)
+        Bpod._get_hardware_configuration(bpod)
+        assert bpod._hardware_config.max_states == 256
+        assert bpod._hardware_config.timer_period == 100
+        assert bpod._hardware_config.max_serial_events == 75
+        assert bpod._hardware_config.max_bytes_per_serial_message == 5
+        assert bpod._hardware_config.n_global_timers == 16
+        assert bpod._hardware_config.n_global_counters == 8
+        assert bpod._hardware_config.n_conditions == 16
+        assert bpod._hardware_config.n_inputs == 16
+        assert bpod._hardware_config.input_description == b'UUUXZFFFFBBPPPPP'
+        assert bpod._hardware_config.n_outputs == 21
+        assert bpod._hardware_config.output_description == b'UUUXZFFFFBBPPPPPVVVVV'
+        assert mock_serial.in_waiting() == 0
+
+    def test_get_version_info_v22(self, mock_serial):
+        """Test retrieval of hardware configuration (firmware version 22)."""
+        mock_serial.mock_responses = {
+            b'H': struct.pack(
+                '<2H5B16s1B21s',
+                256,  # max_states
+                100,  # timer_period
+                75,  # max_serial_events
+                16,  # n_global_timers
+                8,  # n_global_counters
+                16,  # n_conditions
+                16,  # n_inputs
+                b'UUUXZFFFFBBPPPPP',  # input_description
+                21,  # n_outputs
+                b'UUUXZFFFFBBPPPPPVVVVV',  # output_description
+            ),
+        }
+        bpod = MagicMock(spec=Bpod)
+        bpod.serial0 = mock_serial
+        bpod.version = MagicMock()
+        bpod.version.firmware = (22, 0)
+        Bpod._get_hardware_configuration(bpod)
+        assert bpod._hardware_config.max_states == 256
+        assert bpod._hardware_config.timer_period == 100
+        assert bpod._hardware_config.max_serial_events == 75
+        assert bpod._hardware_config.max_bytes_per_serial_message == 3
+        assert bpod._hardware_config.n_global_timers == 16
+        assert bpod._hardware_config.n_global_counters == 8
+        assert bpod._hardware_config.n_conditions == 16
+        assert bpod._hardware_config.n_inputs == 16
+        assert bpod._hardware_config.input_description == b'UUUXZFFFFBBPPPPP'
+        assert bpod._hardware_config.n_outputs == 21
+        assert bpod._hardware_config.output_description == b'UUUXZFFFFBBPPPPPVVVVV'
+        assert mock_serial.in_waiting() == 0
 
 
 class TestBpodHandshake:

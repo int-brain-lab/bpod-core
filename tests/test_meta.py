@@ -5,7 +5,7 @@ from bpod_core import __version__ as bpod_core_version
 
 
 def test_semantic_versioning():
-    """Test bpod_core version for correct syntax"""
+    """Test bpod_core version for correct syntax."""
     pattern = (
         r'^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)'
         r'(?:-(?P<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)'
