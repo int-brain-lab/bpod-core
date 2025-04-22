@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from serial import SerialException
-from serial_extensions import ExtendedSerial
 
 from bpod_core.bpod import Bpod, BpodError
+from bpod_core.serial_extensions import ExtendedSerial
 
 
 class TestBpodIdentifyBpod:
@@ -76,7 +76,7 @@ class TestBpodIdentifyBpod:
         port, serial_number = Bpod._identify_bpod(serial_number='12345')
         assert port == 'COM3'
         assert serial_number == '12345'  # existing serial
-        mock_serial.assert_not_called()
+        mock_serial.assert_called_once_with('COM3', timeout=0.15)
 
     def test_serial_incorrect_serial(self, mock_serial, mock_comports):
         """Test failure to identify Bpod when specifying incorrect serial."""
@@ -90,7 +90,7 @@ class TestBpodIdentifyBpod:
         mock_port_info[0].vid = 0x0000  # unsupported VID
         with pytest.raises(BpodError, match='.* not .* supported Bpod'):
             Bpod._identify_bpod(serial_number='12345')
-        mock_serial.assert_not_called()
+        mock_serial.assert_called_once_with('COM3', timeout=0.15)
 
     def test_port_success(self, mock_serial, mock_comports):
         """Test successful identification of Bpod when specifying port."""
@@ -105,11 +105,20 @@ class TestBpodIdentifyBpod:
             Bpod._identify_bpod(port='incorrect_port')
         mock_serial.assert_not_called()
 
+    def test_port_unsupported_vid(self, mock_serial, mock_comports):
+        """Test failure to identify Bpod when specifying incorrect port."""
+        mock_port_info = mock_comports.return_value
+        mock_port_info[0].vid = 0x0000  # unsupported VID
+        with pytest.raises(BpodError, match='.* not .* supported Bpod'):
+            Bpod._identify_bpod(port='COM3')
+        mock_serial.assert_not_called()
+
 
 @pytest.fixture
 def mock_serial():
     """Mock read and write methods for ExtendedSerial."""
     last_write = b''
+    response_buffer = bytearray()
     extended_serial = ExtendedSerial()
     extended_serial.mock_responses = dict()
 
@@ -118,9 +127,11 @@ def mock_serial():
         last_write = data
 
     def read(size):
-        nonlocal last_write
-        response = extended_serial.mock_responses.get(last_write, b'')
-        assert size == len(response)
+        nonlocal last_write, response_buffer
+        response_buffer.extend(extended_serial.mock_responses.get(last_write, b''))
+        assert size <= len(response_buffer)
+        response = bytes(response_buffer[:size])
+        del response_buffer[:size]
         return response
 
     with (
@@ -134,7 +145,7 @@ class TestGetVersionInfo:
     def test_get_version_info(self, mock_serial):
         """Test retrieval of version info with supported firmware and hardware."""
         mock_serial.mock_responses = {
-            b'F': struct.pack('<HH', 23, 3),  # Firmware version 23, Bpod type 3
+            b'F': struct.pack('<2H', 23, 3),  # Firmware version 23, Bpod type 3
             b'f': struct.pack('<H', 1),  # Minor firmware version 1
             b'v': struct.pack('<B', 2),  # PCB revision 2
         }
@@ -144,12 +155,12 @@ class TestGetVersionInfo:
         Bpod._get_version_info(bpod)
         assert bpod._info['bpod_type'] == 3
         assert bpod._info['v_firmware'] == (23, 1)
-        assert bpod._info['v_pcb'] == 2
+        assert bpod._info['pcb_rev'] == 2
 
     def test_get_version_info_unsupported_firmware(self, mock_serial):
         """Test failure when firmware version is unsupported."""
         mock_serial.mock_responses = {
-            b'F': struct.pack('<HH', 20, 3),  # Firmware version 20, Bpod type 3
+            b'F': struct.pack('<2H', 20, 3),  # Firmware version 20, Bpod type 3
             b'f': struct.pack('<H', 1),  # Minor firmware version 1
         }
         bpod = MagicMock(spec=Bpod)
@@ -160,7 +171,7 @@ class TestGetVersionInfo:
     def test_get_version_info_unsupported_hardware(self, mock_serial):
         """Test failure when hardware version is unsupported."""
         mock_serial.mock_responses = {
-            b'F': struct.pack('<HH', 23, 2),  # Firmware version 23, Bpod type 2
+            b'F': struct.pack('<2H', 23, 2),  # Firmware version 23, Bpod type 2
             b'f': struct.pack('<H', 1),  # Minor firmware version 1
         }
         bpod = MagicMock(spec=Bpod)

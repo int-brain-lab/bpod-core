@@ -66,7 +66,7 @@ class TestSerial:
 
     @pytest.fixture(scope='class')
     def bpod(self, device):
-        bpod = Bpod(port=device.port, timeout=0.1)
+        bpod = Bpod(port=device.port)
         yield bpod
         bpod.close()
 

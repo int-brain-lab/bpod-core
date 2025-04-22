@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import validate_call
 from serial import SerialException
@@ -19,7 +19,7 @@ MIN_BPOD_FW_VERSION = (23, 0)  # minimum supported firmware version (major, mino
 MIN_BPOD_HW_VERSION = 3  # minimum supported hardware version
 MAX_BPOD_HW_VERSION = 4  # maximum supported hardware version
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 class BpodError(Exception):
@@ -35,10 +35,13 @@ class Bpod:
     """Bpod class for interfacing with the Bpod Finite State Machine."""
 
     _info: dict[str, Any] = dict()
+    Serial0: ExtendedSerial
+    Serial1: ExtendedSerial
+    Serial2: ExtendedSerial | None = None
 
     @validate_call
     def __init__(self, port: str | None = None, serial_number: str | None = None):
-        logger.info(f'bpod_core version {bpod_core_version}')
+        log.info(f'bpod_core {bpod_core_version}')
 
         # identify Bpod by port or serial number
         port, self._info['serial_number'] = self._identify_bpod(port, serial_number)
@@ -50,6 +53,16 @@ class Bpod:
 
         # get firmware version and machine type; enforce version requirements
         self._get_version_info()
+
+        # detect additional serial ports
+        self._detect_additional_serial_ports()
+
+        # log hardware information
+        log.info(f'Connected to Bpod Finite State Machine on {self.port0}')
+        log.info(
+            f'Firmware Version {"{}.{}".format(*self.firmware_version)}, '
+            f'Serial Number {self.serial_number}, PCB Revision {self._info["pcb_rev"]}'
+        )
 
     def __enter__(self):
         """Enter context."""
@@ -117,7 +130,10 @@ class Bpod:
         elif serial_number is not None:
             try:
                 port_info = next(
-                    p for p in comports() if p.serial_number == serial_number
+                    p
+                    for p in comports()
+                    if p.serial_number == serial_number
+                    and sends_discovery_byte(p.device)
                 )
             except (StopIteration, AttributeError) as e:
                 raise BpodError(f'No device with serial number {serial_number}') from e
@@ -149,29 +165,115 @@ class Bpod:
 
             - 'bpod_type': The type of the Bpod,
             - 'v_firmware': A tuple representing the firmware version (major, minor),
-            - 'v_pcb': The PCB revision, if applicable.
+            - 'pcb_reb': The PCB revision, if applicable.
 
         Raises
         ------
         BpodError
             If the hardware version or firmware version is not supported.
         """
-        info_dict = dict()
-        v_major, info_dict['bpod_type'] = self.serial0.query(b'F', '<2H')
+        info = dict()
+        v_major, info['bpod_type'] = self.serial0.query(b'F', '<2H')
         v_minor = self.serial0.query(b'f', '<H')[0] if v_major > 22 else 0
-        info_dict['v_firmware'] = (v_major, v_minor)
-        if not (MIN_BPOD_HW_VERSION <= info_dict['bpod_type'] <= MAX_BPOD_HW_VERSION):
+        info['v_firmware'] = (v_major, v_minor)
+        if not (MIN_BPOD_HW_VERSION <= info['bpod_type'] <= MAX_BPOD_HW_VERSION):
             raise BpodError(
                 f'The hardware version of the Bpod on {self.port0} is not supported.'
             )
-        if info_dict['v_firmware'] < MIN_BPOD_FW_VERSION:
+        if info['v_firmware'] < MIN_BPOD_FW_VERSION:
             raise BpodError(
                 f'The Bpod on {self.port0} uses firmware v{v_major}.{v_minor} '
                 f'which is not supported. Please update the device to '
                 f'firmware v{MIN_BPOD_FW_VERSION[0]}.{MIN_BPOD_FW_VERSION[1]} or later.'
             )
-        info_dict['v_pcb'] = self.serial0.query(b'v', '<B')[0] if v_major > 22 else None
-        self._info.update(info_dict)
+        info['pcb_rev'] = self.serial0.query(b'v', '<B')[0] if v_major > 22 else None
+
+        keys = [
+            'max_states',
+            'timer_period',
+            'max_serial_events',
+            'max_bytes_per_serial_message',
+            'n_global_timers',
+            'n_global_counters',
+            'n_conditions',
+            'n_inputs',
+            'input_description_array',
+            'n_outputs',
+            'output_description_array',
+        ]
+        values = list(self.serial0.query(b'H', '<2H6B'))
+        values.extend(self.serial0.read(f'<{values[-1]}s1B'))
+        values.extend(self.serial0.read(f'<{values[-1]}s'))
+        info.update(dict(zip(keys, values, strict=False)))
+        #     class _Info(NamedTuple):
+        #         serial_number: str
+        #         firmware_version: tuple[int, int]
+        #         machine_type: int
+        #         machine_type_string: str
+        #         pcb_revision: int
+        #         max_states: int
+        #         timer_period: int
+        #         max_serial_events: int
+        #         max_bytes_per_serial_message: int
+        #         n_global_timers: int
+        #         n_global_counters: int
+        #         n_conditions: int
+        #         n_inputs: int
+        #         input_description_array: bytes
+        #         n_outputs: int
+        #         output_description_array: bytes
+
+        pass
+
+        self._info.update(info)
+
+    def _detect_additional_serial_ports(self) -> None:
+        """Detect additional USB-serial ports."""
+        # First, assemble a list of candidate ports
+        candidate_ports = [
+            p.device
+            for p in comports()
+            if p.vid in VIDS_BPOD
+            and p.serial_number == self.serial_number
+            and p.device != self.port0
+        ]
+
+        # Exclude those devices from the list that are already sending a discovery byte
+        for port in candidate_ports:
+            try:
+                with ExtendedSerial(port, timeout=0.15) as ser:
+                    if ser.read(1) == bytes([222]):
+                        candidate_ports.remove(port)
+            except SerialException:
+                pass
+
+        # Find second USB-serial port
+        for port in candidate_ports:
+            try:
+                with ExtendedSerial(port, timeout=0.15) as ser:
+                    self.serial0.write(b'{')
+                    if ser.read(1) == bytes([222]):
+                        ser.reset_input_buffer()
+                        ser.timeout = None
+                        self.serial1 = ser
+                        candidate_ports.remove(port)
+                        break
+            except SerialException:
+                pass
+
+        # State Machine 2+ uses a third USB-serial port
+        if self._info.get('bpod_type') == 4:
+            for port in candidate_ports:
+                try:
+                    with ExtendedSerial(port, timeout=0.15) as ser:
+                        self.serial0.write(b'}')
+                        if ser.read(1) == bytes([223]):
+                            ser.reset_input_buffer()
+                            ser.timeout = None
+                            self.serial2 = ser
+                            break
+                except SerialException:
+                    pass
 
     def _handshake(self):
         """
@@ -191,15 +293,19 @@ class Bpod:
             raise BpodError(f'Handshake with device on {self.port0} failed') from e
         finally:
             self.serial0.reset_input_buffer()
-        logger.debug(f'Handshake with Bpod on {self.port0} successful')
+        log.debug(f'Handshake with Bpod on {self.port0} successful')
 
     @property
-    def port0(self) -> str:
-        return self.serial0.port or ''
+    def port0(self) -> str | None:
+        return self.serial0.port
 
     @property
-    def serial_number(self) -> str:
-        return self._info.get('serial_number') or ''
+    def serial_number(self) -> str | None:
+        return self._info.get('serial_number')
+
+    @property
+    def firmware_version(self) -> tuple[int, int]:
+        return cast(tuple[int, int], self._info.get('v_firmware', (0, 0)))
 
     def open(self):
         """
@@ -681,3 +787,5 @@ class Bpod:
 #
 # class Module:
 #     pass
+
+Bpod()

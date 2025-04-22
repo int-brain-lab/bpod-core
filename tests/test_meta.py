@@ -15,7 +15,7 @@ def test_semantic_versioning():
     assert re.match(pattern, bpod_core_version) is not None
 
 
-def test_changelog_format():
+def test_changelog():
     """Test that the current version is mentioned in the changelog."""
     changelog_path = Path(__file__).parents[1].joinpath('CHANGELOG.md')
     assert changelog_path.exists(), 'changelog file does not exist'
