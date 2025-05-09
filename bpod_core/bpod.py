@@ -20,7 +20,7 @@ VENDOR_IDS_BPOD = [0x16C0]  # vendor IDs of supported Bpod devices
 MIN_BPOD_FW_VERSION = (23, 0)  # minimum supported firmware version (major, minor)
 MIN_BPOD_HW_VERSION = 3  # minimum supported hardware version
 MAX_BPOD_HW_VERSION = 4  # maximum supported hardware version
-CHANNEL_TYPES = {
+CHANNEL_TYPES_INPUT = {
     b'U': 'Serial',
     b'X': 'SoftCode',
     b'Z': 'SoftCodeApp',
@@ -29,9 +29,10 @@ CHANNEL_TYPES = {
     b'D': 'Digital',
     b'B': 'BNC',
     b'W': 'Wire',
-    b'V': 'Valve',
     b'P': 'Port',
 }
+CHANNEL_TYPES_OUTPUT = CHANNEL_TYPES_INPUT.copy()
+CHANNEL_TYPES_OUTPUT.update({b'V': 'Valve', b'P': 'PWM'})
 
 logger = logging.getLogger(__name__)
 
@@ -293,9 +294,9 @@ class Bpod:
     def _configure_io(self) -> None:
         """Configure the input and output channels of the Bpod."""
         logger.debug('Configuring I/O')
-        for description, channel_class in (
-            (self._hardware.input_description, Input),
-            (self._hardware.output_description, Output),
+        for description, channel_class, channel_names in (
+            (self._hardware.input_description, Input, CHANNEL_TYPES_INPUT),
+            (self._hardware.output_description, Output, CHANNEL_TYPES_OUTPUT),
         ):
             n_channels = len(description)
             io_class = f'{channel_class.__name__.lower()}s'
@@ -304,10 +305,10 @@ class Bpod:
 
             # loop over the description array and create channels
             for idx, io_key in enumerate(struct.unpack(f'<{n_channels}c', description)):
-                if io_key not in CHANNEL_TYPES:
+                if io_key not in channel_names:
                     raise RuntimeError(f'Unknown {io_class[:-1]} type: {io_key}')
                 n = description[:idx].count(io_key) + 1
-                name = f'{CHANNEL_TYPES[io_key]}{n}'
+                name = f'{channel_names[io_key]}{n}'
                 channels.append(channel_class(self, name, io_key, idx))
                 types.append((name, channel_class))
 
@@ -560,6 +561,10 @@ class Input(Channel):
         bool
             True if the operation was success, False otherwise.
         """
+        if self.io_type not in b'FDBWVP':
+            logger.warning(
+                f'{"En" if enabled else "Dis"}abling input `{self.name}` has no effect'
+            )
         self._enabled = enabled
         success = self._set_enable_inputs()
         return success
