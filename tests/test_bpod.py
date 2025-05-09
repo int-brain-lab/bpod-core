@@ -278,6 +278,7 @@ class TestBpodHandshake:
             Bpod._handshake(mock_bpod)
         mock_bpod.serial0.reset_input_buffer.assert_called_once()
 
+
 class TestResetSessionClock:
     def test_reset_session_clock(self, mock_bpod, caplog):
         caplog.set_level(logging.DEBUG)

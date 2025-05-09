@@ -401,7 +401,6 @@ class Bpod:
         logger.debug('Resetting session clock')
         return self.serial0.verify(b'*')
 
-
     @property
     def port(self) -> str | None:
         """The port of the Bpod's primary serial device."""
