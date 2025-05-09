@@ -149,7 +149,7 @@ class StateMachine(BaseModel):
             A dictionary mapping conditions to target states for transitions.
             Defaults to an empty dictionary.
         output_actions : dict, optional
-            A dictionary of actions to be executed during the state.
+            A dictionary of actions to be executed on entering the state.
             Defaults to an empty dictionary.
         comment : Comment, optional
             An optional comment describing the state.

@@ -396,6 +396,11 @@ class Bpod:
         self.serial0.write_struct(f'<c{self._hardware.n_inputs}?', b'E', *enable)
         return self.serial0.read(1) == b'\x01'
 
+    def _reset_session_clock(self) -> bool:
+        logger.debug('Resetting session clock')
+        return self.serial0.verify(ord('*'))
+
+
     @property
     def port(self) -> str | None:
         """The port of the Bpod's primary serial device."""

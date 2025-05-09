@@ -277,3 +277,12 @@ class TestBpodHandshake:
         with pytest.raises(BpodError, match='Handshake .* failed'):
             Bpod._handshake(mock_bpod)
         mock_bpod.serial0.reset_input_buffer.assert_called_once()
+
+class TestResetSessionClock:
+    def test_reset_session_clock(selfself, mock_bpod, caplog):
+        caplog.set_level(logging.DEBUG)
+        mock_bpod.serial0.mock_responses = {b'*': 1}
+        Bpod._reset_session_clock(mock_bpod)
+        assert len(caplog.records) == 1
+        assert caplog.records[0].levelname == 'DEBUG'
+        assert 'successful' in caplog.records[0].message
