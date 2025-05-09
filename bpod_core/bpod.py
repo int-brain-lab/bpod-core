@@ -398,7 +398,7 @@ class Bpod:
 
     def _reset_session_clock(self) -> bool:
         logger.debug('Resetting session clock')
-        return self.serial0.verify(ord('*'))
+        return self.serial0.verify(b'*')
 
 
     @property
