@@ -85,7 +85,10 @@ class TestChunkedSerialReader:
         reader.process = MagicMock()
         reader.data_received(b'\x01\x00\x00\x00\x02\x00\x00\x00')
         reader.process.assert_has_calls(
-            [call(b'\x01\x00\x00\x00'), call(b'\x02\x00\x00\x00')]
+            [
+                call(b'\x01\x00\x00\x00'),
+                call(b'\x02\x00\x00\x00'),
+            ]
         )
         assert len(reader) == 0
 
@@ -95,7 +98,10 @@ class TestChunkedSerialReader:
         reader.data_received(b'\x01\x00\x00\x00')
         reader.data_received(b'\x02\x00\x00\x00')
         reader.process.assert_has_calls(
-            [call(b'\x01\x00\x00\x00'), call(b'\x02\x00\x00\x00')]
+            [
+                call(b'\x01\x00\x00\x00'),
+                call(b'\x02\x00\x00\x00'),
+            ]
         )
         assert len(reader) == 0
 
