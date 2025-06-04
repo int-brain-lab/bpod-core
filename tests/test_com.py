@@ -95,8 +95,10 @@ class TestChunkedSerialReader:
     def test_multiple_data_received(self):
         reader = com.ChunkedSerialReader(chunk_size=4)
         reader.process = MagicMock()
-        reader.data_received(b'\x01\x00\x00\x00')
-        reader.data_received(b'\x02\x00\x00\x00')
+        reader.data_received(b'\x01\x00')
+        reader.data_received(b'\x00\x00')
+        reader.data_received(b'\x02\x00')
+        reader.data_received(b'\x00\x00')
         reader.process.assert_has_calls(
             [
                 call(b'\x01\x00\x00\x00'),
