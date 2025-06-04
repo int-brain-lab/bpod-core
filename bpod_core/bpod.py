@@ -946,7 +946,7 @@ class Bpod:
                 'The last state machine sent was not confirmed by the Bpod'
             )
         logger.debug('Running state machine ...')
-        protocol = FSMReader(chunk_size=2)
+        protocol = TrialReader(chunk_size=2)
         # TODO: add handlers to protocol
         self._reader_thread = ReaderThread(self.serial0, protocol)
         self._reader_thread.start()
@@ -1183,7 +1183,7 @@ class EndOfTrial(Exception):  # noqa: N818
     pass
 
 
-class FSMReader(ChunkedSerialReader):
+class TrialReader(ChunkedSerialReader):
     def connection_made(self, transport):
         t0 = struct.unpack('<Q', transport.serial.read(8))[0]
         logger.debug(f'Starting trial at {t0} microseconds')
