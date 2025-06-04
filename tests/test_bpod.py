@@ -358,7 +358,7 @@ class TestResetSessionClock:
     def test_reset_session_clock(self, mock_bpod, caplog):
         caplog.set_level(logging.DEBUG)
         mock_bpod.serial0.mock_responses = {rb'\*': b'\x01'}
-        assert Bpod._reset_session_clock(mock_bpod) is True
+        assert Bpod.reset_session_clock(mock_bpod) is True
         assert len(caplog.records) == 1
         assert caplog.records[0].levelname == 'DEBUG'
         assert 'Resetting' in caplog.records[0].message

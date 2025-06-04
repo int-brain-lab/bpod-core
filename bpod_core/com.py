@@ -163,10 +163,13 @@ class ChunkedSerialReader(Protocol):
     This class provides methods to buffer incoming data and retrieve it in chunks.
     """
 
-    def __init__(self, chunk_size: int = 2) -> None:
-        """Initialize the protocol with an empty buffer."""
+    def __init__(self, chunk_size: int, buffer: bytearray | None = None) -> None:
+        """Initialize the protocol."""
         self._chunk_size = chunk_size
-        self._buf = bytearray()
+        if buffer is None:
+            self._buf = bytearray()
+        else:
+            self._buf = buffer
 
     def __call__(self):
         """Allow the instance to be used as a protocol factory for ReaderThread."""

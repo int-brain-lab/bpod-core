@@ -5,7 +5,7 @@ import re
 import struct
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 from pydantic import validate_call
 from serial import SerialException
@@ -97,6 +97,8 @@ class Bpod:
     _version: VersionInfo
     _hardware: HardwareConfiguration
     _reader_thread: ReaderThread | None = None
+    _next_fsm_index: int = -1
+    _serial_buffer = bytearray()  # buffer for TrialReader thread
     serial0: ExtendedSerial
     """Primary serial device for communication with the Bpod."""
     serial1: ExtendedSerial | None = None
@@ -420,7 +422,7 @@ class Bpod:
         self.serial0.write_struct(f'<c{self._hardware.n_inputs}?', b'E', *enable)
         return self.serial0.read(1) == b'\x01'
 
-    def _reset_session_clock(self) -> bool:
+    def reset_session_clock(self) -> bool:
         logger.debug('Resetting session clock')
         return self.serial0.verify(b'*')
 
@@ -928,7 +930,8 @@ class Bpod:
             byte_array.append(0)
 
         # Send to state machine
-        logger.debug('Sending state machine definition to Bpod')
+        self._next_fsm_index += 1
+        logger.debug(f'Sending state machine #{self._next_fsm_index} to Bpod')
         n_bytes = len(byte_array)
         self.serial0.write_struct(
             f'<c2?H{n_bytes}s', b'C', run_asap, use_back_op, n_bytes, byte_array
@@ -936,7 +939,7 @@ class Bpod:
         self._waiting_for_confirmation = True
 
         if run_asap:
-            self._run_state_machine(blocking=False, wait=True)
+            self._run_state_machine(blocking=False)
 
     @property
     def is_running(self) -> bool:
@@ -948,29 +951,20 @@ class Bpod:
         if self.is_running:
             raise RuntimeError('A state machine is already running')
         self.serial0.write(b'R')
-        self._run_state_machine(blocking=blocking, wait=False)
+        self._run_state_machine(blocking=blocking)
 
-    def _run_state_machine(self, blocking: bool, wait: bool):
-        # Handle confirmation of the last state machine sent
-        if self._waiting_for_confirmation:
-            if self.serial0.verify(b''):
-                logger.debug('State machine confirmed by Bpod')
-            else:
-                raise RuntimeError(
-                    'The last state machine sent was not confirmed by the Bpod'
-                )
-            self._waiting_for_confirmation = False
-
+    def _run_state_machine(self, blocking: bool):
         # Wait for an already running state machine to finish
         if (
             isinstance(self._reader_thread, ReaderThread)
             and self._reader_thread.is_alive()
         ):
-            logger.debug('Waiting for previous state machine to finish ...')
             self._reader_thread.join()
 
-        logger.debug('Running state machine ...')
-        protocol = TrialReader(chunk_size=2)
+        protocol = TrialReader(
+            self._next_fsm_index, self._serial_buffer, self._waiting_for_confirmation
+        )
+        self._waiting_for_confirmation = False
         # TODO: add handlers to protocol
         self._reader_thread = ReaderThread(self.serial0, protocol)
         self._reader_thread.start()
@@ -1216,15 +1210,33 @@ class EndOfTrial(Exception):  # noqa: N818
 
 
 class TrialReader(ChunkedSerialReader):
+    def __init__(self, index: int, buffer: bytearray, confirm: bool) -> None:
+        super().__init__(chunk_size=2, buffer=buffer)
+        self.index = index
+        self.confirm_fsm = confirm
+
     def connection_made(self, transport):
-        t0 = struct.unpack('<Q', transport.serial.read(8))[0]
-        logger.debug(f'Starting trial at {t0} microseconds')
+        if self.confirm_fsm:
+            if not self.get_or_read(1, transport) == b'\x01':
+                raise RuntimeError(
+                    f'State machine #{self.index} was not confirmed by Bpod'
+                )
+            elif logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f'State machine #{self.index} confirmed by Bpod')
+        t0 = struct.unpack('<Q', self.get_or_read(8, transport))[0]
+        logger.debug(f'Starting state machine #{self.index} at {t0} microseconds')
+
+    def get_or_read(self, n_bytes: int, transport) -> bytes:
+        if len(self._buf) >= n_bytes:
+            return self.get(n_bytes)
+        else:
+            return cast(bytes, transport.serial.read(n_bytes))
 
     def connection_lost(self, exc: BaseException | None) -> None:
         if exc is None:
             return
         if isinstance(exc, EndOfTrial):
-            logger.debug('State machine finished')
+            pass
         else:
             raise exc
 
@@ -1244,7 +1256,8 @@ class TrialReader(ChunkedSerialReader):
                 cycles, micros = struct.unpack('<IQ', self.get(12))
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
-                        f'Ending trial at {micros} microseconds / {cycles} cycles'
+                        f'Ending state machine #{self.index} at '
+                        f'{micros} microseconds / {cycles} cycles'
                     )
                 raise EndOfTrial
 

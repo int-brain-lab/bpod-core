@@ -58,23 +58,23 @@ class TestEnhancedSerial:
 
 class TestChunkedSerialReader:
     def test_initial_buffer_size(self):
-        reader = com.ChunkedSerialReader()
+        reader = com.ChunkedSerialReader(chunk_size=2)
         assert len(reader) == 0
 
     def test_put_data(self):
-        reader = com.ChunkedSerialReader()
+        reader = com.ChunkedSerialReader(chunk_size=2)
         reader.put(b'\x01\x02\x03\x04')
         assert len(reader) == 4
 
     def test_get_data(self):
-        reader = com.ChunkedSerialReader()
+        reader = com.ChunkedSerialReader(chunk_size=2)
         reader.put(b'\x01\x02\x03\x04')
         data = reader.get(4)
         assert data == bytearray(b'\x01\x02\x03\x04')
         assert len(reader) == 0
 
     def test_get_partial_data(self):
-        reader = com.ChunkedSerialReader()
+        reader = com.ChunkedSerialReader(chunk_size=2)
         reader.put(b'\x01\x02\x03\x04')
         data = reader.get(2)
         assert data == bytearray(b'\x01\x02')
