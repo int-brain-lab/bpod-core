@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 import numpy as np
 import pytest
@@ -80,21 +80,23 @@ class TestChunkedSerialReader:
         assert data == bytearray(b'\x01\x02')
         assert len(reader) == 2
 
-    def test_data_received(self, capsys):
-        reader = com.ChunkedSerialReader()
+    def test_data_received(self):
+        reader = com.ChunkedSerialReader(chunk_size=4)
+        reader.process = MagicMock()
         reader.data_received(b'\x01\x00\x00\x00\x02\x00\x00\x00')
-        captured = capsys.readouterr()
-        assert '1' in captured.out
-        assert '2' in captured.out
+        reader.process.assert_has_calls(
+            [call(b'\x01\x00\x00\x00'), call(b'\x02\x00\x00\x00')]
+        )
         assert len(reader) == 0
 
     def test_multiple_data_received(self, capsys):
-        reader = com.ChunkedSerialReader()
+        reader = com.ChunkedSerialReader(chunk_size=4)
+        reader.process = MagicMock()
         reader.data_received(b'\x01\x00\x00\x00')
         reader.data_received(b'\x02\x00\x00\x00')
-        captured = capsys.readouterr()
-        assert '1' in captured.out
-        assert '2' in captured.out
+        reader.process.assert_has_calls(
+            [call(b'\x01\x00\x00\x00'), call(b'\x02\x00\x00\x00')]
+        )
         assert len(reader) == 0
 
 
