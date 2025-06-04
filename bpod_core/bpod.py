@@ -946,7 +946,7 @@ class Bpod:
                 'The last state machine sent was not confirmed by the Bpod'
             )
         logger.debug('Running state machine ...')
-        protocol = FSMReader()
+        protocol = FSMReader(chunk_size=2)
         # TODO: add handlers to protocol
         self._reader_thread = ReaderThread(self.serial0, protocol)
         self._reader_thread.start()
@@ -1184,10 +1184,6 @@ class EndOfTrial(Exception):  # noqa: N818
 
 
 class FSMReader(ChunkedSerialReader):
-    def __call__(self):
-        """Allow the instance to be used as a protocol factory for ReaderThread."""
-        return self
-
     def connection_made(self, transport):
         t0 = struct.unpack('<Q', transport.serial.read(8))[0]
         logger.debug(f'Starting trial at {t0} microseconds')
@@ -1200,29 +1196,19 @@ class FSMReader(ChunkedSerialReader):
         else:
             raise exc
 
-    def data_received(self, data):
-        self.put(data)
-        while len(self) >= 2:
-            opcodes = struct.unpack('<2B', self.get(2))
-            self.process(*opcodes)
-
-    def wait_for_bytes(self, n_bytes: int):
-        """Wait until at least n_bytes are available in the buffer."""
-        while len(self) < n_bytes:
-            pass
-
-    def process(self, op1: int, op2: int):
+    def process(self, data_chunk: bytearray):
+        op1, op2 = struct.unpack('<2B', data_chunk)
         if op1 == 1:  # read events
             format_str = f'<{op2}BI'
             n_bytes = struct.calcsize(format_str)
-            self.wait_for_bytes(n_bytes)
-            *events, timestamp = struct.unpack(format_str, self.get(n_bytes))
+            *events, n_cycles = struct.unpack(format_str, self.get(n_bytes))
             for event in events:
-                self.handle_event(timestamp, event)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f'{n_cycles} cycles: event {event}')
+                self.handle_event(n_cycles, event)
 
             # handle exit event
             if 255 in events:
-                self.wait_for_bytes(12)
                 cycles, micros = struct.unpack('<IQ', self.get(12))
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(
@@ -1231,16 +1217,16 @@ class FSMReader(ChunkedSerialReader):
                 raise EndOfTrial
 
         elif op1 == 2:  # handle softcode
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f'soft-code {op1}')
             self.handle_softcode(op2)
         else:
             raise RuntimeError(f'Unknown opcode: {op1}')
 
     @staticmethod
     def handle_event(n_cycles: int, event: int):
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f'{n_cycles} cycles: event {event}')
+        pass
 
     @staticmethod
     def handle_softcode(softcode: int):
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f'soft-code {softcode}')
+        pass
