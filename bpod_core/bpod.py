@@ -1197,7 +1197,6 @@ class FSMReader(ChunkedSerialReader):
             return
         if isinstance(exc, EndOfTrial):
             logger.debug('State machine finished')
-            self.handle_end_of_trial()
         else:
             raise exc
 
