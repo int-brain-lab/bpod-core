@@ -89,7 +89,7 @@ class TestChunkedSerialReader:
         )
         assert len(reader) == 0
 
-    def test_multiple_data_received(self, capsys):
+    def test_multiple_data_received(self):
         reader = com.ChunkedSerialReader(chunk_size=4)
         reader.process = MagicMock()
         reader.data_received(b'\x01\x00\x00\x00')
