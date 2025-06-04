@@ -935,6 +935,9 @@ class Bpod:
         )
         self._waiting_for_confirmation = True
 
+        if run_asap:
+            self._run_state_machine(blocking=False, wait=True)
+
     @property
     def is_running(self) -> bool:
         """Check if the Bpod is currently running a state machine."""
@@ -945,13 +948,26 @@ class Bpod:
         if self.is_running:
             raise RuntimeError('A state machine is already running')
         self.serial0.write(b'R')
+        self._run_state_machine(blocking=blocking, wait=False)
 
+    def _run_state_machine(self, blocking: bool, wait: bool):
         # Handle confirmation of the last state machine sent
-        if self._waiting_for_confirmation and not self.serial0.verify(b''):
-            raise RuntimeError(
-                'The last state machine sent was not confirmed by the Bpod'
-            )
-        self._waiting_for_confirmation = False
+        if self._waiting_for_confirmation:
+            if self.serial0.verify(b''):
+                logger.debug('State machine confirmed by Bpod')
+            else:
+                raise RuntimeError(
+                    'The last state machine sent was not confirmed by the Bpod'
+                )
+            self._waiting_for_confirmation = False
+
+        # Wait for an already running state machine to finish
+        if (
+            isinstance(self._reader_thread, ReaderThread)
+            and self._reader_thread.is_alive()
+        ):
+            logger.debug('Waiting for previous state machine to finish ...')
+            self._reader_thread.join()
 
         logger.debug('Running state machine ...')
         protocol = TrialReader(chunk_size=2)
