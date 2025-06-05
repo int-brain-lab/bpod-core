@@ -109,62 +109,79 @@ class FSMThread(Thread):
         self._confirm_fsm = confirm_fsm
         self._cycle_period = cycle_period
         self._softcode_handler = softcode_handler
+        self._struct_ts_event = struct.Struct('<I')
+        self._struct_ts_exit = struct.Struct('<IQ')
 
     def stop(self):
         self.alive = False
         self.join(2)
 
     def run(self):
+        # assign members to local variables to avoid repeated attribute lookups
+        serial = self.serial
+        index = self._index
+        cycle_period = self._cycle_period
+        struct_ts_event = self._struct_ts_event
+        struct_ts_exit = self._struct_ts_exit
+        softcode_handler = self._softcode_handler
+
+        # should we use debug logging?
+        debug = logger.isEnabledFor(logging.DEBUG)
+
+        # create buffers for repeated serial reads
+        opcode_buf = bytearray(2)  # buffer for opcodes
+        event_data_buf = bytearray(259)  # max 255 events + 4 bytes for n_cycles
+
         # confirm the state machine
         if self._confirm_fsm:
-            if self.serial.read(1) != b'\x01':
-                raise RuntimeError(
-                    f'State machine #{self._index} was not confirmed by Bpod'
-                )
-            elif logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f'State machine #{self._index} confirmed by Bpod')
+            if serial.read(1) != b'\x01':
+                raise RuntimeError(f'State machine #{index} was not confirmed by Bpod')
+            elif debug:
+                logger.debug(f'State machine #{index} confirmed by Bpod')
 
         # read the start time of the state machine
-        t0 = struct.unpack('<Q', self.serial.read(8))[0]
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f'{t0} µs: Starting state machine #{self._index}')
+        t0 = struct.unpack('<Q', serial.read(8))[0]
+        if debug:
+            logger.debug(f'{t0} µs: Starting state machine #{index}')
 
+        # enter the reading loop
         while self.alive:
             # read the next two opcodes
-            opcodes = self.serial.read(2)
-            opcodes_mv = memoryview(opcodes)
+            serial.readinto(opcode_buf)
+            opcode, param = opcode_buf
 
-            if opcodes_mv[0] == 1:
-                # read 1 byte per event + 4 bytes for n_cycles (uInt32)
-                event_data = self.serial.read(opcodes_mv[1] + 4)
-                event_data_mv = memoryview(event_data)
+            if opcode == 1:  # handle events
+                # read `param` event bytes + 4 bytes for n_cycles (uInt32)
+                event_data_view = memoryview(event_data_buf)[: param + 4]
+                serial.readinto(event_data_view)
 
                 # unpack the number of cycles, calculate the event's timestamp
-                n_cycles: int = struct.unpack_from('<I', event_data, opcodes_mv[1])[0]
-                micros = t0 + n_cycles * self._cycle_period
+                n_cycles = struct_ts_event.unpack_from(event_data_view, param)[0]
+                micros = t0 + n_cycles * cycle_period
 
                 # handle each event
-                for event in event_data_mv[: opcodes_mv[1]]:
-                    if logger.isEnabledFor(logging.DEBUG):
+                events = event_data_view[:param]
+                for event in events:
+                    if debug:
                         logger.debug(f'{micros} µs: event {event}')
 
                 # handle exit event
-                if 255 in event_data_mv:
-                    cycles, micros = struct.unpack('<IQ', self.serial.read(12))
-                    if logger.isEnabledFor(logging.DEBUG):
+                if 255 in events:
+                    cycles, micros = struct_ts_exit.unpack(serial.read(12))
+                    if debug:
                         logger.debug(
-                            f'{micros} µs: Ending state machine #{self._index} '
+                            f'{micros} µs: Ending state machine #{index} '
                             f'({cycles} cycles)'
                         )
                     break
 
-            elif opcodes_mv[0] == 2:
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f'soft-code {opcodes_mv[1]}')
-                self._softcode_handler(opcodes_mv[1])
+            elif opcode == 2:  # handle opcodes
+                if debug:
+                    logger.debug(f'soft-code {param}')
+                softcode_handler(param)
 
             else:
-                raise RuntimeError(f'Unknown opcode: {opcodes_mv[1]}')
+                raise RuntimeError(f'Unknown opcode: {opcode}')
 
 
 class Bpod:
