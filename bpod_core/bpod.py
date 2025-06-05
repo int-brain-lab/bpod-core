@@ -175,9 +175,9 @@ class FSMThread(Thread):
                         )
                     break
 
-            elif opcode == 2:  # handle opcodes
+            elif opcode == 2:  # handle softcodes
                 if debug:
-                    logger.debug(f'soft-code {param}')
+                    logger.debug(f'Softcode {param}')
                 softcode_handler(param)
 
             else:
