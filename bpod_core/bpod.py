@@ -4,6 +4,7 @@ import logging
 import re
 import struct
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from threading import Thread
 from typing import NamedTuple
@@ -98,6 +99,7 @@ class FSMThread(Thread):
         fsm_index: int,
         confirm_fsm: bool,
         cycle_period: int,
+        softcode_handler: Callable,
     ):
         super().__init__()
         self.daemon = True
@@ -106,6 +108,7 @@ class FSMThread(Thread):
         self._index = fsm_index
         self._confirm_fsm = confirm_fsm
         self._cycle_period = cycle_period
+        self._softcode_handler = softcode_handler
 
     def stop(self):
         self.alive = False
@@ -136,7 +139,7 @@ class FSMThread(Thread):
                 event_data = self.serial.read(opcodes_mv[1] + 4)
                 event_data_mv = memoryview(event_data)
 
-                # unpack the number of cycles
+                # unpack the number of cycles, calculate the event's timestamp
                 n_cycles: int = struct.unpack_from('<I', event_data, opcodes_mv[1])[0]
                 micros = t0 + n_cycles * self._cycle_period
 
@@ -158,7 +161,7 @@ class FSMThread(Thread):
             elif opcodes_mv[0] == 2:
                 if logger.isEnabledFor(logging.DEBUG):
                     logger.debug(f'soft-code {opcodes_mv[1]}')
-                self.handle_softcode(opcodes_mv[1])
+                self._softcode_handler(opcodes_mv[1])
 
             else:
                 raise RuntimeError(f'Unknown opcode: {opcodes_mv[1]}')
@@ -1019,6 +1022,16 @@ class Bpod:
         """Check if the Bpod is currently running a state machine."""
         return getattr(self._fsm_thread, 'alive', False)
 
+    def wait(self):
+        """
+        Wait for the currently running state machine to finish.
+
+        This method blocks until the state machine has finished executing.
+        If no state machine is currently running, it raises a RuntimeError.
+        """
+        if isinstance(self._fsm_thread, Thread):
+            self._fsm_thread.join()
+
     def run_state_machine(self, blocking: bool = True):
         """Temporary run method for debugging purposes."""
         if self.is_running:
@@ -1036,6 +1049,7 @@ class Bpod:
             self._next_fsm_index,
             self._waiting_for_confirmation,
             self._hardware.cycle_period,
+            self._softcode_handler,
         )
         self._fsm_thread.start()
         self._waiting_for_confirmation = False
@@ -1051,6 +1065,10 @@ class Bpod:
         self.serial0.write(b'X')
         if self._fsm_thread is not None:
             self._fsm_thread.join()
+
+    @staticmethod
+    def _softcode_handler():
+        pass
 
 
 class Channel(ABC):
