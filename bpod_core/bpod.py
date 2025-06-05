@@ -93,6 +93,9 @@ class BpodError(Exception):
 
 
 class FSMThread(Thread):
+    _struct_ts_event = struct.Struct('<I')
+    _struct_ts_exit = struct.Struct('<IQ')
+
     def __init__(
         self,
         serial: ExtendedSerial,
@@ -109,8 +112,6 @@ class FSMThread(Thread):
         self._confirm_fsm = confirm_fsm
         self._cycle_period = cycle_period
         self._softcode_handler = softcode_handler
-        self._struct_ts_event = struct.Struct('<I')
-        self._struct_ts_exit = struct.Struct('<IQ')
 
     def stop(self):
         self.alive = False
@@ -122,15 +123,14 @@ class FSMThread(Thread):
         index = self._index
         cycle_period = self._cycle_period
         struct_ts_event = self._struct_ts_event
-        struct_ts_exit = self._struct_ts_exit
         softcode_handler = self._softcode_handler
-
-        # should we use debug logging?
-        debug = logger.isEnabledFor(logging.DEBUG)
 
         # create buffers for repeated serial reads
         opcode_buf = bytearray(2)  # buffer for opcodes
         event_data_buf = bytearray(259)  # max 255 events + 4 bytes for n_cycles
+
+        # should we use debug logging?
+        debug = logger.isEnabledFor(logging.DEBUG)
 
         # confirm the state machine
         if self._confirm_fsm:
@@ -167,7 +167,7 @@ class FSMThread(Thread):
 
                 # handle exit event
                 if 255 in events:
-                    cycles, micros = struct_ts_exit.unpack(serial.read(12))
+                    cycles, micros = self._struct_ts_exit.unpack(serial.read(12))
                     if debug:
                         logger.debug(
                             f'{micros} µs: Ending state machine #{index} '
@@ -1084,7 +1084,7 @@ class Bpod:
             self._fsm_thread.join()
 
     @staticmethod
-    def _softcode_handler():
+    def _softcode_handler(softcode: int):
         pass
 
 
