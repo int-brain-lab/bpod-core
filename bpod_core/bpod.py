@@ -113,7 +113,7 @@ class FSMThread(Thread):
         self._cycle_period = cycle_period
         self._softcode_handler = softcode_handler
 
-    def stop(self):
+    def kill(self):
         self.alive = False
         self.join(2)
 
