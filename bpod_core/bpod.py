@@ -1058,9 +1058,9 @@ class Bpod:
 
     def _run_state_machine(self, blocking: bool):
         # Wait for an already running state machine to finish
-        if isinstance(self._fsm_thread, FSMThread) and self._fsm_thread.is_alive():
-            self._fsm_thread.join()
+        self.wait()
 
+        # Start a new FSM thread
         self._fsm_thread = FSMThread(
             self.serial0,
             self._next_fsm_index,
@@ -1071,7 +1071,7 @@ class Bpod:
         self._fsm_thread.start()
         self._waiting_for_confirmation = False
 
-        # Wait for the reader thread to finish
+        # Wait for the FSM thread to finish
         if blocking:
             self._fsm_thread.join()
 
