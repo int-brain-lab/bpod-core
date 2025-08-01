@@ -156,6 +156,9 @@ setenv = [
   {"COVERAGE_FILE" = ".coverage.{envname}"},
   {"COVERALLS_FLAG_NAME" = "{on_platform}_{envname}"}
 ]
+passenv = [
+  "GITHUB_*"
+]
 runner = "uv-venv-lock-runner"
 
 [tool.tox.env.clean]
