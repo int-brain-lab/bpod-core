@@ -57,7 +57,7 @@ test = [
   "packaging>=25.0",
 ]
 typing = ["mypy>=1.15.0", "types-pyserial>=3.5.0.20250326"]
-github-actions = [
+ci = [
   "coveralls>=4.0.1",
   "pytest-github-actions-annotate-failures>=0.3.0",
 ]
@@ -144,43 +144,3 @@ source = [
 [tool.pytest.ini_options]
 addopts = "--cov=bpod_core"
 testpaths = ["tests/"]
-
-[tool.tox]
-env_list = ["typing", "clean", "py310", "py311", "py312", "py313", "combine"]
-
-[tool.tox.env_run_base]
-depends = ["clean"]
-dependency_groups = ["test"]
-commands = [
-  ["pytest"],
-  ["coverage", "xml", "--data-file={env:COVERAGE_FILE}", "-o", "{env:COVERAGE_FILE}.xml"],
-  ["python", "-c", "import os, subprocess; os.getenv('GITHUB_ACTIONS') and subprocess.run(['coveralls', '--submit={env:COVERAGE_FILE}.xml'])"],
-  ["python", "-c", "import os; os.remove('{env:COVERAGE_FILE}.xml')"]
-]
-setenv = [
-  {"COVERAGE_FILE" = ".coverage.{envname}"},
-  {"COVERALLS_FLAG_NAME" = "{on_platform}_{envname}"}
-]
-passenv = [
-  "COVERALLS_REPO_TOKEN",
-  "GITHUB_*"
-]
-runner = "uv-venv-lock-runner"
-
-[tool.tox.env.clean]
-depends = []
-skip_install = true
-commands = [["coverage", "erase"]]
-setenv = {"COVERAGE_FILE" = ".coverage"}
-
-[tool.tox.env.typing]
-depends = []
-dependency_groups = ["typing"]
-skip_install = true
-commands = [["mypy"]]
-
-[tool.tox.env.combine]
-depends = ["py310", "py311", "py312", "py313"]
-skip_install = true
-commands = [["coverage", "combine"]]
-setenv = {"COVERAGE_FILE" = ".coverage"}

@@ -68,6 +68,10 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+ci = [
+    { name = "coveralls" },
+    { name = "pytest-github-actions-annotate-failures" },
+]
 dev = [
     { name = "mypy" },
     { name = "myst-parser" },
@@ -97,10 +101,6 @@ doc = [
     { name = "sphinx-copybutton" },
     { name = "sphinx-jsonschema" },
     { name = "sphinx-rtd-theme" },
-]
-github-actions = [
-    { name = "coveralls" },
-    { name = "pytest-github-actions-annotate-failures" },
 ]
 lint = [
     { name = "ruff" },
@@ -130,6 +130,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+ci = [
+    { name = "coveralls", specifier = ">=4.0.1" },
+    { name = "pytest-github-actions-annotate-failures", specifier = ">=0.3.0" },
+]
 dev = [
     { name = "mypy", specifier = ">=1.15.0" },
     { name = "myst-parser", specifier = ">=4.0.1" },
@@ -156,10 +160,6 @@ doc = [
     { name = "sphinx-copybutton", specifier = ">=0.5.2" },
     { name = "sphinx-jsonschema", specifier = ">=1.19.1" },
     { name = "sphinx-rtd-theme", specifier = ">=3.0.2" },
-]
-github-actions = [
-    { name = "coveralls", specifier = ">=4.0.1" },
-    { name = "pytest-github-actions-annotate-failures", specifier = ">=0.3.0" },
 ]
 lint = [{ name = "ruff", specifier = ">=0.9.2" }]
 test = [
