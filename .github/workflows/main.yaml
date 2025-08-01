@@ -31,5 +31,6 @@ jobs:
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
           EXTRA_DEPS: github-actions
         run: uv run tox -v #-p --parallel-no-spinner
