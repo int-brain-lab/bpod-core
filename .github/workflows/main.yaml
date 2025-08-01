@@ -19,5 +19,6 @@ jobs:
         run: uv sync --no-default-groups --group test --group ci
       - name: run tox
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}env:
+          COVERALLS_REPO_TOKEN: ${{ secrets.COVERALLS_REPO_TOKEN }}
         run: uv run tox --parallel-no-spinner -- -ci
