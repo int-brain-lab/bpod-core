@@ -7,18 +7,7 @@ on:
       - '**/*.md'
 
 jobs:
-  ruff:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
-        with:
-          version-file: 'uv.lock'
-          args: 'check --output-format=github'
-      - run: 'ruff format --check --diff'
-
   tox:
-    needs: ruff
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -27,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - name: sync dependencies
-        run: uv sync --no-default-groups --group test --group github-actions
+        run: uv sync --no-default-groups --group test --group ci
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
