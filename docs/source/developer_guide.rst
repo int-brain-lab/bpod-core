@@ -22,8 +22,8 @@ On the developer side, these 3 fields are manually controlled by, both
 
       .. code-block:: console
 
-         git tag 1.2.3
-         git push origin --tags
+         $ git tag 1.2.3
+         $ git push origin --tags
 
 
 Installing UV
@@ -136,7 +136,7 @@ API reference. To build the documentation, run the following command:
 
 .. code-block:: console
 
-   $ uv run sphinx docs/source docs/build
+   $ uv run sphinx-build docs/source docs/build
 
 After running this command, you can view the generated documentation in your
 web browser by opening ``docs/build/index.html``.
