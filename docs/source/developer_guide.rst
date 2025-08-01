@@ -26,66 +26,130 @@ On the developer side, these 3 fields are manually controlled by, both
          git push origin --tags
 
 
-Package Management and Development Workflows with PDM
------------------------------------------------------
+Installing UV
+-------------
 
-We use `PDM <https://pdm-project.org/en/latest/>`_ to manage dependencies of bpod-core.
-PDM can also be used to run various commands with relevance to the development process without having to activate a virtual
-environment first.
-Please refer to `PDM's documentation <https://pdm-project.org/en/latest/#installation>`_ for help with installing PDM.
+This project is utilizing `UV <https://github.com/astral-sh/uv>`_ as its package
+manager for managing dependencies and ensuring consistent and reproducible environments.
+To install UV:
 
+.. tab-set::
 
-Installing Developer Dependencies
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   .. tab-item:: Linux and macOS
 
-To install additional dependencies needed for working on bpod-core's code-base, run:
+      .. code-block:: console
 
-.. code-block:: console
+         $ curl -LsSf https://astral.sh/uv/install.sh | sh
 
-   pdm sync -d
+   .. tab-item:: Windows
 
+      .. code-block:: pwsh-session
 
-Running Unit Tests
-^^^^^^^^^^^^^^^^^^
+         PS> powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-To run unit tests locally, run:
-
-.. code-block:: console
-
-   pdm run pytest
-
-This will also generate a HTML based coverage report which can be found in the ``htmlcov`` directory.
+See `UV's documentation <https://docs.astral.sh/uv/>`_ for details.
 
 
-Linting & Formatting
-^^^^^^^^^^^^^^^^^^^^
+Installing developer dependencies
+---------------------------------
 
-We use `Ruff <https://docs.astral.sh/ruff>`_ for linting and formatting our code-base in close accordance with `the Black code
-style <https://black.readthedocs.io/en/stable/the_black_code_style/current_style.html>`_.
-
-To lint your code, run:
+To set up your development environment, you need to install the necessary
+dependencies. The following command will synchronize your environment with the
+dependencies specified in the ``pyproject.toml`` file, including development
+dependencies and Qt:
 
 .. code-block:: console
 
-   pdm run ruff check
-
-Appending the flag ``--fix`` to the above command will automatically fix issues that are deemed safe to handle.
-
-To reformat your code according to the `Black code style <https://black.readthedocs.io/en/stable/the_black_code_style/current_style.html>`_ run:
-
-.. code-block:: console
-
-   pdm run ruff format
-
-Appending the flag ``--check`` to the above command will check your code for formatting issues without applying any changes.
-Refer to `Ruff Formater's documentation <https://docs.astral.sh/ruff/formatter/>`_ for further details.
+   $ uv sync
 
 
-Documentation
-^^^^^^^^^^^^^
+Running the unit-tests
+----------------------
 
-To build the documentation, run:
+We use `tox <https://tox.wiki/>`_ to automate our unit-tests. This allows us to
+verify that our code works with various versions of Qt for Python. To run the
+unit tests, execute the following command:
 
 .. code-block:: console
 
-   pdm run docs
+   $ uv run tox -p
+
+Tox will create isolated environments for each specified version of Qt and run
+the tests in those environments. You can find the results of the tests in the
+terminal output, which will indicate whether the tests passed or failed.
+
+Alternatively, if you want to run unit-tests for your current environment, run
+
+.. code-block:: console
+
+   $ uv run pytest
+
+
+Coverage report
+---------------
+
+After running ``tox`` or ``pytest`` (see above), you can generate a coverage report
+to assess how much of the code is covered by the unit tests:
+
+.. code-block:: console
+
+   $ uv run coverage report
+
+If you need a more detailed representation of your code coverage, generate an HTML
+report:
+
+.. code-block:: console
+
+   $ uv run coverage html
+
+You'll find the HTML report in the folder ``htmlcov``, where you can open
+``index.html`` in a web browser to view detailed coverage statistics.
+
+
+Checking and formatting of code
+-------------------------------
+
+We use `ruff <https://docs.astral.sh/ruff/formatter/>`_ to ensure our code
+adheres to style guidelines and is free of common issues. To format your code
+automatically, run:
+
+.. code-block:: console
+
+   $ uv run ruff format
+
+This command will apply formatting changes to your codebase according to the
+specified style rules. To check your code for issues, use:
+
+.. code-block:: console
+
+   $ uv run ruff check
+
+This command will analyze your code and report any issues it finds. If you want
+ruff to attempt to fix any issues it identifies, you can add the ``--fix``
+flag, which will automatically correct fixable problems.
+
+Building the documentation
+--------------------------
+
+We use `Sphinx <https://www.sphinx-doc.org/>`_ to build our documentation and
+API reference. To build the documentation, run the following command:
+
+.. code-block:: console
+
+   $ uv run sphinx docs/source docs/build
+
+After running this command, you can view the generated documentation in your
+web browser by opening ``docs/build/index.html``.
+
+Building the package
+--------------------
+
+To build the package, execute the following command:
+
+.. code-block:: console
+
+   $ uv build
+
+This command will create a distributable package of your project, in the form
+of a source distribution (sdist) and a wheel (bdist_wheel). The generated
+package files will be located in the ``dist`` directory.
