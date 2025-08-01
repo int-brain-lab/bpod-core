@@ -20,7 +20,7 @@ jobs:
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uv run tox -p auto -- -ci
+        run: uv run tox --parallel-no-spin -- -ci
   finish:
     needs: tox
     if: ${{ always() }}
