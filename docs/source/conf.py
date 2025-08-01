@@ -37,6 +37,7 @@ extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.autosummary',
     'sphinx_copybutton',
+    'sphinx_design',
     'sphinx_autodoc_typehints',
     'sphinx-jsonschema',
 ]

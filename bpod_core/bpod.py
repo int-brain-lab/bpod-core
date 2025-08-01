@@ -1141,7 +1141,7 @@ class Bpod:
         If no state machine is currently running, it raises a RuntimeError.
         """
         if self.is_running:
-            self._fsm_thread.join()
+            self._fsm_thread.join()  # type: ignore[union-attr]
 
     def run_state_machine(self, *, blocking: bool = True) -> None:
         """Temporary run method for debugging purposes."""
