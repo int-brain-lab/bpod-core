@@ -32,4 +32,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXTRA_DEPS: github-actions
-        run: uv run tox -p auto --parallel-no-spinner
+        run: uv run tox -v #-p --parallel-no-spinner
