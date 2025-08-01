@@ -17,7 +17,7 @@ jobs:
           args: 'check --output-format=github'
       - run: 'ruff format --check --diff'
 
-  tests:
+  tox:
     name: python ${{ matrix.python-version }} on ${{ matrix.os }}
     needs: ruff
     runs-on: ${{ matrix.os }}
@@ -28,30 +28,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: pdm-project/setup-pdm@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: true
-      - name: install dependencies
-        run: pdm install -dG test -dG typing
+      - uses: astral-sh/setup-uv@v6
+      - name: sync dependencies
+        run: uv sync --no-default-groups --group test --group ci --group typing
       - name: mypy
         run: pdm run mypy
-      - name: pytest
-        run: pdm run pytest
-      - name: coveralls.io
-        uses: coverallsapp/github-action@v2
-        with:
-          flag-name: ${{ matrix.python-version }}, ${{ matrix.os }}
-          parallel: true
-          file: coverage.xml
-          compare-ref: main
-
-  finish:
-    needs: tests
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Coveralls Finished
-        uses: coverallsapp/github-action@v2
-        with:
-          parallel-finished: true
+      - name: run tox
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXTRA_DEPS: ci
+          POST_COMMAND: '- coveralls --submit=${{ env.COVERAGE_FILE }}'
+        run: uv run tox -p auto --parallel-no-spinner

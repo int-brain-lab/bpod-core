@@ -151,7 +151,7 @@ env_list = ["typing", "clean", "py310", "py311", "py312", "py313", "combine"]
 [tool.tox.env_run_base]
 depends = ["clean"]
 dependency_groups = ["test"]
-commands = [["pytest"]]
+commands = [["pytest"], ["{env:POST_COMMAND:python -c 'pass'}"]]
 setenv = [
   {"COVERAGE_FILE" = ".coverage.{envname}"},
   {"COVERALLS_FLAG_NAME" = "{on_platform}_{envname}"}
