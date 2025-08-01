@@ -154,8 +154,8 @@ dependency_groups = ["test"]
 commands = [
   ["pytest"],
   ["coverage", "xml", "--data-file={env:COVERAGE_FILE}", "-o", "{env:COVERAGE_FILE}.xml"],
-  ["-", "coveralls", "--service=github-actions", "--submit={env:COVERAGE_FILE}.xml"],
-  ["python", "-c", "\"import os; os.remove('{env:COVERAGE_FILE}.xml')\""]
+  ["python", "-c", "import os, subprocess; os.getenv('GITHUB_ACTIONS') and subprocess.run(['coveralls', '--submit={env:COVERAGE_FILE}.xml'])"],
+  ["python", "-c", "import os; os.remove('{env:COVERAGE_FILE}.xml')"]
 ]
 setenv = [
   {"COVERAGE_FILE" = ".coverage.{envname}"},
