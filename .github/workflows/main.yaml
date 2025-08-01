@@ -7,51 +7,25 @@ on:
       - '**/*.md'
 
 jobs:
-  ruff:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/ruff-action@v3
-        with:
-          version-file: 'pyproject.toml'
-          args: 'check --output-format=github'
-      - run: 'ruff format --check --diff'
-
-  tests:
-    name: python ${{ matrix.python-version }} on ${{ matrix.os }}
-    needs: ruff
+  tox:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: ["ubuntu-latest", "windows-latest", "macos-latest"]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-
     steps:
       - uses: actions/checkout@v4
-      - uses: pdm-project/setup-pdm@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: true
-      - name: install dependencies
-        run: pdm install -dG test -dG typing
-      - name: mypy
-        run: pdm run mypy
-      - name: pytest
-        run: pdm run pytest
-      - name: coveralls.io
-        uses: coverallsapp/github-action@v2
-        with:
-          flag-name: ${{ matrix.python-version }}, ${{ matrix.os }}
-          parallel: true
-          file: coverage.xml
-          compare-ref: main
-
+      - uses: astral-sh/setup-uv@v6
+      - name: sync dependencies
+        run: uv sync --no-default-groups --group test --group ci
+      - name: run tox
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: uv run tox --parallel-no-spin -- -ci
   finish:
-    needs: tests
+    needs: tox
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Coveralls Finished
-        uses: coverallsapp/github-action@v2
-        with:
-          parallel-finished: true
+    - uses: coverallsapp/github-action@v2
+      with:
+        parallel-finished: true
