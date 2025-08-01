@@ -16,6 +16,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: pdm-project/setup-pdm@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Build package
+        run: uv build
       - name: Publish package
-        run: pdm publish
+        run: uv publish
