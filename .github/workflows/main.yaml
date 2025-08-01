@@ -20,4 +20,4 @@ jobs:
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uv run tox -p auto --parallel-no-spinner -- -ci
+        run: uv run tox -p all --parallel-no-spinner -- -ci
