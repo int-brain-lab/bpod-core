@@ -135,12 +135,6 @@ warn_unused_configs = true
 source_pkgs = [ "bpod_core" ]
 relative_files = true
 
-[tool.coverage.paths]
-source = [
-  "bpod_core/",
-  ".tox/**/bpod_core/",
-]
-
 [tool.pytest.ini_options]
 addopts = "--cov=bpod_core"
 testpaths = ["tests/"]
