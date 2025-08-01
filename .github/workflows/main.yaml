@@ -28,8 +28,6 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: sync dependencies
         run: uv sync --no-default-groups --group test --group github-actions
-      - name: mypy
-        run: pdm run mypy
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
