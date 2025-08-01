@@ -18,14 +18,11 @@ jobs:
       - run: 'ruff format --check --diff'
 
   tox:
-    name: python ${{ matrix.python-version }} on ${{ matrix.os }}
     needs: ruff
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: ["ubuntu-latest", "windows-latest", "macos-latest"]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -36,6 +33,6 @@ jobs:
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXTRA_DEPS: ci
+          EXTRA_DEPS: github-actions
           POST_COMMAND: '- coveralls --submit=${{ env.COVERAGE_FILE }}'
         run: uv run tox -p auto --parallel-no-spinner
