@@ -322,7 +322,7 @@ def get_local_ipv4() -> str:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         try:
             s.connect(('8.8.8.8', 80))  # Doesn't have to be reachable
-            return s.getsockname()[0]
+            return str(s.getsockname()[0])
         except OSError as e:
             if e.errno in {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL}:
                 return '127.0.0.1'
