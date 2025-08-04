@@ -124,6 +124,8 @@ def mock_bpod_20(mock_comports, mock_ext_serial):  # noqa: ARG001
         patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial),
         patch('bpod_core.bpod.Bpod._detect_additional_serial_ports'),
         patch('bpod_core.bpod.ZMQService'),
+        patch('bpod_core.bpod.json.load', return_value={}),
+        patch('bpod_core.bpod.json.dump', return_value={})
     ):
         yield Bpod
 
@@ -135,6 +137,8 @@ def mock_bpod_25(mock_comports, mock_ext_serial):  # noqa: ARG001
         patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial),
         patch('bpod_core.bpod.Bpod._detect_additional_serial_ports'),
         patch('bpod_core.bpod.ZMQService'),
+        patch('bpod_core.bpod.json.load', return_value={}),
+        patch('bpod_core.bpod.json.dump', return_value={})
     ):
         yield Bpod
 
@@ -146,6 +150,8 @@ def mock_bpod_2p(mock_comports, mock_ext_serial):  # noqa: ARG001
         patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial),
         patch('bpod_core.bpod.Bpod._detect_additional_serial_ports'),
         patch('bpod_core.bpod.ZMQService'),
+        patch('bpod_core.bpod.json.load', return_value={}),
+        patch('bpod_core.bpod.json.dump', return_value={})
     ):
         yield Bpod
 
