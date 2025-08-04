@@ -48,6 +48,7 @@ CHANNEL_TYPES_OUTPUT = CHANNEL_TYPES_INPUT.copy()
 CHANNEL_TYPES_OUTPUT.update({b'V': 'Valve', b'P': 'PWM'})
 N_SERIAL_EVENTS_DEFAULT = 15
 VALID_OPERATORS = ['exit', '>exit', '>back']
+MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,8 @@ class VersionInfo(NamedTuple):
     """Firmware version (major, minor)"""
     machine: int
     """Machine type (numerical)"""
+    machine_str: str
+    """Machine type (string)"""
     pcb: int | None
     """PCB revision, if applicable"""
 
@@ -318,11 +321,15 @@ class Bpod:
         # update modules
         self.update_modules()
 
+        # start ZeroMQ service
+        self._start_zmq()
+
         # log hardware information
         if logger.isEnabledFor(logging.INFO):
-            machine = {3: 'r2.0-2.5', 4: '2+ r1.0'}.get(self.version.machine, 'unknown')
             logger.info(
-                'Connected to Bpod Finite State Machine %s on %s', machine, self.port
+                'Connected to Bpod Finite State Machine %s on %s',
+                self.version.machine_str,
+                self.port,
             )
             logger.info(
                 'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
@@ -330,7 +337,6 @@ class Bpod:
                 self._serial_number,
                 self.version.pcb,
             )
-            # logger.info(f'ZeroMQ service running at tcp://{local_ip}:{self._zmq_port}')
 
     def __enter__(self) -> Self:
         """Enter context."""
@@ -358,11 +364,6 @@ class Bpod:
         """
         if self.serial0.is_open:
             return
-        self._zmq_service = ZMQService(
-            f'Bpod {self._serial_number}',
-            f'Bpod Finite State Machine, serial number {self._serial_number}',
-            service_type='_bpod._tcp.local.',
-        )
         self.serial0.open()
         self._handshake()
 
@@ -376,6 +377,20 @@ class Bpod:
         if self._zmq_service is not None:
             self._zmq_service.close()
             self._zmq_service = None
+
+    def _start_zmq(self):
+        self._zmq_service = ZMQService(
+            f'Bpod "{self.name}"' if self.name else f'Bpod {self._serial_number}',
+            {
+                'description': f'Bpod Finite State Machine {self.version.machine_str}',
+                'serial_number': self._serial_number or '',
+                'name': self.name or '',
+                'location': self.location or '',
+                'firmware_version': '.'.join([str(x) for x in self.version.firmware]),
+                'core_version': bpod_core_version,
+            },
+            service_type='_bpod._tcp.local.',
+        )
 
     def _save_settings(self) -> None:
         """Save the current settings to the settings file."""
@@ -513,6 +528,7 @@ class Bpod:
         """
         logger.debug('Retrieving version information')
         v_major, machine_type = self.serial0.query_struct(b'F', '<2H')
+        machine_type_str = MACHINE_TYPES.get(machine_type, 'unknown')
         v_minor = self.serial0.query_struct(b'f', '<H')[0] if v_major > 22 else 0
         v_firmware = (v_major, v_minor)
         if not (MIN_BPOD_HW_VERSION <= machine_type <= MAX_BPOD_HW_VERSION):
@@ -526,7 +542,7 @@ class Bpod:
                 f'v{MIN_BPOD_FW_VERSION[0]}.{MIN_BPOD_FW_VERSION[1]} or later.',
             )
         pcv_rev = self.serial0.query_struct(b'v', '<B')[0] if v_major > 22 else None
-        self._version = VersionInfo(v_firmware, machine_type, pcv_rev)
+        self._version = VersionInfo(v_firmware, machine_type, machine_type_str, pcv_rev)
 
     def _get_hardware_configuration(self) -> None:
         """Retrieve the Bpod's onboard hardware configuration."""
@@ -1235,6 +1251,19 @@ class Bpod:
     def name(self, name: str | None) -> None:
         """Set the name of the Bpod device."""
         self._set_settings(['devices', str(self._serial_number), 'name'], name)
+
+    @property
+    def location(self) -> str | None:
+        """Get the location of the Bpod device."""
+        return cast(
+            'str | None',
+            self._get_setting(['devices', str(self._serial_number), 'location'], None),
+        )
+
+    @location.setter
+    def location(self, location: str | None) -> None:
+        """Set the location of the Bpod device."""
+        self._set_settings(['devices', str(self._serial_number), 'location'], location)
 
 
 class Channel(ABC):
