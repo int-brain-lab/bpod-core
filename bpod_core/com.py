@@ -1,15 +1,22 @@
 """Module providing extended serial communication functionality."""
 
+import errno
 import logging
+import socket
 import struct
+import threading
+import weakref
 from collections.abc import Iterable
 from typing import Any, TypeAlias
 
 import numpy as np
+import zmq
 from serial import Serial
 from serial.serialutil import to_bytes as serial_to_bytes  # type: ignore[attr-defined]
 from serial.threaded import Protocol
 from typing_extensions import Buffer, Self
+from zeroconf import NonUniqueNameException, ServiceInfo, Zeroconf
+from zmq import Context
 
 logger = logging.getLogger(__name__)
 
@@ -289,3 +296,174 @@ def to_bytes(data: ByteLike) -> bytes:  # noqa: PLR0911
             return b''.join(to_bytes(item) for item in data)
         case _:
             return serial_to_bytes(data)  # type: ignore[no-any-return]
+
+
+def get_local_ipv4() -> str:
+    """
+    Determine the primary local IPv4 address of the machine.
+
+    This function attempts to determine the IPv4 address of the local machine
+    that would be used for an outbound connection to the internet. It does this
+    by creating a UDP socket and connecting to a known public IP address
+    (Google DNS at 8.8.8.8). No data is sent, but the OS uses the routing table
+    to select the appropriate local interface.
+
+    Returns
+    -------
+    bytes
+        The local IPv4 address as a string. If the network is unreachable or
+        unavailable, returns the loopback address `127.0.0.1`.
+
+    Raises
+    ------
+    OSError
+        If an unexpected socket error occurs during interface detection.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(('8.8.8.8', 80))  # Doesn't have to be reachable
+            return s.getsockname()[0]
+        except OSError as e:
+            if e.errno in {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL}:
+                return '127.0.0.1'
+            else:
+                raise
+
+
+class ZMQService:
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        socket_type: int = zmq.DEALER,
+        local: bool = False,
+        advertise: bool = True,
+    ) -> None:
+        """
+        Initialize a ZeroMQ service with optional Zeroconf advertisement.
+
+        Opens a ZeroMQ DEALER socket bound to a random available port on all interfaces.
+        If `advertise` is True, the service is published on the local network using
+        Zeroconf (mDNS). If the requested service name is already in use on the network,
+        numeric suffixes like " (2)", " (3)", etc., are appended to avoid name
+        conflicts.
+
+        Parameters
+        ----------
+        name : str
+            The base Zeroconf service instance name. If the name is already taken, a
+            suffix is appended automatically.
+        description : str
+            A descriptive string published as a Zeroconf property.
+        socket_type : int, optional
+            The ZeroMQ socket type to create (e.g., zmq.DEALER, zmq.ROUTER).
+            Default is zmq.DEALER.
+        local : bool, optional
+            If True, advertise the service on the loopback address (127.0.0.1).
+            Otherwise, advertise on the primary local IPv4 address. Default is False.
+        advertise : bool, optional
+            Whether to advertise the service via Zeroconf. If False, the service is
+            not advertised. Default is True.
+
+        Raises
+        ------
+        RuntimeError
+            If the service cannot be registered after multiple attempts due to name
+            conflicts on the Zeroconf network.
+        """
+        self._closed = False
+        self._close_lock = threading.Lock()
+        self._finalizer = weakref.finalize(self, self.close)
+
+        self._zmq_context = Context()
+        ip_address = '127.0.0.1' if local else get_local_ipv4()
+        try:
+            self._bind_address = f'tcp://{ip_address}'
+            self._zmq_socket = self._zmq_context.socket(socket_type)
+            self._zmq_port = self._zmq_socket.bind_to_random_port(self._bind_address)
+        except zmq.ZMQError as e:
+            logger.error(f'Failed to bind ZMQ socket on {self._bind_address}: {e}')
+            raise
+        logger.debug('Opening ZMQ socket on %s:%d', self._bind_address, self._zmq_port)
+
+        if not advertise:
+            self._zeroconf = None
+            self._service_info = None
+            return
+
+        self._zeroconf = Zeroconf()
+        service_type = '_zmq._tcp.local.'
+        address = socket.inet_aton(ip_address)
+        server = f'{socket.gethostname()}.local.'
+        max_attempts = 50
+        for i in range(1, max_attempts + 1):
+            if i == 1:
+                instance_name = f'{name}.{service_type}'
+            else:
+                instance_name = f'{name} ({i}).{service_type}'
+            self._service_info = ServiceInfo(
+                type_=service_type,
+                name=instance_name,
+                port=self._zmq_port,
+                addresses=[address],
+                properties={'description': description},
+                server=server,
+            )
+            try:
+                self._zeroconf.register_service(self._service_info)
+                logger.debug("Registering Zeroconf service '%s'", instance_name)
+                break
+            except NonUniqueNameException:
+                continue
+        else:
+            raise RuntimeError(
+                f"Failed to register service '{name}' after {max_attempts} attempts"
+            )
+
+    def close(self) -> None:
+        """Close the ZeroMQ service and unregister the Zeroconf advertisement."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self._zeroconf is not None and self._service_info is not None:
+                logger.debug(
+                    "Unregistering Zeroconf service '%s'", self._service_info.name
+                )
+                self._zeroconf.unregister_service(self._service_info)
+                self._zeroconf.close()
+            logger.debug(
+                'Closing ZMQ socket on %s:%d', self._bind_address, self._zmq_port
+            )
+            self._zmq_socket.close(linger=0)
+            self._zmq_context.term()
+
+    @property
+    def port(self) -> int:
+        """
+        Get the port number of the ZeroMQ socket.
+
+        Returns
+        -------
+        int
+            The port number on which the ZeroMQ socket is bound.
+        """
+        return self._zmq_port
+
+    @property
+    def bind_address(self) -> str:
+        """
+        Get the bind address of the ZeroMQ socket.
+
+        Returns
+        -------
+        str
+            The bind address of the ZeroMQ socket, including the IP address and port.
+        """
+        return self._bind_address
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
