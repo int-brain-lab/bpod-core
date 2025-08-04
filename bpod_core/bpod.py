@@ -337,6 +337,11 @@ class Bpod:
                 self._serial_number,
                 self.version.pcb,
             )
+            logger.info(
+                'ZeroMQ service started on %s:%d',
+                self._zmq_service.bind_address if self._zmq_service else '?',
+                self._zmq_service.port if self._zmq_service else '?',
+            )
 
     def __enter__(self) -> Self:
         """Enter context."""
@@ -379,6 +384,7 @@ class Bpod:
             self._zmq_service = None
 
     def _start_zmq(self):
+        port = self._get_setting(['devices', str(self._serial_number), 'zmq_port'])
         self._zmq_service = ZMQService(
             f'{self.name}' if self.name else f'bpod_{self._serial_number}',
             {
@@ -389,7 +395,11 @@ class Bpod:
                 'firmware': '.'.join([str(x) for x in self.version.firmware]),
                 'core': bpod_core_version,
             },
+            port=cast('int | None', port),
             service_type='_bpod._tcp.local.',
+        )
+        self._set_setting(
+            ['devices', str(self._serial_number), 'zmq_port'], self._zmq_service.port
         )
 
     def _save_settings(self) -> None:
@@ -409,7 +419,7 @@ class Bpod:
     def _get_setting(self, keys: list[str], default: Any = None) -> Any:
         return get_nested(self._settings, keys, default)
 
-    def _set_settings(self, keys: list[str], value: Any = None) -> None:
+    def _set_setting(self, keys: list[str], value: Any = None) -> None:
         set_nested(self._settings, keys, value)
         self._save_settings()
 
@@ -1250,7 +1260,7 @@ class Bpod:
     @name.setter
     def name(self, name: str | None) -> None:
         """Set the name of the Bpod device."""
-        self._set_settings(['devices', str(self._serial_number), 'name'], name)
+        self._set_setting(['devices', str(self._serial_number), 'name'], name)
 
     @property
     def location(self) -> str | None:
@@ -1263,7 +1273,7 @@ class Bpod:
     @location.setter
     def location(self, location: str | None) -> None:
         """Set the location of the Bpod device."""
-        self._set_settings(['devices', str(self._serial_number), 'location'], location)
+        self._set_setting(['devices', str(self._serial_number), 'location'], location)
 
 
 class Channel(ABC):

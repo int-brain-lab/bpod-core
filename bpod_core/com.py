@@ -340,6 +340,7 @@ class ZMQService:
         self,
         name: str,
         description: dict[str, str],
+        port: int | None = None,
         socket_type: int = zmq.DEALER,
         local: bool = False,
         advertise: bool = True,
@@ -361,6 +362,9 @@ class ZMQService:
             suffix is appended automatically.
         description : dict
             A dict published as a TXT record.
+        port : int, optional
+            The port number to bind the ZeroMQ socket to. If None, a random port is
+            selected. Default is None.
         socket_type : int, optional
             The ZeroMQ socket type to create (e.g., zmq.DEALER, zmq.ROUTER).
             Default is zmq.DEALER.
@@ -385,13 +389,18 @@ class ZMQService:
 
         self._zmq_context = Context()
         self.ip_address = '127.0.0.1' if local else get_local_ipv4()
-        try:
-            self._bind_address = f'tcp://{self.ip_address}'
-            self._zmq_socket = self._zmq_context.socket(socket_type)
+        self._bind_address = f'tcp://{self.ip_address}'
+        self._zmq_socket = self._zmq_context.socket(socket_type)
+        if port is not None:
+            try:
+                self._zmq_socket.bind(f'{self._bind_address}:{port}')
+                self._zmq_port = port
+            except zmq.ZMQError:
+                logger.debug(
+                    'Could not bind ZMQ socket on %s:%d', self._bind_address, port
+                )
+        if not hasattr(self, '_zmq_port'):
             self._zmq_port = self._zmq_socket.bind_to_random_port(self._bind_address)
-        except zmq.ZMQError as e:
-            logger.error(f'Failed to bind ZMQ socket on {self._bind_address}: {e}')
-            raise
         logger.debug('Opening ZMQ socket on %s:%d', self._bind_address, self._zmq_port)
 
         self._service_type = service_type
