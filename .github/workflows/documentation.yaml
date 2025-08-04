@@ -18,14 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pdm-project/setup-pdm@v4
-        with:
-          cache: true
-          python-version: '3.10'
-      - name: Install dependencies
-        run: pdm install -dG doc
-      - name: Sphinx build
-        run: pdm run sphinx-build docs/source docs/build
+      - uses: astral-sh/setup-uv@v6
+      - name: sync dependencies
+        run: uv sync --no-default-groups --group doc --extra pyqt6
+      - name: build documentation
+        run: uv run sphinx-build docs/source docs/build
       - uses: peaceiris/actions-gh-pages@v4
         with:
           publish_branch: gh-pages

@@ -1,11 +1,12 @@
 """Module defining classes and types for creating and managing state machines."""
 
+import ctypes
 import re
 from collections import OrderedDict
 from typing import Annotated
 
-from graphviz import Digraph  # type: ignore
-from pydantic import BaseModel, Field, validate_call
+from graphviz import Digraph  # type: ignore[import-untyped]
+from pydantic import BaseModel, Field, NonNegativeFloat, NonNegativeInt, validate_call
 
 StateName = Annotated[
     str,
@@ -66,18 +67,131 @@ Comment = Annotated[
         description='An optional comment describing the state.',
     ),
 ]
+GlobalTimerIndex = Annotated[
+    NonNegativeInt,
+    Field(
+        title='Global Timer ID',
+        description='The ID of the global timer',
+    ),
+]
+GlobalTimerDuration = Annotated[
+    NonNegativeFloat,
+    Field(
+        allow_inf_nan=False,
+        title='Global Timer Duration',
+        description='The duration of the global timer in seconds',
+    ),
+]
+GlobalTimerOnsetDelay = Annotated[
+    NonNegativeFloat,
+    Field(
+        allow_inf_nan=False,
+        default=0.0,
+        title='Onset Delay',
+        description='The onset delay of the global timer in seconds',
+    ),
+]
+GlobalTimerChannel = Annotated[
+    str | None,
+    Field(
+        title='Channel',
+        default=None,
+        description='The channel affected by the global timer',
+    ),
+]
+GlobalTimerChannelValue = Annotated[
+    int,
+    Field(
+        ge=0,
+        le=255,
+        default=0,
+        title='Channel Value',
+        description='The value a channel is set to',
+    ),
+]
+GlobalTimerSendEvents = Annotated[
+    bool,
+    Field(
+        default=True,
+        title='Send Events',
+        description='Whether the global timer is sending events',
+    ),
+]
+GlobalTimerLoop = Annotated[
+    int,
+    Field(
+        ge=0,
+        le=255,
+        default=0,
+        title='Loop Mode',
+        description='Whether the global timer is looping or not',
+    ),
+]
+GlobalTimerLoopInterval = Annotated[
+    NonNegativeFloat,
+    Field(
+        default=0.0,
+        title='Loop Interval',
+        description='The interval in seconds that the global timer is looping',
+    ),
+]
+GlobalTimerOnsetTrigger = Annotated[
+    NonNegativeInt | None,
+    Field(
+        default=0,
+        title='Onset Trigger',
+        description='An integer whose bits indicate other global timers to trigger',
+    ),
+]
+GlobalCounterID = Annotated[
+    NonNegativeInt,
+    Field(
+        title='ID',
+        description='The ID of the global counter',
+    ),
+]
+GlobalCounterEvent = Annotated[
+    str,
+    Field(
+        title='Event',
+        description='The name of the event to count',
+    ),
+]
+GlobalCounterThreshold = Annotated[
+    NonNegativeInt,
+    Field(
+        le=ctypes.c_uint32(-1).value,
+        title='Threshold',
+        description='The count threshold to generate an event',
+    ),
+]
+ConditionID = Annotated[
+    NonNegativeInt,
+    Field(
+        title='ID',
+        description='The ID of the condition',
+    ),
+]
+ConditionChannel = Annotated[
+    str,
+    Field(
+        title='Channel',
+        description='The channel or global timer attached to the condition',
+    ),
+]
+ConditionValue = Annotated[
+    bool,
+    Field(
+        title='Value',
+        description='The value of the condition channel if the condition is met',
+    ),
+]
 
 
 class State(BaseModel):
     """Represents a state in the state machine."""
 
-    timer: float = Field(
-        ge=0.0,
-        allow_inf_nan=False,
-        default=0.0,
-        title='State Timer',
-        description="The state's timer in seconds",
-    )
+    timer: StateTimer = StateTimer()
     """The state's timer in seconds."""
 
     state_change_conditions: StateChangeConditions = StateChangeConditions()
@@ -94,6 +208,31 @@ class State(BaseModel):
         'json_schema_extra': {'additionalProperties': False},
     }
     """Configuration for the `State` model."""
+
+
+class GlobalTimer(BaseModel, validate_assignment=True):
+    timer_id: GlobalTimerIndex
+    duration: GlobalTimerDuration
+    onset_delay: GlobalTimerOnsetDelay = GlobalTimerOnsetDelay()
+    channel: GlobalTimerChannel = None
+    value_on: GlobalTimerChannelValue = GlobalTimerChannelValue()
+    value_off: GlobalTimerChannelValue = GlobalTimerChannelValue()
+    send_events: GlobalTimerSendEvents = GlobalTimerSendEvents()
+    loop: GlobalTimerLoop = GlobalTimerLoop()
+    loop_interval: GlobalTimerLoopInterval = GlobalTimerLoopInterval()
+    onset_trigger: GlobalTimerOnsetTrigger = None
+
+
+class GlobalCounter(BaseModel, validate_assignment=True):
+    id: GlobalCounterID
+    event: GlobalCounterEvent
+    threshold: GlobalCounterThreshold
+
+
+class Condition(BaseModel, validate_assignment=True):
+    id: ConditionID
+    channel: ConditionChannel
+    value: ConditionValue
 
 
 class StateMachine(BaseModel):
@@ -116,10 +255,33 @@ class StateMachine(BaseModel):
                 'minLength': 1,
                 'type': 'string',
                 'not': {'const': 'exit'},
-            }
+            },
         },
     )
     """An ordered dictionary of states in the state machine."""
+
+    global_timers: OrderedDict[GlobalTimerIndex, GlobalTimer] = Field(
+        description='A collection of global timers',
+        title='Global Timers',
+        default_factory=OrderedDict,
+        json_schema_extra={'propertyNames': {'type': 'int'}},
+    )
+    """An ordered dictionary of global timers in the state machine."""
+
+    global_counters: OrderedDict[GlobalCounterID, GlobalCounter] = Field(
+        description='A collection of global counters',
+        title='Global Counters',
+        default_factory=OrderedDict,
+        json_schema_extra={'propertyNames': {'type': 'int'}},
+    )
+    """An ordered dictionary of global counters in the state machine."""
+
+    conditions: OrderedDict[ConditionID, Condition] = Field(
+        description='A collection of conditions',
+        title='Conditions',
+        default_factory=OrderedDict,
+        json_schema_extra={'propertyNames': {'type': 'int'}},
+    )
 
     model_config = {
         'validate_assignment': True,
@@ -149,7 +311,7 @@ class StateMachine(BaseModel):
             A dictionary mapping conditions to target states for transitions.
             Defaults to an empty dictionary.
         output_actions : dict, optional
-            A dictionary of actions to be executed during the state.
+            A dictionary of actions to be executed on entering the state.
             Defaults to an empty dictionary.
         comment : Comment, optional
             An optional comment describing the state.
@@ -166,6 +328,117 @@ class StateMachine(BaseModel):
             state_change_conditions=state_change_conditions,
             output_actions=output_actions,
             comment=comment,
+        )
+
+    def set_global_timer(  # noqa: PLR0913
+        self,
+        timer_id: GlobalTimerIndex,
+        duration: GlobalTimerDuration,
+        onset_delay: GlobalTimerOnsetDelay = 0.0,
+        channel: GlobalTimerChannel = None,
+        value_on: GlobalTimerChannelValue = 0,
+        value_off: GlobalTimerChannelValue = 0,
+        send_events: GlobalTimerSendEvents = True,
+        loop: GlobalTimerLoop = 0,
+        loop_interval: GlobalTimerLoopInterval = 0,
+        onset_trigger: GlobalTimerOnsetTrigger = 0,
+    ) -> None:
+        """
+        Configure a global timer with the specified parameters.
+
+        Parameters
+        ----------
+        timer_id : int
+            The index of the global timer to configure.
+        duration : float
+            The duration of the global timer in seconds.
+        onset_delay : float, optional
+            The onset delay of the global timer in seconds. Default is 0.0.
+        channel : str, optional
+            The channel affected by the global timer. Default is None.
+        value_on : int, optional
+            The value to set the channel to when the timer is active. Default is 0.
+        value_off : int, optional
+            The value to set the channel to when the timer is inactive. Default is 0.
+        send_events : bool, optional
+            Whether the global timer sends events. Default is True.
+        loop : int, optional
+            The number of times the timer should loop. Default is 0.
+        loop_interval : float, optional
+            The interval in seconds between loops. Default is 0.
+        onset_trigger : int, optional
+            An integer whose bits indicate other global timers to trigger.
+
+        Returns
+        -------
+        None
+        """
+        self.global_timers[timer_id] = GlobalTimer(
+            timer_id=timer_id,
+            duration=duration,
+            onset_delay=onset_delay,
+            channel=channel,
+            value_on=value_on,
+            value_off=value_off,
+            send_events=send_events,
+            loop=loop,
+            loop_interval=loop_interval,
+            onset_trigger=onset_trigger,
+        )
+
+    def set_global_counter(
+        self,
+        counter_id: GlobalCounterID,
+        event: GlobalCounterEvent,
+        threshold: GlobalCounterThreshold,
+    ) -> None:
+        """
+        Configure a global timer with the specified parameters.
+
+        Parameters
+        ----------
+        counter_id : int
+            The ID of the global counter.
+        event : str
+            The name of the event to count.
+        threshold : int
+            The count threshold to generate an event
+
+        Returns
+        -------
+        None
+        """
+        self.global_counters[counter_id] = GlobalCounter(
+            id=counter_id,
+            event=event,
+            threshold=threshold,
+        )
+
+    def set_condition(
+        self,
+        condition_id: ConditionID,
+        channel: ConditionChannel,
+        value: ConditionValue,
+    ) -> None:
+        """Configure a condition with the specified parameters.
+
+        Parameters
+        ----------
+        condition_id : int
+            The ID of the condition.
+        channel : str
+            The channel or global timer attached to the condition.
+        value: bool
+            The value of the condition channel if the condition is met
+
+        Returns
+        -------
+        None
+        """
+        self.conditions[condition_id] = Condition(
+            id=condition_id,
+            channel=channel,
+            value=value,
         )
 
     @property

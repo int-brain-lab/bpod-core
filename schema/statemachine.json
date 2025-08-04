@@ -1,5 +1,154 @@
 {
   "$defs": {
+    "Condition": {
+      "properties": {
+        "id": {
+          "description": "The ID of the condition",
+          "minimum": 0,
+          "title": "ID",
+          "type": "integer"
+        },
+        "channel": {
+          "description": "The channel or global timer attached to the condition",
+          "title": "Channel",
+          "type": "string"
+        },
+        "value": {
+          "description": "The value of the condition channel if the condition is met",
+          "title": "Value",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "channel",
+        "value"
+      ],
+      "title": "Condition",
+      "type": "object"
+    },
+    "GlobalCounter": {
+      "properties": {
+        "id": {
+          "description": "The ID of the global counter",
+          "minimum": 0,
+          "title": "ID",
+          "type": "integer"
+        },
+        "event": {
+          "description": "The name of the event to count",
+          "title": "Event",
+          "type": "string"
+        },
+        "threshold": {
+          "description": "The count threshold to generate an event",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "title": "Threshold",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "event",
+        "threshold"
+      ],
+      "title": "GlobalCounter",
+      "type": "object"
+    },
+    "GlobalTimer": {
+      "properties": {
+        "timer_id": {
+          "description": "The ID of the global timer",
+          "minimum": 0,
+          "title": "Global Timer ID",
+          "type": "integer"
+        },
+        "duration": {
+          "description": "The duration of the global timer in seconds",
+          "minimum": 0,
+          "title": "Global Timer Duration",
+          "type": "number"
+        },
+        "onset_delay": {
+          "default": 0.0,
+          "description": "The onset delay of the global timer in seconds",
+          "minimum": 0,
+          "title": "Onset Delay",
+          "type": "number"
+        },
+        "channel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The channel affected by the global timer",
+          "title": "Channel"
+        },
+        "value_on": {
+          "default": 0,
+          "description": "The value a channel is set to",
+          "maximum": 255,
+          "minimum": 0,
+          "title": "Channel Value",
+          "type": "integer"
+        },
+        "value_off": {
+          "default": 0,
+          "description": "The value a channel is set to",
+          "maximum": 255,
+          "minimum": 0,
+          "title": "Channel Value",
+          "type": "integer"
+        },
+        "send_events": {
+          "default": false,
+          "description": "Whether the global timer is sending events",
+          "title": "Send Events",
+          "type": "boolean"
+        },
+        "loop": {
+          "default": 0,
+          "description": "Whether the global timer is looping or not",
+          "maximum": 255,
+          "minimum": 0,
+          "title": "Loop Mode",
+          "type": "integer"
+        },
+        "loop_interval": {
+          "default": 0.0,
+          "description": "The interval in seconds that the global timer is looping",
+          "minimum": 0,
+          "title": "Loop Interval",
+          "type": "number"
+        },
+        "onset_trigger": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "An integer whose bits indicate other global timers to trigger",
+          "title": "Onset Trigger"
+        }
+      },
+      "required": [
+        "timer_id",
+        "duration"
+      ],
+      "title": "GlobalTimer",
+      "type": "object"
+    },
     "State": {
       "additionalProperties": false,
       "description": "Represents a state in the state machine.",
@@ -68,6 +217,39 @@
         "type": "string"
       },
       "title": "States",
+      "type": "object"
+    },
+    "global_timers": {
+      "additionalProperties": {
+        "$ref": "#/$defs/GlobalTimer"
+      },
+      "description": "A collection of global timers",
+      "propertyNames": {
+        "type": "int"
+      },
+      "title": "Global Timers",
+      "type": "object"
+    },
+    "global_counters": {
+      "additionalProperties": {
+        "$ref": "#/$defs/GlobalCounter"
+      },
+      "description": "A collection of global counters",
+      "propertyNames": {
+        "type": "int"
+      },
+      "title": "Global Counters",
+      "type": "object"
+    },
+    "conditions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Condition"
+      },
+      "description": "A collection of conditions",
+      "propertyNames": {
+        "type": "int"
+      },
+      "title": "Conditions",
       "type": "object"
     }
   },
