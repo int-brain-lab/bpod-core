@@ -12,7 +12,7 @@ from pathlib import Path
 from threading import Event as TreadingEvent
 from threading import Thread
 from types import TracebackType
-from typing import NamedTuple, cast
+from typing import Any, NamedTuple, cast
 
 import numpy as np
 from appdirs import user_data_dir
@@ -25,7 +25,7 @@ from typing_extensions import Self
 from bpod_core import __version__ as bpod_core_version
 from bpod_core.com import ExtendedSerial, ZMQService
 from bpod_core.fsm import StateMachine
-from bpod_core.misc import suggest_similar
+from bpod_core.misc import get_nested, set_nested, suggest_similar
 
 PROJECT_NAME = 'bpod-core'
 AUTHOR_NAME = 'International Brain Laboratory'
@@ -390,6 +390,13 @@ class Bpod:
                 self._settings = json.load(f)
         else:
             self._settings = {}
+
+    def _get_setting(self, keys: list[str], default: Any = None) -> Any:
+        return get_nested(self._settings, keys, default)
+
+    def _set_settings(self, keys: list[str], value: Any = None) -> None:
+        set_nested(self._settings, keys, value)
+        self._save_settings()
 
     def _sends_discovery_byte(
         self,
@@ -1219,27 +1226,15 @@ class Bpod:
     @property
     def name(self) -> str | None:
         """Get the name of the Bpod device."""
-        devices = self._settings.setdefault('devices', {})
-        device = devices.setdefault(self._serial_number, {})
-        return cast(str | None, device.get('name', None))
+        return cast(
+            'str | None',
+            self._get_setting(['devices', str(self._serial_number), 'name'], None),
+        )
 
     @name.setter
     def name(self, name: str | None) -> None:
-        """
-        Set the name of the Bpod device.
-
-        Parameters
-        ----------
-        name : str or None
-            The name to set for the Bpod device. If None, the name is removed.
-        """
-        devices = self._settings.setdefault('devices', {})
-        device = devices.setdefault(self._serial_number, {})
-        if name is None:
-            device.pop('name', None)
-        else:
-            device['name'] = name
-        self._save_settings()
+        """Set the name of the Bpod device."""
+        self._set_settings(['devices', str(self._serial_number), 'name'], name)
 
 
 class Channel(ABC):

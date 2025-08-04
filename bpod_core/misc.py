@@ -2,6 +2,7 @@
 
 import difflib
 import re
+from typing import Any
 
 RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z\d])')
 RE_UNDERSCORES = re.compile(r'_{2,}')
@@ -61,3 +62,46 @@ def suggest_similar(
     """
     matches = difflib.get_close_matches(invalid_string, valid_strings, 1, cutoff)
     return format_string.format(matches[0]) if len(matches) > 0 else ''
+
+
+def set_nested(d: dict[str, Any], keys: list[str], value: Any) -> None:
+    """
+    Set a value in a nested dict, creating intermediate dicts as needed.
+
+    Parameters
+    ----------
+    d : dict
+        The dictionary in which to set the value.
+    keys : list of str
+        A list of keys representing the nested path where the value should be set.
+    value : Any
+        The value to set at the specified path.
+    """
+    for key in keys[:-1]:
+        d = d.setdefault(key, {})
+    d[keys[-1]] = value
+
+
+def get_nested(d: dict[str, Any], keys: list[str], default: Any = None) -> Any:
+    """
+    Retrieve a value from a nested dict using a list of keys.
+
+    Parameters
+    ----------
+    d : dict
+        The dictionary from which to get a value.
+    keys : list of str
+        A list of keys representing the path to the desired value.
+    default : Any, optional
+        The value to return if the path does not exist. Defaults to None.
+
+    Returns
+    -------
+    Any
+        The value at the nested path, or default if any key in the path is missing.
+    """
+    for key in keys:
+        if not isinstance(d, dict) or key not in d:
+            return default
+        d = d[key]
+    return d
