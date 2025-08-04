@@ -460,7 +460,7 @@ class ZMQService:
         Returns
         -------
         str
-            The bind address of the ZeroMQ socket, including the IP address and port.
+            The bind address of the ZeroMQ socket.
         """
         return self._bind_address
 
