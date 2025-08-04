@@ -15,7 +15,7 @@ from serial import Serial
 from serial.serialutil import to_bytes as serial_to_bytes  # type: ignore[attr-defined]
 from serial.threaded import Protocol
 from typing_extensions import Buffer, Self
-from zeroconf import NonUniqueNameException, ServiceInfo, Zeroconf
+from zeroconf import ServiceInfo, Zeroconf
 from zmq import Context
 
 from bpod_core.misc import convert_to_snake_case
@@ -333,27 +333,17 @@ def get_local_ipv4() -> str:
 
 
 class ZMQService:
-    _zeroconf: Zeroconf | None = None
-    _service_info: ServiceInfo | None = None
-
     def __init__(
         self,
         name: str,
-        description: dict[str, str],
+        description: dict[str | bytes, str | bytes | None],
         port: int | None = None,
         socket_type: int = zmq.DEALER,
         local: bool = False,
-        advertise: bool = True,
         service_type: str = '_zmq._tcp.local.',
     ) -> None:
         """
-        Initialize a ZeroMQ service with optional Zeroconf advertisement.
-
-        Opens a ZeroMQ DEALER socket bound to a random available port on all interfaces.
-        If `advertise` is True, the service is published on the local network using
-        Zeroconf (mDNS). If the requested service name is already in use on the network,
-        numeric suffixes like " (2)", " (3)", etc., are appended to avoid name
-        conflicts.
+        Initialize a ZeroMQ service with Zeroconf advertisement.
 
         Parameters
         ----------
@@ -371,9 +361,6 @@ class ZMQService:
         local : bool, optional
             If True, advertise the service on the loopback address (127.0.0.1).
             Otherwise, advertise on the primary local IPv4 address. Default is False.
-        advertise : bool, optional
-            Whether to advertise the service via Zeroconf. If False, the service is
-            not advertised. Default is True.
         service_type : str, optional
             The Zeroconf service type. Default is '_zmq._tcp.local.'.
 
@@ -403,9 +390,9 @@ class ZMQService:
             self._zmq_port = self._zmq_socket.bind_to_random_port(self._bind_address)
         logger.debug('Opening ZMQ socket on %s:%d', self._bind_address, self._zmq_port)
 
+        self._zeroconf = Zeroconf()
         self._service_type = service_type
-        if advertise:
-            self._register_service(name, description)
+        self._register_service(name, description)
 
     def close(self) -> None:
         """Close the ZeroMQ service and unregister the Zeroconf advertisement."""
@@ -422,111 +409,49 @@ class ZMQService:
             self._zmq_socket.close(linger=0)
             self._zmq_context.term()
 
-    @property
-    def port(self) -> int:
-        """
-        Get the port number of the ZeroMQ socket.
-
-        Returns
-        -------
-        int
-            The port number on which the ZeroMQ socket is bound.
-        """
-        return self._zmq_port
-
-    @property
-    def bind_address(self) -> str:
-        """
-        Get the bind address of the ZeroMQ socket.
-
-        Returns
-        -------
-        str
-            The bind address of the ZeroMQ socket.
-        """
-        return self._bind_address
-
-    @property
-    def service_name(self) -> str | None:
-        """
-        Get the name of the Zeroconf service.
-
-        Returns
-        -------
-        str or None
-            The name of the Zeroconf service instance.
-            Returns None if no service is registered.
-        """
-        if self._service_info is not None:
-            return self._service_info.name
-        return None
-
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    @property
+    def port(self) -> int:
+        """Get the port number of the ZeroMQ socket."""
+        return self._zmq_port
+
+    @property
+    def bind_address(self) -> str:
+        """Get the bind address of the ZeroMQ socket."""
+        return self._bind_address
+
+    @property
+    def service_name(self) -> str:
+        """Get the name of the Zeroconf service."""
+        return self._service_info.name
+
+    def _escape_service_name(self, name: str) -> str:
+        name = name.removesuffix('.' + self._service_type)
+        return f'{convert_to_snake_case(name)}.{self._service_type}'
+
     def _register_service(
-        self, name: str, description: dict[str, str], max_attempts: int = 50
+        self, name: str, txt_record: dict[str | bytes, str | bytes | None]
     ) -> None:
-        """
-        Attempt to register a Zeroconf service with a unique name.
-
-        Parameters
-        ----------
-        name : str
-            The base service name.
-        description : dict
-            Description for the service.
-
-        Raises
-        ------
-        RuntimeError
-            If a name conflict prevents registration after multiple attempts.
-        """
-        if self._zeroconf is None:
-            self._zeroconf = Zeroconf()
-        server = f'{socket.gethostname()}.local.'
-        name = convert_to_snake_case(name)
-
-        for i in range(1, max_attempts + 1):
-            if i == 1:
-                instance_name = f'{name}.{self._service_type}'
-            else:
-                instance_name = f'{name}_{i}.{self._service_type}'
-            service_info = ServiceInfo(
-                type_=self._service_type,
-                name=instance_name,
-                port=self.port,
-                addresses=[socket.inet_aton(self.ip_address)],
-                properties=description,
-                server=server,
-            )
-            try:
-                self._zeroconf.register_service(service_info)
-                logger.debug("Registering Zeroconf service '%s'", instance_name)
-                self._service_info = service_info
-                return
-            except NonUniqueNameException:
-                continue
-
-        raise RuntimeError(
-            f"Failed to register service '{name}' after {max_attempts} attempts"
+        """Register a Zeroconf service."""
+        service_info = ServiceInfo(
+            type_=self._service_type,
+            name=self._escape_service_name(name),
+            port=self.port,
+            addresses=[socket.inet_aton(self.ip_address)],
+            properties=txt_record,
+            server=f'{socket.gethostname()}.local.',
         )
+        self._zeroconf.register_service(service_info, allow_name_change=True)
+        self._service_info = service_info
+        logger.debug("Registering Zeroconf service '%s'", self.service_name)
 
     def _unregister_service(self):
         """Unregister the Zeroconf service."""
-        if self._zeroconf is not None and self._service_info is not None:
-            logger.debug("Unregistering Zeroconf service '%s'", self.service_name)
-            self._zeroconf.unregister_service(self._service_info)
-            self._service_info = None
-
-    def update_advertisement(self, name: str, description: dict) -> None:
-        """Update the Zeroconf service name and description."""
-        with self._close_lock:
-            if self._closed:
-                logger.warning('Service already closed - cannot update advertisement.')
-                return
-            self._unregister_service()
-            self._register_service(name, description)
+        logger.debug("Unregistering Zeroconf service '%s'", self.service_name)
+        self._zeroconf.unregister_service(self._service_info)
+        self._service_info = None

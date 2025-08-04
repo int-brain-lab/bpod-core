@@ -263,7 +263,7 @@ class Bpod:
     _version: VersionInfo
     _hardware: HardwareConfiguration
     _fsm_thread: FSMThread | None = None
-    _zmq_service: ZMQService | None = None
+    _zmq_service: ZMQService
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
     serial0: ExtendedSerial
@@ -339,8 +339,8 @@ class Bpod:
             )
             logger.info(
                 'ZeroMQ service started on %s:%d',
-                self._zmq_service.bind_address if self._zmq_service else '?',
-                self._zmq_service.port if self._zmq_service else '?',
+                self._zmq_service.bind_address,
+                self._zmq_service.port,
             )
 
     def __enter__(self) -> Self:
@@ -388,7 +388,7 @@ class Bpod:
     def _start_zmq(self):
         port = self._get_setting(['devices', str(self._serial_number), 'zmq_port'])
         self._zmq_service = ZMQService(
-            f'{self.name}' if self.name else f'bpod_{self._serial_number}',
+            self.name if self.name else f'bpod_{self._serial_number}',
             {
                 'description': f'Bpod Finite State Machine {self.version.machine_str}',
                 'serial': self._serial_number or '',
@@ -405,7 +405,7 @@ class Bpod:
         )
 
     def _stop_zmq(self):
-        if self._zmq_service is not None:
+        if hasattr(self, '_zmq_service'):
             self._zmq_service.close()
 
     def _save_settings(self) -> None:
