@@ -287,7 +287,7 @@ class Bpod:
     def __init__(
         self, port: str | None = None, serial_number: str | None = None
     ) -> None:
-        self._finalizer = weakref.finalize(self, self.close)
+        self._finalizer = weakref.finalize(self, self._finalize)
         logger.info('bpod_core %s', bpod_core_version)
         self._load_settings()
 
@@ -355,6 +355,7 @@ class Bpod:
     ) -> None:
         """Exit context and close connection."""
         self.close()
+        self._stop_zmq()
 
     def open(self) -> None:
         """
@@ -379,9 +380,10 @@ class Bpod:
             logger.debug('Closing connection to Bpod on %s', self.port)
             self.serial0.write(b'Z')
             self.serial0.close()
-        if self._zmq_service is not None:
-            self._zmq_service.close()
-            self._zmq_service = None
+
+    def _finalize(self) -> None:
+        self.close()
+        self._stop_zmq()
 
     def _start_zmq(self):
         port = self._get_setting(['devices', str(self._serial_number), 'zmq_port'])
@@ -401,6 +403,10 @@ class Bpod:
         self._set_setting(
             ['devices', str(self._serial_number), 'zmq_port'], self._zmq_service.port
         )
+
+    def _stop_zmq(self):
+        if self._zmq_service is not None:
+            self._zmq_service.close()
 
     def _save_settings(self) -> None:
         """Save the current settings to the settings file."""
