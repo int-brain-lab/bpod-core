@@ -26,8 +26,8 @@ def convert_to_snake_case(input_str: str) -> str:
         The converted snake_case string.
     """
     input_str = input_str.replace(' ', '_')
-    snake_case_str = re.sub(RE_SNAKE_CASE, '_', input_str)
-    snake_case_str = re.sub(RE_UNDERSCORES, '_', snake_case_str)
+    snake_case_str = RE_SNAKE_CASE.sub('_', input_str)
+    snake_case_str = RE_UNDERSCORES.sub('_', snake_case_str)
     return snake_case_str.lower()
 
 
