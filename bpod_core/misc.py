@@ -4,8 +4,9 @@ import difflib
 import re
 from typing import Any
 
+RE_SANITIZE = re.compile(r'[^a-zA-Z0-9_]')
 RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z\d])')
-RE_UNDERSCORES = re.compile(r'_{2,}')
+RE_UNDERSCORES = re.compile(r'_{2,}|_$|^_')
 
 
 def convert_to_snake_case(input_str: str) -> str:
@@ -26,7 +27,8 @@ def convert_to_snake_case(input_str: str) -> str:
         The converted snake_case string.
     """
     input_str = input_str.replace(' ', '_')
-    snake_case_str = RE_SNAKE_CASE.sub('_', input_str)
+    snake_case_str = RE_SANITIZE.sub('', input_str)
+    snake_case_str = RE_SNAKE_CASE.sub('_', snake_case_str)
     snake_case_str = RE_UNDERSCORES.sub('_', snake_case_str)
     return snake_case_str.lower()
 

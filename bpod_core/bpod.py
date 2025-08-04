@@ -380,7 +380,7 @@ class Bpod:
 
     def _start_zmq(self):
         self._zmq_service = ZMQService(
-            f'Bpod "{self.name}"' if self.name else f'Bpod {self._serial_number}',
+            f'{self.name}' if self.name else f'bpod_{self._serial_number}',
             {
                 'description': f'Bpod Finite State Machine {self.version.machine_str}',
                 'serial': self._serial_number or '',

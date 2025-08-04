@@ -18,6 +18,8 @@ from typing_extensions import Buffer, Self
 from zeroconf import NonUniqueNameException, ServiceInfo, Zeroconf
 from zmq import Context
 
+from bpod_core.misc import convert_to_snake_case
+
 logger = logging.getLogger(__name__)
 
 ByteLike: TypeAlias = (
@@ -477,12 +479,13 @@ class ZMQService:
         if self._zeroconf is None:
             self._zeroconf = Zeroconf()
         server = f'{socket.gethostname()}.local.'
+        name = convert_to_snake_case(name)
 
         for i in range(1, max_attempts + 1):
             if i == 1:
                 instance_name = f'{name}.{self._service_type}'
             else:
-                instance_name = f'{name} ({i}).{self._service_type}'
+                instance_name = f'{name}_{i}.{self._service_type}'
             service_info = ServiceInfo(
                 type_=self._service_type,
                 name=instance_name,
