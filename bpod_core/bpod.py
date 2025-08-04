@@ -383,11 +383,11 @@ class Bpod:
             f'Bpod "{self.name}"' if self.name else f'Bpod {self._serial_number}',
             {
                 'description': f'Bpod Finite State Machine {self.version.machine_str}',
-                'serial_number': self._serial_number or '',
+                'serial': self._serial_number or '',
                 'name': self.name or '',
                 'location': self.location or '',
-                'firmware_version': '.'.join([str(x) for x in self.version.firmware]),
-                'core_version': bpod_core_version,
+                'firmware': '.'.join([str(x) for x in self.version.firmware]),
+                'core': bpod_core_version,
             },
             service_type='_bpod._tcp.local.',
         )
