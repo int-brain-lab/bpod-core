@@ -1,5 +1,6 @@
 """Module for interfacing with the Bpod Finite State Machine."""
 
+import json
 import logging
 import re
 import struct
@@ -7,12 +8,14 @@ import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Event as TreadingEvent
 from threading import Thread
 from types import TracebackType
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 import numpy as np
+from appdirs import user_data_dir
 from numpy.typing import NDArray
 from pydantic import validate_call
 from serial import SerialException
@@ -25,6 +28,8 @@ from bpod_core.fsm import StateMachine
 from bpod_core.misc import suggest_similar
 
 PROJECT_NAME = 'bpod-core'
+AUTHOR_NAME = 'International Brain Laboratory'
+SETTINGS_PATH = Path(user_data_dir(PROJECT_NAME, AUTHOR_NAME)).joinpath('settings.json')
 VENDOR_IDS_BPOD = [0x16C0]  # vendor IDs of supported Bpod devices
 MIN_BPOD_FW_VERSION = (23, 0)  # minimum supported firmware version (major, minor)
 MIN_BPOD_HW_VERSION = 3  # minimum supported hardware version
@@ -250,6 +255,7 @@ class FSMThread(Thread):
 class Bpod:
     """Bpod class for interfacing with the Bpod Finite State Machine."""
 
+    _settings: dict
     _name: str | None
     _version: VersionInfo
     _hardware: HardwareConfiguration
@@ -280,6 +286,7 @@ class Bpod:
     ) -> None:
         self._finalizer = weakref.finalize(self, self.close)
         logger.info('bpod_core %s', bpod_core_version)
+        self._load_settings()
 
         # initialize members
         self.event_names = []
@@ -369,6 +376,20 @@ class Bpod:
         if self._zmq_service is not None:
             self._zmq_service.close()
             self._zmq_service = None
+
+    def _save_settings(self) -> None:
+        """Save the current settings to the settings file."""
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with SETTINGS_PATH.open('w') as f:
+            json.dump(self._settings, f, indent=2)
+
+    def _load_settings(self) -> None:
+        """Load settings from the settings file."""
+        if SETTINGS_PATH.exists():
+            with SETTINGS_PATH.open('r') as f:
+                self._settings = json.load(f)
+        else:
+            self._settings = {}
 
     def _sends_discovery_byte(
         self,
@@ -1194,6 +1215,31 @@ class Bpod:
     @staticmethod
     def _softcode_handler(softcode: int) -> None:
         pass
+
+    @property
+    def name(self) -> str | None:
+        """Get the name of the Bpod device."""
+        devices = self._settings.setdefault('devices', {})
+        device = devices.setdefault(self._serial_number, {})
+        return cast(str | None, device.get('name', None))
+
+    @name.setter
+    def name(self, name: str | None) -> None:
+        """
+        Set the name of the Bpod device.
+
+        Parameters
+        ----------
+        name : str or None
+            The name to set for the Bpod device. If None, the name is removed.
+        """
+        devices = self._settings.setdefault('devices', {})
+        device = devices.setdefault(self._serial_number, {})
+        if name is None:
+            device.pop('name', None)
+        else:
+            device['name'] = name
+        self._save_settings()
 
 
 class Channel(ABC):

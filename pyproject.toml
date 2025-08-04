@@ -24,6 +24,7 @@ dependencies = [
   "graphviz>=0.20.0",
   "pyzmq>=27.0.1",
   "zeroconf>=0.147.0",
+  "appdirs>=1.4.4",
 ]
 license = { text = "MIT" }
 readme = "README.md"
@@ -59,7 +60,11 @@ test = [
   "tox-uv>=0.7.2",
   "packaging>=25.0",
 ]
-typing = ["mypy>=1.15.0", "types-pyserial>=3.5.0.20250326"]
+typing = [
+  "appdirs-stubs>=0.1.0",
+  "mypy>=1.15.0",
+  "types-pyserial>=3.5.0.20250326",
+]
 ci = [
   "coveralls>=4.0.1",
   "pytest-github-actions-annotate-failures>=0.3.0",
