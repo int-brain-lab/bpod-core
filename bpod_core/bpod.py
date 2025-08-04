@@ -20,7 +20,7 @@ from serial.tools.list_ports import comports
 from typing_extensions import Self
 
 from bpod_core import __version__ as bpod_core_version
-from bpod_core.com import ExtendedSerial
+from bpod_core.com import ExtendedSerial, ZMQService
 from bpod_core.fsm import StateMachine
 from bpod_core.misc import suggest_similar
 
@@ -250,9 +250,11 @@ class FSMThread(Thread):
 class Bpod:
     """Bpod class for interfacing with the Bpod Finite State Machine."""
 
+    _name: str | None
     _version: VersionInfo
     _hardware: HardwareConfiguration
     _fsm_thread: FSMThread | None = None
+    _zmq_service: ZMQService | None = None
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
     serial0: ExtendedSerial
@@ -276,7 +278,7 @@ class Bpod:
     def __init__(
         self, port: str | None = None, serial_number: str | None = None
     ) -> None:
-        weakref.finalize(self, self.close)
+        self._finalizer = weakref.finalize(self, self.close)
         logger.info('bpod_core %s', bpod_core_version)
 
         # initialize members
@@ -321,6 +323,7 @@ class Bpod:
                 self._serial_number,
                 self.version.pcb,
             )
+            # logger.info(f'ZeroMQ service running at tcp://{local_ip}:{self._zmq_port}')
 
     def __enter__(self) -> Self:
         """Enter context."""
@@ -334,6 +337,38 @@ class Bpod:
     ) -> None:
         """Exit context and close connection."""
         self.close()
+
+    def open(self) -> None:
+        """
+        Open the connection to the Bpod.
+
+        Raises
+        ------
+        SerialException
+            If the port could not be opened.
+        BpodException
+            If the handshake fails.
+        """
+        if self.serial0.is_open:
+            return
+        self._zmq_service = ZMQService(
+            f'Bpod {self._serial_number}',
+            f'Bpod Finite State Machine, serial number {self._serial_number}',
+            service_type='_bpod._tcp.local.',
+        )
+        self.serial0.open()
+        self._handshake()
+
+    def close(self) -> None:
+        """Close the connection to the Bpod."""
+        self.stop_state_machine()
+        if hasattr(self, 'serial0') and self.serial0.is_open:
+            logger.debug('Closing connection to Bpod on %s', self.port)
+            self.serial0.write(b'Z')
+            self.serial0.close()
+        if self._zmq_service is not None:
+            self._zmq_service.close()
+            self._zmq_service = None
 
     def _sends_discovery_byte(
         self,
@@ -673,30 +708,6 @@ class Bpod:
     def version(self) -> VersionInfo:
         """Version information of the Bpod's firmware and hardware."""
         return self._version
-
-    def open(self) -> None:
-        """
-        Open the connection to the Bpod.
-
-        Raises
-        ------
-        SerialException
-            If the port could not be opened.
-        BpodException
-            If the handshake fails.
-        """
-        if self.serial0.is_open:
-            return
-        self.serial0.open()
-        self._handshake()
-
-    def close(self) -> None:
-        """Close the connection to the Bpod."""
-        self.stop_state_machine()
-        if hasattr(self, 'serial0') and self.serial0.is_open:
-            logger.debug('Closing connection to Bpod on %s', self.port)
-            self.serial0.write(b'Z')
-            self.serial0.close()
 
     def set_status_led(self, enabled: bool) -> bool:
         """

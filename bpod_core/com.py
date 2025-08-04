@@ -338,6 +338,7 @@ class ZMQService:
         socket_type: int = zmq.DEALER,
         local: bool = False,
         advertise: bool = True,
+        service_type: str = '_zmq._tcp.local.',
     ) -> None:
         """
         Initialize a ZeroMQ service with optional Zeroconf advertisement.
@@ -364,6 +365,8 @@ class ZMQService:
         advertise : bool, optional
             Whether to advertise the service via Zeroconf. If False, the service is
             not advertised. Default is True.
+        service_type : str, optional
+            The Zeroconf service type. Default is '_zmq._tcp.local.'.
 
         Raises
         ------
@@ -392,7 +395,6 @@ class ZMQService:
             return
 
         self._zeroconf = Zeroconf()
-        service_type = '_zmq._tcp.local.'
         address = socket.inet_aton(ip_address)
         server = f'{socket.gethostname()}.local.'
         max_attempts = 50
