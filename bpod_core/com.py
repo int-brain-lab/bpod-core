@@ -8,7 +8,7 @@ import socket
 import struct
 import threading
 import weakref
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any, TypeAlias
 
 import numpy as np
@@ -521,8 +521,80 @@ def discover_device(
     finally:
         zeroconf.close()
     if not found:
-        raise TimeoutError('No device found via Zeroconf')
+        raise TimeoutError('No matching device found via Zeroconf')
     return address
+
+
+class DualChannelClient:
+    def __init__(
+        self,
+        service_type: str,
+        address: str | None = None,
+        topic: str = '',
+        event_handler: Callable[[dict], Any] | None = None,
+        discovery_timeout: float = 10.0,
+        **kwargs,
+    ):
+        self.zmq_context = Context()
+        self.req_socket = self.zmq_context.socket(zmq.REQ)
+        self.sub_socket = self.zmq_context.socket(zmq.SUB)
+
+        # connect REQ channel
+        if address is not None:
+            self.req_address = address
+        else:
+            self.req_address = discover_device(service_type, kwargs, discovery_timeout)
+        self.req_socket.connect(self.req_address)
+
+        # connect SUB channel
+        self.sub_topic = topic
+        self.sub_address = ''  # TODO: get sub_address via REQ
+        self.sub_socket.connect(self.sub_address)
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.sub_topic)
+
+        # start event loop
+        self._event_handler = event_handler
+        self._running = False
+        self._event_thread = None
+        if self._event_handler:
+            self._start_event_loop()
+
+    def _start_event_loop(self):
+        self._running = True
+        self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
+        self._event_thread.start()
+
+    def _event_loop(self):
+        while self._running:
+            try:
+                msg = self.sub_socket.recv()
+                self._event_handler(msg)
+            except Exception as e:
+                print('Error in event handler:', e)
+
+    def request(self, request_type: str, **kwargs) -> Any:
+        """
+        Send a JSON-encoded request and receive the reply.
+
+        Parameters
+        ----------
+        request_type : str
+            The request type, e.g. 'call'
+        **kwargs
+            Arbitrary keyword arguments representing the request payload to be
+            serialized and sent.
+
+        Returns
+        -------
+        Any
+            The decoded response received from the remote endpoint.
+        """
+        message = dict(kwargs)  # make a shallow copy
+        message['type'] = request_type  # force override
+        encoded_message = json.dumps(message).encode('utf-8')
+        self.req_socket.send(encoded_message)
+        reply = self.req_socket.recv()
+        return json.loads(reply.decode('utf-8'))
 
 
 class RemoteBpod:
@@ -534,50 +606,18 @@ class RemoteBpod:
         location: str | None = None,
         timeout: float = 10.0,
     ):
-        self._zmq_context = Context()
-        self._req_socket = self._zmq_context.socket(zmq.REQ)
-        self._sub_socket = self._zmq_context.socket(zmq.SUB)
-
-        self._connect(
-            address,
-            timeout,
-            name=name,
-            serial=serial_number,
-            location=location,
-        )
-
-    def _connect(self, address: str | None, timeout: float, **kwargs) -> None:
-        if address is not None:
-            self._zmq_address = address
-        else:
-            props = {k: v for k, v in kwargs.items() if v is not None}
-            try:
-                self._zmq_address = discover_device('_bpod._tcp.local.', props, timeout)
-            except TimeoutError as e:
-                p = ', '.join([f'{k} = "{v}"' for k, v in props.items()])
-                raise TimeoutError(f'Failed to discover remote Bpod with {p}.') from e
-            logger.debug('Discovered Bpod on %s', self._zmq_address)
-        self._req_socket.connect(self._zmq_address)
-
-    def _request(self, **kwargs) -> Any:
-        """
-        Send a JSON-encoded request over the ZeroMQ socket and receive the reply.
-
-        Parameters
-        ----------
-        **kwargs
-            Arbitrary keyword arguments representing the request payload to be
-            serialized and sent.
-
-        Returns
-        -------
-        Any
-            The decoded JSON response received from the remote endpoint.
-        """
-        encoded_message = json.dumps(kwargs).encode('utf-8')
-        self._req_socket.send(encoded_message)
-        reply = self._req_socket.recv()
-        return json.loads(reply.decode('utf-8'))
+        try:
+            self._zmq = DualChannelClient(
+                service_type='_bpod._tcp.local.',
+                address=address,
+                discovery_timeout=timeout,
+                name=name,
+                serial=serial_number,
+                location=location,
+            )
+        except TimeoutError as e:
+            raise TimeoutError('Failed to discover remote Bpod.') from e
+        logger.debug('Discovered Bpod on %s', self._zmq.req_address)
 
     def _remote_call(self, method: str, *args, **kwargs) -> Any | None:
         """
@@ -597,7 +637,9 @@ class RemoteBpod:
         Any or None
             The result returned from the remote method.
         """
-        reply = self._request(type='call', method=method, args=args, kwargs=kwargs)
+        reply = self._zmq.request(
+            request_type='call', method=method, args=args, kwargs=kwargs
+        )
         if reply.get('success'):
             return reply['result']
         logger.error(f'Remote {reply["error"]["type"]}: ' + reply['error']['message'])
