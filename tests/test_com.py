@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, call, patch
 
 import numpy as np
 import pytest
-from zeroconf import NonUniqueNameException
 
 from bpod_core import com
 
