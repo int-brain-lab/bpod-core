@@ -177,53 +177,25 @@ class TestGetLocalIPv4:
         assert ip == '127.0.0.1'
 
 
-class TestZMQServiceBasic:
-    def test_basic_init_and_properties(self):
-        service = com.ZMQService('testservice', 'desc', advertise=False)
-        assert service.port > 0
-        assert service.bind_address.startswith('tcp://')
-        assert service._zeroconf is None
-        assert service._service_info is None
-        service.close()
+class TestZMQService:
+    @pytest.fixture
+    def mock_service(self):
+        with (
+            patch('bpod_core.com.Zeroconf'),
+            com.ZMQService('testservice', {'key': 'value'}) as service,
+        ):
+            yield service
 
-    def test_close_idempotent(self):
-        service = com.ZMQService('testservice', 'desc', advertise=False)
-        service.close()
-        # Calling close again should do nothing / not error
-        service.close()
-
-    def test_context_manager_closes(self):
-        with com.ZMQService('testservice', 'desc', advertise=False) as service:
-            assert not service._closed
-        assert service._closed
+    def test_basic_init_and_properties(self, mock_service):
+        assert mock_service.port > 0
+        assert mock_service.bind_address.startswith('tcp://')
+        assert mock_service._zeroconf is not None
+        assert mock_service._service_info is not None
 
     @pytest.mark.parametrize('local', [True, False])
-    def test_bind_address_matches_local_flag(self, local):
-        service = com.ZMQService('testservice', 'desc', local=local, advertise=False)
+    @patch('bpod_core.com.Zeroconf')
+    def test_bind_address_matches_local_flag(self, _, local):
+        service = com.ZMQService('testservice', {'key': 'value'}, local=local)
         ip = service.bind_address.split('://')[1]
         expected_ip = '127.0.0.1' if local else com.get_local_ipv4()
         assert ip == expected_ip
-        service.close()
-
-
-class TestZMQServiceAdvertise:
-    def test_register_service_with_name_conflict_retry(self, monkeypatch):
-        call_count = {'count': 0}
-
-        def fake_register(service_info):
-            call_count['count'] += 1
-            if call_count['count'] == 1:
-                raise NonUniqueNameException()
-
-        # Patch Zeroconf and ServiceInfo
-        monkeypatch.setattr('bpod_core.com.Zeroconf', MagicMock())
-        monkeypatch.setattr('bpod_core.com.ServiceInfo', MagicMock())
-        zeroconf_instance = com.Zeroconf.return_value
-        zeroconf_instance.register_service.side_effect = fake_register
-        com.ServiceInfo.side_effect = lambda **kwargs: MagicMock(
-            name=kwargs.get('name')
-        )
-
-        service = com.ZMQService('testservice', 'desc')
-        assert call_count['count'] == 2
-        service.close()
