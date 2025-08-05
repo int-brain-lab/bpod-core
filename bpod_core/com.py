@@ -1,7 +1,9 @@
 """Module providing extended serial communication functionality."""
 
 import errno
+import json
 import logging
+import re
 import socket
 import struct
 import threading
@@ -15,7 +17,12 @@ from serial import Serial
 from serial.serialutil import to_bytes as serial_to_bytes  # type: ignore[attr-defined]
 from serial.threaded import Protocol
 from typing_extensions import Buffer, Self
-from zeroconf import ServiceInfo, Zeroconf
+from zeroconf import (
+    ServiceBrowser,
+    ServiceInfo,
+    ServiceStateChange,
+    Zeroconf,
+)
 from zmq import Context
 
 from bpod_core.misc import convert_to_snake_case
@@ -455,3 +462,143 @@ class ZMQService:
         logger.debug("Unregistering Zeroconf service '%s'", self.service_name)
         self._zeroconf.unregister_service(self._service_info)
         self._service_info = None
+
+
+def discover_device(
+    service_type: str,
+    properties: dict[str, str | None] | None = None,
+    timeout: float = 10,
+) -> str:
+    """
+    Discover a Zeroconf device/service on the local network matching given properties.
+
+    Parameters
+    ----------
+    service_type : str
+        The Zeroconf service type to discover, e.g., '_zmq._tcp.local.'
+    properties : dict, optional
+        Dictionary of expected service properties to match.
+    timeout : float, optional
+        How many seconds to wait for a matching service before timing out.
+        Default is 10.
+
+    Returns
+    -------
+    str
+        The Zeroconf service address, e.g., 'tcp://192.168.1.10:1234'.
+
+    Raises
+    ------
+    TimeoutError
+        If no matching device/service is found within the timeout period.
+    """
+    properties = properties or {}
+    address = ''
+    protocol = (m := re.search(r'_(tcp|udp)\.', service_type)) and m.group(1)
+    event = threading.Event()
+
+    def on_state_change(*, name: str, state_change: ServiceStateChange, **_):
+        nonlocal address, protocol
+        if state_change is ServiceStateChange.Added:
+            info = zeroconf.get_service_info(service_type, name)
+            if not info or not info.addresses:
+                return
+            for k, v in properties.items():
+                key = k.encode('utf-8') if isinstance(k, str) else k
+                value = v.encode('utf-8') if isinstance(v, str) else v
+                if info.properties.get(key) != value:
+                    return
+            port = info.port
+            ip = socket.inet_ntoa(info.addresses[0])
+            ip = '127.0.0.1' if ip == get_local_ipv4() else ip
+            address = f'{protocol}://{ip}:{port}'
+            event.set()
+
+    zeroconf = Zeroconf()
+    try:
+        ServiceBrowser(zeroconf, service_type, handlers=[on_state_change])
+        found = event.wait(timeout)
+    finally:
+        zeroconf.close()
+    if not found:
+        raise TimeoutError('No device found via Zeroconf')
+    return address
+
+
+class RemoteBpod:
+    def __init__(
+        self,
+        address: str | None = None,
+        name: str | None = None,
+        serial_number: str | None = None,
+        location: str | None = None,
+        timeout: float = 10.0,
+    ):
+        self._zmq_context = Context()
+        self._req_socket = self._zmq_context.socket(zmq.REQ)
+        self._sub_socket = self._zmq_context.socket(zmq.SUB)
+
+        self._connect(
+            address,
+            timeout,
+            name=name,
+            serial=serial_number,
+            location=location,
+        )
+
+    def _connect(self, address: str | None, timeout: float, **kwargs) -> None:
+        if address is not None:
+            self._zmq_address = address
+        else:
+            props = {k: v for k, v in kwargs.items() if v is not None}
+            try:
+                self._zmq_address = discover_device('_bpod._tcp.local.', props, timeout)
+            except TimeoutError as e:
+                p = ', '.join([f'{k} = "{v}"' for k, v in props.items()])
+                raise TimeoutError(f'Failed to discover remote Bpod with {p}.') from e
+            logger.debug('Discovered Bpod on %s', self._zmq_address)
+        self._req_socket.connect(self._zmq_address)
+
+    def _request(self, **kwargs) -> Any:
+        """
+        Send a JSON-encoded request over the ZeroMQ socket and receive the reply.
+
+        Parameters
+        ----------
+        **kwargs
+            Arbitrary keyword arguments representing the request payload to be
+            serialized and sent.
+
+        Returns
+        -------
+        Any
+            The decoded JSON response received from the remote endpoint.
+        """
+        encoded_message = json.dumps(kwargs).encode('utf-8')
+        self._req_socket.send(encoded_message)
+        reply = self._req_socket.recv()
+        return json.loads(reply.decode('utf-8'))
+
+    def _remote_call(self, method: str, *args, **kwargs) -> Any | None:
+        """
+        Perform a remote procedure call by sending a 'call' type request.
+
+        Parameters
+        ----------
+        method : str
+            The name of the remote method to invoke.
+        *args
+            Positional arguments to pass to the remote method.
+        **kwargs
+            Keyword arguments to pass to the remote method.
+
+        Returns
+        -------
+        Any or None
+            The result returned from the remote method.
+        """
+        reply = self._request(type='call', method=method, args=args, kwargs=kwargs)
+        if reply.get('success'):
+            return reply['result']
+        logger.error(f'Remote {reply["error"]["type"]}: ' + reply['error']['message'])
+        return None
