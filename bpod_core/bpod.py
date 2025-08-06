@@ -1549,14 +1549,18 @@ class RemoteBpod:
         location: str | None = None,
         timeout: float = 10.0,
     ):
+        properties = {
+            'address': address,
+            'timeout': timeout,
+            'name': name,
+            'serial': serial_number,
+            'location': location,
+        }
+        properties = {k: v for k, v in properties.items() if v is not None}
+
         try:
             self._zmq = DualChannelClient(
-                service_type='_bpod._tcp.local.',
-                address=address,
-                timeout=timeout,
-                name=name,
-                serial=serial_number,
-                location=location,
+                service_type='_bpod._tcp.local.', **properties
             )
         except TimeoutError as e:
             raise TimeoutError('Failed to discover remote Bpod.') from e
