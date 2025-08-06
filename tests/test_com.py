@@ -181,20 +181,24 @@ class TestZMQService:
     def mock_service(self):
         with (
             patch('bpod_core.com.Zeroconf'),
-            com.ZMQService('testservice', {'key': 'value'}) as service,
+            com.DualChannelHost('test', 'testservice') as service,
         ):
             yield service
 
     def test_basic_init_and_properties(self, mock_service):
-        assert mock_service.port > 0
-        assert mock_service.bind_address.startswith('tcp://')
+        assert mock_service.rep_tcp_port > 0
+        assert mock_service.rep_tcp_addr.startswith('tcp://')
         assert mock_service._zeroconf is not None
         assert mock_service._service_info is not None
 
-    @pytest.mark.parametrize('local', [True, False])
+    @pytest.mark.parametrize('remote', [True, False])
     @patch('bpod_core.com.Zeroconf')
-    def test_bind_address_matches_local_flag(self, _, local):
-        service = com.ZMQService('testservice', {'key': 'value'}, local=local)
-        ip = service.bind_address.split('://')[1]
-        expected_ip = '127.0.0.1' if local else com.get_local_ipv4()
+    def test_bind_address_matches_local_flag(self, _, remote):
+        service = com.DualChannelHost(
+            'test',
+            'testservice',
+            remote=remote,
+        )
+        ip = service.bind_ip
+        expected_ip = com.get_local_ipv4() if remote else '127.0.0.1'
         assert ip == expected_ip

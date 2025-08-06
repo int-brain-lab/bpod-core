@@ -4,13 +4,13 @@ import json
 import logging
 import re
 import struct
+import threading
+import traceback
 import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Event as TreadingEvent
-from threading import Thread
 from types import TracebackType
 from typing import Any, NamedTuple, cast
 
@@ -23,7 +23,7 @@ from serial.tools.list_ports import comports
 from typing_extensions import Self
 
 from bpod_core import __version__ as bpod_core_version
-from bpod_core.com import ExtendedSerial, ZMQService
+from bpod_core.com import DualChannelHost, ExtendedSerial
 from bpod_core.fsm import StateMachine
 from bpod_core.misc import get_nested, set_nested, suggest_similar
 
@@ -106,7 +106,7 @@ class BpodError(Exception):
     """
 
 
-class FSMThread(Thread):
+class FSMThread(threading.Thread):
     """A thread for managing the execution of a finite state machine on the Bpod."""
 
     _struct_start = struct.Struct('<Q')
@@ -146,7 +146,7 @@ class FSMThread(Thread):
         super().__init__()
         self.daemon = True
         self.serial = serial
-        self._stop_event = TreadingEvent()
+        self._stop_event = threading.Event()
         self._index = fsm_index
         self._confirm_fsm = confirm_fsm
         self._cycle_period = cycle_period
@@ -263,7 +263,7 @@ class Bpod:
     _version: VersionInfo
     _hardware: HardwareConfiguration
     _fsm_thread: FSMThread | None = None
-    _zmq_service: ZMQService
+    _zmq_service: DualChannelHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
     serial0: ExtendedSerial
@@ -337,11 +337,11 @@ class Bpod:
                 self._serial_number,
                 self.version.pcb,
             )
-            logger.info(
-                'ZeroMQ service started on %s:%d',
-                self._zmq_service.bind_address,
-                self._zmq_service.port,
-            )
+            # logger.info(
+            #     'ZeroMQ service started on %s:%d',
+            #     self._zmq_service.bind_address,
+            #     self._zmq_service.port,
+            # )
 
     def __enter__(self) -> Self:
         """Enter context."""
@@ -385,11 +385,38 @@ class Bpod:
         self.close()
         self._stop_zmq()
 
+    def _zmq_handler(self, message: dict) -> dict[str, Any]:
+        msg_type = message.get('type')
+        if msg_type == 'call':
+            method_name = message.get('method', '')
+            args = message.get('args', ())
+            kwargs = message.get('kwargs', {})
+            try:
+                method = getattr(self, method_name)
+                result = method(*args, **kwargs)
+                response = {'success': True, 'result': result}
+            except Exception as e:
+                response = {
+                    'success': False,
+                    'error': {
+                        'type': type(e).__name__,
+                        'message': str(e),
+                        'traceback': traceback.format_exc(),
+                    },
+                }
+        else:
+            response = {
+                'success': False,
+                'error': f'Unknown message type: {msg_type}',
+            }
+        return response
+
     def _start_zmq(self):
         port = self._get_setting(['devices', str(self._serial_number), 'zmq_port'])
-        self._zmq_service = ZMQService(
-            self.name if self.name else f'bpod_{self._serial_number}',
-            {
+        self._zmq_service = DualChannelHost(
+            name=self.name if self.name else f'bpod_{self._serial_number}',
+            service_type='_bpod',
+            description={
                 'description': f'Bpod Finite State Machine {self.version.machine_str}',
                 'serial': self._serial_number or '',
                 'name': self.name or '',
@@ -397,11 +424,12 @@ class Bpod:
                 'firmware': '.'.join([str(x) for x in self.version.firmware]),
                 'core': bpod_core_version,
             },
-            port=cast('int | None', port),
-            service_type='_bpod._tcp.local.',
+            event_handler=self._zmq_handler,
+            port_pub=cast('int | None', port),
         )
         self._set_setting(
-            ['devices', str(self._serial_number), 'zmq_port'], self._zmq_service.port
+            ['devices', str(self._serial_number), 'zmq_port'],
+            self._zmq_service.rep_tcp_port,
         )
 
     def _stop_zmq(self):

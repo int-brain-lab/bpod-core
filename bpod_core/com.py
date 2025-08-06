@@ -6,7 +6,9 @@ import logging
 import re
 import socket
 import struct
+import sys
 import threading
+import uuid
 import weakref
 from collections.abc import Callable, Iterable
 from typing import Any, TypeAlias
@@ -339,131 +341,6 @@ def get_local_ipv4() -> str:
                 raise
 
 
-class ZMQService:
-    def __init__(
-        self,
-        name: str,
-        description: dict[str | bytes, str | bytes | None],
-        port: int | None = None,
-        socket_type: int = zmq.DEALER,
-        local: bool = False,
-        service_type: str = '_zmq._tcp.local.',
-    ) -> None:
-        """
-        Initialize a ZeroMQ service with Zeroconf advertisement.
-
-        Parameters
-        ----------
-        name : str
-            The base Zeroconf service instance name. If the name is already taken, a
-            suffix is appended automatically.
-        description : dict
-            A dict published as a TXT record.
-        port : int, optional
-            The port number to bind the ZeroMQ socket to. If None, a random port is
-            selected. Default is None.
-        socket_type : int, optional
-            The ZeroMQ socket type to create (e.g., zmq.DEALER, zmq.ROUTER).
-            Default is zmq.DEALER.
-        local : bool, optional
-            If True, advertise the service on the loopback address (127.0.0.1).
-            Otherwise, advertise on the primary local IPv4 address. Default is False.
-        service_type : str, optional
-            The Zeroconf service type. Default is '_zmq._tcp.local.'.
-
-        Raises
-        ------
-        RuntimeError
-            If the service cannot be registered after multiple attempts due to name
-            conflicts on the Zeroconf network.
-        """
-        self._closed = False
-        self._close_lock = threading.Lock()
-        self._finalizer = weakref.finalize(self, self.close)
-
-        self._zmq_context = Context()
-        self.ip_address = '127.0.0.1' if local else get_local_ipv4()
-        self._bind_address = f'tcp://{self.ip_address}'
-        self._zmq_socket = self._zmq_context.socket(socket_type)
-        if port is not None:
-            try:
-                self._zmq_socket.bind(f'{self._bind_address}:{port}')
-                self._zmq_port = port
-            except zmq.ZMQError:
-                logger.debug(
-                    'Could not bind ZMQ socket on %s:%d', self._bind_address, port
-                )
-        if not hasattr(self, '_zmq_port'):
-            self._zmq_port = self._zmq_socket.bind_to_random_port(self._bind_address)
-        logger.debug('Opening ZMQ socket on %s:%d', self._bind_address, self._zmq_port)
-
-        self._zeroconf = Zeroconf()
-        self._service_type = service_type
-        self._register_service(name, description)
-
-    def close(self) -> None:
-        """Close the ZeroMQ service and unregister the Zeroconf advertisement."""
-        with self._close_lock:
-            if self._closed:
-                return
-            self._closed = True
-            if self._zeroconf is not None:
-                self._unregister_service()
-                self._zeroconf.close()
-            logger.debug(
-                'Closing ZMQ socket on %s:%d', self._bind_address, self._zmq_port
-            )
-            self._zmq_socket.close(linger=0)
-            self._zmq_context.term()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
-    @property
-    def port(self) -> int:
-        """Get the port number of the ZeroMQ socket."""
-        return self._zmq_port
-
-    @property
-    def bind_address(self) -> str:
-        """Get the bind address of the ZeroMQ socket."""
-        return self._bind_address
-
-    @property
-    def service_name(self) -> str:
-        """Get the name of the Zeroconf service."""
-        return self._service_info.name
-
-    def _escape_service_name(self, name: str) -> str:
-        name = name.removesuffix('.' + self._service_type)
-        return f'{convert_to_snake_case(name)}.{self._service_type}'
-
-    def _register_service(
-        self, name: str, txt_record: dict[str | bytes, str | bytes | None]
-    ) -> None:
-        """Register a Zeroconf service."""
-        service_info = ServiceInfo(
-            type_=self._service_type,
-            name=self._escape_service_name(name),
-            port=self.port,
-            addresses=[socket.inet_aton(self.ip_address)],
-            properties=txt_record,
-            server=f'{socket.gethostname()}.local.',
-        )
-        self._zeroconf.register_service(service_info, allow_name_change=True)
-        self._service_info = service_info
-        logger.debug("Registering Zeroconf service '%s'", self.service_name)
-
-    def _unregister_service(self):
-        """Unregister the Zeroconf service."""
-        logger.debug("Unregistering Zeroconf service '%s'", self.service_name)
-        self._zeroconf.unregister_service(self._service_info)
-        self._service_info = None
-
-
 def discover_device(
     service_type: str,
     properties: dict[str, str | None] | None = None,
@@ -525,6 +402,120 @@ def discover_device(
     return address
 
 
+class DualChannelHost:
+    def __init__(
+        self,
+        name: str,
+        service_type: str,
+        event_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        description: dict[str | bytes, str | bytes | None] | None = None,
+        port_pub: int | None = None,
+        port_rep: int | None = None,
+        remote: bool = False,
+    ) -> None:
+        self._closed = False
+        self._close_lock = threading.Lock()
+        self._finalizer = weakref.finalize(self, self.close)
+
+        self.uuid = uuid.uuid4()
+
+        self.name = convert_to_snake_case(name).strip('_')
+
+        self.zmq_context = Context()
+        self.rep_socket = self.zmq_context.socket(zmq.REP)
+        self.pub_socket = self.zmq_context.socket(zmq.PUB)
+
+        # bind IPC addresses to sockets
+        if sys.platform == 'win32':
+            self.rep_ipc_addr = f'ipc://\\\\.\\pipe\\{self.name}_{self.uuid.hex}_REP'
+            self.pub_ipc_addr = f'ipc://\\\\.\\pipe\\{self.name}_{self.uuid.hex}_PUB'
+        else:
+            self.rep_ipc_addr = f'ipc:///tmp/{self.name}_{self.uuid.hex}_REP.ipc'
+            self.pub_ipc_addr = f'ipc:///tmp/{self.name}_{self.uuid.hex}_PUB.ipc'
+        self.rep_socket.bind(self.rep_ipc_addr)
+        self.pub_socket.bind(self.pub_ipc_addr)
+
+        # bind TCP addresses to sockets
+        self.bind_ip = get_local_ipv4() if remote else '127.0.0.1'
+        self.pub_tcp_addr, self.pub_tcp_port = self._bind_tcp(
+            self.pub_socket, self.bind_ip, port_pub
+        )
+        self.rep_tcp_addr, self.rep_tcp_port = self._bind_tcp(
+            self.rep_socket, self.bind_ip, port_rep
+        )
+
+        # start recv thread
+        self._stop_event_loop = threading.Event()
+        self._event_handler = event_handler
+        self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
+        self._event_thread.start()
+
+        # advertise service via Zeroconf
+        self._zeroconf = Zeroconf()
+        self._service_info = ServiceInfo(
+            type_=f'_{service_type.strip("_")}._tcp.local.',
+            name=f'{self.name}._{service_type.strip("_")}._tcp.local.',
+            port=self.rep_tcp_port,
+            addresses=[socket.inet_aton(self.bind_ip)],
+            properties=description or {},
+            server=f'{socket.gethostname()}.local.',
+        )
+        self._zeroconf.register_service(self._service_info, allow_name_change=True)
+        logger.debug("Registering Zeroconf service '%s'", self.zeroconf_service_name)
+
+    @staticmethod
+    def _bind_tcp(zmq_socket, ip_address, tcp_port):
+        tcp_address = f'tcp://{ip_address}'
+        if tcp_port is not None:
+            try:
+                zmq_socket.bind(f'{tcp_address}:{tcp_port}')
+            except zmq.ZMQError:
+                tcp_port = None
+        if tcp_port is None:
+            tcp_port = zmq_socket.bind_to_random_port(tcp_address)
+        return f'{tcp_address}:{tcp_port}', tcp_port
+
+    def _event_loop(self):
+        while not self._stop_event_loop.is_set():
+            if not self.rep_socket.poll(100):
+                continue
+            msg = self.rep_socket.recv()
+            request = json.loads(msg.decode())
+            response = self._event_handler(request) if self._event_handler else {}
+            self.rep_socket.send(json.dumps(response).encode())
+
+    def close(self) -> None:
+        """Close the ZeroMQ service and unregister the Zeroconf advertisement."""
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+
+            logger.debug(
+                "Unregistering Zeroconf service '%s'", self.zeroconf_service_name
+            )
+            self._zeroconf.unregister_service(self._service_info)
+            self._zeroconf.close()
+
+            self._stop_event_loop.set()
+            self._event_thread.join()
+
+            self.pub_socket.close(linger=0)
+            self.rep_socket.close(linger=0)
+            self.zmq_context.term()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    @property
+    def zeroconf_service_name(self) -> str:
+        """Get the name of the Zeroconf service."""
+        return self._service_info.name
+
+
 class DualChannelClient:
     def __init__(
         self,
@@ -546,18 +537,18 @@ class DualChannelClient:
             self.req_address = discover_device(service_type, kwargs, discovery_timeout)
         self.req_socket.connect(self.req_address)
 
-        # connect SUB channel
-        self.sub_topic = topic
-        self.sub_address = ''  # TODO: get sub_address via REQ
-        self.sub_socket.connect(self.sub_address)
-        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.sub_topic)
-
-        # start event loop
-        self._event_handler = event_handler
-        self._running = False
-        self._event_thread = None
-        if self._event_handler:
-            self._start_event_loop()
+        # # connect SUB channel
+        # self.sub_topic = topic
+        # self.sub_address = ''  # TODO: get sub_address via REQ
+        # self.sub_socket.connect(self.sub_address)
+        # self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.sub_topic)
+        #
+        # # start SUB event loop
+        # self._event_handler = event_handler
+        # self._running = False
+        # self._event_thread = None
+        # if self._event_handler:
+        #     self._start_event_loop()
 
     def _start_event_loop(self):
         self._running = True
@@ -566,11 +557,9 @@ class DualChannelClient:
 
     def _event_loop(self):
         while self._running:
-            try:
-                msg = self.sub_socket.recv()
-                self._event_handler(msg)
-            except Exception as e:
-                print('Error in event handler:', e)
+            msg = self.sub_socket.recv()
+            msg = json.loads(msg.decode('utf-8'))
+            self._event_handler(msg)
 
     def request(self, request_type: str, **kwargs) -> Any:
         """
