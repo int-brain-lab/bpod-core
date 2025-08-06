@@ -1567,10 +1567,10 @@ class RemoteBpod:
             'Connected to Bpod Finite State Machine %s on %s',
             self._version['machine_str'],
             self._zmq.req_address,
-            )
+        )
 
     def _request(self, request_type: str, **kwargs) -> dict:
-        return self._zmq.request(type=request_type, **kwargs)
+        return cast('dict', self._zmq.request(type=request_type, **kwargs))
 
     def _remote_call(self, method: str, *args, **kwargs) -> Any | None:
         """
@@ -1590,8 +1590,7 @@ class RemoteBpod:
         Any or None
             The result returned from the remote method.
         """
-        reply = self._request('call', method=method, args=args, kwargs=kwargs
-        )
+        reply = self._request('call', method=method, args=args, kwargs=kwargs)
         if reply.get('success'):
             return reply['result']
         print(reply)

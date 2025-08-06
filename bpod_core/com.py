@@ -11,7 +11,6 @@ import uuid
 import weakref
 from collections.abc import Callable, Iterable
 from typing import Any, TypeAlias
-from unittest import case
 
 import numpy as np
 import orjson
@@ -346,7 +345,7 @@ def discover_device(
     service_type: str,
     properties: dict[str, str | None] | None = None,
     timeout: float = 10,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, dict[bytes, bytes | None]]:
     """
     Discover a Zeroconf device/service on the local network matching given properties.
 
@@ -480,7 +479,8 @@ class DualChannelHost:
         return f'{tcp_address}:{tcp_port}', tcp_port
 
     def _rep(self, response_type: str, data: dict | None):
-        response = {'type': response_type, 'data': data | {}}
+        data = data or {}
+        response = {'type': response_type, 'data': data}
         self.req_socket.send(orjson.dumps(response))
 
     def _event_loop(self):
@@ -522,7 +522,7 @@ class DualChannelHost:
             self.req_socket.send(orjson.dumps(response))
 
     @staticmethod
-    def _format_error(name: str, message: str) -> dict[str, str]:
+    def _format_error(name: str, message: str) -> dict:
         return {'type': 'error', 'data': {'name': name, 'message': message}}
 
     def close(self) -> None:
@@ -624,7 +624,6 @@ class DualChannelClient:
         else:
             self.sub_address = rep_data.get('tcp_pub_sub')
 
-
     def _req(
         self, request_type: str, data: dict | None = None
     ) -> tuple[str, dict | None]:
@@ -638,7 +637,7 @@ class DualChannelClient:
         try:
             decoded_reply = orjson.loads(reply)
         except orjson.JSONDecodeError as e:
-            raise ValueError(f'Invalid reply: {reply}') from e
+            raise ValueError('Invalid reply') from e
         rep_type = decoded_reply.get('type', 'invalid')
         rep_data = decoded_reply.get('data', None)
         return rep_type, rep_data
@@ -662,10 +661,10 @@ class DualChannelClient:
         if rep_type == 'REP' and rep_data is not None:
             return rep_data
         elif rep_type == 'invalid' or rep_data is None:
-            logger.error('Received invalid response: %s', response)
+            logger.error('Received invalid response')
         elif rep_type == 'error':
             self.log_remote_error(
-                rep_data.get('name', 'Error'), response.get('message', '')
+                rep_data.get('name', 'Error'), rep_data.get('message', '')
             )
         else:
             logger.error("Received unknown response type: '%s'", rep_type)
