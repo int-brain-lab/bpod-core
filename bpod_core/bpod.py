@@ -396,6 +396,7 @@ class Bpod:
                 result = method(*args, **kwargs)
                 response = {'success': True, 'result': result}
             except Exception as e:
+                print(message)
                 response = {
                     'success': False,
                     'error': {
@@ -404,6 +405,11 @@ class Bpod:
                         'traceback': traceback.format_exc(),
                     },
                 }
+        elif msg_type == 'handshake':
+            response = {
+                'bpod-core': bpod_core_version,
+                'version': self._version._asdict(),
+            }
         else:
             response = {
                 'success': False,
@@ -1547,14 +1553,24 @@ class RemoteBpod:
             self._zmq = DualChannelClient(
                 service_type='_bpod._tcp.local.',
                 address=address,
-                discovery_timeout=timeout,
+                timeout=timeout,
                 name=name,
                 serial=serial_number,
                 location=location,
             )
         except TimeoutError as e:
             raise TimeoutError('Failed to discover remote Bpod.') from e
-        logger.debug('Discovered Bpod on %s', self._zmq.req_address)
+        self._handshake()
+
+        # log hardware information
+        logger.info(
+            'Connected to Bpod Finite State Machine %s on %s',
+            self._version['machine_str'],
+            self._zmq.req_address,
+            )
+
+    def _request(self, request_type: str, **kwargs) -> dict:
+        return self._zmq.request(type=request_type, **kwargs)
 
     def _remote_call(self, method: str, *args, **kwargs) -> Any | None:
         """
@@ -1574,10 +1590,18 @@ class RemoteBpod:
         Any or None
             The result returned from the remote method.
         """
-        reply = self._zmq.request(
-            request_type='call', method=method, args=args, kwargs=kwargs
+        reply = self._request('call', method=method, args=args, kwargs=kwargs
         )
         if reply.get('success'):
             return reply['result']
+        print(reply)
         logger.error(f'Remote {reply["error"]["type"]}: ' + reply['error']['message'])
         return None
+
+    def _handshake(self):
+        reply = self._request('handshake')
+        self._version = reply['version']
+        self._version['bpod_core'] = reply['bpod-core']
+
+    def set_status_led(self, enabled: bool) -> None:
+        self._remote_call('set_status_led', enabled)
