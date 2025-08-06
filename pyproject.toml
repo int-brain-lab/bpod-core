@@ -25,6 +25,7 @@ dependencies = [
   "pyzmq>=27.0.1",
   "zeroconf>=0.147.0",
   "appdirs>=1.4.4",
+  "orjson>=3.11.1",
 ]
 license = { text = "MIT" }
 readme = "README.md"

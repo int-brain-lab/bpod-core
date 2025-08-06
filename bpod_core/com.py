@@ -1,7 +1,6 @@
 """Module providing extended serial communication functionality."""
 
 import errno
-import json
 import logging
 import re
 import socket
@@ -14,6 +13,7 @@ from collections.abc import Callable, Iterable
 from typing import Any, TypeAlias
 
 import numpy as np
+import orjson
 import zmq
 from serial import Serial
 from serial.serialutil import to_bytes as serial_to_bytes  # type: ignore[attr-defined]
@@ -480,9 +480,15 @@ class DualChannelHost:
             if not self.rep_socket.poll(100):
                 continue
             msg = self.rep_socket.recv()
-            request = json.loads(msg.decode())
-            response = self._event_handler(request) if self._event_handler else {}
-            self.rep_socket.send(json.dumps(response).encode())
+            try:
+                request = orjson.loads(msg)
+            except (orjson.JSONDecodeError, UnicodeDecodeError):
+                logger.error('Received invalid JSON from client')
+                response = {'error': 'Invalid JSON format'}
+            else:
+                response = self._event_handler(request) if self._event_handler else {}
+            logger.debug(f'Received request from client: {request}')
+            self.rep_socket.send(orjson.dumps(response))
 
     def close(self) -> None:
         """Close the ZeroMQ service and unregister the Zeroconf advertisement."""
@@ -558,7 +564,7 @@ class DualChannelClient:
     def _event_loop(self):
         while self._running:
             msg = self.sub_socket.recv()
-            msg = json.loads(msg.decode('utf-8'))
+            msg = orjson.loads(msg)
             self._event_handler(msg)
 
     def request(self, request_type: str, **kwargs) -> Any:
@@ -580,7 +586,7 @@ class DualChannelClient:
         """
         message = dict(kwargs)  # make a shallow copy
         message['type'] = request_type  # force override
-        encoded_message = json.dumps(message).encode('utf-8')
+        encoded_message = orjson.dumps(message)
         self.req_socket.send(encoded_message)
         reply = self.req_socket.recv()
-        return json.loads(reply.decode('utf-8'))
+        return orjson.loads(reply)
