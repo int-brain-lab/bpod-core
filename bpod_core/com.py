@@ -418,7 +418,6 @@ class DualChannelHost:
         self._finalizer = weakref.finalize(self, self.close)
 
         self.uuid = uuid.uuid4()
-
         self.name = convert_to_snake_case(name).strip('_')
 
         self.zmq_context = Context()
@@ -427,13 +426,13 @@ class DualChannelHost:
 
         # bind IPC addresses to sockets
         if sys.platform == 'win32':
-            self.rep_ipc_addr = f'ipc://\\\\.\\pipe\\{self.name}_{self.uuid.hex}_REP'
-            self.pub_ipc_addr = f'ipc://\\\\.\\pipe\\{self.name}_{self.uuid.hex}_PUB'
+            self.rep_ipc_addr = None
+            self.pub_ipc_addr = None
         else:
             self.rep_ipc_addr = f'ipc:///tmp/{self.name}_{self.uuid.hex}_REP.ipc'
             self.pub_ipc_addr = f'ipc:///tmp/{self.name}_{self.uuid.hex}_PUB.ipc'
-        self.rep_socket.bind(self.rep_ipc_addr)
-        self.pub_socket.bind(self.pub_ipc_addr)
+            self.rep_socket.bind(self.rep_ipc_addr)
+            self.pub_socket.bind(self.pub_ipc_addr)
 
         # bind TCP addresses to sockets
         self.bind_ip = get_local_ipv4() if remote else '127.0.0.1'
