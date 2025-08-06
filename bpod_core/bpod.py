@@ -23,7 +23,7 @@ from serial.tools.list_ports import comports
 from typing_extensions import Self
 
 from bpod_core import __version__ as bpod_core_version
-from bpod_core.com import DualChannelHost, ExtendedSerial
+from bpod_core.com import DualChannelClient, DualChannelHost, ExtendedSerial
 from bpod_core.fsm import StateMachine
 from bpod_core.misc import get_nested, set_nested, suggest_similar
 
@@ -1532,3 +1532,52 @@ class Module:
     def relay(self, state: bool) -> None:
         """The current state of the serial relay."""
         self.set_relay(state)
+
+
+class RemoteBpod:
+    def __init__(
+        self,
+        address: str | None = None,
+        name: str | None = None,
+        serial_number: str | None = None,
+        location: str | None = None,
+        timeout: float = 10.0,
+    ):
+        try:
+            self._zmq = DualChannelClient(
+                service_type='_bpod._tcp.local.',
+                address=address,
+                discovery_timeout=timeout,
+                name=name,
+                serial=serial_number,
+                location=location,
+            )
+        except TimeoutError as e:
+            raise TimeoutError('Failed to discover remote Bpod.') from e
+        logger.debug('Discovered Bpod on %s', self._zmq.req_address)
+
+    def _remote_call(self, method: str, *args, **kwargs) -> Any | None:
+        """
+        Perform a remote procedure call by sending a 'call' type request.
+
+        Parameters
+        ----------
+        method : str
+            The name of the remote method to invoke.
+        *args
+            Positional arguments to pass to the remote method.
+        **kwargs
+            Keyword arguments to pass to the remote method.
+
+        Returns
+        -------
+        Any or None
+            The result returned from the remote method.
+        """
+        reply = self._zmq.request(
+            request_type='call', method=method, args=args, kwargs=kwargs
+        )
+        if reply.get('success'):
+            return reply['result']
+        logger.error(f'Remote {reply["error"]["type"]}: ' + reply['error']['message'])
+        return None
