@@ -598,6 +598,10 @@ class DualChannelClient:
         timeout: float = 10.0,
         properties: dict | None = None,
     ):
+        self._closed = False
+        self._close_lock = threading.Lock()
+        self._finalizer = weakref.finalize(self, self.close)
+
         self.zmq_context = Context()
         self.req_socket = self.zmq_context.socket(zmq.REQ)
         self.sub_socket = self.zmq_context.socket(zmq.SUB)
@@ -628,11 +632,26 @@ class DualChannelClient:
         logger.debug("Binding SUB socket to '%s'", self.req_address)
 
         # start event loop for subscription handling
-        self._event_handler = event_handler or self._empty_event_handler
-        # self._running = False
-        # self._event_thread = None
-        # if self._event_handler:
-        #     self._start_event_loop()
+        self._stop_event_loop = threading.Event()
+        self._event_handler = event_handler
+        self._running = False
+        self._event_thread = None
+        if self._event_handler:
+            self._start_event_loop()
+
+    def close(self):
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+
+            if self._running:
+                self._stop_event_loop.set()
+                self._event_thread.join()
+
+            self.req_socket.close(linger=0)
+            self.sub_socket.close(linger=0)
+            self.zmq_context.term()
 
     def __enter__(self):
         return self
@@ -640,20 +659,18 @@ class DualChannelClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
-    @staticmethod
-    def _empty_event_handler(*_) -> dict:
-        return {}
-
     def _start_event_loop(self):
         self._running = True
         self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
         self._event_thread.start()
 
-    # def _event_loop(self):
-    #     while self._running:
-    #         msg = self.sub_socket.recv()
-    #         msg = self._decoder.decode(msg)
-    #         self._event_handler(msg)
+    def _event_loop(self):
+        while not self._stop_event_loop.is_set():
+            if not self.sub_socket.poll(100):
+                continue
+            msg = self.sub_socket.recv()
+            msg = self._decoder.decode(msg)
+            self._event_handler(msg)
 
     def _handshake(self):
         rep_type, rep_data = self._req('handshake')
