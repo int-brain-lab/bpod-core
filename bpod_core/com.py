@@ -412,6 +412,9 @@ class ReqRepStruct(msgspec.Struct, omit_defaults=True):
 
 
 class DualChannelHost:
+    _encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
+    _decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder
+
     def __init__(
         self,
         name: str,
@@ -420,7 +423,7 @@ class DualChannelHost:
         description: dict[str | bytes, str | bytes | None] | None = None,
         port_pub: int | None = None,
         port_rep: int | None = None,
-        remote: bool = False,
+        remote: bool = True,
         serialization: Literal['json', 'msgpack'] = 'json',
     ) -> None:
         self._closed = False
@@ -583,6 +586,9 @@ class DualChannelHost:
 
 
 class DualChannelClient:
+    _encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
+    _decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder
+
     def __init__(
         self,
         service_type: str,
@@ -590,7 +596,7 @@ class DualChannelClient:
         topic: str = '',
         event_handler: Callable[[dict], Any] | None = None,
         timeout: float = 10.0,
-        **kwargs,
+        properties: dict | None = None,
     ):
         self.zmq_context = Context()
         self.req_socket = self.zmq_context.socket(zmq.REQ)
@@ -605,7 +611,7 @@ class DualChannelClient:
         if address is not None:
             self.req_address = address
         else:
-            address, txt_record = discover_device(service_type, kwargs, timeout)
+            address, txt_record = discover_device(service_type, properties, timeout)
             self.req_address = address
         self.req_socket.connect(self.req_address)
         logger.debug("Binding REQ socket to '%s'", self.req_address)
