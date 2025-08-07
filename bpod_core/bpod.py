@@ -1551,7 +1551,6 @@ class RemoteBpod:
     ):
         properties = {
             'address': address,
-            'timeout': timeout,
             'name': name,
             'serial': serial_number,
             'location': location,
@@ -1560,7 +1559,10 @@ class RemoteBpod:
 
         try:
             self._zmq = DualChannelClient(
-                service_type='_bpod._tcp.local.', **properties
+                '_bpod._tcp.local.',
+                address=address,
+                timeout=timeout,
+                properties=properties,
             )
         except TimeoutError as e:
             raise TimeoutError('Failed to discover remote Bpod.') from e
@@ -1608,3 +1610,6 @@ class RemoteBpod:
 
     def set_status_led(self, enabled: bool) -> None:
         self._remote_call('set_status_led', enabled)
+
+    def _event_handler(self, message: dict):
+        pass
