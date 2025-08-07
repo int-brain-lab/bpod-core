@@ -13,8 +13,8 @@ from collections.abc import Callable, Iterable
 from typing import Any, TypeAlias
 
 import numpy as np
-import orjson
 import zmq
+from msgspec import DecodeError, EncodeError, ValidationError, msgpack
 from serial import Serial
 from serial.serialutil import to_bytes as serial_to_bytes  # type: ignore[attr-defined]
 from serial.threaded import Protocol
@@ -444,6 +444,10 @@ class DualChannelHost:
         self.pub_tcp_addr, self.pub_tcp_port = self._bind_tcp(self.pub_socket, port_pub)
         self.rep_tcp_addr, self.rep_tcp_port = self._bind_tcp(self.req_socket, port_rep)
 
+        # msgspec encoder/decoder
+        self._encoder = msgpack.Encoder()
+        self._decoder = msgpack.Decoder()
+
         # start recv thread
         self._stop_event_loop = threading.Event()
         self._event_handler = event_handler
@@ -478,10 +482,10 @@ class DualChannelHost:
             tcp_port = zmq_socket.bind_to_random_port(tcp_address)
         return f'{tcp_address}:{tcp_port}', tcp_port
 
-    def _rep(self, response_type: str, data: dict | None):
+    def _send_reply(self, response_type: str, data: dict | None):
         data = data or {}
         response = {'type': response_type, 'data': data}
-        self.req_socket.send(orjson.dumps(response))
+        self.req_socket.send(self._encoder.encode(response))
 
     def _event_loop(self):
         while not self._stop_event_loop.is_set():
@@ -489,10 +493,13 @@ class DualChannelHost:
                 continue
             msg = self.req_socket.recv()
             try:
-                request = orjson.loads(msg)
-            except orjson.JSONDecodeError as e:
-                logger.error('Received invalid JSON from client')
-                response = self._format_error(type(e).__name__, e.msg)
+                request = self._decoder.decode(msg)
+            except ValidationError as e:
+                logger.error("The client's message didn’t match the expected schema")
+                response = self._format_error(type(e).__name__, e.args[0])
+            except DecodeError as e:
+                logger.error('Error decoding message from client')
+                response = self._format_error(type(e).__name__, e.args[0])
             else:
                 req_type = request.get('type', 'invalid')
                 req_data = request.get('data', None)
@@ -519,7 +526,7 @@ class DualChannelHost:
                     message = f'Received unknown request type: {req_type}'
                     logger.error(message)
                     response = self._format_error('RequestError', message)
-            self.req_socket.send(orjson.dumps(response))
+            self.req_socket.send(self._encoder.encode(response))
 
     @staticmethod
     def _format_error(name: str, message: str) -> dict:
@@ -571,6 +578,10 @@ class DualChannelClient:
         self.req_socket = self.zmq_context.socket(zmq.REQ)
         self.sub_socket = self.zmq_context.socket(zmq.SUB)
 
+        # msgspec encoder/decoder
+        self._encoder = msgpack.Encoder()
+        self._decoder = msgpack.Decoder()
+
         # connect REQ channel
         if address is not None:
             self.req_address = address
@@ -588,7 +599,7 @@ class DualChannelClient:
         self.sub_socket.connect(self.sub_address)
         self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.sub_topic)
 
-        # # start SUB event loop
+        # start SUB event loop
         # self._event_handler = event_handler
         # self._running = False
         # self._event_thread = None
@@ -600,11 +611,11 @@ class DualChannelClient:
         self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
         self._event_thread.start()
 
-    def _event_loop(self):
-        while self._running:
-            msg = self.sub_socket.recv()
-            msg = orjson.loads(msg)
-            self._event_handler(msg)
+    # def _event_loop(self):
+    #     while self._running:
+    #         msg = self.sub_socket.recv()
+    #         msg = self._decoder.decode(msg)
+    #         self._event_handler(msg)
 
     def _handshake(self):
         rep_type, rep_data = self._req('handshake')
@@ -629,14 +640,14 @@ class DualChannelClient:
     ) -> tuple[str, dict | None]:
         message = {'type': request_type, 'data': data or {}}
         try:
-            encoded_message = orjson.dumps(message)
-        except orjson.JSONEncodeError as e:
+            encoded_message = self._encoder.encode(message)
+        except EncodeError as e:
             raise ValueError(f'Invalid request: {message}') from e
         self.req_socket.send(encoded_message)
         reply = self.req_socket.recv()
         try:
-            decoded_reply = orjson.loads(reply)
-        except orjson.JSONDecodeError as e:
+            decoded_reply = self._decoder.decode(reply)
+        except DecodeError as e:
             raise ValueError('Invalid reply') from e
         rep_type = decoded_reply.get('type', 'invalid')
         rep_data = decoded_reply.get('data', None)
