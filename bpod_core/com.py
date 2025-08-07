@@ -407,6 +407,9 @@ def discover_device(
 
 
 class DualChannelHost:
+    _encoder = msgpack.Encoder()
+    _decoder = msgpack.Decoder()
+
     def __init__(
         self,
         name: str,
@@ -415,18 +418,18 @@ class DualChannelHost:
         description: dict[str | bytes, str | bytes | None] | None = None,
         port_pub: int | None = None,
         port_rep: int | None = None,
-        remote: bool = False,
+        remote: bool = True,
     ) -> None:
         self._closed = False
         self._close_lock = threading.Lock()
         self._finalizer = weakref.finalize(self, self.close)
 
-        self.uuid = uuid.uuid4()
         self.name = convert_to_snake_case(name).strip('_')
-        self._event_handler = event_handler
+        self.uuid = uuid.uuid4()
 
+        # create sockets
         self.zmq_context = Context()
-        self.req_socket = self.zmq_context.socket(zmq.REP)
+        self.rep_socket = self.zmq_context.socket(zmq.REP)
         self.pub_socket = self.zmq_context.socket(zmq.PUB)
 
         # bind IPC addresses to sockets
@@ -436,36 +439,45 @@ class DualChannelHost:
         else:
             self.rep_ipc_addr = f'ipc:///tmp/REQ_REP_{self.uuid.hex}.ipc'
             self.pub_ipc_addr = f'ipc:///tmp/PUB_SUB_{self.uuid.hex}.ipc'
-            self.req_socket.bind(self.rep_ipc_addr)
+            self.rep_socket.bind(self.rep_ipc_addr)
             self.pub_socket.bind(self.pub_ipc_addr)
+            logger.debug("Binding REQ/REP socket to '%s'", self.rep_ipc_addr)
+            logger.debug("Binding PUB/SUB socket to '%s'", self.pub_ipc_addr)
 
         # bind TCP addresses to sockets
-        self.bind_ip = get_local_ipv4() if remote else '127.0.0.1'
+        self.bind_ip = '0.0.0.0' if remote else '127.0.0.1'
+        self.rep_tcp_addr, self.rep_tcp_port = self._bind_tcp(self.rep_socket, port_rep)
         self.pub_tcp_addr, self.pub_tcp_port = self._bind_tcp(self.pub_socket, port_pub)
-        self.rep_tcp_addr, self.rep_tcp_port = self._bind_tcp(self.req_socket, port_rep)
-
-        # msgspec encoder/decoder
-        self._encoder = msgpack.Encoder()
-        self._decoder = msgpack.Decoder()
+        logger.debug("Binding REQ/REP socket to '%s'", self.rep_tcp_addr)
+        logger.debug("Binding PUB/SUB socket to '%s'", self.pub_tcp_addr)
 
         # start recv thread
         self._stop_event_loop = threading.Event()
-        self._event_handler = event_handler
+        self._event_handler = event_handler or self._empty_event_handler
         self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
         self._event_thread.start()
 
         # advertise service via Zeroconf
+        self.service_type = f'_{service_type.strip("_")}._tcp.local.'
+        self.service_name = f'{self.name}.{self.service_type}'
         self._zeroconf = Zeroconf()
         self._service_info = ServiceInfo(
-            type_=f'_{service_type.strip("_")}._tcp.local.',
-            name=f'{self.name}._{service_type.strip("_")}._tcp.local.',
+            type_=self.service_type,
+            name=self.service_name,
             port=self.rep_tcp_port,
             addresses=[socket.inet_aton(self.bind_ip)],
             properties=description or {},
             server=f'{socket.gethostname()}.local.',
         )
         self._zeroconf.register_service(self._service_info, allow_name_change=True)
-        logger.debug("Registering Zeroconf service '%s'", self.zeroconf_service_name)
+        self.service_name = self._service_info.name
+        logger.debug("Registering Zeroconf service '%s'", self.service_name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     @staticmethod
     def _empty_event_handler(*_) -> dict:
@@ -480,18 +492,19 @@ class DualChannelHost:
                 tcp_port = None
         if tcp_port is None:
             tcp_port = zmq_socket.bind_to_random_port(tcp_address)
-        return f'{tcp_address}:{tcp_port}', tcp_port
+        address = f'{tcp_address}:{tcp_port}', tcp_port
+        return address
 
     def _send_reply(self, response_type: str, data: dict | None):
         data = data or {}
         response = {'type': response_type, 'data': data}
-        self.req_socket.send(self._encoder.encode(response))
+        self.rep_socket.send(self._encoder.encode(response))
 
     def _event_loop(self):
         while not self._stop_event_loop.is_set():
-            if not self.req_socket.poll(100):
+            if not self.rep_socket.poll(100):
                 continue
-            msg = self.req_socket.recv()
+            msg = self.rep_socket.recv()
             try:
                 request = self._decoder.decode(msg)
             except ValidationError as e:
@@ -526,7 +539,7 @@ class DualChannelHost:
                     message = f'Received unknown request type: {req_type}'
                     logger.error(message)
                     response = self._format_error('RequestError', message)
-            self.req_socket.send(self._encoder.encode(response))
+            self.rep_socket.send(self._encoder.encode(response))
 
     @staticmethod
     def _format_error(name: str, message: str) -> dict:
@@ -540,7 +553,7 @@ class DualChannelHost:
             self._closed = True
 
             logger.debug(
-                "Unregistering Zeroconf service '%s'", self.zeroconf_service_name
+                "Unregistering Zeroconf service '%s'", self.service_name
             )
             self._zeroconf.unregister_service(self._service_info)
             self._zeroconf.close()
@@ -549,19 +562,8 @@ class DualChannelHost:
             self._event_thread.join()
 
             self.pub_socket.close(linger=0)
-            self.req_socket.close(linger=0)
+            self.rep_socket.close(linger=0)
             self.zmq_context.term()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
-
-    @property
-    def zeroconf_service_name(self) -> str:
-        """Get the name of the Zeroconf service."""
-        return self._service_info.name
 
 
 class DualChannelClient:
@@ -599,12 +601,23 @@ class DualChannelClient:
         self.sub_socket.connect(self.sub_address)
         self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.sub_topic)
 
-        # start SUB event loop
-        # self._event_handler = event_handler
+        # start event loop for subscription handling
+        self._event_handler = event_handler
+        self._event_handler = event_handler or self._empty_event_handler
         # self._running = False
         # self._event_thread = None
         # if self._event_handler:
         #     self._start_event_loop()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    @staticmethod
+    def _empty_event_handler(*_) -> dict:
+        return {}
 
     def _start_event_loop(self):
         self._running = True
@@ -654,20 +667,6 @@ class DualChannelClient:
         return rep_type, rep_data
 
     def request(self, **kwargs) -> Any:
-        """
-        Send a JSON-encoded request and receive the reply.
-
-        Parameters
-        ----------
-        **kwargs
-            Arbitrary keyword arguments representing the request payload to be
-            serialized and sent.
-
-        Returns
-        -------
-        Any
-            The decoded response received from the remote endpoint.
-        """
         rep_type, rep_data = self._req('REQ', kwargs)
         if rep_type == 'REP' and rep_data is not None:
             return rep_data
