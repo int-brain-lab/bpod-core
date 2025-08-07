@@ -200,5 +200,5 @@ class TestZMQService:
             remote=remote,
         )
         ip = service.bind_ip
-        expected_ip = com.get_local_ipv4() if remote else '127.0.0.1'
+        expected_ip = '0.0.0.0' if remote else '127.0.0.1'
         assert ip == expected_ip
