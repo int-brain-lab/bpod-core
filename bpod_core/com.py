@@ -407,7 +407,7 @@ def discover_device(
     return address, txt_record
 
 
-class DualChannelMessage(msgspec.Struct):
+class DualChannelMessage(msgspec.Struct, omit_defaults=True):
     type: str = msgspec.field(name='T')  # message type
     data: Any | None = msgspec.field(default=None, name='D')  # message data
 
@@ -563,7 +563,7 @@ class DualChannelHost:
                         reply_bytes = self._encoder.encode(reply)
                         self.rep_socket.send(reply_bytes, copy=False)
                     except (msgspec.EncodeError, zmq.ZMQError) as e:
-                        logger.Exception('Error sending reply to client', exc_info=e)
+                        logger.exception('Error sending reply to client', exc_info=e)
                     continue
 
             # handle request depending on request type
@@ -666,10 +666,11 @@ class DualChannelClient:
         self.req_socket = self.zmq_context.socket(zmq.REQ)
         self.sub_socket = self.zmq_context.socket(zmq.SUB)
 
-        # msgspec encoder/decoder
-        self._serialization_protocol = 'msgpack'
-        self._encoder = msgspec.msgpack.Encoder()
-        self._decoder = msgspec.msgpack.Decoder(type=DualChannelMessage)
+        # define msgspec encoder/decoder
+        self._serialization = 'msgpack'
+        serialization_module = getattr(msgspec, self._serialization)
+        self._encoder = serialization_module.Encoder()
+        self._decoder = serialization_module.Decoder(type=DualChannelMessage)
 
         # connect REQ channel
         if address is not None:
@@ -767,18 +768,21 @@ class DualChannelClient:
             try:
                 reply: DualChannelMessage = self._decoder.decode(reply_frame.bytes)
 
-            # switch decoder/encoder
+            # switch serialization format
             except msgspec.DecodeError as e:
+                new_serialization = ({'json', 'msgpack'} - {self._serialization}).pop()
+                new_serialization_module = getattr(msgspec, new_serialization)
+                new_decoder = new_serialization_module.Decoder(type=DualChannelMessage)
                 try:
-                    reply = msgspec.json.decode(
-                        reply_frame.bytes, type=DualChannelMessage
-                    )
+                    reply = new_decoder.decode(reply_frame.bytes)
                 except msgspec.DecodeError:
                     raise ValueError('Invalid reply') from e
                 else:
-                    logger.debug('Switching to JSON encoding')
-                    self._encoder = msgspec.json.Encoder()
-                    self._decoder = msgspec.json.Decoder(type=DualChannelMessage)
+                    logger.debug(f'Switching to {new_serialization} serialization')
+                    self._encoder = new_serialization_module.Encoder()
+                    self._decoder = new_decoder
+                    self._serialization = new_serialization
+
             return reply.type, reply.data
 
     def request(self, **kwargs) -> Any:
