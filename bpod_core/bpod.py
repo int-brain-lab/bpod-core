@@ -422,7 +422,7 @@ class Bpod:
         self._zmq_service = DualChannelHost(
             name=self.name if self.name else f'bpod_{self._serial_number}',
             service_type='_bpod',
-            description={
+            txt_record={
                 'description': f'Bpod Finite State Machine {self.version.machine_str}',
                 'serial': self._serial_number or '',
                 'name': self.name or '',
@@ -1561,7 +1561,7 @@ class RemoteBpod:
             self._zmq = DualChannelClient(
                 '_bpod._tcp.local.',
                 address=address,
-                timeout=timeout,
+                discovery_timeout=timeout,
                 properties=properties,
             )
         except TimeoutError as e:
