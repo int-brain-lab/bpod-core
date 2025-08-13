@@ -1562,7 +1562,7 @@ class RemoteBpod:
                 '_bpod._tcp.local.',
                 address=address,
                 discovery_timeout=timeout,
-                properties=properties,
+                txt_properties=properties,
             )
         except TimeoutError as e:
             raise TimeoutError('Failed to discover remote Bpod.') from e

@@ -652,10 +652,9 @@ class DualChannelClient:
         self,
         service_type: str,
         address: str | None = None,
-        topic: str = '',
         event_handler: Callable[[dict], Any] | None = None,
         discovery_timeout: float = 10.0,
-        properties: dict | None = None,
+        txt_properties: dict | None = None,
     ):
         self._closed = False
         self._close_lock = threading.Lock()
@@ -677,7 +676,7 @@ class DualChannelClient:
             self.req_address = address
         else:
             self.req_address, txt_record = discover_device(
-                service_type, properties, discovery_timeout
+                service_type, txt_properties, discovery_timeout
             )
         self.req_socket.connect(self.req_address)
         logger.debug("Binding REQ socket to '%s'", self.req_address)
@@ -688,9 +687,8 @@ class DualChannelClient:
         self._handshake()
 
         # connect SUB channel
-        self.sub_topic = topic
         self.sub_socket.connect(self.sub_address)
-        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, self.sub_topic)
+        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, '')
         logger.debug("Binding SUB socket to '%s'", self.sub_address)
 
         # start event loop for subscription handling
@@ -753,18 +751,27 @@ class DualChannelClient:
             self.sub_address = reply_data.get('tcp_pub_sub')
 
     def _req(self, request_type: str, data: Any | None = None) -> tuple[str, Any]:
-        # acquire lock
-        with self._req_lock:
-            # encode and send request
+        with self._req_lock:  # acquire lock
+            # encode request
+            request = DualChannelMessage(type=request_type, data=data)
             try:
-                request = DualChannelMessage(type=request_type, data=data)
                 request_bytes = self._encoder.encode(request)
             except msgspec.EncodeError as e:
-                raise ValueError(f'Invalid request: {request}') from e
-            self.req_socket.send(request_bytes)
+                raise ValueError('Error encoding request to host') from e
 
+            # send request
+            try:
+                self.req_socket.send(request_bytes)
+            except zmq.ZMQError as e:
+                raise RuntimeError('Error sending request to host') from e
+
+            # receive reply
+            try:
+                reply_frame = self.req_socket.recv(copy=False)
+            except zmq.ZMQError as e:
+                raise RuntimeError('Error receiving reply from host') from e
             # receive and decode reply
-            reply_frame = self.req_socket.recv(copy=False)
+
             try:
                 reply: DualChannelMessage = self._decoder.decode(reply_frame.bytes)
 
@@ -776,7 +783,7 @@ class DualChannelClient:
                 try:
                     reply = new_decoder.decode(reply_frame.bytes)
                 except msgspec.DecodeError:
-                    raise ValueError('Invalid reply') from e
+                    raise ValueError('Error decoding reply from host') from e
                 else:
                     logger.debug(f'Switching to {new_serialization} serialization')
                     self._encoder = new_serialization_module.Encoder()
@@ -788,16 +795,14 @@ class DualChannelClient:
     def request(self, **kwargs) -> Any:
         reply_type, reply_data = self._req('R', kwargs)
         match reply_type:
-            case 'R':
+            case 'R':  # general request
                 return reply_data
-            case 'E':
-                self.log_remote_error(
-                    reply_data.get('name', 'Error'), reply_data.get('message', '')
+            case 'E':  # error
+                logger.error(
+                    'Remote %s: %s',
+                    reply_data.get('name', 'Error'),
+                    reply_data.get('message', ''),
                 )
             case _:
                 logger.error("Received unknown reply type: '%s'", reply_type)
         return {}
-
-    @staticmethod
-    def log_remote_error(name: str, message: str) -> None:
-        logger.error('Remote %s: %s', name, message)
