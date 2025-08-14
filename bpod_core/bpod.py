@@ -23,8 +23,9 @@ from serial.tools.list_ports import comports
 from typing_extensions import Self
 
 from bpod_core import __version__ as bpod_core_version
-from bpod_core.com import DualChannelClient, DualChannelHost, ExtendedSerial
+from bpod_core.com import ExtendedSerial
 from bpod_core.fsm import StateMachine
+from bpod_core.ipc import DualChannelClient, DualChannelHost
 from bpod_core.misc import get_nested, set_nested, suggest_similar
 
 PROJECT_NAME = 'bpod-core'

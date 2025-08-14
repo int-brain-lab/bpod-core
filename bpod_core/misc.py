@@ -1,7 +1,9 @@
 """Miscellaneous tools that don't fit the other categories."""
 
 import difflib
+import errno
 import re
+import socket
 from typing import Any
 
 RE_SANITIZE = re.compile(r'[^a-zA-Z0-9_]')
@@ -107,3 +109,35 @@ def get_nested(d: dict[str, Any], keys: list[str], default: Any = None) -> Any:
             return default
         d = d[key]
     return d
+
+
+def get_local_ipv4() -> str:
+    """
+    Determine the primary local IPv4 address of the machine.
+
+    This function attempts to determine the IPv4 address of the local machine
+    that would be used for an outbound connection to the internet. It does this
+    by creating a UDP socket and connecting to a known public IP address
+    (Google DNS at 8.8.8.8). No data is sent, but the OS uses the routing table
+    to select the appropriate local interface.
+
+    Returns
+    -------
+    bytes
+        The local IPv4 address as a string. If the network is unreachable or
+        unavailable, returns the loopback address `127.0.0.1`.
+
+    Raises
+    ------
+    OSError
+        If an unexpected socket error occurs during interface detection.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(('8.8.8.8', 80))  # Doesn't have to be reachable
+            return str(s.getsockname()[0])
+        except OSError as e:
+            if e.errno in {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL}:
+                return '127.0.0.1'
+            else:
+                raise

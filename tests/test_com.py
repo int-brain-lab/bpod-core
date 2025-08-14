@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, call, patch
 import numpy as np
 import pytest
 
+import bpod_core.ipc
+import bpod_core.misc
 from bpod_core import com
 
 
@@ -152,7 +154,7 @@ class TestToBytes:
 
 class TestGetLocalIPv4:
     def test_returns_valid_ipv4(self):
-        ip = com.get_local_ipv4()
+        ip = bpod_core.misc.get_local_ipv4()
         parts = ip.split('.')
         assert len(parts) == 4
         assert all(0 <= int(p) < 256 for p in parts)
@@ -172,7 +174,7 @@ class TestGetLocalIPv4:
                 return False
 
         monkeypatch.setattr(socket, 'socket', lambda *a, **k: DummySocket())
-        ip = com.get_local_ipv4()
+        ip = bpod_core.misc.get_local_ipv4()
         assert ip == '127.0.0.1'
 
 
@@ -181,7 +183,7 @@ class TestZMQService:
     def mock_service(self):
         with (
             patch('bpod_core.com.Zeroconf'),
-            com.DualChannelHost('test', 'testservice') as service,
+            bpod_core.ipc.DualChannelHost('test', 'testservice') as service,
         ):
             yield service
 
@@ -194,7 +196,7 @@ class TestZMQService:
     @pytest.mark.parametrize('remote', [True, False])
     @patch('bpod_core.com.Zeroconf')
     def test_bind_address_matches_local_flag(self, _, remote):
-        service = com.DualChannelHost(
+        service = bpod_core.ipc.DualChannelHost(
             'test',
             'testservice',
             remote=remote,
