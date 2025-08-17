@@ -1,3 +1,5 @@
+"""Inter-process Communication, service discovery and related."""
+
 import contextlib
 import os
 import re

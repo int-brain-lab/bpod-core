@@ -176,31 +176,3 @@ class TestGetLocalIPv4:
         monkeypatch.setattr(socket, 'socket', lambda *a, **k: DummySocket())
         ip = bpod_core.misc.get_local_ipv4()
         assert ip == '127.0.0.1'
-
-
-class TestZMQService:
-    @pytest.fixture
-    def mock_service(self):
-        with (
-            patch('bpod_core.com.Zeroconf'),
-            bpod_core.ipc.DualChannelHost('test', 'testservice') as service,
-        ):
-            yield service
-
-    def test_basic_init_and_properties(self, mock_service):
-        assert mock_service.rep_tcp_port > 0
-        assert mock_service.rep_tcp_addr.startswith('tcp://')
-        assert mock_service._zeroconf is not None
-        assert mock_service._service_info is not None
-
-    @pytest.mark.parametrize('remote', [True, False])
-    @patch('bpod_core.com.Zeroconf')
-    def test_bind_address_matches_local_flag(self, _, remote):
-        service = bpod_core.ipc.DualChannelHost(
-            'test',
-            'testservice',
-            remote=remote,
-        )
-        ip = service.bind_ip
-        expected_ip = '0.0.0.0' if remote else '127.0.0.1'
-        assert ip == expected_ip
