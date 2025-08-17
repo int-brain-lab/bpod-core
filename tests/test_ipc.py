@@ -7,22 +7,28 @@ from bpod_core import ipc
 
 @pytest.fixture
 def host():
-    with ipc.DualChannelHost(
-        name='TestService',
-        service_type='dualtest',
-        event_handler=lambda data: {'echo': data},
-        remote=False,
-    ) as h:
-        yield h
+    with (
+        patch('bpod_core.ipc.Zeroconf'),
+        ipc.DualChannelHost(
+            name='TestService',
+            service_type='dualtest',
+            event_handler=lambda data: {'echo': data},
+            remote=False,
+        ) as host,
+    ):
+        yield host
 
 
 @pytest.fixture
 def client(host):
-    with ipc.DualChannelClient(
-        service_type='dualtest',
-        address=host.rep_tcp_addr,
-    ) as c:
-        yield c
+    with (
+        patch('bpod_core.ipc.Zeroconf'),
+        ipc.DualChannelClient(
+            service_type='dualtest',
+            address=host.rep_tcp_addr,
+        ) as client,
+    ):
+        yield client
 
 
 def test_handshake(client):
