@@ -14,6 +14,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, NamedTuple, cast
 
+import msgspec
 import numpy as np
 from appdirs import user_data_dir
 from numpy.typing import NDArray
@@ -54,7 +55,7 @@ MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
 logger = logging.getLogger(__name__)
 
 
-class VersionInfo(NamedTuple):
+class VersionInfo(msgspec.Struct, frozen=True):
     """Represents the Bpod's on-board hardware configuration."""
 
     firmware: tuple[int, int]
@@ -66,8 +67,11 @@ class VersionInfo(NamedTuple):
     pcb: int | None
     """PCB revision, if applicable"""
 
+    def _to_dict(self) -> dict[str, Any]:
+        return {f: getattr(self, f) for f in self.__struct_fields__}
 
-class HardwareConfiguration(NamedTuple):
+
+class HardwareConfiguration(msgspec.Struct, frozen=True):
     """Represents the Bpod's on-board hardware configuration."""
 
     max_states: int
@@ -256,13 +260,21 @@ class FSMThread(threading.Thread):
         # TODO: handle end of state machine
 
 
-class Bpod:
+class AbstractBpod:
+    _version: VersionInfo
+    _hardware: HardwareConfiguration
+
+    @property
+    def version(self) -> VersionInfo:
+        """Version information of the Bpod's firmware and hardware."""
+        return self._version
+
+
+class Bpod(AbstractBpod):
     """Bpod class for interfacing with the Bpod Finite State Machine."""
 
     _settings: dict
     _name: str | None
-    _version: VersionInfo
-    _hardware: HardwareConfiguration
     _fsm_thread: FSMThread | None = None
     _zmq_service: DualChannelHost
     _next_fsm_index: int = -1
@@ -326,23 +338,22 @@ class Bpod:
         self._start_zmq()
 
         # log hardware information
-        if logger.isEnabledFor(logging.INFO):
-            logger.info(
-                'Connected to Bpod Finite State Machine %s on %s',
-                self.version.machine_str,
-                self.port,
-            )
-            logger.info(
-                'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
-                *self.version.firmware,
-                self._serial_number,
-                self.version.pcb,
-            )
-            # logger.info(
-            #     'ZeroMQ service started on %s:%d',
-            #     self._zmq_service.bind_address,
-            #     self._zmq_service.port,
-            # )
+        logger.info(
+            'Connected to Bpod Finite State Machine %s on %s',
+            self.version.machine_str,
+            self.port,
+        )
+        logger.info(
+            'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
+            *self.version.firmware,
+            self._serial_number,
+            self.version.pcb,
+        )
+        # logger.info(
+        #     'ZeroMQ service started on %s:%d',
+        #     self._zmq_service.bind_address,
+        #     self._zmq_service.port,
+        # )
 
     def __enter__(self) -> Self:
         """Enter context."""
@@ -409,7 +420,7 @@ class Bpod:
         elif msg_type == 'handshake':
             response = {
                 'bpod-core': bpod_core_version,
-                'version': self._version._asdict(),
+                'version': self._version._to_dict(),
             }
         else:
             response = {
@@ -798,11 +809,6 @@ class Bpod:
     def port(self) -> str | None:
         """The port of the Bpod's primary serial device."""
         return self.serial0.port
-
-    @property
-    def version(self) -> VersionInfo:
-        """Version information of the Bpod's firmware and hardware."""
-        return self._version
 
     def set_status_led(self, enabled: bool) -> bool:
         """

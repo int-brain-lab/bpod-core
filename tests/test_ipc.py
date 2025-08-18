@@ -14,6 +14,7 @@ def host():
             service_type='dualtest',
             event_handler=lambda data: {'echo': data},
             remote=False,
+            serialization='json',
         ) as host,
     ):
         yield host
@@ -34,11 +35,17 @@ def client(host):
 def test_handshake(client):
     assert client.req_address.startswith(('tcp://', 'ipc://'))
     assert client.sub_address.startswith(('tcp://', 'ipc://'))
+    assert client._serialization == 'json'  # client should downgrade serialization
 
 
 def test_request_response(client):
     reply = client.request(foo='bar')
     assert reply == {'echo': {'foo': 'bar'}}
+
+
+def test_unknown_request_type(client, caplog):
+    with caplog.at_level('ERROR'):
+        client._req(request_type='invalid')
 
 
 def test_error_response(host, client, caplog):
