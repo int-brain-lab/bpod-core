@@ -8,12 +8,14 @@ import sys
 import threading
 import uuid
 import weakref
+from abc import abstractmethod
 from collections.abc import Callable
 from types import TracebackType
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import msgspec
 import zmq
+from mypy.error_formatter import ABC
 from typing_extensions import Self
 from zeroconf import (
     InterfaceChoice,
@@ -27,7 +29,7 @@ from zeroconf import (
 from bpod_core.com import logger
 from bpod_core.misc import convert_to_snake_case, get_local_ipv4
 
-IP_LOCALHOST = '127.0.0.1'
+IP_LOOPBACK = '127.0.0.1'
 IP_ANY = '0.0.0.0'
 
 
@@ -36,13 +38,60 @@ class DualChannelMessage(msgspec.Struct, omit_defaults=True, array_like=True):
     data: Any | None = msgspec.field(default=None, name='D')  # message data
 
 
-class DualChannelHost:
+class DualChannelBase(ABC):
+    _serialization: Literal['json', 'msgpack'] = 'msgpack'
+    _encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
+    _decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder
+    _event_thread: threading.Thread
+    _socket_req_rep: zmq.Socket
+    _socket_pub_sub: zmq.Socket
+
+    def __init__(self) -> None:
+        self._closed = False
+        self._lock_close = threading.Lock()
+        self._finalizer = weakref.finalize(self, self.close)
+        self._zmq_context = zmq.Context()
+        self._stop_event_loop = threading.Event()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
+        self.close()
+        return None
+
+    @abstractmethod
+    def _event_loop(self): ...
+
+    def close(self) -> bool:
+        with self._lock_close:
+            if self._closed:
+                return False
+            self._closed = True
+
+            if self._event_thread and self._event_thread.is_alive():
+                self._stop_event_loop.set()
+                self._event_thread.join()
+
+            # close sockets and terminate context
+            self._socket_req_rep.close(linger=0)
+            self._socket_pub_sub.close(linger=0)
+            self._zmq_context.term()
+            return True
+
+
+class DualChannelHost(DualChannelBase):
     """
     A ZeroMQ host providing REQ/REP and PUB/SUB sockets with Zeroconf discovery.
 
     Parameters
     ----------
-    name : str
+    service_name : str
         Service name to advertise.
     service_type : str
         Zeroconf service type (e.g., 'my_service').
@@ -60,14 +109,12 @@ class DualChannelHost:
         Serialization format for message encoding.
     """
 
-    _encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
-    _decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder
     _rep_ipc_addr: str | None = None
     _pub_ipc_addr: str | None = None
 
     def __init__(
         self,
-        name: str,
+        service_name: str,
         service_type: str,
         txt_record: dict[str | bytes, str | bytes | None] | None = None,
         event_handler: Callable[[Any | None], Any] | None = None,
@@ -76,24 +123,22 @@ class DualChannelHost:
         port_rep: int | None = None,
         serialization: Literal['json', 'msgpack'] = 'msgpack',
     ) -> None:
-        self._closed = False
-        self._close_lock = threading.Lock()
-        self._finalizer = weakref.finalize(self, self.close)
+        # initialize base class
+        super().__init__()
 
-        self.name = convert_to_snake_case(name).strip('_')
+        self.name = convert_to_snake_case(service_name).strip('_')
         self.uuid = uuid.uuid4()
-        self.bind_ip = IP_ANY if remote else IP_LOCALHOST
-        self.local_ip = get_local_ipv4() if remote else IP_LOCALHOST
+        self._bind_ip = IP_ANY if remote else IP_LOOPBACK
+        self._local_ip = get_local_ipv4() if remote else IP_LOOPBACK
 
-        # ZeroMQ context and sockets
-        self._zmq_context = zmq.Context()
-        self.rep_socket = self._zmq_context.socket(zmq.REP)
-        self.pub_socket = self._zmq_context.socket(zmq.PUB)
+        # ZeroMQ sockets
+        self._socket_req_rep = self._zmq_context.socket(zmq.REP)
+        self._socket_pub_sub = self._zmq_context.socket(zmq.PUB)
 
         # socket options / high-water marks
-        self.pub_socket.setsockopt(zmq.SNDHWM, 1000)
-        self.rep_socket.setsockopt(zmq.SNDHWM, 1000)
-        self.rep_socket.setsockopt(zmq.RCVHWM, 1000)
+        self._socket_req_rep.setsockopt(zmq.SNDHWM, 1000)
+        self._socket_req_rep.setsockopt(zmq.RCVHWM, 1000)
+        self._socket_pub_sub.setsockopt(zmq.SNDHWM, 1000)
 
         # bind sockets to IPC addresses (POSIX only)
         # clients on localhost can upgrade to IPC (named pipes) for improved performance
@@ -101,8 +146,8 @@ class DualChannelHost:
             self._rep_ipc_addr = f'ipc:///tmp/REQ_REP_{self.uuid.hex}.ipc'
             self._pub_ipc_addr = f'ipc:///tmp/PUB_SUB_{self.uuid.hex}.ipc'
             try:
-                self.rep_socket.bind(self._rep_ipc_addr)
-                self.pub_socket.bind(self._pub_ipc_addr)
+                self._socket_req_rep.bind(self._rep_ipc_addr)
+                self._socket_pub_sub.bind(self._pub_ipc_addr)
                 logger.debug("Binding REP socket to '%s'", self._rep_ipc_addr)
                 logger.debug("Binding PUB socket to '%s'", self._pub_ipc_addr)
             except zmq.ZMQError:
@@ -112,8 +157,8 @@ class DualChannelHost:
 
         def bind_tcp(zmq_socket: zmq.Socket, tcp_port: int | None) -> tuple[str, int]:
             """Bind socket to TCP address with preferred port."""
-            bind_address = f'tcp://{self.bind_ip}'
-            service_address = f'tcp://{self.local_ip}'
+            bind_address = f'tcp://{self._bind_ip}'
+            service_address = f'tcp://{self._local_ip}'
             if tcp_port is not None:
                 try:
                     zmq_socket.bind(f'{bind_address}:{tcp_port}')
@@ -124,8 +169,8 @@ class DualChannelHost:
             return f'{service_address}:{tcp_port}', tcp_port
 
         # bind sockets to TCP addresses
-        self.rep_tcp_addr, self.rep_tcp_port = bind_tcp(self.rep_socket, port_rep)
-        self.pub_tcp_addr, self.pub_tcp_port = bind_tcp(self.pub_socket, port_pub)
+        self.rep_tcp_addr, self.rep_tcp_port = bind_tcp(self._socket_req_rep, port_rep)
+        self.pub_tcp_addr, self.pub_tcp_port = bind_tcp(self._socket_pub_sub, port_pub)
         logger.debug("Binding REP socket to '%s'", self.rep_tcp_addr)
         logger.debug("Binding PUB socket to '%s'", self.pub_tcp_addr)
 
@@ -141,44 +186,29 @@ class DualChannelHost:
             raise ValueError(f'Unsupported serialization protocol: {serialization}')
 
         # start event loop for request handling
-        self._stop_event_loop = threading.Event()
         self._user_event_handler = event_handler or self._empty_event_handler
         self._event_handler_lock = threading.RLock()
         self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
         self._event_thread.start()
 
         # advertise service via Zeroconf
-        self.service_type = f'_{service_type.strip("_")}._tcp.local.'
-        self.service_name = f'{self.name}.{self.service_type}'
+        self._service_type = f'_{service_type.strip("_")}._tcp.local.'
+        self._service_name = f'{self.name}.{self._service_type}'
         self._service_info = ServiceInfo(
-            type_=self.service_type,
-            name=self.service_name,
+            type_=self._service_type,
+            name=self._service_name,
             port=self.rep_tcp_port,
-            addresses=[socket.inet_aton(self.local_ip)],
+            addresses=[socket.inet_aton(self._local_ip)],
             properties=txt_record or {},
             server=f'{socket.gethostname()}.local.',
         )
         self._zeroconf = Zeroconf(
-            interfaces=InterfaceChoice.Default if remote else IP_LOCALHOST,
+            interfaces=InterfaceChoice.Default if remote else IP_LOOPBACK,
             ip_version=IPVersion.V4Only,
         )
         self._zeroconf.register_service(self._service_info, allow_name_change=True)
-        self.service_name = self._service_info.name
-        logger.debug("Registering Zeroconf service '%s'", self.service_name)
-
-    def __enter__(self) -> Self:
-        """Enter context manager, returning the host."""
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> bool | None:
-        """Exit context manager and close resources."""
-        self.close()
-        return None
+        self._service_name = self._service_info.name
+        logger.debug("Registering Zeroconf service '%s'", self._service_name)
 
     @staticmethod
     def _empty_event_handler(_: Any) -> dict:
@@ -198,12 +228,12 @@ class DualChannelHost:
         """
         while not self._stop_event_loop.is_set():
             # wait for incoming requests (short poll so we can check stop_event)
-            if not self.rep_socket.poll(100):
+            if not self._socket_req_rep.poll(100):
                 continue
 
             # guard the actual recv with try/except so shutdown can't hang us
             try:
-                request_frame = self.rep_socket.recv(copy=False)
+                request_frame = self._socket_req_rep.recv(copy=False)
             except zmq.ZMQError as e:
                 logger.exception('Error receiving request from client', exc_info=e)
 
@@ -230,7 +260,7 @@ class DualChannelHost:
                     reply = self._format_error(type(e).__name__, e.args[0])
                     try:
                         reply_bytes = self._encoder.encode(reply)
-                        self.rep_socket.send(reply_bytes, copy=False)
+                        self._socket_req_rep.send(reply_bytes, copy=False)
                     except (msgspec.EncodeError, zmq.ZMQError) as e:
                         logger.exception('Error sending reply to client', exc_info=e)
                     continue
@@ -275,7 +305,7 @@ class DualChannelHost:
 
             # send reply
             try:
-                self.rep_socket.send(reply_bytes, copy=False)
+                self._socket_req_rep.send(reply_bytes, copy=False)
             except zmq.ZMQError as e:
                 logger.exception('Error sending reply to client', exc_info=e)
 
@@ -298,41 +328,26 @@ class DualChannelHost:
         """
         return DualChannelMessage(type='E', data={'name': name, 'message': message})
 
-    def close(self) -> None:
-        """Close the ZeroMQ service and unregister the Zeroconf advertisement."""
-        with self._close_lock:
-            if self._closed:
-                return
-            self._closed = True
+    def close(self) -> bool:
+        if not super().close():
+            return False
 
-            # Stop event loop
-            if self._event_thread.is_alive():
-                self._stop_event_loop.set()
-                self._event_thread.join()
+        # Unregister Zeroconf service
+        logger.debug("Unregistering Zeroconf service '%s'", self._service_name)
+        self._zeroconf.unregister_service(self._service_info)
+        self._zeroconf.close()
 
-            # Unregister Zeroconf service
-            logger.debug("Unregistering Zeroconf service '%s'", self.service_name)
-            self._zeroconf.unregister_service(self._service_info)
-            self._zeroconf.close()
+        # remove IPC files
+        with contextlib.suppress(FileNotFoundError):
+            if self._rep_ipc_addr is not None:
+                os.remove(self._rep_ipc_addr[6:])
+            if self._pub_ipc_addr is not None:
+                os.remove(self._pub_ipc_addr[6:])
 
-            # close ZMQ sockets and terminate context
-            self.pub_socket.close(linger=0)
-            self.rep_socket.close(linger=0)
-            self._zmq_context.term()
-
-            # remove IPC files
-            with contextlib.suppress(FileNotFoundError):
-                if self._rep_ipc_addr is not None:
-                    os.remove(self._rep_ipc_addr[6:])
-                if self._pub_ipc_addr is not None:
-                    os.remove(self._pub_ipc_addr[6:])
+        return True
 
 
-class DualChannelClient:
-    _serialization = 'msgpack'
-    _encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
-    _decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder
-
+class DualChannelClient(DualChannelBase):
     def __init__(
         self,
         service_type: str,
@@ -341,15 +356,12 @@ class DualChannelClient:
         discovery_timeout: float = 10.0,
         txt_properties: dict | None = None,
     ):
-        self._closed = False
-        self._close_lock = threading.Lock()
-        self._req_lock = threading.Lock()
-        self._finalizer = weakref.finalize(self, self.close)
+        # initialize base class
+        super().__init__()
 
-        # ZeroMQ context and sockets
-        self.zmq_context = zmq.Context()
-        self.req_socket = self.zmq_context.socket(zmq.REQ)
-        self.sub_socket = self.zmq_context.socket(zmq.SUB)
+        # ZeroMQ sockets
+        self._socket_req_rep = self._zmq_context.socket(zmq.REQ)
+        self._socket_pub_sub = self._zmq_context.socket(zmq.SUB)
 
         # define msgspec encoder/decoder
         serialization_module = getattr(msgspec, self._serialization)
@@ -358,67 +370,35 @@ class DualChannelClient:
 
         # connect REQ channel
         if address is not None:
-            self.req_address = address
+            self._address_req = address
         else:
-            self.req_address, txt_record = discover_device(
+            self._address_req, _ = discover(
                 service_type, txt_properties, discovery_timeout
             )
-        self.req_socket.connect(self.req_address)
-        logger.debug("Binding REQ socket to '%s'", self.req_address)
-        self.protocol = 'TCP'
-        self.is_local = '127.0.0.1' in self.req_address or '0.0.0.0' in self.req_address
+        self._socket_req_rep.connect(self._address_req)
+        self._lock_req = threading.Lock()
+        logger.debug("Binding REQ socket to '%s'", self._address_req)
+        self.is_local = '127.0.0.1' in self._address_req
 
         # perform handshake
         self._handshake()
 
         # connect SUB channel
-        self.sub_socket.connect(self.sub_address)
-        self.sub_socket.setsockopt_string(zmq.SUBSCRIBE, '')
-        logger.debug("Binding SUB socket to '%s'", self.sub_address)
+        self._socket_pub_sub.connect(self._address_sub)
+        self._socket_pub_sub.setsockopt_string(zmq.SUBSCRIBE, '')
+        logger.debug("Binding SUB socket to '%s'", self._address_sub)
 
         # start event loop for subscription handling
-        self._stop_event_loop = threading.Event()
         self._event_handler = event_handler
-        self._event_thread = None
-        if self._event_handler:
-            self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
-            self._event_thread.start()
-
-    def __enter__(self) -> Self:
-        """Enter context manager, returning the client."""
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> bool | None:
-        """Exit context manager and close resources."""
-        self.close()
-        return None
-
-    def close(self):
-        """Close the client connection."""
-        with self._close_lock:
-            if self._closed:
-                return
-            self._closed = True
-
-            if self._event_thread and self._event_thread.is_alive():
-                self._stop_event_loop.set()
-                self._event_thread.join()
-
-            self.req_socket.close(linger=0)
-            self.sub_socket.close(linger=0)
-            self.zmq_context.term()
+        self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
+        self._event_thread.start()
 
     def _event_loop(self):
         """Process incoming PUB messages."""
         while not self._stop_event_loop.is_set():
-            if not self.sub_socket.poll(100):
+            if not self._socket_pub_sub.poll(100):
                 continue
-            msg = self.sub_socket.recv()
+            msg = self._socket_pub_sub.recv()
             msg = self._decoder.decode(msg)
             try:
                 self._event_handler(msg)
@@ -434,17 +414,16 @@ class DualChannelClient:
             and reply_data.get('ipc_req_rep') is not None
             and reply_data.get('ipc_pub_sub') is not None
         ):
-            self.req_socket.disconnect(self.req_address)
-            self.req_address = reply_data.get('ipc_req_rep')
-            logger.debug("Rebinding REQ socket to '%s'", self.req_address)
-            self.req_socket.connect(self.req_address)
-            self.sub_address = reply_data.get('ipc_pub_sub')
-            self.protocol = 'IPC'
+            self._socket_req_rep.disconnect(self._address_req)
+            self._address_req = reply_data.get('ipc_req_rep')
+            logger.debug("Rebinding REQ socket to '%s'", self._address_req)
+            self._socket_req_rep.connect(self._address_req)
+            self._address_sub = reply_data.get('ipc_pub_sub')
         else:
-            self.sub_address = reply_data.get('tcp_pub_sub')
+            self._address_sub = reply_data.get('tcp_pub_sub')
 
     def _req(self, request_type: str, data: Any | None = None) -> tuple[str, Any]:
-        with self._req_lock:  # acquire lock
+        with self._lock_req:  # acquire lock
             # encode request
             request = DualChannelMessage(type=request_type, data=data)
             try:
@@ -454,35 +433,36 @@ class DualChannelClient:
 
             # send request
             try:
-                self.req_socket.send(request_bytes)
+                self._socket_req_rep.send(request_bytes)
             except zmq.ZMQError as e:
                 raise RuntimeError('Error sending request to host') from e
 
             # receive reply
             try:
-                reply_frame = self.req_socket.recv(copy=False)
+                reply_frame = self._socket_req_rep.recv(copy=False)
             except zmq.ZMQError as e:
                 raise RuntimeError('Error receiving reply from host') from e
-            # receive and decode reply
 
+            # receive and decode reply
             try:
                 reply: DualChannelMessage = self._decoder.decode(reply_frame.bytes)
 
             # switch serialization format
             except msgspec.DecodeError as e:
-                new_serialization = ({'json', 'msgpack'} - {self._serialization}).pop()
-                new_serialization_module = getattr(msgspec, new_serialization)
+                new_format = 'msgpack' if self._serialization == 'json' else 'json'
+                new_serialization_module = getattr(msgspec, new_format)
                 new_decoder = new_serialization_module.Decoder(type=DualChannelMessage)
                 try:
                     reply = new_decoder.decode(reply_frame.bytes)
                 except msgspec.DecodeError:
                     raise ValueError('Error decoding reply from host') from e
                 else:
-                    logger.debug(f'Switching to {new_serialization} serialization')
+                    logger.debug(f'Switching to {new_format} serialization')
                     self._encoder = new_serialization_module.Encoder()
                     self._decoder = new_decoder
-                    self._serialization = new_serialization
+                    self._serialization = cast('Literal["json", "msgpack"]', new_format)
 
+            # return reply type and data
             return reply.type, reply.data
 
     def request(self, **kwargs) -> Any:
@@ -501,7 +481,7 @@ class DualChannelClient:
         return {}
 
 
-def discover_device(
+def discover(
     service_type: str,
     properties: dict[str, str | None] | None = None,
     timeout: float = 10,

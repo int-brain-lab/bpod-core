@@ -10,7 +10,7 @@ def host():
     with (
         patch('bpod_core.ipc.Zeroconf'),
         ipc.DualChannelHost(
-            name='TestService',
+            service_name='TestService',
             service_type='dualtest',
             event_handler=lambda data: {'echo': data},
             remote=False,
@@ -33,8 +33,8 @@ def client(host):
 
 
 def test_handshake(client):
-    assert client.req_address.startswith(('tcp://', 'ipc://'))
-    assert client.sub_address.startswith(('tcp://', 'ipc://'))
+    assert client._address_req.startswith(('tcp://', 'ipc://'))
+    assert client._address_sub.startswith(('tcp://', 'ipc://'))
     assert client._serialization == 'json'  # client should downgrade serialization
 
 
@@ -86,6 +86,6 @@ def test_bind_address_matches_local_flag(_, remote):
         'testservice',
         remote=remote,
     )
-    ip = service.bind_ip
+    ip = service._bind_ip
     expected_ip = '0.0.0.0' if remote else '127.0.0.1'
     assert ip == expected_ip

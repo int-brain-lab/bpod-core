@@ -432,7 +432,7 @@ class Bpod(AbstractBpod):
     def _start_zmq(self):
         port = self._get_setting(['devices', str(self._serial_number), 'zmq_port'])
         self._zmq_service = DualChannelHost(
-            name=self.name if self.name else f'bpod_{self._serial_number}',
+            service_name=self.name if self.name else f'bpod_{self._serial_number}',
             service_type='_bpod',
             txt_record={
                 'description': f'Bpod Finite State Machine {self.version.machine_str}',
@@ -1579,7 +1579,7 @@ class RemoteBpod:
         logger.info(
             'Connected to Bpod Finite State Machine %s on %s',
             self._version['machine_str'],
-            self._zmq.req_address,
+            self._zmq._address_req,
         )
 
     def _request(self, request_type: str, **kwargs) -> dict:
