@@ -1,193 +1,34 @@
 """Module defining classes and types for creating and managing state machines."""
 
-import ctypes
-import re
 from typing import Annotated
 
 import msgspec
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import Field, validate_call
+from pydantic import validate_call
 
-StateName = Annotated[
-    str,
-    msgspec.Meta(
-        min_length=1,
-        title='State Name',
-        description='The name of the state',
-        pattern=r'^(?!>)(?!exit$).*$',
-    ),
-    Field(min_length=1, pattern=re.compile(r'^(?!>)(?!exit$).*$')),
-]
-StateTimer = Annotated[
-    float,
-    msgspec.Meta(
-        ge=0.0,
-        title='State Timer',
-        description="The state's timer in seconds",
-    ),
-    Field(ge=0.0),
-]
-TargetState = Annotated[
-    str,
-    msgspec.Meta(
-        min_length=1,
-        title='Target State',
-        description='The name of the target state',
-    ),
-    Field(min_length=1),
-]
-StateChangeConditions = Annotated[
-    dict[str, TargetState],
-    msgspec.Meta(
-        title='State Change Conditions',
-        description='The conditions for switching from the current state to others',
-    ),
-]
-OutputActionValue = Annotated[
-    int,
-    msgspec.Meta(
-        ge=0,
-        le=255,
-        title='Output Action Value',
-        description='The integer value of the output action',
-    ),
-]
-OutputActions = Annotated[
-    dict[str, OutputActionValue],
-    msgspec.Meta(
-        title='Output Actions',
-        description='The actions to be executed during the state',
-    ),
-]
-Comment = Annotated[
-    str,
-    msgspec.Meta(
-        title='Comment',
-        description='An optional comment describing the state.',
-    ),
-]
-GlobalTimerIndex = Annotated[
-    int,
-    msgspec.Meta(
-        ge=0,
-        title='Global Timer ID',
-        description='The ID of the global timer',
-    ),
-]
-GlobalTimerDuration = Annotated[
-    float,
-    msgspec.Meta(
-        ge=0.0,
-        title='Global Timer Duration',
-        description='The duration of the global timer in seconds',
-    ),
-]
-GlobalTimerOnsetDelay = Annotated[
-    float,
-    msgspec.Meta(
-        ge=0.0,
-        title='Onset Delay',
-        description='The onset delay of the global timer in seconds',
-    ),
-]
-GlobalTimerChannel = Annotated[
-    str,
-    msgspec.Meta(
-        title='Channel',
-        description='The channel affected by the global timer',
-    ),
-]
-GlobalTimerChannelValue = Annotated[
-    int,
-    msgspec.Meta(
-        ge=0,
-        le=255,
-        title='Channel Value',
-        description='The value a channel is set to',
-    ),
-]
-GlobalTimerSendEvents = Annotated[
-    bool,
-    msgspec.Meta(
-        title='Send Events',
-        description='Whether the global timer is sending events',
-    ),
-]
-GlobalTimerLoop = Annotated[
-    int,
-    msgspec.Meta(
-        ge=0,
-        le=255,
-        title='Loop Mode',
-        description='Whether the global timer is looping or not',
-    ),
-]
-GlobalTimerLoopInterval = Annotated[
-    float,
-    msgspec.Meta(
-        ge=0.0,
-        title='Loop Interval',
-        description='The interval in seconds that the global timer is looping',
-    ),
-]
-GlobalTimerOnsetTrigger = Annotated[
-    int,
-    msgspec.Meta(
-        ge=0,
-        title='Onset Trigger',
-        description='An integer whose bits indicate other global timers to trigger',
-    ),
-]
-GlobalCounterID = Annotated[
-    int,
-    msgspec.Meta(
-        ge=0,
-        title='ID',
-        description='The ID of the global counter',
-    ),
-]
-GlobalCounterEvent = Annotated[
-    str,
-    msgspec.Meta(
-        title='Event',
-        description='The name of the event to count',
-    ),
-]
-GlobalCounterThreshold = Annotated[
-    int,
-    msgspec.Meta(
-        ge=0,
-        le=ctypes.c_uint32(-1).value,
-        title='Threshold',
-        description='The count threshold to generate an event',
-    ),
-]
-ConditionID = Annotated[
-    int,
-    msgspec.Meta(
-        ge=0,
-        title='ID',
-        description='The ID of the condition',
-    ),
-]
-ConditionChannel = Annotated[
-    str,
-    msgspec.Meta(
-        title='Channel',
-        description='The channel or global timer attached to the condition',
-    ),
-]
-ConditionValue = Annotated[
-    bool,
-    msgspec.Meta(
-        title='Value',
-        description='The value of the condition channel if the condition is met',
-    ),
-]
-
-
-def validate_struct(data: msgspec.Struct):
-    msgspec.msgpack.decode(msgspec.msgpack.encode(data), type=type(data))
+from bpod_core.types import (
+    StateComment,
+    ConditionChannel,
+    ConditionID,
+    ConditionValue,
+    GlobalCounterEvent,
+    GlobalCounterID,
+    GlobalCounterThreshold,
+    GlobalTimerChannel,
+    GlobalTimerChannelValue,
+    GlobalTimerDuration,
+    GlobalTimerIndex,
+    GlobalTimerLoop,
+    GlobalTimerLoopInterval,
+    GlobalTimerOnsetDelay,
+    GlobalTimerOnsetTrigger,
+    GlobalTimerSendEvents,
+    StateActions,
+    StateConditions,
+    StateMachineName,
+    StateName,
+    StateTimer,
+)
 
 
 class State(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
@@ -196,13 +37,13 @@ class State(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     timer: StateTimer = 0.0
     """The state's timer in seconds."""
 
-    state_change_conditions: StateChangeConditions = {}
+    state_change_conditions: StateConditions = {}
     """A dictionary mapping conditions to target states for transitions."""
 
-    output_actions: OutputActions = {}
+    output_actions: StateActions = {}
     """A dictionary of actions to be executed during the state."""
 
-    comment: Comment | None = None
+    comment: StateComment | None = None
     """An optional comment describing the state."""
 
 
@@ -231,57 +72,50 @@ class Condition(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     value: ConditionValue
 
 
-StateMachineName = Annotated[
-    str,
-    msgspec.Meta(
-        min_length=1,
-        title='State Machine Name',
-        description='The name of the state machine',
-    ),
-]
-StateMachineStates = Annotated[
-    dict[StateName, State],
-    msgspec.Meta(
-        title='States',
-        description='A collection of states',
-        min_length=1,
-        extra_json_schema={
-            'propertyNames': {'pattern': '^((?!>)(?!exit$).)*$', 'minLength': 1}
-        },
-    ),
-]
-StateMachineGlobalTimers = Annotated[
-    dict[GlobalTimerIndex, GlobalTimer],
-    msgspec.Meta(title='Global Timers', description='A collection of global timers'),
-]
-StateMachineGlobalCounters = Annotated[
-    dict[GlobalCounterID, GlobalCounter],
-    msgspec.Meta(
-        title='Global Counters', description='A collection of global counters'
-    ),
-]
-StateMachineConditions = Annotated[
-    dict[ConditionID, Condition],
-    msgspec.Meta(title='Conditions', description='A collection of conditions'),
-]
-
-
 class StateMachine(msgspec.Struct, omit_defaults=True):
     """Represents a state machine with a collection of states."""
 
     name: StateMachineName = 'State Machine'
     """The name of the state machine."""
 
-    states: StateMachineStates = dict()
+    states: Annotated[
+        dict[StateName, State],
+        msgspec.Meta(
+            title='States',
+            description='A collection of states',
+            min_length=1,
+            extra_json_schema={
+                'propertyNames': {'pattern': '^((?!>)(?!exit$).)*$', 'minLength': 1}
+            },
+        ),
+    ] = dict()
     """A dictionary of states in the state machine."""
 
-    global_timers: StateMachineGlobalTimers = dict()
+    global_timers: Annotated[
+        dict[GlobalTimerIndex, GlobalTimer],
+        msgspec.Meta(
+            title='Global Timers',
+            description='A collection of global timers',
+        ),
+    ] = dict()
     """A dictionary of global timers in the state machine."""
 
-    global_counters: StateMachineGlobalCounters = dict()
+    global_counters: Annotated[
+        dict[GlobalCounterID, GlobalCounter],
+        msgspec.Meta(
+            title='Global Counters',
+            description='A collection of global counters',
+        ),
+    ] = dict()
     """A dictionary of global counters in the state machine."""
 
-    conditions: StateMachineConditions = dict()
+    conditions: Annotated[
+        dict[ConditionID, Condition],
+        msgspec.Meta(
+            title='Conditions',
+            description='A collection of conditions',
+        ),
+    ] = dict()
     """A dictionary of conditions in the state machine."""
 
     @validate_call
@@ -289,9 +123,9 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         self,
         name: StateName,
         timer: StateTimer = 0.0,
-        state_change_conditions: StateChangeConditions | None = None,
-        output_actions: OutputActions | None = None,
-        comment: Comment | None = None,
+        state_change_conditions: StateConditions | None = None,
+        output_actions: StateActions | None = None,
+        comment: StateComment | None = None,
     ) -> None:
         """
         Adds a new state to the state machine.
