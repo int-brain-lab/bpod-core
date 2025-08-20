@@ -1,6 +1,5 @@
 """Module for interfacing with the Bpod Finite State Machine."""
 
-import ctypes
 import json
 import logging
 import re
