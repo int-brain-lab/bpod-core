@@ -60,7 +60,7 @@ StateComment = Annotated[
     str,
     msgspec.Meta(
         title='Comment',
-        description='An optional comment describing the state.',
+        description='A comment describing the state.',
     ),
 ]
 GlobalTimerIndex = Annotated[
