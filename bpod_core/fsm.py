@@ -4,8 +4,8 @@ import ctypes
 from typing import Annotated
 
 import msgspec
+from pydantic import validate_call
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import Field
 
 StateName = Annotated[
     str,
@@ -120,7 +120,7 @@ GlobalTimerLoop = Annotated[
 ]
 GlobalTimerLoopInterval = Annotated[
     float,
-    Field(
+    msgspec.Meta(
         ge=0.0,
         title='Loop Interval',
         description='The interval in seconds that the global timer is looping',
@@ -128,7 +128,7 @@ GlobalTimerLoopInterval = Annotated[
 ]
 GlobalTimerOnsetTrigger = Annotated[
     int,
-    Field(
+    msgspec.Meta(
         ge=0,
         title='Onset Trigger',
         description='An integer whose bits indicate other global timers to trigger',
@@ -283,6 +283,7 @@ class StateMachine(msgspec.Struct):
     }
     """Configuration for the `StateMachine` model."""
 
+    @validate_call
     def add_state(
         self,
         name: StateName,
