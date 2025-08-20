@@ -152,7 +152,11 @@ class DualChannelHost:
             type_=self.service_type,
             name=self.service_name,
             port=self.rep_tcp_port,
-            addresses=[socket.inet_aton(self.bind_ip)],
+            addresses=[
+                socket.inet_aton(get_local_ipv4())
+                if remote
+                else socket.inet_aton(IP_LOCALHOST)
+            ],
             properties=txt_record or {},
             server=f'{socket.gethostname()}.local.',
         )
