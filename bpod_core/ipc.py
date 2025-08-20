@@ -15,7 +15,14 @@ from typing import Any, Literal
 import msgspec
 import zmq
 from typing_extensions import Self
-from zeroconf import ServiceBrowser, ServiceInfo, ServiceStateChange, Zeroconf
+from zeroconf import (
+    InterfaceChoice,
+    IPVersion,
+    ServiceBrowser,
+    ServiceInfo,
+    ServiceStateChange,
+    Zeroconf,
+)
 
 from bpod_core.com import logger
 from bpod_core.misc import convert_to_snake_case, get_local_ipv4
@@ -138,7 +145,6 @@ class DualChannelHost:
         # advertise service via Zeroconf
         self.service_type = f'_{service_type.strip("_")}._tcp.local.'
         self.service_name = f'{self.name}.{self.service_type}'
-        self._zeroconf = Zeroconf()
         self._service_info = ServiceInfo(
             type_=self.service_type,
             name=self.service_name,
@@ -146,6 +152,10 @@ class DualChannelHost:
             addresses=[socket.inet_aton(self.bind_ip)],
             properties=txt_record or {},
             server=f'{socket.gethostname()}.local.',
+        )
+        self._zeroconf = Zeroconf(
+            interfaces=InterfaceChoice.Default if remote else [self.bind_ip],
+            ip_version=IPVersion.V4Only,
         )
         self._zeroconf.register_service(self._service_info, allow_name_change=True)
         self.service_name = self._service_info.name
