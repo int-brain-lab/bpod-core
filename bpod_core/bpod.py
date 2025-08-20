@@ -1,5 +1,6 @@
 """Module for interfacing with the Bpod Finite State Machine."""
 
+import ctypes
 import json
 import logging
 import re
@@ -959,16 +960,19 @@ class Bpod(AbstractBpod):
         ):
             if value > maximum_value:
                 raise ValueError(
-                    'Too many %s in state machine - hardware supports a maximum '
-                    'number of %d %s',
-                    name,
-                    maximum_value,
-                    name,
+                    f'Too many {name} in state machine - hardware supports up to '
+                    f'{maximum_value} {name}'
                 )
 
         # Validate states
         valid_targets = list(state_machine.states.keys()) + VALID_OPERATORS
+        max_state_duration = np.iinfo(np.uint32).max / self._hardware.cycle_frequency
         for state_name, state in state_machine.states.items():
+            if state.timer < 0 or state.timer > max_state_duration:
+                raise ValueError(
+                    f"Invalid timer value {state.timer} for state '{state_name}' - "
+                    f'must be between 0 and {max_state_duration} seconds',
+                )
             for condition_name, target in state.state_change_conditions.items():
                 if target not in valid_targets:
                     target_type = 'operator' if target[0] == '>' else 'target state'
