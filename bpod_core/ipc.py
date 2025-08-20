@@ -83,6 +83,7 @@ class DualChannelHost:
         self.name = convert_to_snake_case(name).strip('_')
         self.uuid = uuid.uuid4()
         self.bind_ip = IP_ANY if remote else IP_LOCALHOST
+        self.local_ip = get_local_ipv4() if remote else IP_LOCALHOST
 
         # ZeroMQ context and sockets
         self._zmq_context = zmq.Context()
@@ -111,15 +112,16 @@ class DualChannelHost:
 
         def bind_tcp(zmq_socket: zmq.Socket, tcp_port: int | None) -> tuple[str, int]:
             """Bind socket to TCP address with preferred port."""
-            tcp_address = f'tcp://{self.bind_ip}'
+            bind_address = f'tcp://{self.bind_ip}'
+            service_address = f'tcp://{self.local_ip}'
             if tcp_port is not None:
                 try:
-                    zmq_socket.bind(f'{tcp_address}:{tcp_port}')
+                    zmq_socket.bind(f'{bind_address}:{tcp_port}')
                 except zmq.ZMQError:
                     tcp_port = None
             if tcp_port is None:
-                tcp_port = zmq_socket.bind_to_random_port(tcp_address)
-            return f'{tcp_address}:{tcp_port}', tcp_port
+                tcp_port = zmq_socket.bind_to_random_port(bind_address)
+            return f'{service_address}:{tcp_port}', tcp_port
 
         # bind sockets to TCP addresses
         self.rep_tcp_addr, self.rep_tcp_port = bind_tcp(self.rep_socket, port_rep)
@@ -152,11 +154,7 @@ class DualChannelHost:
             type_=self.service_type,
             name=self.service_name,
             port=self.rep_tcp_port,
-            addresses=[
-                socket.inet_aton(get_local_ipv4())
-                if remote
-                else socket.inet_aton(IP_LOCALHOST)
-            ],
+            addresses=[socket.inet_aton(self.local_ip)],
             properties=txt_record or {},
             server=f'{socket.gethostname()}.local.',
         )
