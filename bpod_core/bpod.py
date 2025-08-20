@@ -1606,7 +1606,6 @@ class RemoteBpod:
         reply = self._request('call', method=method, args=args, kwargs=kwargs)
         if reply.get('success'):
             return reply['result']
-        print(reply)
         logger.error(f'Remote {reply["error"]["type"]}: ' + reply['error']['message'])
         return None
 
