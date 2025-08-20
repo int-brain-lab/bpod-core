@@ -1,5 +1,3 @@
-from collections import OrderedDict
-
 import pytest
 from pydantic import ValidationError
 
@@ -22,7 +20,7 @@ def test_state_creation():
 def test_state_machine_creation():
     sm = StateMachine(name='Test State Machine')
     assert sm.name == 'Test State Machine'
-    assert isinstance(sm.states, OrderedDict)
+    assert isinstance(sm.states, dict)
     assert len(sm.states) == 0
 
 
