@@ -245,6 +245,9 @@ StateMachineStates = Annotated[
         title='States',
         description='A collection of states',
         min_length=1,
+        extra_json_schema={
+            'propertyNames': {'pattern': '^((?!>)(?!exit$).)*$', 'minLength': 1}
+        },
     ),
 ]
 StateMachineGlobalTimers = Annotated[

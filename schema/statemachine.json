@@ -16,6 +16,10 @@
         "states": {
           "title": "States",
           "description": "A collection of states",
+          "propertyNames": {
+            "pattern": "^((?!>)(?!exit$).)*$",
+            "minLength": 1
+          },
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/State"
