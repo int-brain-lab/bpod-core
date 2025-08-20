@@ -273,16 +273,16 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
     """The name of the state machine."""
 
     states: StateMachineStates = dict()
-    """An ordered dictionary of states in the state machine."""
+    """A dictionary of states in the state machine."""
 
     global_timers: StateMachineGlobalTimers = dict()
-    """An ordered dictionary of global timers in the state machine."""
+    """A dictionary of global timers in the state machine."""
 
     global_counters: StateMachineGlobalCounters = dict()
-    """An ordered dictionary of global counters in the state machine."""
+    """A dictionary of global counters in the state machine."""
 
     conditions: StateMachineConditions = dict()
-    """An ordered dictionary of conditions in the state machine."""
+    """A dictionary of conditions in the state machine."""
 
     @validate_call
     def add_state(
