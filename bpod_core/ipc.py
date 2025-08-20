@@ -27,6 +27,9 @@ from zeroconf import (
 from bpod_core.com import logger
 from bpod_core.misc import convert_to_snake_case, get_local_ipv4
 
+IP_LOCALHOST = '127.0.0.1'
+IP_ANY = '0.0.0.0'
+
 
 class DualChannelMessage(msgspec.Struct, omit_defaults=True, array_like=True):
     type: str = msgspec.field(name='T')  # message type
@@ -79,7 +82,7 @@ class DualChannelHost:
 
         self.name = convert_to_snake_case(name).strip('_')
         self.uuid = uuid.uuid4()
-        self.bind_ip = '0.0.0.0' if remote else '127.0.0.1'
+        self.bind_ip = IP_ANY if remote else IP_LOCALHOST
 
         # ZeroMQ context and sockets
         self._zmq_context = zmq.Context()
@@ -154,7 +157,7 @@ class DualChannelHost:
             server=f'{socket.gethostname()}.local.',
         )
         self._zeroconf = Zeroconf(
-            interfaces=InterfaceChoice.Default if remote else [self.bind_ip],
+            interfaces=InterfaceChoice.Default if remote else IP_LOCALHOST,
             ip_version=IPVersion.V4Only,
         )
         self._zeroconf.register_service(self._service_info, allow_name_change=True)
