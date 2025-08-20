@@ -174,11 +174,17 @@
           "default": 0
         },
         "loop_interval": {
+          "title": "Loop Interval",
+          "description": "The interval in seconds that the global timer is looping",
           "type": "number",
+          "minimum": 0.0,
           "default": 0.0
         },
         "onset_trigger": {
+          "title": "Onset Trigger",
+          "description": "An integer whose bits indicate other global timers to trigger",
           "type": "integer",
+          "minimum": 0,
           "default": 0
         }
       },

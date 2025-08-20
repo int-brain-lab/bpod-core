@@ -1,11 +1,12 @@
 """Module defining classes and types for creating and managing state machines."""
 
 import ctypes
+import re
 from typing import Annotated
 
 import msgspec
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import validate_call
+from pydantic import Field, validate_call
 
 StateName = Annotated[
     str,
@@ -13,8 +14,9 @@ StateName = Annotated[
         min_length=1,
         title='State Name',
         description='The name of the state',
-        pattern=r'^(?!exit$).*$',
+        pattern=r'^(?!>)(?!exit$).*$',
     ),
+    Field(min_length=1, pattern=re.compile(r'^(?!>)(?!exit$).*$')),
 ]
 StateTimer = Annotated[
     float,
@@ -23,6 +25,7 @@ StateTimer = Annotated[
         title='State Timer',
         description="The state's timer in seconds",
     ),
+    Field(ge=0.0),
 ]
 TargetState = Annotated[
     str,
@@ -31,6 +34,7 @@ TargetState = Annotated[
         title='Target State',
         description='The name of the target state',
     ),
+    Field(min_length=1),
 ]
 StateChangeConditions = Annotated[
     dict[str, TargetState],
@@ -186,7 +190,7 @@ def validate_struct(data: msgspec.Struct):
     msgspec.msgpack.decode(msgspec.msgpack.encode(data), type=type(data))
 
 
-class State(msgspec.Struct, forbid_unknown_fields=True):
+class State(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     """Represents a state in the state machine."""
 
     timer: StateTimer = 0.0
@@ -202,7 +206,7 @@ class State(msgspec.Struct, forbid_unknown_fields=True):
     """An optional comment describing the state."""
 
 
-class GlobalTimer(msgspec.Struct, forbid_unknown_fields=True):
+class GlobalTimer(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     timer_id: GlobalTimerIndex
     duration: GlobalTimerDuration
     onset_delay: GlobalTimerOnsetDelay = 0.0
@@ -215,13 +219,13 @@ class GlobalTimer(msgspec.Struct, forbid_unknown_fields=True):
     onset_trigger: GlobalTimerOnsetTrigger = 0
 
 
-class GlobalCounter(msgspec.Struct, forbid_unknown_fields=True):
+class GlobalCounter(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     id: GlobalCounterID
     event: GlobalCounterEvent
     threshold: GlobalCounterThreshold
 
 
-class Condition(msgspec.Struct, forbid_unknown_fields=True):
+class Condition(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     id: ConditionID
     channel: ConditionChannel
     value: ConditionValue
@@ -259,7 +263,7 @@ StateMachineConditions = Annotated[
 ]
 
 
-class StateMachine(msgspec.Struct):
+class StateMachine(msgspec.Struct, omit_defaults=True):
     """Represents a state machine with a collection of states."""
 
     name: StateMachineName = 'State Machine'
@@ -276,12 +280,6 @@ class StateMachine(msgspec.Struct):
 
     conditions: StateMachineConditions = dict()
     """An ordered dictionary of conditions in the state machine."""
-
-    model_config = {
-        'validate_assignment': True,
-        'json_schema_extra': {'additionalProperties': False},
-    }
-    """Configuration for the `StateMachine` model."""
 
     @validate_call
     def add_state(
