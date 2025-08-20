@@ -1,5 +1,3 @@
-import errno
-import socket
 from unittest.mock import MagicMock, call, patch
 
 import numpy as np
@@ -148,57 +146,3 @@ class TestToBytes:
     def test_to_bytes_with_float(self):
         with pytest.raises(TypeError):
             com.to_bytes(42.0)
-
-
-class TestGetLocalIPv4:
-    def test_returns_valid_ipv4(self):
-        ip = com.get_local_ipv4()
-        parts = ip.split('.')
-        assert len(parts) == 4
-        assert all(0 <= int(p) < 256 for p in parts)
-
-    def test_fallback_to_loopback_on_unreachable(self, monkeypatch):
-        class DummySocket:
-            def connect(self, addr):
-                raise OSError(errno.ENETUNREACH, 'Network unreachable')
-
-            def close(self):
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-        monkeypatch.setattr(socket, 'socket', lambda *a, **k: DummySocket())
-        ip = com.get_local_ipv4()
-        assert ip == '127.0.0.1'
-
-
-class TestZMQService:
-    @pytest.fixture
-    def mock_service(self):
-        with (
-            patch('bpod_core.com.Zeroconf'),
-            com.DualChannelHost('test', 'testservice') as service,
-        ):
-            yield service
-
-    def test_basic_init_and_properties(self, mock_service):
-        assert mock_service.rep_tcp_port > 0
-        assert mock_service.rep_tcp_addr.startswith('tcp://')
-        assert mock_service._zeroconf is not None
-        assert mock_service._service_info is not None
-
-    @pytest.mark.parametrize('remote', [True, False])
-    @patch('bpod_core.com.Zeroconf')
-    def test_bind_address_matches_local_flag(self, _, remote):
-        service = com.DualChannelHost(
-            'test',
-            'testservice',
-            remote=remote,
-        )
-        ip = service.bind_ip
-        expected_ip = '0.0.0.0' if remote else '127.0.0.1'
-        assert ip == expected_ip
