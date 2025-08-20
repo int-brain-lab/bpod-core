@@ -4,8 +4,8 @@ import ctypes
 from typing import Annotated
 
 import msgspec
-from pydantic import validate_call
 from graphviz import Digraph  # type: ignore[import-untyped]
+from pydantic import validate_call
 
 StateName = Annotated[
     str,
