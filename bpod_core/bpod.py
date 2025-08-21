@@ -7,7 +7,6 @@ import struct
 import threading
 import traceback
 import weakref
-from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -593,7 +592,7 @@ class Bpod(AbstractBpod):
         machine_type_str = MACHINE_TYPES.get(machine_type, 'unknown')
         v_minor = self.serial0.query_struct(b'f', '<H')[0] if v_major > 22 else 0
         v_firmware = (v_major, v_minor)
-        if not (MIN_BPOD_HW_VERSION <= machine_type <= MAX_BPOD_HW_VERSION):
+        if not MIN_BPOD_HW_VERSION <= machine_type <= MAX_BPOD_HW_VERSION:
             raise BpodError(
                 f'The hardware version of the Bpod on {self.port} is not supported.',
             )
@@ -743,7 +742,7 @@ class Bpod(AbstractBpod):
 
     def _compile_event_names(self) -> None:
         """Compile the list of event names supported by the Bpod hardware."""
-        n_serial_events = sum([len(m.event_names) for m in self.modules])
+        n_serial_events = sum(len(m.event_names) for m in self.modules)
         n_softcodes = self._hardware.max_serial_events - n_serial_events
         n_usb = self._hardware.input_description.count(b'X')
         n_usb_ext = self._hardware.input_description.count(b'Z')
@@ -1331,10 +1330,9 @@ class Bpod(AbstractBpod):
         self._set_setting(['devices', str(self._serial_number), 'location'], location)
 
 
-class Channel(ABC):
-    """Abstract base class representing a channel on the Bpod device."""
+class Channel:
+    """Base class representing a channel on the Bpod device."""
 
-    @abstractmethod
     def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
         """
         Abstract base class representing a channel on the Bpod device.
@@ -1453,23 +1451,6 @@ class Input(Channel):
 
 class Output(Channel):
     """Output channel class representing a digital output channel."""
-
-    def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
-        """
-        Output channel class representing a digital output channel.
-
-        Parameters
-        ----------
-        bpod : Bpod
-            The Bpod instance associated with the channel.
-        name : str
-            The name of the channel.
-        io_key : bytes
-            The I/O type of the channel (e.g., b'B', b'V', b'P').
-        index : int
-            The index of the channel.
-        """
-        super().__init__(bpod, name, io_key, index)
 
     def override(self, state: bool | int) -> None:
         """
