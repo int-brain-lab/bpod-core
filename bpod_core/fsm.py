@@ -7,7 +7,6 @@ from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import validate_call
 
 from bpod_core.types import (
-    StateComment,
     ConditionChannel,
     ConditionID,
     ConditionValue,
@@ -24,6 +23,7 @@ from bpod_core.types import (
     GlobalTimerOnsetTrigger,
     GlobalTimerSendEvents,
     StateActions,
+    StateComment,
     StateConditions,
     StateMachineName,
     StateName,
