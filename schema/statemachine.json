@@ -30,6 +30,9 @@
         "global_timers": {
           "title": "Global Timers",
           "description": "A collection of global timers",
+          "propertyNames": {
+            "pattern": "^\\d+$"
+          },
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/GlobalTimer"
@@ -39,6 +42,9 @@
         "global_counters": {
           "title": "Global Counters",
           "description": "A collection of global counters",
+          "propertyNames": {
+            "pattern": "^\\d+$"
+          },
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/GlobalCounter"
@@ -48,6 +54,9 @@
         "conditions": {
           "title": "Conditions",
           "description": "A collection of conditions",
+          "propertyNames": {
+            "pattern": "^\\d+$"
+          },
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/Condition"

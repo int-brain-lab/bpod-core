@@ -85,7 +85,10 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
             description='A collection of states',
             min_length=1,
             extra_json_schema={
-                'propertyNames': {'pattern': '^((?!>)(?!exit$).)*$', 'minLength': 1}
+                'propertyNames': {
+                    'pattern': '^((?!>)(?!exit$).)*$',
+                    'minLength': 1,
+                }
             },
         ),
     ] = dict()
@@ -96,6 +99,11 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         msgspec.Meta(
             title='Global Timers',
             description='A collection of global timers',
+            extra_json_schema={
+                'propertyNames': {
+                    'pattern': r'^\d+$',
+                }
+            },
         ),
     ] = dict()
     """A dictionary of global timers in the state machine."""
@@ -105,6 +113,11 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         msgspec.Meta(
             title='Global Counters',
             description='A collection of global counters',
+            extra_json_schema={
+                'propertyNames': {
+                    'pattern': r'^\d+$',
+                }
+            },
         ),
     ] = dict()
     """A dictionary of global counters in the state machine."""
@@ -114,6 +127,11 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         msgspec.Meta(
             title='Conditions',
             description='A collection of conditions',
+            extra_json_schema={
+                'propertyNames': {
+                    'pattern': r'^\d+$',
+                }
+            },
         ),
     ] = dict()
     """A dictionary of conditions in the state machine."""
