@@ -187,7 +187,7 @@ class FSMThread(threading.Thread):
         # confirm the state machine
         if self._confirm_fsm:
             if serial.read(1) != b'\x01':
-                raise RuntimeError('State machine #%d was not confirmed by Bpod', index)
+                raise RuntimeError(f'State machine #{index} was not confirmed by Bpod')
             if debug:
                 logger.debug('State machine #%d confirmed by Bpod', index)
 
@@ -457,13 +457,13 @@ class Bpod(AbstractBpod):
     def _save_settings(self) -> None:
         """Save the current settings to the settings file."""
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with SETTINGS_PATH.open('w') as f:
+        with SETTINGS_PATH.open('w', encoding='utf8') as f:
             json.dump(self._settings, f, indent=2)
 
     def _load_settings(self) -> None:
         """Load settings from the settings file."""
         if SETTINGS_PATH.exists():
-            with SETTINGS_PATH.open('r') as f:
+            with SETTINGS_PATH.open('r', encoding='utf8') as f:
                 self._settings = json.load(f)
         else:
             self._settings = {}

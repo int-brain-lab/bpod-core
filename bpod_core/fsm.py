@@ -91,7 +91,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
                 }
             },
         ),
-    ] = dict()
+    ] = {}
     """A dictionary of states in the state machine."""
 
     global_timers: Annotated[
@@ -105,7 +105,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
                 }
             },
         ),
-    ] = dict()
+    ] = {}
     """A dictionary of global timers in the state machine."""
 
     global_counters: Annotated[
@@ -119,7 +119,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
                 }
             },
         ),
-    ] = dict()
+    ] = {}
     """A dictionary of global counters in the state machine."""
 
     conditions: Annotated[
@@ -133,7 +133,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
                 }
             },
         ),
-    ] = dict()
+    ] = {}
     """A dictionary of conditions in the state machine."""
 
     @validate_call
