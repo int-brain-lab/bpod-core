@@ -61,7 +61,6 @@ intersphinx_mapping = {
     'pandas': ('https://pandas.pydata.org/docs/', None),
     'serial': ('https://pyserial.readthedocs.io/en/stable/', None),
     'graphviz': ('https://graphviz.readthedocs.io/en/stable/', None),
-    'beartype': ('https://beartype.readthedocs.io/en/latest/', None),
 }
 
 # -- Options for HTML output -------------------------------------------------

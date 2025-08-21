@@ -17,8 +17,8 @@ from typing import Any, NamedTuple, cast
 import msgspec
 import numpy as np
 from appdirs import user_data_dir
-from beartype import beartype
 from numpy.typing import NDArray
+from pydantic import validate_call
 from serial import SerialException
 from serial.tools.list_ports import comports
 from typing_extensions import Self
@@ -296,7 +296,7 @@ class Bpod(AbstractBpod):
     output_actions: list[str]
     """List of output actions."""
 
-    @beartype
+    @validate_call
     def __init__(
         self, port: str | None = None, serial_number: str | None = None
     ) -> None:
@@ -810,7 +810,7 @@ class Bpod(AbstractBpod):
         """The port of the Bpod's primary serial device."""
         return self.serial0.port
 
-    @beartype
+    @validate_call
     def set_status_led(self, enabled: bool) -> bool:
         """
         Enable or disable the Bpod's status LED.
@@ -902,7 +902,7 @@ class Bpod(AbstractBpod):
         """
         self.send_state_machine(state_machine, validate_only=True)
 
-    @beartype
+    @validate_call(config={'arbitrary_types_allowed': True})
     def send_state_machine(
         self,
         state_machine: StateMachine,
@@ -932,7 +932,7 @@ class Bpod(AbstractBpod):
         ------
         ValueError
             If the state machine is invalid or exceeds hardware limitations.
-        :exc:`~beartype.roar.BeartypeCallHintViolation`
+        :exc:`~validate_call.roar.validate_callCallHintViolation`
             If function arguments don’t match type hints.
         """
         # Disable all active module relays
@@ -1262,7 +1262,7 @@ class Bpod(AbstractBpod):
         if self.is_running:
             self._fsm_thread.join()  # type: ignore[union-attr]
 
-    @beartype
+    @validate_call
     def run_state_machine(self, *, blocking: bool = True) -> None:
         """Temporary run method for debugging purposes."""
         if self.is_running:
@@ -1524,7 +1524,7 @@ class Module:
             else:
                 self.event_names.append(f'{self.name}_{idx + 1}')
 
-    @beartype
+    @validate_call
     def set_relay(self, enable: bool) -> None:
         """
         Enable or disable the serial relay for the module.
