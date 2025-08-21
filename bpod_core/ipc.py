@@ -8,14 +8,13 @@ import sys
 import threading
 import uuid
 import weakref
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from types import TracebackType
 from typing import Any, Literal, cast
 
 import msgspec
 import zmq
-from mypy.error_formatter import ABC
 from typing_extensions import Self
 from zeroconf import (
     InterfaceChoice,
@@ -240,7 +239,7 @@ class DualChannelHost(DualChannelBase):
             # try to decode the request
             try:
                 request: DualChannelMessage = self._decoder.decode(request_frame.bytes)
-            except msgspec.DecodeError as e:
+            except msgspec.DecodeError as e1:
                 # try the other serialization as a fallback
                 try:
                     if self._serialization_protocol == 'msgpack':
@@ -255,14 +254,14 @@ class DualChannelHost(DualChannelBase):
                     logger.exception(
                         'Error decoding request from client: %s',
                         request_frame.bytes,
-                        exc_info=e,
+                        exc_info=e1,
                     )
-                    reply = self._format_error(type(e).__name__, e.args[0])
+                    reply = self._format_error(type(e1).__name__, e1.args[0])
                     try:
                         reply_bytes = self._encoder.encode(reply)
                         self._socket_req_rep.send(reply_bytes, copy=False)
-                    except (msgspec.EncodeError, zmq.ZMQError) as e:
-                        logger.exception('Error sending reply to client', exc_info=e)
+                    except (msgspec.EncodeError, zmq.ZMQError) as e2:
+                        logger.exception('Error sending reply to client', exc_info=e2)
                     continue
 
             # handle request depending on request type
@@ -456,11 +455,10 @@ class DualChannelClient(DualChannelBase):
                     reply = new_decoder.decode(reply_frame.bytes)
                 except msgspec.DecodeError:
                     raise ValueError('Error decoding reply from host') from e
-                else:
-                    logger.debug(f'Switching to {new_format} serialization')
-                    self._encoder = new_serialization_module.Encoder()
-                    self._decoder = new_decoder
-                    self._serialization = cast('Literal["json", "msgpack"]', new_format)
+                logger.debug('Switching to %s serialization', new_format)
+                self._encoder = new_serialization_module.Encoder()
+                self._decoder = new_decoder
+                self._serialization = cast('Literal["json", "msgpack"]', new_format)
 
             # return reply type and data
             return reply.type, reply.data

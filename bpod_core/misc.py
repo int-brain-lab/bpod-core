@@ -139,5 +139,4 @@ def get_local_ipv4() -> str:
         except OSError as e:
             if e.errno in {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL}:
                 return '127.0.0.1'
-            else:
-                raise
+            raise

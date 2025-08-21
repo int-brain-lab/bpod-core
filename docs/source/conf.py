@@ -3,6 +3,8 @@ import os
 import sys
 from datetime import date
 
+import msgspec
+
 sys.path.insert(0, os.path.abspath('../..'))
 from bpod_core import __version__, fsm
 
@@ -25,7 +27,9 @@ rst_prolog = f"""
 
 # -- dump json schema --------------------------------------------------------
 with open('../../schema/statemachine.json', 'w') as f:
-    json.dump(fsm.StateMachine.model_json_schema(), f, indent=2)
+    schema = msgspec.json.schema(fsm.StateMachine)
+    json.dump(schema, f, indent=2)
+    f.write('\n')  # add final newline
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

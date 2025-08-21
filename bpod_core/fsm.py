@@ -1,302 +1,149 @@
 """Module defining classes and types for creating and managing state machines."""
 
-import ctypes
-import re
-from collections import OrderedDict
 from typing import Annotated
 
+import msgspec
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import BaseModel, Field, NonNegativeFloat, NonNegativeInt, validate_call
+from pydantic import validate_call
 
-StateName = Annotated[
-    str,
-    Field(
-        min_length=1,
-        title='State Name',
-        description='The name of the state',
-        pattern=re.compile(r'^(?!exit$).*$'),
-    ),
-]
-StateTimer = Annotated[
-    float,
-    Field(
-        ge=0.0,
-        allow_inf_nan=False,
-        default=0.0,
-        title='State Timer',
-        description="The state's timer in seconds",
-    ),
-]
-TargetState = Annotated[
-    str,
-    Field(
-        min_length=1,
-        title='Target State',
-        description='The name of the target state',
-    ),
-]
-StateChangeConditions = Annotated[
-    dict[str, TargetState],
-    Field(
-        default_factory=dict,
-        title='State Change Conditions',
-        description='The conditions for switching from the current state to others',
-    ),
-]
-OutputActionValue = Annotated[
-    int,
-    Field(
-        ge=0,
-        le=255,
-        title='Output Action Value',
-        description='The integer value of the output action',
-    ),
-]
-OutputActions = Annotated[
-    dict[str, OutputActionValue],
-    Field(
-        default_factory=dict,
-        title='Output Actions',
-        description='The actions to be executed during the state',
-    ),
-]
-Comment = Annotated[
-    str,
-    Field(
-        title='Comment',
-        description='An optional comment describing the state.',
-    ),
-]
-GlobalTimerIndex = Annotated[
-    NonNegativeInt,
-    Field(
-        title='Global Timer ID',
-        description='The ID of the global timer',
-    ),
-]
-GlobalTimerDuration = Annotated[
-    NonNegativeFloat,
-    Field(
-        allow_inf_nan=False,
-        title='Global Timer Duration',
-        description='The duration of the global timer in seconds',
-    ),
-]
-GlobalTimerOnsetDelay = Annotated[
-    NonNegativeFloat,
-    Field(
-        allow_inf_nan=False,
-        default=0.0,
-        title='Onset Delay',
-        description='The onset delay of the global timer in seconds',
-    ),
-]
-GlobalTimerChannel = Annotated[
-    str | None,
-    Field(
-        title='Channel',
-        default=None,
-        description='The channel affected by the global timer',
-    ),
-]
-GlobalTimerChannelValue = Annotated[
-    int,
-    Field(
-        ge=0,
-        le=255,
-        default=0,
-        title='Channel Value',
-        description='The value a channel is set to',
-    ),
-]
-GlobalTimerSendEvents = Annotated[
-    bool,
-    Field(
-        default=True,
-        title='Send Events',
-        description='Whether the global timer is sending events',
-    ),
-]
-GlobalTimerLoop = Annotated[
-    int,
-    Field(
-        ge=0,
-        le=255,
-        default=0,
-        title='Loop Mode',
-        description='Whether the global timer is looping or not',
-    ),
-]
-GlobalTimerLoopInterval = Annotated[
-    NonNegativeFloat,
-    Field(
-        default=0.0,
-        title='Loop Interval',
-        description='The interval in seconds that the global timer is looping',
-    ),
-]
-GlobalTimerOnsetTrigger = Annotated[
-    NonNegativeInt | None,
-    Field(
-        default=0,
-        title='Onset Trigger',
-        description='An integer whose bits indicate other global timers to trigger',
-    ),
-]
-GlobalCounterID = Annotated[
-    NonNegativeInt,
-    Field(
-        title='ID',
-        description='The ID of the global counter',
-    ),
-]
-GlobalCounterEvent = Annotated[
-    str,
-    Field(
-        title='Event',
-        description='The name of the event to count',
-    ),
-]
-GlobalCounterThreshold = Annotated[
-    NonNegativeInt,
-    Field(
-        le=ctypes.c_uint32(-1).value,
-        title='Threshold',
-        description='The count threshold to generate an event',
-    ),
-]
-ConditionID = Annotated[
-    NonNegativeInt,
-    Field(
-        title='ID',
-        description='The ID of the condition',
-    ),
-]
-ConditionChannel = Annotated[
-    str,
-    Field(
-        title='Channel',
-        description='The channel or global timer attached to the condition',
-    ),
-]
-ConditionValue = Annotated[
-    bool,
-    Field(
-        title='Value',
-        description='The value of the condition channel if the condition is met',
-    ),
-]
+from bpod_core.types import (
+    ConditionChannel,
+    ConditionID,
+    ConditionValue,
+    GlobalCounterEvent,
+    GlobalCounterID,
+    GlobalCounterThreshold,
+    GlobalTimerChannel,
+    GlobalTimerChannelValue,
+    GlobalTimerDuration,
+    GlobalTimerIndex,
+    GlobalTimerLoop,
+    GlobalTimerLoopInterval,
+    GlobalTimerOnsetDelay,
+    GlobalTimerOnsetTrigger,
+    GlobalTimerSendEvents,
+    StateActions,
+    StateComment,
+    StateConditions,
+    StateMachineName,
+    StateName,
+    StateTimer,
+)
 
 
-class State(BaseModel):
+class State(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     """Represents a state in the state machine."""
 
-    timer: StateTimer = StateTimer()
+    timer: StateTimer = 0.0
     """The state's timer in seconds."""
 
-    state_change_conditions: StateChangeConditions = StateChangeConditions()
+    state_change_conditions: StateConditions = {}
     """A dictionary mapping conditions to target states for transitions."""
 
-    output_actions: OutputActions = OutputActions()
+    output_actions: StateActions = {}
     """A dictionary of actions to be executed during the state."""
 
-    comment: Comment = Comment()
+    comment: StateComment | None = None
     """An optional comment describing the state."""
 
-    model_config = {
-        'validate_assignment': True,
-        'json_schema_extra': {'additionalProperties': False},
-    }
-    """Configuration for the `State` model."""
 
-
-class GlobalTimer(BaseModel, validate_assignment=True):
+class GlobalTimer(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     timer_id: GlobalTimerIndex
     duration: GlobalTimerDuration
-    onset_delay: GlobalTimerOnsetDelay = GlobalTimerOnsetDelay()
-    channel: GlobalTimerChannel = None
-    value_on: GlobalTimerChannelValue = GlobalTimerChannelValue()
-    value_off: GlobalTimerChannelValue = GlobalTimerChannelValue()
-    send_events: GlobalTimerSendEvents = GlobalTimerSendEvents()
-    loop: GlobalTimerLoop = GlobalTimerLoop()
-    loop_interval: GlobalTimerLoopInterval = GlobalTimerLoopInterval()
-    onset_trigger: GlobalTimerOnsetTrigger = None
+    onset_delay: GlobalTimerOnsetDelay = 0.0
+    channel: GlobalTimerChannel | None = None
+    value_on: GlobalTimerChannelValue = 0
+    value_off: GlobalTimerChannelValue = 0
+    send_events: GlobalTimerSendEvents = True
+    loop: GlobalTimerLoop = 0
+    loop_interval: GlobalTimerLoopInterval = 0.0
+    onset_trigger: GlobalTimerOnsetTrigger = 0
 
 
-class GlobalCounter(BaseModel, validate_assignment=True):
+class GlobalCounter(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     id: GlobalCounterID
     event: GlobalCounterEvent
     threshold: GlobalCounterThreshold
 
 
-class Condition(BaseModel, validate_assignment=True):
+class Condition(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     id: ConditionID
     channel: ConditionChannel
     value: ConditionValue
 
 
-class StateMachine(BaseModel):
+class StateMachine(msgspec.Struct, omit_defaults=True):
     """Represents a state machine with a collection of states."""
 
-    name: str = Field(
-        min_length=1,
-        default='State Machine',
-        title='State Machine Name',
-        description='The name of the state machine',
-    )
+    name: StateMachineName = 'State Machine'
     """The name of the state machine."""
 
-    states: OrderedDict[StateName, State] = Field(
-        description='A collection of states',
-        title='States',
-        default_factory=OrderedDict,
-        json_schema_extra={
-            'propertyNames': {
-                'minLength': 1,
-                'type': 'string',
-                'not': {'const': 'exit'},
+    states: Annotated[
+        dict[StateName, State],
+        msgspec.Meta(
+            title='States',
+            description='A collection of states',
+            min_length=1,
+            extra_json_schema={
+                'propertyNames': {
+                    'pattern': '^((?!>)(?!exit$).)*$',
+                    'minLength': 1,
+                }
             },
-        },
-    )
-    """An ordered dictionary of states in the state machine."""
+        ),
+    ] = {}
+    """A dictionary of states in the state machine."""
 
-    global_timers: OrderedDict[GlobalTimerIndex, GlobalTimer] = Field(
-        description='A collection of global timers',
-        title='Global Timers',
-        default_factory=OrderedDict,
-        json_schema_extra={'propertyNames': {'type': 'int'}},
-    )
-    """An ordered dictionary of global timers in the state machine."""
+    global_timers: Annotated[
+        dict[GlobalTimerIndex, GlobalTimer],
+        msgspec.Meta(
+            title='Global Timers',
+            description='A collection of global timers',
+            extra_json_schema={
+                'propertyNames': {
+                    'pattern': r'^\d+$',
+                }
+            },
+        ),
+    ] = {}
+    """A dictionary of global timers in the state machine."""
 
-    global_counters: OrderedDict[GlobalCounterID, GlobalCounter] = Field(
-        description='A collection of global counters',
-        title='Global Counters',
-        default_factory=OrderedDict,
-        json_schema_extra={'propertyNames': {'type': 'int'}},
-    )
-    """An ordered dictionary of global counters in the state machine."""
+    global_counters: Annotated[
+        dict[GlobalCounterID, GlobalCounter],
+        msgspec.Meta(
+            title='Global Counters',
+            description='A collection of global counters',
+            extra_json_schema={
+                'propertyNames': {
+                    'pattern': r'^\d+$',
+                }
+            },
+        ),
+    ] = {}
+    """A dictionary of global counters in the state machine."""
 
-    conditions: OrderedDict[ConditionID, Condition] = Field(
-        description='A collection of conditions',
-        title='Conditions',
-        default_factory=OrderedDict,
-        json_schema_extra={'propertyNames': {'type': 'int'}},
-    )
-
-    model_config = {
-        'validate_assignment': True,
-        'json_schema_extra': {'additionalProperties': False},
-    }
-    """Configuration for the `StateMachine` model."""
+    conditions: Annotated[
+        dict[ConditionID, Condition],
+        msgspec.Meta(
+            title='Conditions',
+            description='A collection of conditions',
+            extra_json_schema={
+                'propertyNames': {
+                    'pattern': r'^\d+$',
+                }
+            },
+        ),
+    ] = {}
+    """A dictionary of conditions in the state machine."""
 
     @validate_call
     def add_state(
         self,
         name: StateName,
-        timer: StateTimer,
-        state_change_conditions: StateChangeConditions,
-        output_actions: OutputActions,
-        comment: Comment | None = None,
+        timer: StateTimer = 0.0,
+        state_change_conditions: StateConditions | None = None,
+        output_actions: StateActions | None = None,
+        comment: StateComment | None = None,
     ) -> None:
         """
         Adds a new state to the state machine.
@@ -323,10 +170,10 @@ class StateMachine(BaseModel):
         """
         if name in self.states:
             raise ValueError(f"A state named '{name}' is already registered")
-        self.states[name] = State.model_construct(
+        self.states[name] = State(
             timer=timer,
-            state_change_conditions=state_change_conditions,
-            output_actions=output_actions,
+            state_change_conditions=state_change_conditions or {},
+            output_actions=output_actions or {},
             comment=comment,
         )
 
@@ -335,7 +182,7 @@ class StateMachine(BaseModel):
         timer_id: GlobalTimerIndex,
         duration: GlobalTimerDuration,
         onset_delay: GlobalTimerOnsetDelay = 0.0,
-        channel: GlobalTimerChannel = None,
+        channel: GlobalTimerChannel | None = None,
         value_on: GlobalTimerChannelValue = 0,
         value_off: GlobalTimerChannelValue = 0,
         send_events: GlobalTimerSendEvents = True,
@@ -461,7 +308,7 @@ class StateMachine(BaseModel):
 
         Notes
         -----
-        This method depends on theGraphviz system libraries to be installed.
+        This method depends on the Graphviz system libraries to be installed.
         See https://graphviz.readthedocs.io/en/stable/manual.html#installation
         """
         # Initialize the Digraph with the name of the state machine

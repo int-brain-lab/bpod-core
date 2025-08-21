@@ -7,7 +7,6 @@ import struct
 import threading
 import traceback
 import weakref
-from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -187,7 +186,7 @@ class FSMThread(threading.Thread):
         # confirm the state machine
         if self._confirm_fsm:
             if serial.read(1) != b'\x01':
-                raise RuntimeError('State machine #%d was not confirmed by Bpod', index)
+                raise RuntimeError(f'State machine #{index} was not confirmed by Bpod')
             if debug:
                 logger.debug('State machine #%d confirmed by Bpod', index)
 
@@ -457,13 +456,13 @@ class Bpod(AbstractBpod):
     def _save_settings(self) -> None:
         """Save the current settings to the settings file."""
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with SETTINGS_PATH.open('w') as f:
+        with SETTINGS_PATH.open('w', encoding='utf8') as f:
             json.dump(self._settings, f, indent=2)
 
     def _load_settings(self) -> None:
         """Load settings from the settings file."""
         if SETTINGS_PATH.exists():
-            with SETTINGS_PATH.open('r') as f:
+            with SETTINGS_PATH.open('r', encoding='utf8') as f:
                 self._settings = json.load(f)
         else:
             self._settings = {}
@@ -593,7 +592,7 @@ class Bpod(AbstractBpod):
         machine_type_str = MACHINE_TYPES.get(machine_type, 'unknown')
         v_minor = self.serial0.query_struct(b'f', '<H')[0] if v_major > 22 else 0
         v_firmware = (v_major, v_minor)
-        if not (MIN_BPOD_HW_VERSION <= machine_type <= MAX_BPOD_HW_VERSION):
+        if not MIN_BPOD_HW_VERSION <= machine_type <= MAX_BPOD_HW_VERSION:
             raise BpodError(
                 f'The hardware version of the Bpod on {self.port} is not supported.',
             )
@@ -743,7 +742,7 @@ class Bpod(AbstractBpod):
 
     def _compile_event_names(self) -> None:
         """Compile the list of event names supported by the Bpod hardware."""
-        n_serial_events = sum([len(m.event_names) for m in self.modules])
+        n_serial_events = sum(len(m.event_names) for m in self.modules)
         n_softcodes = self._hardware.max_serial_events - n_serial_events
         n_usb = self._hardware.input_description.count(b'X')
         n_usb_ext = self._hardware.input_description.count(b'Z')
@@ -810,6 +809,7 @@ class Bpod(AbstractBpod):
         """The port of the Bpod's primary serial device."""
         return self.serial0.port
 
+    @validate_call
     def set_status_led(self, enabled: bool) -> bool:
         """
         Enable or disable the Bpod's status LED.
@@ -901,6 +901,7 @@ class Bpod(AbstractBpod):
         """
         self.send_state_machine(state_machine, validate_only=True)
 
+    @validate_call(config={'arbitrary_types_allowed': True})
     def send_state_machine(
         self,
         state_machine: StateMachine,
@@ -930,6 +931,8 @@ class Bpod(AbstractBpod):
         ------
         ValueError
             If the state machine is invalid or exceeds hardware limitations.
+        :exc:`~validate_call.roar.validate_callCallHintViolation`
+            If function arguments don’t match type hints.
         """
         # Disable all active module relays
         if not validate_only:
@@ -1258,6 +1261,7 @@ class Bpod(AbstractBpod):
         if self.is_running:
             self._fsm_thread.join()  # type: ignore[union-attr]
 
+    @validate_call
     def run_state_machine(self, *, blocking: bool = True) -> None:
         """Temporary run method for debugging purposes."""
         if self.is_running:
@@ -1326,10 +1330,9 @@ class Bpod(AbstractBpod):
         self._set_setting(['devices', str(self._serial_number), 'location'], location)
 
 
-class Channel(ABC):
-    """Abstract base class representing a channel on the Bpod device."""
+class Channel:
+    """Base class representing a channel on the Bpod device."""
 
-    @abstractmethod
     def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
         """
         Abstract base class representing a channel on the Bpod device.
@@ -1448,23 +1451,6 @@ class Input(Channel):
 
 class Output(Channel):
     """Output channel class representing a digital output channel."""
-
-    def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
-        """
-        Output channel class representing a digital output channel.
-
-        Parameters
-        ----------
-        bpod : Bpod
-            The Bpod instance associated with the channel.
-        name : str
-            The name of the channel.
-        io_key : bytes
-            The I/O type of the channel (e.g., b'B', b'V', b'P').
-        index : int
-            The index of the channel.
-        """
-        super().__init__(bpod, name, io_key, index)
 
     def override(self, state: bool | int) -> None:
         """
