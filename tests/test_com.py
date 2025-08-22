@@ -57,6 +57,15 @@ class TestChunkedSerialReader:
         reader = com.ChunkedSerialReader(chunk_size=2)
         assert len(reader) == 0
 
+    def test_custom_buffer(self):
+        buffer = bytearray()
+        reader = com.ChunkedSerialReader(chunk_size=2, buffer=buffer)
+        assert buffer is reader._buf
+
+    def test_call(self):
+        reader = com.ChunkedSerialReader(chunk_size=2)
+        assert reader.__call__() is reader
+
     def test_put_data(self):
         reader = com.ChunkedSerialReader(chunk_size=2)
         reader.put(b'\x01\x02\x03\x04')

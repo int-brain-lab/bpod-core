@@ -7,15 +7,14 @@ from bpod_core import misc
 
 class TestSanitizeString:
     def test_basic_substitution(self):
-        assert misc.sanitize_string(' hello world-123 ') == '_hello_world_123_'
+        assert misc.sanitize_string(' foo bar-123 ') == '_foo_bar_123_'
 
     def test_custom_substitute(self):
-        assert misc.sanitize_string('hello world!', substitute='-') == 'hello-world-'
-        assert misc.sanitize_string('a+b=c', substitute='X') == 'aXbXc'
+        assert misc.sanitize_string('foo bar!', substitute='-') == 'foo-bar-'
 
     def test_invalid_types(self):
         with pytest.raises(TypeError):
-            misc.sanitize_string('test', substitute=1)  # type: ignore
+            misc.sanitize_string('foo', substitute=1)  # type: ignore
         with pytest.raises(TypeError):
             misc.sanitize_string(1)  # type: ignore
 
@@ -23,49 +22,44 @@ class TestSanitizeString:
 @pytest.mark.parametrize(
     ('text', 'expected'),
     [
-        ('Hello World', 'hello_world'),
-        (' Hello World ', 'hello_world'),
-        ('HelloWorld', 'hello_world'),
-        ('Hello_World', 'hello_world'),
-        ('Hello__World', 'hello_world'),
-        ('_Hello_World_', 'hello_world'),
-        ('123Test', '123_test'),
-        ('Test123', 'test_123'),
+        ('Foo Bar', 'foo_bar'),
+        (' Foo Bar ', 'foo_bar'),
+        ('FooBar', 'foo_bar'),
+        ('Foo_Bar', 'foo_bar'),
+        ('Foo__Bar', 'foo_bar'),
+        ('_Foo_Bar_', 'foo_bar'),
+        ('123Bar', '123_bar'),
+        ('Foo123', 'foo_123'),
     ],
 )
 def test_convert_to_snake_case(text, expected):
     assert misc.convert_to_snake_case(text) == expected
 
 
-def test_suggest_similar():
-    # Test when there's a close match
-    result = misc.suggest_similar('appl', ['apple', 'banana', 'grape'], cutoff=0.6)
-    assert result == " - did you mean 'apple'?"
+class TestSuggestSimilar:
+    @pytest.fixture
+    def fruits(self):
+        return ['apple', 'banana', 'grape']
 
-    # Test when there's no close match
-    result = misc.suggest_similar('xyz', ['apple', 'banana', 'grape'], cutoff=0.6)
-    assert result == ''
+    def test_close_match(self, fruits):
+        result = misc.suggest_similar('appl', fruits, cutoff=0.6)
+        assert result == " - did you mean 'apple'?"
 
-    # Test with custom format string
-    result = misc.suggest_similar(
-        'banan',
-        ['apple', 'banana', 'grape'],
-        format_string="Did you mean '{}'?",
-        cutoff=0.6,
-    )
-    assert result == "Did you mean 'banana'?"
+    def test_no_close_match(self, fruits):
+        result = misc.suggest_similar('xyz', fruits, cutoff=0.6)
+        assert result == ''
 
-    # Test with low cutoff (no match above cutoff)
-    result = misc.suggest_similar('banana', ['apple', 'grape'], cutoff=0.9)
-    assert result == ''
+    def test_custom_format_string(self, fruits):
+        result = misc.suggest_similar('banan', fruits, format_string='{}?', cutoff=0.6)
+        assert result == 'banana?'
 
-    # Test with an empty valid_strings list
-    result = misc.suggest_similar('apple', [], cutoff=0.6)
-    assert result == ''
+    def test_empty_valid_strings(self):
+        result = misc.suggest_similar('apple', [], cutoff=0.6)
+        assert result == ''
 
-    # Test when the invalid_string is exactly one of the valid strings
-    result = misc.suggest_similar('banana', ['banana', 'apple', 'grape'], cutoff=0.6)
-    assert result == ''
+    def test_invalid_string_is_valid(self, fruits):
+        result = misc.suggest_similar('banana', fruits, cutoff=0.6)
+        assert result == " - did you mean 'banana'?"
 
 
 class TestSetNested:

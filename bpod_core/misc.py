@@ -89,8 +89,6 @@ def suggest_similar(
     str
         A formatted suggestion string if a match is found, otherwise an empty string.
     """
-    if invalid_string in valid_strings:
-        return ''  # Return an empty string for exact matches
     matches = difflib.get_close_matches(invalid_string, valid_strings, 1, cutoff)
     return format_string.format(matches[0]) if len(matches) > 0 else ''
 
