@@ -1,8 +1,8 @@
-import ctypes
 import re
 from typing import Annotated
 
 import msgspec
+import numpy as np
 from pydantic import Field
 
 StateName = Annotated[
@@ -154,7 +154,7 @@ GlobalCounterThreshold = Annotated[
     int,
     msgspec.Meta(
         ge=0,
-        le=ctypes.c_uint32(-1).value,
+        le=np.iinfo(np.uint32).max,
         title='Threshold',
         description='The count threshold to generate an event',
     ),
