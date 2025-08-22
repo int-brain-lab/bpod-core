@@ -7,17 +7,13 @@ from bpod_core import com
 
 
 @pytest.fixture
-def mock_serial():
+def mock_serial(mocker):
     """Fixture to mock serial communication."""
     mock_serial = com.ExtendedSerial()
     patched_object_base = 'bpod_core.com.Serial'
-    with (
-        patch(f'{patched_object_base}.write') as mock_write,
-        patch(f'{patched_object_base}.read') as mock_read,
-    ):
-        mock_serial.super_write = mock_write
-        mock_serial.super_read = mock_read
-        yield mock_serial
+    mock_serial.super_write = mocker.patch(f'{patched_object_base}.write')
+    mock_serial.super_read = mocker.patch(f'{patched_object_base}.read')
+    return mock_serial
 
 
 class TestEnhancedSerial:

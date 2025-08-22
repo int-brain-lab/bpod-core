@@ -49,19 +49,19 @@ fixture_bpod_2p = {
 
 
 @pytest.fixture
-def mock_comports():
+def mock_comports(mocker):
     """Fixture to mock available COM ports."""
     mock_port_info = MagicMock()
     mock_port_info.device = 'COM3'
     mock_port_info.serial_number = '12345'
     mock_port_info.vid = 0x16C0  # supported VID
-    with patch('bpod_core.bpod.comports') as mock_comports:
-        mock_comports.return_value = [mock_port_info]
-        yield mock_comports
+    mock_comports = mocker.patch('bpod_core.bpod.comports')
+    mock_comports.return_value = [mock_port_info]
+    return mock_comports
 
 
 @pytest.fixture
-def mock_ext_serial():
+def mock_ext_serial(mocker):
     """Mock base class methods for ExtendedSerial."""
     extended_serial = ExtendedSerial()
     extended_serial.response_buffer = bytearray()
@@ -84,22 +84,16 @@ def mock_ext_serial():
     def in_waiting() -> int:
         return len(extended_serial.response_buffer)
 
-    patched_obj_base = 'bpod_core.com.Serial'
-    with (
-        patch(f'{patched_obj_base}.__init__', return_value=None),
-        patch(f'{patched_obj_base}.__enter__', return_value=extended_serial),
-        patch(f'{patched_obj_base}.open'),
-        patch(f'{patched_obj_base}.close'),
-        patch(f'{patched_obj_base}.write', side_effect=write),
-        patch(f'{patched_obj_base}.read', side_effect=read),
-        patch(f'{patched_obj_base}.reset_input_buffer'),
-        patch(
-            f'{patched_obj_base}.in_waiting',
-            new_callable=PropertyMock,
-            side_effect=in_waiting,
-        ),
-    ):
-        yield extended_serial
+    tmp = 'bpod_core.com.Serial'
+    mocker.patch(f'{tmp}.__init__', return_value=None)
+    mocker.patch(f'{tmp}.__enter__', return_value=extended_serial)
+    mocker.patch(f'{tmp}.open')
+    mocker.patch(f'{tmp}.close')
+    mocker.patch(f'{tmp}.write', side_effect=write)
+    mocker.patch(f'{tmp}.read', side_effect=read)
+    mocker.patch(f'{tmp}.reset_input_buffer')
+    mocker.patch(f'{tmp}.in_waiting', new_callable=PropertyMock, side_effect=in_waiting)
+    return extended_serial
 
 
 @pytest.fixture
@@ -116,44 +110,36 @@ def mock_bpod(mock_ext_serial):
     )
     return mock_bpod
 
+@pytest.fixture
+def mock_json(mocker):
+    mocker.patch('bpod_core.bpod.json.load', return_value={})
+    mocker.patch('bpod_core.bpod.json.dump', return_value={})
 
 @pytest.fixture
-def mock_bpod_20(mock_comports, mock_ext_serial):  # noqa: ARG001
+def mock_bpod_20(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: ARG001
     mock_ext_serial.mock_responses.update(fixture_bpod_20)
-    with (
-        patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial),
-        patch('bpod_core.bpod.Bpod._detect_additional_serial_ports'),
-        patch('bpod_core.bpod.DualChannelHost'),
-        patch('bpod_core.bpod.json.load', return_value={}),
-        patch('bpod_core.bpod.json.dump', return_value={}),
-    ):
-        yield Bpod
+    mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
+    mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
+    mocker.patch('bpod_core.bpod.DualChannelHost')
+    return Bpod
 
 
 @pytest.fixture
-def mock_bpod_25(mock_comports, mock_ext_serial):  # noqa: ARG001
+def mock_bpod_25(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: ARG001
     mock_ext_serial.mock_responses.update(fixture_bpod_25)
-    with (
-        patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial),
-        patch('bpod_core.bpod.Bpod._detect_additional_serial_ports'),
-        patch('bpod_core.bpod.DualChannelHost'),
-        patch('bpod_core.bpod.json.load', return_value={}),
-        patch('bpod_core.bpod.json.dump', return_value={}),
-    ):
-        yield Bpod
+    mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
+    mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
+    mocker.patch('bpod_core.bpod.DualChannelHost')
+    return Bpod
 
 
 @pytest.fixture
-def mock_bpod_2p(mock_comports, mock_ext_serial):  # noqa: ARG001
+def mock_bpod_2p(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: ARG001
     mock_ext_serial.mock_responses.update(fixture_bpod_2p)
-    with (
-        patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial),
-        patch('bpod_core.bpod.Bpod._detect_additional_serial_ports'),
-        patch('bpod_core.bpod.DualChannelHost'),
-        patch('bpod_core.bpod.json.load', return_value={}),
-        patch('bpod_core.bpod.json.dump', return_value={}),
-    ):
-        yield Bpod
+    mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
+    mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
+    mocker.patch('bpod_core.bpod.DualChannelHost')
+    return Bpod
 
 
 class TestBpodIdentifyBpod:
