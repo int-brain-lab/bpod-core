@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0-alpha.3] - 2025-08-04
+## [0.1.0a3] - 2025-08-04
 
 ### Added
 
@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - switched package management from PDM to uv.
 
-## [0.1.0-alpha.2] - 2025-05-07
+## [0.1.0a2] - 2025-05-07
 
 ### Added
 
@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - further refactoring of the code
 - renamed `serial` module to `com` to avoid confusion with PySerial.
 
-## [0.1.0-alpha.1] - 2025-04-22
+## [0.1.0a1] - 2025-04-22
 
 ### Changed
 
@@ -41,11 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - removed `SerialSingleton` class.
 
-## [0.1.0-alpha] - 2025-04-17
+## [0.1.0a0] - 2025-04-17
 
 First alpha release. Nothing works.
 
-[0.1.0-alpha.3]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha.3
-[0.1.0-alpha.2]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha.2
-[0.1.0-alpha.1]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha.1
-[0.1.0-alpha]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha
+[0.1.0a3]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha.3
+[0.1.0a2]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha.2
+[0.1.0a1]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha.1
+[0.1.0a0]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha
