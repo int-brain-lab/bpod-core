@@ -1,4 +1,3 @@
-
 import pytest
 
 from bpod_core import ipc
