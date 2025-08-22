@@ -1,7 +1,7 @@
 import logging
 import re
 import struct
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, PropertyMock
 
 import pytest
 from serial import SerialException
@@ -110,10 +110,12 @@ def mock_bpod(mock_ext_serial):
     )
     return mock_bpod
 
+
 @pytest.fixture
 def mock_json(mocker):
     mocker.patch('bpod_core.bpod.json.load', return_value={})
     mocker.patch('bpod_core.bpod.json.dump', return_value={})
+
 
 @pytest.fixture
 def mock_bpod_20(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: ARG001

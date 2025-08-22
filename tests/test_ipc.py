@@ -1,4 +1,3 @@
-from unittest.mock import patch
 
 import pytest
 
@@ -6,29 +5,32 @@ from bpod_core import ipc
 
 
 @pytest.fixture
-def host():
-    with (
-        patch('bpod_core.ipc.Zeroconf'),
-        ipc.DualChannelHost(
-            service_name='TestService',
-            service_type='dualtest',
-            event_handler=lambda data: {'echo': data},
-            remote=False,
-            serialization='json',
-        ) as host,
-    ):
+def mock_zeroconf(mocker):
+    return mocker.patch('bpod_core.ipc.Zeroconf')
+
+
+@pytest.fixture
+def mock_service_browser(mocker):
+    return mocker.patch('bpod_core.ipc.ServiceBrowser')
+
+
+@pytest.fixture
+def host(mock_zeroconf):
+    with ipc.DualChannelHost(
+        service_name='TestService',
+        service_type='dualtest',
+        event_handler=lambda data: {'echo': data},
+        remote=False,
+        serialization='json',
+    ) as host:
         yield host
 
 
 @pytest.fixture
-def client(host):
-    with (
-        patch('bpod_core.ipc.Zeroconf'),
-        ipc.DualChannelClient(
-            service_type='dualtest',
-            address=host.rep_tcp_addr,
-        ) as client,
-    ):
+def client(host, mock_service_browser):
+    with ipc.DualChannelClient(
+        service_type='dualtest', address=host.rep_tcp_addr, discovery_timeout=0
+    ) as client:
         yield client
 
 
@@ -63,11 +65,8 @@ def test_error_response(host, client, caplog):
 
 
 @pytest.fixture
-def mock_service():
-    with (
-        patch('bpod_core.ipc.Zeroconf'),
-        ipc.DualChannelHost('test', 'testservice') as service,
-    ):
+def mock_service(mock_zeroconf):
+    with ipc.DualChannelHost('test', 'testservice') as service:
         yield service
 
 
@@ -79,8 +78,7 @@ def test_basic_init_and_properties(mock_service):
 
 
 @pytest.mark.parametrize('remote', [True, False])
-@patch('bpod_core.ipc.Zeroconf')
-def test_bind_address_matches_local_flag(_, remote):
+def test_bind_address_matches_local_flag(mock_zeroconf, remote):
     service = ipc.DualChannelHost(
         'test',
         'testservice',
