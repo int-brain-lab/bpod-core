@@ -1,6 +1,7 @@
 """Module defining classes and types for creating and managing state machines."""
 
-from typing import Annotated
+import json
+from typing import Annotated, cast
 
 import msgspec
 from graphviz import Digraph  # type: ignore[import-untyped]
@@ -288,8 +289,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
             value=value,
         )
 
-    @property
-    def digraph(self) -> Digraph:
+    def to_digraph(self) -> Digraph:
         """
         Returns a graphviz Digraph instance representing the state machine.
 
@@ -360,3 +360,68 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
                 digraph.edge(state_name, target_state, label=condition)
 
         return digraph
+
+    def to_dict(self) -> dict:
+        """Returns the state machine as a dictionary.
+
+        Returns
+        -------
+        dict
+            A dictionary representation of the state machine.
+        """
+        return cast('dict', msgspec.to_builtins(self))
+
+    def to_json(self, indent: None | int = None, compact: bool = False) -> str:
+        """Returns the state machine as a JSON string.
+
+        Parameters
+        ----------
+        indent : int or None, optional
+            If `indent` is a non-negative integer, then JSON array elements and object
+            members will be pretty-printed with that indent level. An indent level of
+            0 will only insert newlines. None is the most compact representation.
+        compact : bool, optional
+            If True, returns a compact JSON representation without extra whitespace.
+            Overrides the `indent` parameter. Default is False.
+
+        Returns
+        -------
+        str
+            A dictionary representation of the state machine.
+        """
+        if compact:
+            return msgspec.json.encode(self).decode()
+        dictionary = self.to_dict()
+        return json.dumps(dictionary, indent=indent)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'StateMachine':
+        """Creates a StateMachine instance from a dictionary.
+
+        Parameters
+        ----------
+        data : dict
+            A dictionary representation of a state machine.
+
+        Returns
+        -------
+        StateMachine
+            A StateMachine instance created from the provided dictionary.
+        """
+        return msgspec.convert(data, type=StateMachine)
+
+    @classmethod
+    def from_json(cls, json_str: str | bytes) -> 'StateMachine':
+        """Creates a StateMachine instance from a JSON string.
+
+        Parameters
+        ----------
+        json_str : str or bytes
+            A JSON string representation of a state machine.
+
+        Returns
+        -------
+        StateMachine
+            A StateMachine instance created from the provided JSON string.
+        """
+        return msgspec.json.decode(json_str, type=StateMachine)
