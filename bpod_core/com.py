@@ -38,7 +38,7 @@ class ExtendedSerial(Serial):
         Write data to the serial port.
 
         This method extends :meth:`serial.Serial.write` with support for NumPy types,
-        unsigned 8-bit integers, strings (interpreted as utf-8) and iterables.
+        unsigned 8-bit integers, strings (interpreted as UTF-8) and iterables.
 
         Parameters
         ----------
@@ -183,7 +183,18 @@ class ChunkedSerialReader(Protocol):
     """
 
     def __init__(self, chunk_size: int, buffer: bytearray | None = None) -> None:
-        """Initialize the protocol."""
+        """
+        Initialize the protocol.
+
+        Parameters
+        ----------
+        chunk_size : int
+            The fixed size of chunks to emit to `process` when enough data has
+            accumulated in the internal buffer.
+        buffer : bytearray, optional
+            Pre-allocated buffer to use for accumulation. If `None`, a new bytearray
+            is created.
+        """
         self._chunk_size = chunk_size
         if buffer is None:
             self._buf = bytearray()
@@ -251,28 +262,43 @@ class ChunkedSerialReader(Protocol):
         """
         Process a chunk of data.
 
+        Subclasses should override this method to implement application-specific
+        handling of fixed-size chunks. It is called repeatedly by `data_received`
+        whenever enough bytes have accumulated to reach `chunk_size`.
+
         Parameters
         ----------
         data_chunk : bytearray
+            A contiguous slice of bytes of length `chunk_size`.
         """
 
 
 def to_bytes(data: ByteLike) -> bytes:  # noqa: PLR0911
     """
-    Convert data to bytestring.
+    Convert data to a bytes object.
 
-    This method extends :meth:`serial.to_bytes` with support for NumPy types,
-    unsigned 8-bit integers, strings (interpreted as utf-8) and iterables.
+    This function extends :func:`serial.to_bytes` with support for:
+    - NumPy arrays and scalars
+    - Unsigned 8-bit integers
+    - Strings (encoded as UTF-8)
+    - Arbitrary iterables of ByteLike
 
     Parameters
     ----------
     data : ByteLike
-        Data to be converted to bytestring.
+        Data to be converted to a bytes object.
 
     Returns
     -------
     bytes
-        Data converted to bytestring.
+        Data converted to bytes.
+
+    Raises
+    ------
+    TypeError
+        If the input type cannot be interpreted as bytes
+    ValueError
+        If an integer is out of the 0..255 range when coerced to a single byte.
     """
     match data:
         case bytes():

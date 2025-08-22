@@ -32,7 +32,7 @@ def sanitize_string(string: str, substitute='_'):
     Raises
     ------
     TypeError
-        If not, both, `string` and `substitute` are strings.
+        If either `string` or `substitute` is not an instance of ``str``.
     """
     if not (isinstance(string, str) and isinstance(substitute, str)):
         raise TypeError('Both `string` and `substitute` must be strings.')
@@ -150,7 +150,7 @@ def get_local_ipv4() -> str:
 
     Returns
     -------
-    bytes
+    str
         The local IPv4 address as a string. If the network is unreachable or
         unavailable, returns the loopback address `127.0.0.1`.
 
