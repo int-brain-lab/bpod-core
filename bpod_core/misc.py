@@ -7,20 +7,45 @@ import socket
 from typing import Any
 
 RE_SANITIZE = re.compile(r'[^a-zA-Z0-9_]')
-RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z\d])')
-RE_UNDERSCORES = re.compile(r'_{2,}|_$|^_')
+RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
+RE_UNDERSCORES = re.compile(r'_{2,}')
 
 
-def convert_to_snake_case(input_str: str) -> str:
+def sanitize_string(string: str, substitute='_'):
     """
-    Convert a given string to snake_case.
-
-    This function replaces spaces with underscores and inserts underscores
-    between lowercase and uppercase letters to convert a string to snake_case.
+    Replace non-alphanumeric characters in a string with a given substitute.
 
     Parameters
     ----------
-    input_str : str
+    string : str
+        The input string to be sanitized.
+    substitute : str, optional
+        The character(s) to replace non-alphanumeric characters with.
+        Defaults to '_'.
+
+    Returns
+    -------
+    str
+        A sanitized string where all non-alphanumeric characters have been replaced with
+        the specified substitute.
+
+    Raises
+    ------
+    TypeError
+        If not, both, `string` and `substitute` are strings.
+    """
+    if not (isinstance(string, str) and isinstance(substitute, str)):
+        raise TypeError('Both `string` and `substitute` must be strings.')
+    return re.sub(RE_SANITIZE, substitute, string)
+
+
+def convert_to_snake_case(string: str) -> str:
+    """
+    Convert a given string to snake_case.
+
+    Parameters
+    ----------
+    string : str
         The input string to be converted.
 
     Returns
@@ -28,11 +53,11 @@ def convert_to_snake_case(input_str: str) -> str:
     str
         The converted snake_case string.
     """
-    input_str = input_str.replace(' ', '_')
-    snake_case_str = RE_SANITIZE.sub('', input_str)
-    snake_case_str = RE_SNAKE_CASE.sub('_', snake_case_str)
-    snake_case_str = RE_UNDERSCORES.sub('_', snake_case_str)
-    return snake_case_str.lower()
+    string = sanitize_string(string)
+    string = RE_SNAKE_CASE.sub('_', string)
+    string = RE_UNDERSCORES.sub('_', string)
+    string = string.strip('_')
+    return string.lower()
 
 
 def suggest_similar(
@@ -64,6 +89,8 @@ def suggest_similar(
     str
         A formatted suggestion string if a match is found, otherwise an empty string.
     """
+    if invalid_string in valid_strings:
+        return ''  # Return an empty string for exact matches
     matches = difflib.get_close_matches(invalid_string, valid_strings, 1, cutoff)
     return format_string.format(matches[0]) if len(matches) > 0 else ''
 
@@ -81,6 +108,8 @@ def set_nested(d: dict[str, Any], keys: list[str], value: Any) -> None:
     value : Any
         The value to set at the specified path.
     """
+    if not keys:
+        return  # Do nothing if keys is empty
     for key in keys[:-1]:
         d = d.setdefault(key, {})
     d[keys[-1]] = value
