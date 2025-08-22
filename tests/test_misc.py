@@ -1,5 +1,5 @@
 import errno
-import socket
+from unittest.mock import patch
 
 import pytest
 
@@ -100,27 +100,96 @@ class TestSetNested:
         assert d == {'a': 42}
 
 
+class TestGetNested:
+    def test_existing_value(self):
+        d = {'a': {'b': {'c': 42}}}
+        result = misc.get_nested(d, ['a', 'b', 'c'])
+        assert result == 42
+
+    def test_missing_key(self):
+        d = {'a': {'b': {}}}
+        result = misc.get_nested(d, ['a', 'b', 'c'])
+        assert result is None  # Default is None
+
+    def test_missing_key_with_default(self):
+        d = {'a': {'b': {}}}
+        result = misc.get_nested(d, ['a', 'b', 'c'], default=99)
+        assert result == 99  # Should return the default value
+
+    def test_empty_dict(self):
+        d = {}
+        result = misc.get_nested(d, ['a', 'b', 'c'])
+        assert result is None  # Default is None
+
+    def test_empty_dict_with_default(self):
+        d = {}
+        result = misc.get_nested(d, ['a', 'b', 'c'], default=99)
+        assert result == 99  # Should return the default value
+
+    def test_top_level_key(self):
+        d = {'a': 42}
+        result = misc.get_nested(d, ['a'])
+        assert result == 42
+
+    def test_non_dict_value(self):
+        d = {'a': 42}
+        result = misc.get_nested(d, ['a', 'b', 'c'])
+        assert result is None  # Default is None
+
+    def test_nested_with_non_dict(self):
+        d = {'a': {'b': 42}}
+        result = misc.get_nested(d, ['a', 'b', 'c'])
+        assert result is None  # Default is None
+
+
 class TestGetLocalIPv4:
-    def test_returns_valid_ipv4(self):
-        ip = misc.get_local_ipv4()
-        parts = ip.split('.')
-        assert len(parts) == 4
-        assert all(0 <= int(p) < 256 for p in parts)
+    @patch('socket.socket')
+    def test_successful_ip_retrieval(self, mock_socket):
+        # Mock the socket's behavior
+        mock_instance = mock_socket.return_value.__enter__.return_value
+        mock_instance.getsockname.return_value = ('192.168.1.10', 0)
 
-    def test_fallback_to_loopback_on_unreachable(self, monkeypatch):
-        class DummySocket:
-            def connect(self, addr):
-                raise OSError(errno.ENETUNREACH, 'Network unreachable')
+        result = misc.get_local_ipv4()
+        assert result == '192.168.1.10'
 
-            def close(self):
-                pass
+    @patch('socket.socket')
+    def test_network_unreachable(self, mock_socket):
+        # Mock the socket to raise an OSError for network unreachable
+        mock_instance = mock_socket.return_value.__enter__.return_value
+        mock_instance.connect.side_effect = OSError(
+            errno.ENETUNREACH, 'Network is unreachable'
+        )
 
-            def __enter__(self):
-                return self
+        result = misc.get_local_ipv4()
+        assert result == '127.0.0.1'
 
-            def __exit__(self, *args):
-                return False
+    @patch('socket.socket')
+    def test_host_unreachable(self, mock_socket):
+        # Mock the socket to raise an OSError for host unreachable
+        mock_instance = mock_socket.return_value.__enter__.return_value
+        mock_instance.connect.side_effect = OSError(
+            errno.EHOSTUNREACH, 'Host is unreachable'
+        )
 
-        monkeypatch.setattr(socket, 'socket', lambda *a, **k: DummySocket())
-        ip = misc.get_local_ipv4()
-        assert ip == '127.0.0.1'
+        result = misc.get_local_ipv4()
+        assert result == '127.0.0.1'
+
+    @patch('socket.socket')
+    def test_address_not_available(self, mock_socket):
+        # Mock the socket to raise an OSError for address not available
+        mock_instance = mock_socket.return_value.__enter__.return_value
+        mock_instance.connect.side_effect = OSError(
+            errno.EADDRNOTAVAIL, 'Address not available'
+        )
+
+        result = misc.get_local_ipv4()
+        assert result == '127.0.0.1'
+
+    @patch('socket.socket')
+    def test_unexpected_os_error(self, mock_socket):
+        # Mock the socket to raise an unexpected OSError
+        mock_instance = mock_socket.return_value.__enter__.return_value
+        mock_instance.connect.side_effect = OSError(errno.EACCES, 'Permission denied')
+
+        with pytest.raises(OSError):
+            misc.get_local_ipv4()
