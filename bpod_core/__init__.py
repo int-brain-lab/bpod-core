@@ -5,4 +5,12 @@ import importlib.metadata
 try:
     __version__ = importlib.metadata.version('bpod_core')
 except importlib.metadata.PackageNotFoundError:
-    __version__ = '0.0.0.dev0'  # Fallback for development mode
+    from pathlib import Path
+
+    from msgspec import toml
+    from packaging.version import Version
+
+    toml_file = Path(__file__).parents[1].joinpath('pyproject.toml')
+    with toml_file.open('r', encoding='utf8') as f:
+        toml_data = toml.decode(f.read())
+    __version__ = str(Version(toml_data['project']['version']))

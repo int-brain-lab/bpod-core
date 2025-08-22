@@ -1,9 +1,30 @@
+import importlib.metadata
 import re
+import sys
 from pathlib import Path
 
 from packaging.version import Version
 
 from bpod_core import __version__ as bpod_core_version
+
+
+def test_version_found(monkeypatch):
+    monkeypatch.setattr(importlib.metadata, 'version', lambda _: '1.2.3')
+    sys.modules.pop('bpod_core', None)
+    import bpod_core  # noqa: PLC0415
+
+    assert bpod_core.__version__ == '1.2.3'
+
+
+def test_version_not_found(monkeypatch):
+    def raise_not_found(name):
+        raise importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(importlib.metadata, 'version', raise_not_found)
+    sys.modules.pop('bpod_core', None)
+    import bpod_core  # noqa: PLC0415
+
+    assert Version(bpod_core.__version__) > Version('0.0.0')
 
 
 def test_changelog():
