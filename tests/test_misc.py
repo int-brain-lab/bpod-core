@@ -1,5 +1,4 @@
 import errno
-from unittest.mock import patch
 
 import pytest
 
@@ -21,15 +20,21 @@ class TestSanitizeString:
             misc.sanitize_string(1)  # type: ignore
 
 
-def test_convert_to_snake_case():
-    assert misc.convert_to_snake_case('Hello World') == 'hello_world'
-    assert misc.convert_to_snake_case(' Hello World ') == 'hello_world'
-    assert misc.convert_to_snake_case('HelloWorld') == 'hello_world'
-    assert misc.convert_to_snake_case('Hello_World') == 'hello_world'
-    assert misc.convert_to_snake_case('Hello__World') == 'hello_world'
-    assert misc.convert_to_snake_case('_Hello_World_') == 'hello_world'
-    assert misc.convert_to_snake_case('123Test') == '123_test'
-    assert misc.convert_to_snake_case('Test123') == 'test_123'
+@pytest.mark.parametrize(
+    ('text', 'expected'),
+    [
+        ('Hello World', 'hello_world'),
+        (' Hello World ', 'hello_world'),
+        ('HelloWorld', 'hello_world'),
+        ('Hello_World', 'hello_world'),
+        ('Hello__World', 'hello_world'),
+        ('_Hello_World_', 'hello_world'),
+        ('123Test', '123_test'),
+        ('Test123', 'test_123'),
+    ],
+)
+def test_convert_to_snake_case(text, expected):
+    assert misc.convert_to_snake_case(text) == expected
 
 
 def test_suggest_similar():
@@ -143,16 +148,17 @@ class TestGetNested:
 
 
 class TestGetLocalIPv4:
-    @patch('socket.socket')
+    @pytest.fixture
+    def mock_socket(self, mocker):
+        return mocker.patch('socket.socket')
+
     def test_successful_ip_retrieval(self, mock_socket):
-        # Mock the socket's behavior
         mock_instance = mock_socket.return_value.__enter__.return_value
         mock_instance.getsockname.return_value = ('192.168.1.10', 0)
 
         result = misc.get_local_ipv4()
         assert result == '192.168.1.10'
 
-    @patch('socket.socket')
     def test_network_unreachable(self, mock_socket):
         # Mock the socket to raise an OSError for network unreachable
         mock_instance = mock_socket.return_value.__enter__.return_value
@@ -163,7 +169,6 @@ class TestGetLocalIPv4:
         result = misc.get_local_ipv4()
         assert result == '127.0.0.1'
 
-    @patch('socket.socket')
     def test_host_unreachable(self, mock_socket):
         # Mock the socket to raise an OSError for host unreachable
         mock_instance = mock_socket.return_value.__enter__.return_value
@@ -174,7 +179,6 @@ class TestGetLocalIPv4:
         result = misc.get_local_ipv4()
         assert result == '127.0.0.1'
 
-    @patch('socket.socket')
     def test_address_not_available(self, mock_socket):
         # Mock the socket to raise an OSError for address not available
         mock_instance = mock_socket.return_value.__enter__.return_value
@@ -185,7 +189,6 @@ class TestGetLocalIPv4:
         result = misc.get_local_ipv4()
         assert result == '127.0.0.1'
 
-    @patch('socket.socket')
     def test_unexpected_os_error(self, mock_socket):
         # Mock the socket to raise an unexpected OSError
         mock_instance = mock_socket.return_value.__enter__.return_value

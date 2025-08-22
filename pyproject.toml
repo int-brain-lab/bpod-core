@@ -61,6 +61,7 @@ test = [
   "tox>=4.25.0",
   "tox-uv>=0.7.2",
   "packaging>=25.0",
+  "pytest-mock>=3.14.1",
 ]
 typing = [
   "appdirs-stubs>=0.1.0",
