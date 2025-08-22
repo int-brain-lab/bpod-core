@@ -138,7 +138,7 @@ select = [
 convention = "numpy"
 
 [tool.mypy]
-packages = "bpod_core"
+packages = [ "bpod_core", "tests" ]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true

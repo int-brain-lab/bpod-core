@@ -123,7 +123,7 @@ def mock_bpod_20(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: AR
     mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
     mocker.patch('bpod_core.bpod.DualChannelHost')
-    return Bpod
+    return Bpod('COM3')
 
 
 @pytest.fixture
@@ -132,7 +132,7 @@ def mock_bpod_25(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: AR
     mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
     mocker.patch('bpod_core.bpod.DualChannelHost')
-    return Bpod
+    return Bpod('COM3')
 
 
 @pytest.fixture
@@ -141,7 +141,7 @@ def mock_bpod_2p(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: AR
     mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
     mocker.patch('bpod_core.bpod.DualChannelHost')
-    return Bpod
+    return Bpod('COM3')
 
 
 class TestBpodIdentifyBpod:
@@ -339,6 +339,7 @@ class TestGetHardwareConfiguration:
 
 class TestBpodHandshake:
     def test_handshake_success(self, mock_bpod, caplog):
+        """Test successful handshake with Bpod."""
         caplog.set_level(logging.DEBUG)
         mock_bpod.serial0.mock_responses = {b'6': b'5'}
         Bpod._handshake(mock_bpod)
@@ -347,12 +348,14 @@ class TestBpodHandshake:
         assert 'successful' in caplog.records[0].message
 
     def test_handshake_failure_1(self, mock_bpod):
-        mock_bpod.serial0.mock_responses = {b'6': b''}
+        """Test failure to complete handshake with Bpod due to incorrect response."""
+        mock_bpod.serial0.mock_responses = {b'6': b'6'}
         with pytest.raises(BpodError, match='Handshake .* failed'):
             Bpod._handshake(mock_bpod)
         mock_bpod.serial0.reset_input_buffer.assert_called_once()
 
     def test_handshake_failure_2(self, mock_bpod):
+        """Test failure to complete handshake with Bpod due to exception."""
         mock_bpod.serial0 = MagicMock(spec=ExtendedSerial)
         mock_bpod.serial0.verify.side_effect = SerialException
         with pytest.raises(BpodError, match='Handshake .* failed'):
@@ -362,6 +365,7 @@ class TestBpodHandshake:
 
 class TestResetSessionClock:
     def test_reset_session_clock(self, mock_bpod, caplog):
+        """Test successful reset of session clock."""
         caplog.set_level(logging.DEBUG)
         mock_bpod.serial0.mock_responses = {rb'\*': b'\x01'}
         assert Bpod.reset_session_clock(mock_bpod) is True
@@ -404,27 +408,24 @@ class TestSendStateMachine:
         return fsm
 
     def test_send_state_machine_basic_25(self, fsm_basic, mock_bpod_25):
-        bpod = mock_bpod_25('COM3')
-        bpod.send_state_machine(fsm_basic, run_asap=False)
-        assert bpod.serial0.last_write == (
+        mock_bpod_25.send_state_machine(fsm_basic, run_asap=False)
+        assert mock_bpod_25.serial0.last_write == (
             b'C\x00\x00&\x00\x02\x00\x00\x00\x01\x00\x00\x00\x01\t\xff\x00\x00\x00\x00'
             b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10'\x00\x00\x10"
             b"'\x00\x00\x00"
         )
 
     def test_send_state_machine_basic_2p(self, fsm_basic, mock_bpod_2p):
-        bpod = mock_bpod_2p('COM3')
-        bpod.send_state_machine(fsm_basic, run_asap=False)
-        assert bpod.serial0.last_write == (
+        mock_bpod_2p.send_state_machine(fsm_basic, run_asap=False)
+        assert mock_bpod_2p.serial0.last_write == (
             b'C\x00\x00,\x00\x02\x00\x00\x00\x01\x00\x00\x00\x01\x00\x0b\x00\xff\x00'
             b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
             b"\x00\x00\x00\x10'\x00\x00\x10'\x00\x00\x00"
         )
 
     def test_send_state_machine_global_timers_25(self, fsm_global_timers, mock_bpod_25):
-        bpod = mock_bpod_25('COM3')
-        bpod.send_state_machine(fsm_global_timers)
-        assert bpod.serial0.last_write == (
+        mock_bpod_25.send_state_machine(fsm_global_timers)
+        assert mock_bpod_25.serial0.last_write == (
             b'C\x00\x00\x61\x00\x02\x03\x00\x00\x00\x01\x00\x00\x00\x00\x01\x02\x01\x00'
             b'\x00\x01\x02\x02\x00\x00\x00\x00\xfe\xfe\x09\x00\x00\x80\x00\x00\x40\x00'
             b'\x00\x01\x01\x01\x01\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
@@ -434,9 +435,8 @@ class TestSendStateMachine:
         )
 
     def test_send_state_machine_global_timers_2p(self, fsm_global_timers, mock_bpod_2p):
-        bpod = mock_bpod_2p('COM3')
-        bpod.send_state_machine(fsm_global_timers)
-        assert bpod.serial0.last_write == (
+        mock_bpod_2p.send_state_machine(fsm_global_timers)
+        assert mock_bpod_2p.serial0.last_write == (
             b'C\x00\x00\x6b\x00\x02\x03\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x01\x02'
             b'\x01\x00\x00\x01\x02\x02\x00\x00\x00\x00\xfe\xfe\x0b\x00\x00\x00\x00\x80'
             b'\x00\x00\x00\x00\x00\x40\x00\x00\x00\x01\x01\x01\x01\x00\x00\x00\x04\x00'
@@ -451,9 +451,8 @@ class TestSendStateMachine:
         fsm_global_counters,
         mock_bpod_25,
     ):
-        bpod = mock_bpod_25('COM3')
-        bpod.send_state_machine(fsm_global_counters)
-        assert bpod.serial0.last_write == (
+        mock_bpod_25.send_state_machine(fsm_global_counters)
+        assert mock_bpod_25.serial0.last_write == (
             b'C\x00\x00\x4a\x00\x03\x00\x03\x00\x01\x02\x02\x00\x00\x00\x01\x0a\xff\x00'
             b'\x01\x09\xff\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x00\x00\x00\xfe'
             b'\xfe\x6d\x01\x01\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x20'
@@ -462,13 +461,10 @@ class TestSendStateMachine:
         )
 
     def test_send_state_machine_global_counters_2p(
-        self,
-        fsm_global_counters,
-        mock_bpod_2p,
+        self, fsm_global_counters, mock_bpod_2p
     ):
-        bpod = mock_bpod_2p('COM3')
-        bpod.send_state_machine(fsm_global_counters)
-        assert bpod.serial0.last_write == (
+        mock_bpod_2p.send_state_machine(fsm_global_counters)
+        assert mock_bpod_2p.serial0.last_write == (
             b'C\x00\x00\x53\x00\x03\x00\x03\x00\x01\x02\x02\x00\x00\x00\x01\x00\x0c\x00'
             b'\xff\x00\x00\x00\x01\x00\x0b\x00\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00'
             b'\x01\x02\x03\x00\x00\x00\xfe\xfe\x57\x01\x01\x03\x00\x00\x00\x00\x00\x00'
@@ -477,18 +473,16 @@ class TestSendStateMachine:
         )
 
     def test_send_state_machine_conditions_25(self, fsm_conditions, mock_bpod_25):
-        bpod = mock_bpod_25('COM3')
-        bpod.send_state_machine(fsm_conditions)
-        assert bpod.serial0.last_write == (
+        mock_bpod_25.send_state_machine(fsm_conditions)
+        assert mock_bpod_25.serial0.last_write == (
             b'C\x00\x00\x2e\x00\x02\x00\x00\x02\x01\x02\x00\x00\x01\x09\xff\x01\x0a\xff'
             b'\x00\x00\x00\x00\x00\x00\x00\x01\x01\x02\x00\x0a\x00\x01\x00\x00\x00\x00'
             b'\x00\x00\x00\x00\x00\x10\x27\x00\x00\x10\x27\x00\x00\x00'
         )
 
     def test_send_state_machine_conditions_2p(self, fsm_conditions, mock_bpod_2p):
-        bpod = mock_bpod_2p('COM3')
-        bpod.send_state_machine(fsm_conditions)
-        assert bpod.serial0.last_write == (
+        mock_bpod_2p.send_state_machine(fsm_conditions)
+        assert mock_bpod_2p.serial0.last_write == (
             b'C\x00\x00\x36\x00\x02\x00\x00\x02\x01\x02\x00\x00\x01\x00\x0b\x00\xff\x00'
             b'\x01\x00\x0c\x00\xff\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x02\x00\x0c'
             b'\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10\x27\x00\x00\x10'

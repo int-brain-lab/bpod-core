@@ -235,6 +235,7 @@ class DualChannelHost(DualChannelBase):
                 request_frame = self._socket_req_rep.recv(copy=False)
             except zmq.ZMQError as e:
                 logger.exception('Error receiving request from client', exc_info=e)
+                continue
 
             # try to decode the request
             try:
