@@ -6,7 +6,7 @@ import msgspec
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import validate_call
 
-from bpod_core.types import (
+from bpod_core.fsm_types import (
     ConditionChannel,
     ConditionID,
     ConditionValue,
