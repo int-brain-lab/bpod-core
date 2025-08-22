@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import msgspec
 import pytest
 from pydantic import ValidationError
 
@@ -152,3 +155,14 @@ def test_from_json():
     fsm = StateMachine.from_json(json_str)
     assert isinstance(fsm, StateMachine)
     assert json_str == fsm.to_json()  # roundtrip
+
+
+def test_schema():
+    """Test that the schema file exists and is up to date."""
+    schema_path = Path(__file__).parents[1].joinpath('schema/statemachine.json')
+    assert schema_path.exists(), 'schema file does not exist'
+    with schema_path.open('r') as f:
+        data = f.read()
+    schema_from_file = msgspec.json.decode(data)
+    schema_from_struct = msgspec.json.schema(StateMachine)
+    assert schema_from_file == schema_from_struct, 'schema file is out of date'
