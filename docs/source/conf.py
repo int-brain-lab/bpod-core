@@ -1,10 +1,9 @@
+import importlib.util
+import inspect
 import json
-import os
 import sys
 from datetime import date
 from pathlib import Path
-import importlib.util
-import inspect
 
 import msgspec
 
@@ -12,13 +11,13 @@ project_root = Path(__file__).parents[2].resolve()
 docs_source_path = Path(__file__).parent.resolve()
 sys.path.insert(0, project_root)
 
-from bpod_core import __version__, fsm
+from bpod_core import __version__, fsm  # noqa: E402
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'bpod-core'
-copyright = f'{date.today().year}, International Brain Laboratory'
+copyright = f'{date.today().year}, International Brain Laboratory'  # noqa: A001
 author = 'International Brain Laboratory'
 release = '.'.join(__version__.split('.')[:3])
 version = '.'.join(__version__.split('.')[:3])
@@ -37,41 +36,47 @@ with schema_root.joinpath('statemachine.json').open('w') as f:
 # -- Generate Examples pages --------------------------------------------------
 # Create docs/source/examples/ with one page per example and an index.rst
 examples_source_path = project_root / 'examples'
-examples_target_path =  docs_source_path / 'examples'
+examples_target_path = docs_source_path / 'examples'
 examples_target_path.mkdir(exist_ok=True)
 example_files = [f for f in examples_source_path.glob('*.py')]
 
 examples_target_path.mkdir(exist_ok=True)
 
 # Write an index.rst with a toctree listing all example pages
-title = 'Examples'
-index_lines: list[str] = []
-index_lines.append(title)
-index_lines.append('=' * len(title))
-index_lines.append('')
-index_lines.append('The following example scripts are part of the repository and are shown here in full.\n')
-index_lines.append('.. toctree::')
-index_lines.append('   :maxdepth: 1')
-index_lines.append('')
+index_lines = [
+    'Example State Machines',
+    '======================',
+    '',
+    'The following examples illustrate usage and features of the '
+    ':class:`~bpod_core.fsm.StateMachine` class.',
+    '',
+    '.. toctree::',
+    '   :maxdepth: 1',
+    '',
+]
 
 for fn in example_files:
-    spec = importlib.util.spec_from_file_location('example', str(fn))
-    my_module = importlib.util.module_from_spec(spec)
-    sys.modules['my_module'] = my_module
-    spec.loader.exec_module(my_module)
+    # Import the example file as a module
+    spec = importlib.util.spec_from_file_location(fn.stem, str(fn))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[fn.stem] = module
+    spec.loader.exec_module(module)
 
-    doc = inspect.getdoc(my_module)
+    # Extract title and description from docstring
+    doc = inspect.getdoc(module)
     page_title = doc.splitlines()[0].strip('."')
     description = '\n'.join(doc.splitlines()[1:]).strip('"')
 
-    digraph = my_module.fsm.to_digraph()
+    # Generate state machine diagram and save as SVG
+    state_machine = module.fsm
+    digraph = state_machine.to_digraph()
     digraph.attr(rankdir='LR')
     image_file = examples_target_path / fn.with_suffix('.svg').name
-    digraph.render(outfile=image_file,
-                   format='svg',
-                   cleanup=True,
-                   engine='dot')
-    # page_title = my_module.fsm.name
+    digraph.render(outfile=image_file, format='svg', cleanup=True, engine='dot')
+
+    # Generate JSON
+    json = state_machine.to_json(indent=2).splitlines()
+    json = [' ' * 7 + line for line in json]
 
     page_path = examples_target_path.joinpath(f'{fn.stem}.rst')
     page_lines = [
@@ -95,12 +100,13 @@ for fn in example_files:
         '',
         '    .. code-block:: json',
         '',
-        *[f'       {l}' for l in my_module.fsm.to_json(indent=2).splitlines()],
+        *json,
         '',
     ]
     with page_path.open('w', encoding='utf-8') as pf:
         pf.write('\n'.join(page_lines) + '\n')
-    # Add to toctree (relative to examples/ directory)
+
+    # Add page to toctree
     index_lines.append(f'   {fn.stem}')
 
 index_out = examples_target_path / 'index.rst'

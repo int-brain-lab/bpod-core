@@ -20,7 +20,6 @@ fsm.add_state(
 )
 fsm.add_state(
     name='ResetGlobalCounter',
-    timer=0,
     state_change_conditions={'Tup': 'Port1Light'},
     output_actions={'GlobalCounterReset': 1},
 )
