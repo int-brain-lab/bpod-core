@@ -2,16 +2,17 @@ import json
 import os
 import sys
 from datetime import date
+from pathlib import Path
+import importlib.util
+import inspect
 
 import msgspec
 
-sys.path.insert(0, os.path.abspath('../..'))
-from bpod_core import __version__, fsm
+project_root = Path(__file__).parents[2].resolve()
+docs_source_path = Path(__file__).parent.resolve()
+sys.path.insert(0, project_root)
 
-# Configuration file for the Sphinx documentation builder.
-#
-# For the full list of built-in configuration values, see the documentation:
-# https://www.sphinx-doc.org/en/master/usage/configuration.html
+from bpod_core import __version__, fsm
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
@@ -26,10 +27,85 @@ rst_prolog = f"""
 """
 
 # -- dump json schema --------------------------------------------------------
-with open('../../schema/statemachine.json', 'w') as f:
+schema_root = project_root / 'schema'
+schema_root.mkdir(exist_ok=True)
+with schema_root.joinpath('statemachine.json').open('w') as f:
     schema = msgspec.json.schema(fsm.StateMachine)
     json.dump(schema, f, indent=2)
     f.write('\n')  # add final newline
+
+# -- Generate Examples pages --------------------------------------------------
+# Create docs/source/examples/ with one page per example and an index.rst
+examples_source_path = project_root / 'examples'
+examples_target_path =  docs_source_path / 'examples'
+examples_target_path.mkdir(exist_ok=True)
+example_files = [f for f in examples_source_path.glob('*.py')]
+
+examples_target_path.mkdir(exist_ok=True)
+
+# Write an index.rst with a toctree listing all example pages
+title = 'Examples'
+index_lines: list[str] = []
+index_lines.append(title)
+index_lines.append('=' * len(title))
+index_lines.append('')
+index_lines.append('The following example scripts are part of the repository and are shown here in full.\n')
+index_lines.append('.. toctree::')
+index_lines.append('   :maxdepth: 1')
+index_lines.append('')
+
+for fn in example_files:
+    spec = importlib.util.spec_from_file_location('example', str(fn))
+    my_module = importlib.util.module_from_spec(spec)
+    sys.modules['my_module'] = my_module
+    spec.loader.exec_module(my_module)
+
+    doc = inspect.getdoc(my_module)
+    page_title = doc.splitlines()[0].strip('."')
+    description = '\n'.join(doc.splitlines()[1:]).strip('"')
+
+    digraph = my_module.fsm.to_digraph()
+    digraph.attr(rankdir='LR')
+    image_file = examples_target_path / fn.with_suffix('.svg').name
+    digraph.render(outfile=image_file,
+                   format='svg',
+                   cleanup=True,
+                   engine='dot')
+    # page_title = my_module.fsm.name
+
+    page_path = examples_target_path.joinpath(f'{fn.stem}.rst')
+    page_lines = [
+        page_title,
+        '-' * len(page_title),
+        '',
+        description,
+        '',
+        f'.. image:: {image_file.name}',
+        '   :align: center',
+        '',
+        '.. tab-set::',
+        '',
+        '   .. tab-item:: Python',
+        '',
+        f'    .. literalinclude:: ../../../examples/{fn.name}',
+        '       :language: python',
+        '       :start-at: from bpod_core.',
+        '',
+        '   .. tab-item:: JSON',
+        '',
+        '    .. code-block:: json',
+        '',
+        *[f'       {l}' for l in my_module.fsm.to_json(indent=2).splitlines()],
+        '',
+    ]
+    with page_path.open('w', encoding='utf-8') as pf:
+        pf.write('\n'.join(page_lines) + '\n')
+    # Add to toctree (relative to examples/ directory)
+    index_lines.append(f'   {fn.stem}')
+
+index_out = examples_target_path / 'index.rst'
+with index_out.open('w', encoding='utf-8') as f:
+    f.write('\n'.join(index_lines) + '\n')
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

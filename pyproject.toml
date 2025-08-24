@@ -94,7 +94,7 @@ source-include = [ "tests/*.py", "schema/*.json", "docs/source/**/*" ]
 source-exclude = [ "docs/source/api" ]
 
 [tool.ruff]
-include = ["bpod_core/**/*.py", "tests/**/*.py"]
+include = ["bpod_core/**/*.py", "tests/**/*.py", "examples/**/*.py"]
 target-version = "py310"
 
 [tool.ruff.format]
