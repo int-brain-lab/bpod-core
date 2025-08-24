@@ -312,54 +312,96 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         See https://graphviz.readthedocs.io/en/stable/manual.html#installation
         """
         # Initialize the Digraph with the name of the state machine
-        digraph = Digraph(self.name)
+        dot = Digraph(self.name)
 
         # Return an empty Digraph if there are no states
         if len(self.states) == 0:
-            return digraph
+            return dot
 
-        # Add the start node represented by a point-shaped node
-        digraph.node(name='', shape='point')
-        digraph.edge('', next(iter(self.states.keys())))
+        # Set default graph attributes and styling
+        fontname = 'Helvetica,Arial,sans-serif'
+        dot.attr(overlap='false', splines='true')
+        dot.attr('graph', fontname=fontname, fontsize='11', bgcolor='transparent')
+        dot.attr('node', fontname=fontname, fontsize='11', bgcolor='white')
+        dot.attr('edge', fontname=fontname, fontsize='10')
 
-        # Add an 'exit' node if any state transitions to 'exit'
-        if 'exit' in [
-            target
-            for state in self.states.values()
-            for target in state.state_change_conditions.values()
-        ]:
-            digraph.node(name='exit', label='<<b>exit</b>>', shape='plain')
+        # Add start node and edge to first state
+        dot.node(
+            name='', shape='circle', style='filled', fillcolor='black', width='0.25'
+        )
+        dot.edge('', next(iter(self.states.keys())))
+        with dot.subgraph() as s:
+            s.attr(rank='source')
+            s.node('')
 
-        # Add nodes for each state
+        # Add exit node if any states transition to it
+        targets = [
+            t for s in self.states.values() for t in s.state_change_conditions.values()
+        ]
+        if 'exit' in targets or '>exit' in targets:
+            dot.node(
+                name='exit',
+                label='',
+                shape='doublecircle',
+                style='filled',
+                fillcolor='black',
+                width='0.125',
+                rank='sink',
+            )
+            with dot.subgraph() as s:
+                s.attr(rank='sink')
+                s.node('exit')
+
+        back_ops = []  # Store back operations for later processing
+
+        # Add nodes and edges for each state
         for state_name, state in self.states.items():
-            # Create table rows for the state's comment and output actions
+            # Create table cells for comment if present
             comment = (
                 f'<TR><TD ALIGN="LEFT" COLSPAN="2" BGCOLOR="LIGHTBLUE">'
                 f'<I>{state.comment}</I></TD></TR>'
                 if state.comment is not None and len(state.comment) > 0
                 else ''
             )
+
+            # Create table rows for output actions
             actions = ''.join(
                 f'<TR><TD ALIGN="LEFT">{k}</TD><TD ALIGN="RIGHT">{v}</TD></TR>'
                 for k, v in state.output_actions.items()
             )
 
-            # Create label for the state node with its name, timer, comment, and actions
+            # Create HTML table label with state info
             label = (
-                f'<<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" ALIGN="LEFT">'
-                f'<TR><TD BGCOLOR="LIGHTBLUE" ALIGN="LEFT"><B>{state_name}  </B></TD>'
-                f'<TD BGCOLOR="LIGHTBLUE" ALIGN="RIGHT">{state.timer:g} s</TD></TR>'
-                f'{comment}{actions}</TABLE>>'
+                '<<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" ALIGN="LEFT" '
+                'BGCOLOR="WHITE"><TR><TD BGCOLOR="LIGHTBLUE" ALIGN="LEFT">'
+                f'<B>{state_name}  </B></TD><TD BGCOLOR="LIGHTBLUE" ALIGN="RIGHT">'
+                f'{state.timer:g} s</TD></TR>{comment}{actions}</TABLE>>'
             )
 
-            # Add the state node to the Digraph
-            digraph.node(name=state_name, label=label, shape='none')
+            # Add state node
+            dot.node(state_name, label, shape='none')
 
-            # Add edges for state transitions based on conditions
-            for condition, target_state in state.state_change_conditions.items():
-                digraph.edge(state_name, target_state, label=condition)
+            # Add edges for state transitions
+            # Use a subgraph to keep edges from the same state on the same rank
+            with dot.subgraph() as s:
+                s.attr(rank='same')
+                for label, target in state.state_change_conditions.items():
+                    if 'exit' in target:
+                        dot.edge(state_name, 'exit', label)
+                    elif target == '>back':
+                        back_ops.append((state_name, label))
+                    else:
+                        dot.edge(state_name, target, label)
+                        s.node(target)
 
-        return digraph
+        # Add edges for back transitions
+        # We label these in red to distinguish them from regular edges
+        for source, label in back_ops:
+            for target, state in self.states.items():
+                if source in state.state_change_conditions.values():
+                    dot.edge(source, target, label, color='red', fontcolor='red')
+
+        return dot
 
     def to_dict(self) -> dict:
         """Returns the state machine as a dictionary.
