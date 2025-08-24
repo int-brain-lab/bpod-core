@@ -265,3 +265,6 @@ cython_debug/
 # graphviz
 *.gv.*
 *.gv
+
+# Junie
+.junie/
