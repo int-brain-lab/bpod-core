@@ -7,11 +7,13 @@ A global counter ends an infinite loop when 5 `Port1In` events occur.
 from bpod_core.fsm import StateMachine
 
 fsm = StateMachine()
+
 fsm.set_global_counter(
     counter_id=1,
     event='Port1High',
     threshold=5,
 )
+
 fsm.add_state(
     name='InitialDelay',
     timer=2,

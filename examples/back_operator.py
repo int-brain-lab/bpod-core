@@ -8,6 +8,7 @@ transitioned into `WaitForExit` - either `FlashPort1` or `FlashPort2`.
 from bpod_core.fsm import StateMachine
 
 fsm = StateMachine()
+
 fsm.add_state(
     name='WaitForChoice',
     state_change_conditions={'Port1_High': 'FlashPort1', 'Port2_High': 'FlashPort2'},
