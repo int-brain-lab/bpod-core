@@ -1,6 +1,5 @@
 """Module for interfacing with the Bpod Finite State Machine."""
 
-import json
 import logging
 import re
 import struct
@@ -9,13 +8,11 @@ import traceback
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from types import TracebackType
 from typing import Any, NamedTuple, cast
 
 import msgspec
 import numpy as np
-from appdirs import user_data_dir
 from numpy.typing import NDArray
 from pydantic import validate_call
 from serial import SerialException
@@ -26,11 +23,10 @@ from bpod_core import __version__ as bpod_core_version
 from bpod_core.com import ExtendedSerial
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import DualChannelClient, DualChannelHost
-from bpod_core.misc import get_nested, set_nested, suggest_similar
+from bpod_core.misc import SettingsDict, suggest_similar
 
 PROJECT_NAME = 'bpod-core'
 AUTHOR_NAME = 'International Brain Laboratory'
-SETTINGS_PATH = Path(user_data_dir(PROJECT_NAME, AUTHOR_NAME)).joinpath('settings.json')
 VENDOR_IDS_BPOD = [0x16C0]  # vendor IDs of supported Bpod devices
 MIN_BPOD_FW_VERSION = (23, 0)  # minimum supported firmware version (major, minor)
 MIN_BPOD_HW_VERSION = 3  # minimum supported hardware version
@@ -52,6 +48,21 @@ VALID_OPERATORS = ['exit', '>exit', '>back']
 MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
 
 logger = logging.getLogger(__name__)
+
+
+class DeviceSettings(msgspec.Struct):
+    """Settings for a specific Bpod device."""
+
+    serial_number: str
+    """Serial number of the device."""
+    name: str = ''
+    """User-defined name of the device."""
+    location: str = ''
+    """User-defined location of the device."""
+    zmq_port_PUB: int | None = None
+    """Port number for the ZeroMQ PUB service"""
+    zmq_port_REP: int | None = None
+    """Port number for the ZeroMQ REP service"""
 
 
 class VersionInfo(msgspec.Struct, frozen=True):
@@ -272,7 +283,7 @@ class AbstractBpod:
 class Bpod(AbstractBpod):
     """Bpod class for interfacing with the Bpod Finite State Machine."""
 
-    _settings: dict
+    _settings: SettingsDict
     _name: str | None
     _fsm_thread: FSMThread | None = None
     _zmq_service: DualChannelHost
@@ -301,7 +312,7 @@ class Bpod(AbstractBpod):
     ) -> None:
         self._finalizer = weakref.finalize(self, self._finalize)
         logger.info('bpod_core %s', bpod_core_version)
-        self._load_settings()
+        self._settings = SettingsDict(PROJECT_NAME, AUTHOR_NAME)
 
         # initialize members
         self.event_names = []
@@ -429,7 +440,8 @@ class Bpod(AbstractBpod):
         return response
 
     def _start_zmq(self):
-        port = self._get_setting(['devices', str(self._serial_number), 'zmq_port'])
+        port_pub = self._get_setting(['devices', self._serial_number, 'port_pub'])
+        port_rep = self._get_setting(['devices', self._serial_number, 'port_rep'])
         self._zmq_service = DualChannelHost(
             service_name=self.name if self.name else f'bpod_{self._serial_number}',
             service_type='_bpod',
@@ -442,10 +454,15 @@ class Bpod(AbstractBpod):
                 'core': bpod_core_version,
             },
             event_handler=self._zmq_handler,
-            port_pub=cast('int | None', port),
+            port_pub=cast('int | None', port_pub),
+            port_rep=cast('int | None', port_rep),
         )
         self._set_setting(
-            ['devices', str(self._serial_number), 'zmq_port'],
+            ['devices', self._serial_number, 'port_pub'],
+            self._zmq_service.pub_tcp_port,
+        )
+        self._set_setting(
+            ['devices', self._serial_number, 'port_rep'],
             self._zmq_service.rep_tcp_port,
         )
 
@@ -453,26 +470,11 @@ class Bpod(AbstractBpod):
         if hasattr(self, '_zmq_service'):
             self._zmq_service.close()
 
-    def _save_settings(self) -> None:
-        """Save the current settings to the settings file."""
-        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with SETTINGS_PATH.open('w', encoding='utf8') as f:
-            json.dump(self._settings, f, indent=2)
-
-    def _load_settings(self) -> None:
-        """Load settings from the settings file."""
-        if SETTINGS_PATH.exists():
-            with SETTINGS_PATH.open('r', encoding='utf8') as f:
-                self._settings = json.load(f)
-        else:
-            self._settings = {}
-
     def _get_setting(self, keys: list[str], default: Any = None) -> Any:
-        return get_nested(self._settings, keys, default)
+        return self._settings.get_nested(keys, default)
 
     def _set_setting(self, keys: list[str], value: Any = None) -> None:
-        set_nested(self._settings, keys, value)
-        self._save_settings()
+        self._settings.set_nested(keys, value)
 
     def _sends_discovery_byte(
         self,

@@ -200,10 +200,6 @@ class TestSettingsDict:
         settings = misc.SettingsDict('test_app', 'test_author', 'test_settings.json')
         yield settings
 
-    def test_initialization_creates_file(self, temp_settings):
-        """Ensure the JSON file is created upon initialization."""
-        assert temp_settings._path.exists()
-
     def test_set_and_get(self, temp_settings):
         """Test setting and retrieving a key-value pair."""
         temp_settings['key'] = 'value'
@@ -244,10 +240,12 @@ class TestSettingsDict:
         assert temp_settings.get('missing_key', 'default') == 'default'
 
     def test_clear_all_keys(self, temp_settings):
-        """Test clearing the entire dictionary."""
+        """Test clearing the entire dictionary by deleting all keys."""
         temp_settings['key1'] = 'value1'
         temp_settings['key2'] = 'value2'
-        temp_settings = {}
+        # Delete all keys from the SettingsDict instance
+        for k in list(iter(temp_settings)):
+            del temp_settings[k]
         assert len(temp_settings) == 0
 
     def test_corrupted_file(self, tmp_path, mocker):
@@ -263,3 +261,38 @@ class TestSettingsDict:
         temp_settings['key1'] = 'value1'
         temp_settings['key2'] = 'value2'
         assert repr(temp_settings) == (repr(temp_settings._state))
+
+    def test_persistence_across_instances(self, tmp_path, mocker):
+        """Values should persist to disk and be readable by a new instance."""
+        mocker.patch('bpod_core.misc.user_config_dir', return_value=str(tmp_path))
+        s1 = misc.SettingsDict('test_app', 'test_author', 'persist.json')
+        s1['a'] = 1
+        s1.set_nested(['nested', 'x'], 42)
+        # New instance should read previous state
+        s2 = misc.SettingsDict('test_app', 'test_author', 'persist.json')
+        assert s2['a'] == 1
+        assert s2.get_nested(['nested', 'x']) == 42
+
+    def test_set_and_get_nested_methods(self, temp_settings):
+        """Use set_nested and get_nested on the SettingsDict wrapper."""
+        temp_settings.set_nested(['level1', 'level2'], 'val')
+        assert temp_settings.get_nested(['level1', 'level2']) == 'val'
+        # Overwrite nested value
+        temp_settings.set_nested(['level1', 'level2'], 'new')
+        assert temp_settings.get_nested(['level1', 'level2']) == 'new'
+
+    def test_missing_file_initialization_and_creation_on_write(self, tmp_path, mocker):
+        """Dict starts empty and file is created upon first write."""
+        mocker.patch('bpod_core.misc.user_config_dir', return_value=str(tmp_path))
+        file_name = 'new_settings.json'
+        s = misc.SettingsDict('test_app', 'test_author', file_name)
+        assert len(s) == 0
+        path = tmp_path / file_name
+        assert not path.exists()
+        s['created'] = True
+        assert path.exists()
+
+    def test_contains_operator(self, temp_settings):
+        temp_settings['present'] = 123
+        assert 'present' in temp_settings
+        assert 'absent' not in temp_settings

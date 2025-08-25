@@ -5,9 +5,9 @@ import errno
 import json
 import re
 import socket
-from collections.abc import Iterator, MutableMapping
+from collections.abc import Iterator, MutableMapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Iterable, cast
 
 import msgspec
 from appdirs import user_config_dir
@@ -99,36 +99,39 @@ def suggest_similar(
     return format_string.format(matches[0]) if len(matches) > 0 else ''
 
 
-def set_nested(d: dict[str, Any], keys: list[str], value: Any) -> None:
+def set_nested(d: MutableMapping, keys: Sequence[Any], value: Any) -> None:
     """
     Set a value in a nested dict, creating intermediate dicts as needed.
 
     Parameters
     ----------
-    d : dict
+    d : MutableMapping
         The dictionary in which to set the value.
-    keys : list of str
-        A list of keys representing the nested path where the value should be set.
+    keys : Sequence
+        A sequence of keys representing the nested path where the value should be set.
     value : Any
         The value to set at the specified path.
     """
     if not keys:
         return  # Do nothing if keys is empty
+
+    current = d
     for key in keys[:-1]:
-        d = d.setdefault(key, {})
-    d[keys[-1]] = value
+        current = current.setdefault(key, {})
+
+    current[keys[-1]] = value
 
 
-def get_nested(d: dict[str, Any], keys: list[str], default: Any = None) -> Any:
+def get_nested(d: MutableMapping, keys: Sequence[Any], default: Any = None) -> Any:
     """
-    Retrieve a value from a nested dict using a list of keys.
+    Retrieve a value from a nested dict using a Sequence of keys.
 
     Parameters
     ----------
-    d : dict
+    d : MutableMapping
         The dictionary from which to get a value.
-    keys : list of str
-        A list of keys representing the path to the desired value.
+    keys : Sequence
+        A sequence of keys representing the path to the desired value.
     default : Any, optional
         The value to return if the path does not exist. Defaults to None.
 
@@ -138,7 +141,7 @@ def get_nested(d: dict[str, Any], keys: list[str], default: Any = None) -> Any:
         The value at the nested path, or default if any key in the path is missing.
     """
     for key in keys:
-        if not isinstance(d, dict) or key not in d:
+        if not isinstance(d, MutableMapping) or key not in d:
             return default
         d = d[key]
     return d
@@ -177,22 +180,18 @@ def get_local_ipv4() -> str:
 
 class SettingsDict(MutableMapping):
     """
-    A dictionary-like class for managing application settings with persistence.
+    Represents a dictionary-like persistent settings storage.
 
-    This class provides a MutableMapping interface for storing, retrieving,
-    and manipulating key-value pairs. Settings are saved to a specified
-    file on disk and persist across executions. This allows applications
-    to easily manage user settings or configuration data in a structured
-    and convenient way.
+    This class is a mutable mapping implementation that stores and retrieves key-value
+    pairs, persisting them to a JSON configuration file. The settings are associated
+    with a specific application name and, optionally, an application author to organize
+    the file path appropriately. You can use this class to manage configuration data
+    that needs to be saved and reused across sessions. Changes to the dictionary are
+    automatically saved to the file.
 
-    Parameters
-    ----------
-    app_name : str
-        The name of the application.
-    app_author : str, optional
-        The author of the application.
-    filename : str, optional
-        The name of the configuration file to use, default is 'settings.json'.
+    This class supports standard dictionary operations such as getting, setting, deleting
+    items, checking for the existence of keys, and iterating over keys. Additionally, it
+    provides functionality for accessing nested values using a sequence of keys.
     """
 
     def __init__(
@@ -201,13 +200,24 @@ class SettingsDict(MutableMapping):
         app_author: str | None = None,
         filename: str = 'settings.json',
     ) -> None:
+        """Initialize the SettingsDict instance.
+
+        Parameters
+        ----------
+        app_name : str
+            Name of the application.
+        app_author : str, optional
+            Name of the application author.
+        filename : str, optional
+            Name of the settings file. Defaults to 'settings.json'.
+        """
         config_path = Path(user_config_dir(app_name, app_author))
-        config_path.mkdir(parents=True, exist_ok=True)
         self._path = config_path / filename
-        self._path.touch(exist_ok=True)
         self._state = self._load_from_file()
 
     def _load_from_file(self) -> dict:
+        if not self._path.exists():
+            return {}
         with self._path.open('r') as f:
             data = f.read()
         try:
@@ -217,6 +227,9 @@ class SettingsDict(MutableMapping):
 
     def _save_to_file(self) -> None:
         dictionary = msgspec.to_builtins(self._state)
+        if not self._path.exists():
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.touch(exist_ok=True)
         with self._path.open('w') as f:
             json.dump(dictionary, f, indent=2)
 
@@ -248,3 +261,33 @@ class SettingsDict(MutableMapping):
 
     def __repr__(self) -> str:
         return repr(self._state)
+
+    def get_nested(self, keys: Sequence[Any], default: Any | None = None) -> Any:
+        """Retrieve a nested value using a sequence of keys.
+
+        Parameters
+        ----------
+        keys : Sequence
+            An sequence of keys representing the nested path.
+        default : Any, optional
+            The value to return if the path does not exist. Defaults to None.
+
+        Returns
+        -------
+        Any
+            The value at the nested path, or default if any key in the path is missing.
+        """
+        return get_nested(d=self._state, keys=keys, default=default)
+
+    def set_nested(self, keys: Sequence[Any], value: Any) -> None:
+        """Set a nested value using a sequence of keys.
+
+        Parameters
+        ----------
+        keys : Sequence
+            An sequence of keys representing the nested path.
+        value : Any
+            The value to set at the nested path.
+        """
+        set_nested(d=self._state, keys=keys, value=value)
+        self._save_to_file()

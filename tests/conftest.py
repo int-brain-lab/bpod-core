@@ -93,7 +93,7 @@ def mock_ext_serial(mocker):
 
 
 @pytest.fixture
-def mock_bpod(mock_ext_serial):
+def mock_bpod(mock_ext_serial, mock_settings):
     mock_bpod = MagicMock(spec=Bpod)
     mock_bpod.serial0 = mock_ext_serial
     mock_bpod._identify_bpod.side_effect = lambda *args, **kwargs: Bpod._identify_bpod(
@@ -108,13 +108,13 @@ def mock_bpod(mock_ext_serial):
 
 
 @pytest.fixture
-def mock_json(mocker):
-    mocker.patch('bpod_core.bpod.json.load', return_value={})
-    mocker.patch('bpod_core.bpod.json.dump', return_value={})
+def mock_settings(mocker):
+    mock_settings = MagicMock()
+    mocker.patch('bpod_core.bpod.SettingsDict', return_value=mock_settings)
 
 
 @pytest.fixture
-def mock_bpod_20(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: ARG001
+def mock_bpod_20(mock_comports, mock_ext_serial, mock_settings, mocker):  # noqa: ARG001
     mock_ext_serial.mock_responses.update(fixture_bpod_20)
     mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
@@ -123,7 +123,7 @@ def mock_bpod_20(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: AR
 
 
 @pytest.fixture
-def mock_bpod_25(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: ARG001
+def mock_bpod_25(mock_comports, mock_ext_serial, mock_settings, mocker):  # noqa: ARG001
     mock_ext_serial.mock_responses.update(fixture_bpod_25)
     mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
@@ -132,7 +132,7 @@ def mock_bpod_25(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: AR
 
 
 @pytest.fixture
-def mock_bpod_2p(mock_comports, mock_ext_serial, mock_json, mocker):  # noqa: ARG001
+def mock_bpod_2p(mock_comports, mock_ext_serial, mock_settings, mocker):  # noqa: ARG001
     mock_ext_serial.mock_responses.update(fixture_bpod_2p)
     mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
