@@ -7,67 +7,75 @@ from pydantic import ValidationError
 from bpod_core.fsm import State, StateMachine
 
 
-def test_state_creation():
-    state = State(
-        timer=5.0,
-        state_change_conditions={'condition1': 'exit'},
-        output_actions={'action1': 255},
-        comment='This is a test state',
-    )
-    assert state.timer == 5.0
-    assert state.state_change_conditions == {'condition1': 'exit'}
-    assert state.output_actions == {'action1': 255}
-    assert state.comment == 'This is a test state'
+class TestState:
+    def test_state_creation(self):
+        """Create a State and verify all fields are set correctly."""
+        state = State(
+            timer=5.0,
+            state_change_conditions={'condition1': 'exit'},
+            output_actions={'action1': 255},
+            comment='This is a test state',
+        )
+        assert state.timer == 5.0
+        assert state.state_change_conditions == {'condition1': 'exit'}
+        assert state.output_actions == {'action1': 255}
+        assert state.comment == 'This is a test state'
 
 
-def test_state_machine_creation():
-    sm = StateMachine(name='Test State Machine')
-    assert sm.name == 'Test State Machine'
-    assert isinstance(sm.states, dict)
-    assert len(sm.states) == 0
+class TestStateMachineBasic:
+    def test_state_machine_creation(self):
+        """Construct an empty StateMachine and check initial state."""
+        sm = StateMachine(name='Test State Machine')
+        assert sm.name == 'Test State Machine'
+        assert isinstance(sm.states, dict)
+        assert len(sm.states) == 0
 
+    def test_add_state(self):
+        """Add a state and verify it appears with expected values."""
+        sm = StateMachine(name='Test State Machine')
+        sm.add_state(
+            name='state1',
+            timer=2.0,
+            state_change_conditions={'condition1': 'state2'},
+            output_actions={'action1': 255},
+            comment='First state',
+        )
+        assert len(sm.states) == 1
+        assert 'state1' in sm.states
+        assert sm.states['state1'].timer == 2.0
+        assert sm.states['state1'].state_change_conditions == {'condition1': 'state2'}
+        assert sm.states['state1'].output_actions == {'action1': 255}
+        assert sm.states['state1'].comment == 'First state'
 
-def test_add_state():
-    sm = StateMachine(name='Test State Machine')
-    sm.add_state(
-        name='state1',
-        timer=2.0,
-        state_change_conditions={'condition1': 'state2'},
-        output_actions={'action1': 255},
-        comment='First state',
-    )
-    assert len(sm.states) == 1
-    assert 'state1' in sm.states
-    assert sm.states['state1'].timer == 2.0
-    assert sm.states['state1'].state_change_conditions == {'condition1': 'state2'}
-    assert sm.states['state1'].output_actions == {'action1': 255}
-    assert sm.states['state1'].comment == 'First state'
-
-
-def test_add_duplicate_state():
-    sm = StateMachine(name='Test State Machine')
-    sm.add_state(name='state1')
-    with pytest.raises(ValueError, match='.*state1.* already registered'):
+    def test_add_duplicate_state(self):
+        """Adding a duplicate state name should raise ValueError."""
+        sm = StateMachine(name='Test State Machine')
         sm.add_state(name='state1')
+        with pytest.raises(ValueError, match='.*state1.* already registered'):
+            sm.add_state(name='state1')
+
+    def test_invalid_state_name(self):
+        """Using reserved state name 'exit' should fail validation."""
+        sm = StateMachine(name='Test State Machine')
+        with pytest.raises(ValidationError):
+            sm.add_state(name='exit')
+        with pytest.raises(ValidationError):
+            sm.add_state(name='>exit')
+
+    def test_invalid_timer(self):
+        """Negative timer values should raise validation errors."""
+        sm = StateMachine(name='Test State Machine')
+        with pytest.raises(ValidationError):
+            sm.add_state(name='state1', timer=-1.0)
 
 
-def test_invalid_state_name():
-    sm = StateMachine(name='Test State Machine')
-    with pytest.raises(ValidationError):
-        sm.add_state(name='exit')
-
-
-def test_invalid_timer():
-    sm = StateMachine(name='Test State Machine')
-    with pytest.raises(ValidationError):
-        sm.add_state(name='state1', timer=-1.0)
-
-
-def test_to_digraph_empty_state_machine():
-    sm = StateMachine(name='Empty State Machine')
-    digraph = sm.to_digraph()
-    assert digraph.name == 'Empty State Machine'
-    assert len(digraph.body) == 0
+class TestToDigraph:
+    def test_to_digraph_empty_state_machine(self):
+        """to_digraph on an empty machine yields an empty body graph."""
+        sm = StateMachine(name='Empty State Machine')
+        digraph = sm.to_digraph()
+        assert digraph.name == 'Empty State Machine'
+        assert len(digraph.body) == 0
 
 
 @pytest.fixture
@@ -89,181 +97,192 @@ def state_machine():
     return fsm
 
 
-def test_to_digraph_with_states(state_machine):
-    digraph = state_machine.to_digraph()
-    assert len(digraph.body) > 0
-    assert 'state1' in digraph.source
-    assert 'state2' in digraph.source
-    assert 'exit' in digraph.source
+class TestToDigraphWithStates:
+    def test_to_digraph_with_states(self, state_machine):
+        """Graph contains nodes and edges for defined states and transitions."""
+        digraph = state_machine.to_digraph()
+        assert len(digraph.body) > 0
+        assert 'state1' in digraph.source
+        assert 'state2' in digraph.source
+        assert 'exit' in digraph.source
 
 
-def test_to_dict(state_machine):
-    sm_dict = state_machine.to_dict()
-    assert sm_dict['name'] == 'Test State Machine'
-    assert 'state1' in sm_dict['states']
-    assert 'state2' in sm_dict['states']
-    assert sm_dict['states']['state1']['timer'] == 2.0
-    assert sm_dict['states']['state1']['state_change_conditions'] == {'tup': 'state2'}
-    assert sm_dict['states']['state1']['output_actions'] == {'action1': 255}
-    assert sm_dict['states']['state1']['comment'] == 'First state'
-    assert sm_dict['states']['state2']['output_actions'] == {'action2': 128}
-    assert sm_dict['states']['state2']['comment'] == 'Second state'
-    assert 'timer' not in sm_dict['states']['state2']  # Default value should be omitted
+class TestSerialization:
+    def test_to_dict(self, state_machine):
+        """Convert to dict and verify structure and omitted defaults."""
+        sm = state_machine.to_dict()
+        assert sm['name'] == 'Test State Machine'
+        assert 'state1' in sm['states']
+        assert 'state2' in sm['states']
+        assert sm['states']['state1']['timer'] == 2.0
+        assert sm['states']['state1']['state_change_conditions'] == {'tup': 'state2'}
+        assert sm['states']['state1']['output_actions'] == {'action1': 255}
+        assert sm['states']['state1']['comment'] == 'First state'
+        assert sm['states']['state2']['output_actions'] == {'action2': 128}
+        assert sm['states']['state2']['comment'] == 'Second state'
+        assert 'timer' not in sm['states']['state2']  # Default value should be omitted
+
+    def test_to_json(self, state_machine):
+        """Serialize to compact JSON by default (no newlines)."""
+        json_str = state_machine.to_json()
+        assert '"name": "Test State Machine"' in json_str
+        assert '"state1"' in json_str
+        assert '"timer": 2.0' in json_str
+        assert '"state_change_conditions": {' in json_str
+        assert '"tup": "state2"' in json_str
+        assert '"output_actions": {' in json_str
+        assert '"action1": 255' in json_str
+        assert '"comment": "First state"' in json_str
+        assert '"state2"' in json_str
+        assert '"state_change_conditions": {' in json_str
+        assert '"tup": "exit"' in json_str
+        assert '"output_actions": {' in json_str
+        assert '"action2": 128' in json_str
+        assert '"comment": "Second state"' in json_str
+        assert '\n' not in json_str  # No newlines when `indent` is None
+
+    def test_to_json_indent(self, state_machine):
+        """Serialize to pretty-printed JSON when indent is provided."""
+        json_str = state_machine.to_json(indent=2)
+        assert '\n' in json_str
+
+    def test_to_json_compact(self, state_machine):
+        """Serialize to the most compact JSON when compact=True."""
+        json_str = state_machine.to_json(compact=True)
+        assert '\n' not in json_str  # No newlines in compact mode
+        assert ': ' not in json_str  # No spaces after colons in compact mode
+        assert ', ' not in json_str  # No spaces after commas in compact mode
 
 
-def test_to_json(state_machine):
-    json_str = state_machine.to_json()
-    assert '"name": "Test State Machine"' in json_str
-    assert '"state1"' in json_str
-    assert '"timer": 2.0' in json_str
-    assert '"state_change_conditions": {' in json_str
-    assert '"tup": "state2"' in json_str
-    assert '"output_actions": {' in json_str
-    assert '"action1": 255' in json_str
-    assert '"comment": "First state"' in json_str
-    assert '"state2"' in json_str
-    assert '"state_change_conditions": {' in json_str
-    assert '"tup": "exit"' in json_str
-    assert '"output_actions": {' in json_str
-    assert '"action2": 128' in json_str
-    assert '"comment": "Second state"' in json_str
-    assert '\n' not in json_str  # No newlines when `indent` is None
+class TestFromConstructors:
+    def test_from_dict(self):
+        """Construct from dict and compare round-trip via to_dict."""
+        dictionary = {}
+        fsm = StateMachine.from_dict(dictionary)
+        assert isinstance(fsm, StateMachine)
+        assert dictionary == fsm.to_dict()  # roundtrip
+
+    def test_from_json(self):
+        """Construct from JSON string and compare round-trip via to_json."""
+        json_str = '{}'
+        fsm = StateMachine.from_json(json_str)
+        assert isinstance(fsm, StateMachine)
+        assert json_str == fsm.to_json()  # roundtrip
+
+    def test_from_invalid_json_raises(self, tmp_path):
+        """Invalid JSON should raise msgspec.DecodeError in from_json."""
+        json_str = 'not valid json'
+        with pytest.raises(msgspec.DecodeError):
+            StateMachine.from_json(json_str)
 
 
-def test_to_json_indent(state_machine):
-    json_str = state_machine.to_json(indent=2)
-    assert '\n' in json_str
+class TestSchema:
+    def test_schema(self):
+        """Test that the schema file exists and is up to date."""
+        schema_path = Path(__file__).parents[1].joinpath('schema/statemachine.json')
+        assert schema_path.exists(), 'schema file does not exist'
+        with schema_path.open('r') as f:
+            data = f.read()
+        schema_from_file = msgspec.json.decode(data)
+        schema_from_struct = msgspec.json.schema(StateMachine)
+        assert schema_from_file == schema_from_struct, 'schema file is out of date'
 
 
-def test_to_json_compact(state_machine):
-    json_str = state_machine.to_json(compact=True)
-    assert '\n' not in json_str  # No newlines in compact mode
-    assert ': ' not in json_str  # No spaces after colons in compact mode
-    assert ', ' not in json_str  # No spaces after commas in compact mode
+class TestFromFile:
+    def test_from_file_roundtrip_json(self, tmp_path, state_machine):
+        """from_file loads a JSON file and matches original machine."""
+        # Write JSON to file
+        path = tmp_path / 'machine.json'
+        path.write_text(state_machine.to_json(indent=2), encoding='utf-8')
+
+        # Load via Path
+        fsm = StateMachine.from_file(path)
+        assert isinstance(fsm, StateMachine)
+        assert fsm.to_dict() == state_machine.to_dict()
+
+        # Load via string path
+        fsm2 = StateMachine.from_file(str(path))
+        assert isinstance(fsm2, StateMachine)
+        assert fsm2.to_dict() == state_machine.to_dict()
+
+    def test_from_file_missing_raises(self, tmp_path):
+        """from_file should raise FileNotFoundError for missing files."""
+        missing = tmp_path / 'missing.json'
+        assert not missing.exists()
+        with pytest.raises(FileNotFoundError):
+            StateMachine.from_file(missing)
+
+    def test_from_file_wrong_extension(self, tmp_path):
+        """Non-.json extension should raise ValueError in from_file."""
+        # Create a non-json file that exists but has wrong extension
+        path = tmp_path / 'machine.txt'
+        path.write_text('{}', encoding='utf-8')
+        with pytest.raises(ValueError, match='Unsupported file extension'):
+            StateMachine.from_file(path)
+
+    def test_from_file_invalid_json_raises(self, tmp_path):
+        """Invalid JSON content on disk should raise msgspec.DecodeError."""
+        bad = tmp_path / 'bad.json'
+        bad.write_text('not valid json', encoding='utf-8')
+        with pytest.raises(msgspec.DecodeError):
+            StateMachine.from_file(bad)
 
 
-def test_from_dict():
-    dictionary = {}
-    fsm = StateMachine.from_dict(dictionary)
-    assert isinstance(fsm, StateMachine)
-    assert dictionary == fsm.to_dict()  # roundtrip
-
-
-def test_from_json():
-    json_str = '{}'
-    fsm = StateMachine.from_json(json_str)
-    assert isinstance(fsm, StateMachine)
-    assert json_str == fsm.to_json()  # roundtrip
-
-
-def test_from_invalid_json_raises(tmp_path):
-    json_str = 'not valid json'
-    with pytest.raises(msgspec.DecodeError):
-        StateMachine.from_json(json_str)
-
-
-def test_schema():
-    """Test that the schema file exists and is up to date."""
-    schema_path = Path(__file__).parents[1].joinpath('schema/statemachine.json')
-    assert schema_path.exists(), 'schema file does not exist'
-    with schema_path.open('r') as f:
-        data = f.read()
-    schema_from_file = msgspec.json.decode(data)
-    schema_from_struct = msgspec.json.schema(StateMachine)
-    assert schema_from_file == schema_from_struct, 'schema file is out of date'
-
-
-def test_from_file_roundtrip_json(tmp_path, state_machine):
-    # Write JSON to file
-    path = tmp_path / 'machine.json'
-    path.write_text(state_machine.to_json(indent=2), encoding='utf-8')
-
-    # Load via Path
-    fsm = StateMachine.from_file(path)
-    assert isinstance(fsm, StateMachine)
-    assert fsm.to_dict() == state_machine.to_dict()
-
-    # Load via string path
-    fsm2 = StateMachine.from_file(str(path))
-    assert isinstance(fsm2, StateMachine)
-    assert fsm2.to_dict() == state_machine.to_dict()
-
-
-def test_from_file_missing_raises(tmp_path):
-    missing = tmp_path / 'missing.json'
-    assert not missing.exists()
-    with pytest.raises(FileNotFoundError):
-        StateMachine.from_file(missing)
-
-
-def test_from_file_wrong_extension(tmp_path):
-    # Create a non-json file that exists but has wrong extension
-    path = tmp_path / 'machine.txt'
-    path.write_text('{}', encoding='utf-8')
-    with pytest.raises(ValueError, match='Unsupported file extension'):
-        StateMachine.from_file(path)
-
-
-def test_from_file_invalid_json_raises(tmp_path):
-    bad = tmp_path / 'bad.json'
-    bad.write_text('not valid json', encoding='utf-8')
-    with pytest.raises(msgspec.DecodeError):
-        StateMachine.from_file(bad)
-
-
-def test_to_file_json_write_and_overwrite(tmp_path, state_machine):
-    # Write JSON file
-    path = tmp_path / 'machine.json'
-    state_machine.to_file(path)
-    assert path.exists()
-    content = path.read_text()
-    assert content == state_machine.to_json(indent=2)
-    with pytest.raises(FileExistsError):
+class TestToFile:
+    def test_to_file_json_write_and_overwrite(self, tmp_path, state_machine):
+        """Write JSON file, prevent overwrite, allow overwrite=True."""
+        # Write JSON file
+        path = tmp_path / 'machine.json'
         state_machine.to_file(path)
-    state_machine.to_file(path, overwrite=True)
-    assert path.read_text() == state_machine.to_json(indent=2)
+        assert path.exists()
+        content = path.read_text()
+        assert content == state_machine.to_json(indent=2)
+        with pytest.raises(FileExistsError):
+            state_machine.to_file(path)
+        state_machine.to_file(path, overwrite=True)
+        assert path.read_text() == state_machine.to_json(indent=2)
 
+    def test_to_file_unsupported_extension(self, tmp_path, state_machine):
+        """Unsupported extension should raise ValueError in to_file."""
+        path = tmp_path / 'machine.txt'
+        with pytest.raises(ValueError, match='Unsupported file extension'):
+            state_machine.to_file(path)
 
-def test_to_file_unsupported_extension(tmp_path, state_machine):
-    path = tmp_path / 'machine.txt'
-    with pytest.raises(ValueError, match='Unsupported file extension'):
-        state_machine.to_file(path)
+    def test_to_file_missing_directory_raises(self, tmp_path, state_machine):
+        """Writing into a non-existent directory should raise FileNotFoundError."""
+        path = tmp_path / 'missing_dir' / 'machine.json'
+        assert not path.parent.exists()
+        with pytest.raises(FileNotFoundError):
+            state_machine.to_file(path)
 
+    def test_to_file_graph_formats_call_render(self, tmp_path, state_machine, mocker):
+        """Graph formats (.pdf/.svg/.png) should call render with expected args."""
+        # Prepare a dummy object with a render method to capture calls
+        render_mock = mocker.Mock()
 
-def test_to_file_missing_directory_raises(tmp_path, state_machine):
-    path = tmp_path / 'missing_dir' / 'machine.json'
-    assert not path.parent.exists()
-    with pytest.raises(FileNotFoundError):
-        state_machine.to_file(path)
+        class DummyGraph:
+            def render(self, **kwargs):
+                return render_mock(**kwargs)
 
+        # Monkeypatch to_digraph to return our dummy graph
+        mocker.patch.object(StateMachine, 'to_digraph', return_value=DummyGraph())
 
-def test_to_file_graph_formats_call_render(tmp_path, state_machine, mocker):
-    # Prepare a dummy object with a render method to capture calls
-    render_mock = mocker.Mock()
-
-    class DummyGraph:
-        def render(self, **kwargs):
-            return render_mock(**kwargs)
-
-    # Monkeypatch to_digraph to return our dummy graph
-    mocker.patch.object(StateMachine, 'to_digraph', return_value=DummyGraph())
-
-    # Parametrize manually
-    cases = [
-        ('diagram.pdf', 'pdf'),
-        ('diagram.svg', 'svg'),
-        ('diagram.png', 'png'),
-        ('diagram.PDF', 'pdf'),
-        ('diagram.SVG', 'svg'),
-        ('diagram.PNG', 'png'),
-    ]
-    for filename, expected_format in cases:
-        render_mock.reset_mock()
-        out = tmp_path / filename
-        state_machine.to_file(out)
-        assert render_mock.call_count == 1
-        kwargs = render_mock.call_args.kwargs
-        assert kwargs['outfile'] == out
-        assert kwargs['cleanup'] is True
-        assert kwargs['quiet'] is True
-        assert kwargs['format'] == expected_format
+        # Parametrize manually
+        cases = [
+            ('diagram.pdf', 'pdf'),
+            ('diagram.svg', 'svg'),
+            ('diagram.png', 'png'),
+            ('diagram.PDF', 'pdf'),
+            ('diagram.SVG', 'svg'),
+            ('diagram.PNG', 'png'),
+        ]
+        for filename, expected_format in cases:
+            render_mock.reset_mock()
+            out = tmp_path / filename
+            state_machine.to_file(out)
+            assert render_mock.call_count == 1
+            kwargs = render_mock.call_args.kwargs
+            assert kwargs['outfile'] == out
+            assert kwargs['cleanup'] is True
+            assert kwargs['quiet'] is True
+            assert kwargs['format'] == expected_format
