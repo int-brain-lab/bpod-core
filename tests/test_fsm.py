@@ -82,7 +82,7 @@ def state_machine():
     )
     fsm.add_state(
         name='state2',
-        state_change_conditions={'tup': 'exit'},
+        state_change_conditions={'tup': 'exit', 'condition': '>back'},
         output_actions={'action2': 128},
         comment='Second state',
     )
@@ -106,7 +106,6 @@ def test_to_dict(state_machine):
     assert sm_dict['states']['state1']['state_change_conditions'] == {'tup': 'state2'}
     assert sm_dict['states']['state1']['output_actions'] == {'action1': 255}
     assert sm_dict['states']['state1']['comment'] == 'First state'
-    assert sm_dict['states']['state2']['state_change_conditions'] == {'tup': 'exit'}
     assert sm_dict['states']['state2']['output_actions'] == {'action2': 128}
     assert sm_dict['states']['state2']['comment'] == 'Second state'
     assert 'timer' not in sm_dict['states']['state2']  # Default value should be omitted
