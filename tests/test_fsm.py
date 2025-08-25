@@ -204,11 +204,14 @@ def test_to_file_graph_formats_call_render(tmp_path, state_machine, mocker):
     # Monkeypatch to_digraph to return our dummy graph
     mocker.patch.object(StateMachine, 'to_digraph', return_value=DummyGraph())
 
-    # Parametrize manually for three formats
+    # Parametrize manually
     cases = [
         ('diagram.pdf', 'pdf'),
         ('diagram.svg', 'svg'),
         ('diagram.png', 'png'),
+        ('diagram.PDF', 'pdf'),
+        ('diagram.SVG', 'svg'),
+        ('diagram.PNG', 'png'),
     ]
     for filename, expected_format in cases:
         render_mock.reset_mock()
@@ -216,8 +219,7 @@ def test_to_file_graph_formats_call_render(tmp_path, state_machine, mocker):
         state_machine.to_file(out)
         assert render_mock.call_count == 1
         kwargs = render_mock.call_args.kwargs
-        assert kwargs['filename'] == out.stem
-        assert kwargs['directory'] == out.parent
+        assert kwargs['outfile'] == out
         assert kwargs['cleanup'] is True
         assert kwargs['quiet'] is True
         assert kwargs['format'] == expected_format

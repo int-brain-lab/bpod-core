@@ -515,22 +515,22 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
             raise FileExistsError(f"File '{filename}' already exists")
         if not filename.parent.exists():
             raise FileNotFoundError(f"Directory '{filename.parent}' does not exist")
+        suffix = filename.suffix.lower()
 
         # JSON output
-        if filename.suffix == '.json':
+        if suffix == '.json':
             filename.write_text(self.to_json(indent=2), encoding='utf-8')
 
         # Rendering via Graphviz
-        elif filename.suffix in ('.pdf', '.svg', '.png'):
+        elif suffix in ('.pdf', '.svg', '.png'):
             common_opts = {
-                'filename': filename.stem,
-                'directory': filename.parent,
+                'outfile': filename,
                 'cleanup': True,
                 'quiet': True,
             }
-            if filename.suffix == '.svg':
+            if suffix == '.svg':
                 render_format = 'svg'
-            elif filename.suffix == '.png':
+            elif suffix == '.png':
                 render_format = 'png'
             else:
                 render_format = 'pdf'
