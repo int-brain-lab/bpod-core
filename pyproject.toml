@@ -90,7 +90,7 @@ required-environments = [
 [tool.uv.build-backend]
 module-name = "bpod_core"
 module-root = ""
-source-include = [ "tests/*.py", "schema/*.json", "docs/source/**/*" ]
+source-include = [ "tests/*.py", "schema/*.json", "docs/source/**/*", "examples/*" ]
 source-exclude = [ "docs/source/api" ]
 
 [tool.ruff]
