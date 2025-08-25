@@ -190,3 +190,76 @@ class TestGetLocalIPv4:
 
         with pytest.raises(OSError):
             misc.get_local_ipv4()
+
+
+class TestSettingsDict:
+    @pytest.fixture
+    def temp_settings(self, tmp_path, mocker):
+        """Fixture to create a SettingsDict pointing to a temporary directory."""
+        mocker.patch('bpod_core.misc.user_config_dir', return_value=str(tmp_path))
+        settings = misc.SettingsDict('test_app', 'test_author', 'test_settings.json')
+        yield settings
+
+    def test_initialization_creates_file(self, temp_settings):
+        """Ensure the JSON file is created upon initialization."""
+        assert temp_settings._path.exists()
+
+    def test_set_and_get(self, temp_settings):
+        """Test setting and retrieving a key-value pair."""
+        temp_settings['key'] = 'value'
+        assert temp_settings['key'] == 'value'
+
+    def test_update_existing_key(self, temp_settings):
+        """Test updating an existing key."""
+        temp_settings['key'] = 'old'
+        temp_settings['key'] = 'new'
+        assert temp_settings['key'] == 'new'
+
+    def test_delete_key(self, temp_settings):
+        """Ensure keys can be deleted."""
+        temp_settings['key'] = 'value'
+        del temp_settings['key']
+        assert 'key' not in temp_settings
+
+    def test_delete_nonexistent_key(self, temp_settings):
+        """Ensure deleting a nonexistent key raises a KeyError."""
+        with pytest.raises(KeyError):
+            del temp_settings['missing_key']
+
+    def test_length_of_dict(self, temp_settings):
+        """Test the length of the set keys."""
+        assert len(temp_settings) == 0
+        temp_settings['key1'] = 'value1'
+        temp_settings['key2'] = 'value2'
+        assert len(temp_settings) == 2
+
+    def test_iterating_keys(self, temp_settings):
+        """Ensure keys can be iterated over."""
+        temp_settings['key1'] = 'value1'
+        temp_settings['key2'] = 'value2'
+        assert set(iter(temp_settings)) == {'key1', 'key2'}
+
+    def test_default_on_missing_key(self, temp_settings):
+        """Test retrieving a default value for a missing key."""
+        assert temp_settings.get('missing_key', 'default') == 'default'
+
+    def test_clear_all_keys(self, temp_settings):
+        """Test clearing the entire dictionary."""
+        temp_settings['key1'] = 'value1'
+        temp_settings['key2'] = 'value2'
+        temp_settings = {}
+        assert len(temp_settings) == 0
+
+    def test_corrupted_file(self, tmp_path, mocker):
+        """Test behavior with a corrupted JSON file."""
+        corrupted_file = tmp_path / 'test_settings.json'
+        corrupted_file.write_text('corrupted json')
+        mocker.patch('bpod_core.misc.user_config_dir', return_value=str(tmp_path))
+        settings = misc.SettingsDict('test_app', 'test_author', 'test_settings.json')
+        assert len(settings) == 0  # Should recover with an empty dict
+
+    def test_repr(self, temp_settings):
+        """Test the repr of the SettingsDict."""
+        temp_settings['key1'] = 'value1'
+        temp_settings['key2'] = 'value2'
+        assert repr(temp_settings) == (repr(temp_settings._state))
