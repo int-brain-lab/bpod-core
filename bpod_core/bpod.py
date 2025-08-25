@@ -59,9 +59,9 @@ class DeviceSettings(msgspec.Struct):
     """User-defined name of the device."""
     location: str = ''
     """User-defined location of the device."""
-    zmq_port_PUB: int | None = None
+    zmq_port_pub: int | None = None
     """Port number for the ZeroMQ PUB service"""
-    zmq_port_REP: int | None = None
+    zmq_port_rep: int | None = None
     """Port number for the ZeroMQ REP service"""
 
 

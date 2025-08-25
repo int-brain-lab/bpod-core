@@ -7,7 +7,7 @@ import re
 import socket
 from collections.abc import Iterator, MutableMapping, Sequence
 from pathlib import Path
-from typing import Any, Iterable, cast
+from typing import Any, cast
 
 import msgspec
 from appdirs import user_config_dir
@@ -189,9 +189,10 @@ class SettingsDict(MutableMapping):
     that needs to be saved and reused across sessions. Changes to the dictionary are
     automatically saved to the file.
 
-    This class supports standard dictionary operations such as getting, setting, deleting
-    items, checking for the existence of keys, and iterating over keys. Additionally, it
-    provides functionality for accessing nested values using a sequence of keys.
+    This class supports standard dictionary operations such as getting, setting,
+    deleting items, checking for the existence of keys, and iterating over keys.
+    Additionally, it provides functionality for accessing nested values using a sequence
+    of keys.
     """
 
     def __init__(
