@@ -53,6 +53,7 @@ class DualChannelBase(ABC):
         self._stop_event_loop = threading.Event()
 
     def __enter__(self) -> Self:
+        """Enter context manager."""
         return self
 
     def __exit__(
@@ -61,6 +62,7 @@ class DualChannelBase(ABC):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> bool | None:
+        """Exit context manager."""
         self.close()
         return None
 
@@ -68,6 +70,18 @@ class DualChannelBase(ABC):
     def _event_loop(self): ...
 
     def close(self) -> bool:
+        """
+        Close the instance.
+
+        Releases resources, stops the event loop, and terminates ZeroMQ sockets and
+        context.
+
+        Returns
+        -------
+        bool
+            Returns True if the instance was successfully closed, False if it was
+            already closed.
+        """
         with self._lock_close:
             if self._closed:
                 return False
@@ -85,28 +99,7 @@ class DualChannelBase(ABC):
 
 
 class DualChannelHost(DualChannelBase):
-    """
-    A ZeroMQ host providing REQ/REP and PUB/SUB sockets with Zeroconf discovery.
-
-    Parameters
-    ----------
-    service_name : str
-        Service name to advertise.
-    service_type : str
-        Zeroconf service type (e.g., 'my_service').
-    txt_record : dict of (str or bytes) to (str, bytes, or None), optional
-        Additional TXT records for Zeroconf service advertisement.
-    event_handler : callable, optional
-        Function to handle incoming requests.
-    remote : bool, default=True
-        If True, binds TCP sockets to '0.0.0.0'. Otherwise, binds to '127.0.0.1'.
-    port_pub : int, optional
-        TCP port to bind the PUB socket. If None, a random available port is chosen.
-    port_rep : int, optional
-        TCP port to bind the REP socket. If None, a random available port is chosen.
-    serialization : {'json', 'msgpack'}, default='msgpack'
-        Serialization format for message encoding.
-    """
+    """A ZeroMQ host providing REQ/REP and PUB/SUB sockets with Zeroconf discovery."""
 
     _rep_ipc_addr: str | None = None
     _pub_ipc_addr: str | None = None
@@ -122,6 +115,28 @@ class DualChannelHost(DualChannelBase):
         port_rep: int | None = None,
         serialization: Literal['json', 'msgpack'] = 'msgpack',
     ) -> None:
+        """
+        Initialize the DualChannelHost.
+
+        Parameters
+        ----------
+        service_name : str
+            Service name to advertise.
+        service_type : str
+            Zeroconf service type (e.g., 'my_service').
+        txt_record : dict, optional
+            Additional TXT records for Zeroconf service advertisement.
+        event_handler : callable, optional
+            Function to handle incoming requests.
+        remote : bool, default=True
+            If True, binds TCP sockets to '0.0.0.0'. Otherwise, binds to '127.0.0.1'.
+        port_pub : int, optional
+            TCP port to bind the PUB socket. If None, a random available port is chosen.
+        port_rep : int, optional
+            TCP port to bind the REP socket. If None, a random available port is chosen.
+        serialization : {'json', 'msgpack'}, default='msgpack'
+            Serialization format for message encoding.
+        """
         # initialize base class
         super().__init__()
 
@@ -329,6 +344,14 @@ class DualChannelHost(DualChannelBase):
         return DualChannelMessage(type='E', data={'name': name, 'message': message})
 
     def close(self) -> bool:
+        """
+        Close the host and clean up resources.
+
+        Returns
+        -------
+        bool
+            True if the host closed successfully, False otherwise.
+        """
         if not super().close():
             return False
 
@@ -348,6 +371,8 @@ class DualChannelHost(DualChannelBase):
 
 
 class DualChannelClient(DualChannelBase):
+    """A client for communicating with a DualChannelHost."""
+
     def __init__(
         self,
         service_type: str,
@@ -356,6 +381,22 @@ class DualChannelClient(DualChannelBase):
         discovery_timeout: float = 10.0,
         txt_properties: dict | None = None,
     ):
+        """
+        Initialize a DualChannelClient instance.
+
+        Parameters
+        ----------
+        service_type : str
+            The mDNS service type to discover or connect to.
+        address : str, optional
+            The direct connection address for the REQ channel, by default None.
+        event_handler : callable, optional
+            A callback to handle PUB messages, by default None.
+        discovery_timeout : float, optional
+            Timeout in seconds for service discovery, by default 10.0.
+        txt_properties : dict, optional
+            Properties for service filtering during discovery, by default None.
+        """
         # initialize base class
         super().__init__()
 
@@ -465,6 +506,20 @@ class DualChannelClient(DualChannelBase):
             return reply.type, reply.data
 
     def request(self, **kwargs) -> Any:
+        """
+        Send a generic request to the server.
+
+        Parameters
+        ----------
+        **kwargs : dict
+            Key-value pairs to be sent as the request payload.
+
+        Returns
+        -------
+        Any
+            The reply data from the server. Returns an empty dictionary if an error
+            occurs.
+        """
         reply_type, reply_data = self._req('R', kwargs)
         match reply_type:
             case 'R':  # general request
