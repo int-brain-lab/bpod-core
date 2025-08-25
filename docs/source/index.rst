@@ -6,6 +6,7 @@
    :hidden:
 
    developer_guide
+   examples/index
    api
    schema
    changelog

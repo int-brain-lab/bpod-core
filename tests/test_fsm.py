@@ -1,5 +1,6 @@
-from collections import OrderedDict
+from pathlib import Path
 
+import msgspec
 import pytest
 from pydantic import ValidationError
 
@@ -22,7 +23,7 @@ def test_state_creation():
 def test_state_machine_creation():
     sm = StateMachine(name='Test State Machine')
     assert sm.name == 'Test State Machine'
-    assert isinstance(sm.states, OrderedDict)
+    assert isinstance(sm.states, dict)
     assert len(sm.states) == 0
 
 
@@ -50,22 +51,6 @@ def test_add_duplicate_state():
         sm.add_state(name='state1')
 
 
-def test_digraph_empty_state_machine():
-    sm = StateMachine(name='Empty State Machine')
-    assert sm.digraph.name == 'Empty State Machine'
-    assert len(sm.digraph.body) == 0
-
-
-def test_digraph_with_states():
-    sm = StateMachine(name='Test State Machine')
-    sm.add_state(name='state1', state_change_conditions={'condition1': 'state2'})
-    sm.add_state(name='state2', state_change_conditions={'condition2': 'exit'})
-    assert len(sm.digraph.body) > 0
-    assert 'state1' in sm.digraph.source
-    assert 'state2' in sm.digraph.source
-    assert 'exit' in sm.digraph.source
-
-
 def test_invalid_state_name():
     sm = StateMachine(name='Test State Machine')
     with pytest.raises(ValidationError):
@@ -78,5 +63,105 @@ def test_invalid_timer():
         sm.add_state(name='state1', timer=-1.0)
 
 
-if __name__ == '__main__':
-    pytest.main()
+def test_to_digraph_empty_state_machine():
+    sm = StateMachine(name='Empty State Machine')
+    digraph = sm.to_digraph()
+    assert digraph.name == 'Empty State Machine'
+    assert len(digraph.body) == 0
+
+
+@pytest.fixture
+def state_machine():
+    fsm = StateMachine(name='Test State Machine')
+    fsm.add_state(
+        name='state1',
+        timer=2.0,
+        state_change_conditions={'tup': 'state2'},
+        output_actions={'action1': 255},
+        comment='First state',
+    )
+    fsm.add_state(
+        name='state2',
+        state_change_conditions={'tup': 'exit', 'condition': '>back'},
+        output_actions={'action2': 128},
+        comment='Second state',
+    )
+    return fsm
+
+
+def test_to_digraph_with_states(state_machine):
+    digraph = state_machine.to_digraph()
+    assert len(digraph.body) > 0
+    assert 'state1' in digraph.source
+    assert 'state2' in digraph.source
+    assert 'exit' in digraph.source
+
+
+def test_to_dict(state_machine):
+    sm_dict = state_machine.to_dict()
+    assert sm_dict['name'] == 'Test State Machine'
+    assert 'state1' in sm_dict['states']
+    assert 'state2' in sm_dict['states']
+    assert sm_dict['states']['state1']['timer'] == 2.0
+    assert sm_dict['states']['state1']['state_change_conditions'] == {'tup': 'state2'}
+    assert sm_dict['states']['state1']['output_actions'] == {'action1': 255}
+    assert sm_dict['states']['state1']['comment'] == 'First state'
+    assert sm_dict['states']['state2']['output_actions'] == {'action2': 128}
+    assert sm_dict['states']['state2']['comment'] == 'Second state'
+    assert 'timer' not in sm_dict['states']['state2']  # Default value should be omitted
+
+
+def test_to_json(state_machine):
+    json_str = state_machine.to_json()
+    assert '"name": "Test State Machine"' in json_str
+    assert '"state1"' in json_str
+    assert '"timer": 2.0' in json_str
+    assert '"state_change_conditions": {' in json_str
+    assert '"tup": "state2"' in json_str
+    assert '"output_actions": {' in json_str
+    assert '"action1": 255' in json_str
+    assert '"comment": "First state"' in json_str
+    assert '"state2"' in json_str
+    assert '"state_change_conditions": {' in json_str
+    assert '"tup": "exit"' in json_str
+    assert '"output_actions": {' in json_str
+    assert '"action2": 128' in json_str
+    assert '"comment": "Second state"' in json_str
+    assert '\n' not in json_str  # No newlines when `indent` is None
+
+
+def test_to_json_indent(state_machine):
+    json_str = state_machine.to_json(indent=2)
+    assert '\n' in json_str
+
+
+def test_to_json_compact(state_machine):
+    json_str = state_machine.to_json(compact=True)
+    assert '\n' not in json_str  # No newlines in compact mode
+    assert ': ' not in json_str  # No spaces after colons in compact mode
+    assert ', ' not in json_str  # No spaces after commas in compact mode
+
+
+def test_from_dict():
+    dictionary = {}
+    fsm = StateMachine.from_dict(dictionary)
+    assert isinstance(fsm, StateMachine)
+    assert dictionary == fsm.to_dict()  # roundtrip
+
+
+def test_from_json():
+    json_str = '{}'
+    fsm = StateMachine.from_json(json_str)
+    assert isinstance(fsm, StateMachine)
+    assert json_str == fsm.to_json()  # roundtrip
+
+
+def test_schema():
+    """Test that the schema file exists and is up to date."""
+    schema_path = Path(__file__).parents[1].joinpath('schema/statemachine.json')
+    assert schema_path.exists(), 'schema file does not exist'
+    with schema_path.open('r') as f:
+        data = f.read()
+    schema_from_file = msgspec.json.decode(data)
+    schema_from_struct = msgspec.json.schema(StateMachine)
+    assert schema_from_file == schema_from_struct, 'schema file is out of date'

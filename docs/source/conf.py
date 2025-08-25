@@ -1,21 +1,23 @@
+import importlib.util
+import inspect
 import json
-import os
 import sys
 from datetime import date
+from pathlib import Path
 
-sys.path.insert(0, os.path.abspath('../..'))
-from bpod_core import __version__, fsm
+import msgspec
 
-# Configuration file for the Sphinx documentation builder.
-#
-# For the full list of built-in configuration values, see the documentation:
-# https://www.sphinx-doc.org/en/master/usage/configuration.html
+project_root = Path(__file__).parents[2].resolve()
+docs_source_path = Path(__file__).parent.resolve()
+sys.path.insert(0, project_root)
+
+from bpod_core import __version__, fsm  # noqa: E402
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'bpod-core'
-copyright = f'{date.today().year}, International Brain Laboratory'
+copyright = f'{date.today().year}, International Brain Laboratory'  # noqa: A001
 author = 'International Brain Laboratory'
 release = '.'.join(__version__.split('.')[:3])
 version = '.'.join(__version__.split('.')[:3])
@@ -24,8 +26,92 @@ rst_prolog = f"""
 """
 
 # -- dump json schema --------------------------------------------------------
-with open('../../schema/statemachine.json', 'w') as f:
-    json.dump(fsm.StateMachine.model_json_schema(), f, indent=2)
+schema_root = project_root / 'schema'
+schema_root.mkdir(exist_ok=True)
+with schema_root.joinpath('statemachine.json').open('w') as f:
+    schema = msgspec.json.schema(fsm.StateMachine)
+    json.dump(schema, f, indent=2)
+    f.write('\n')  # add final newline
+
+# -- Generate Examples pages --------------------------------------------------
+# Create docs/source/examples/ with one page per example and an index.rst
+examples_source_path = project_root / 'examples'
+examples_target_path = docs_source_path / 'examples'
+examples_target_path.mkdir(exist_ok=True)
+example_files = [f for f in examples_source_path.glob('*.py')]
+
+examples_target_path.mkdir(exist_ok=True)
+
+# Write an index.rst with a toctree listing all example pages
+index_lines = [
+    'Example State Machines',
+    '======================',
+    '',
+    'The following examples illustrate usage and features of the '
+    ':class:`~bpod_core.fsm.StateMachine` class.',
+    '',
+    '.. toctree::',
+    '   :maxdepth: 1',
+    '',
+]
+
+for fn in example_files:
+    # Import the example file as a module
+    spec = importlib.util.spec_from_file_location(fn.stem, str(fn))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[fn.stem] = module
+    spec.loader.exec_module(module)
+
+    # Extract title and description from docstring
+    doc = inspect.getdoc(module)
+    page_title = doc.splitlines()[0].strip('."')
+    description = '\n'.join(doc.splitlines()[1:]).strip('"')
+
+    # Generate state machine diagram and save as SVG
+    state_machine = module.fsm
+    digraph = state_machine.to_digraph()
+    digraph.attr(rankdir='LR')
+    image_file = examples_target_path / fn.with_suffix('.svg').name
+    digraph.render(outfile=image_file, format='svg', cleanup=True, engine='dot')
+
+    # Generate JSON
+    json = state_machine.to_json(indent=2).splitlines()
+    json = [' ' * 7 + line for line in json]
+
+    page_path = examples_target_path.joinpath(f'{fn.stem}.rst')
+    page_lines = [
+        page_title,
+        '-' * len(page_title),
+        '',
+        description,
+        '',
+        f'.. image:: {image_file.name}',
+        '   :align: center',
+        '',
+        '.. tab-set::',
+        '',
+        '   .. tab-item:: Python',
+        '',
+        f'    .. literalinclude:: ../../../examples/{fn.name}',
+        '       :language: python',
+        '       :start-at: from bpod_core.',
+        '',
+        '   .. tab-item:: JSON',
+        '',
+        '    .. code-block:: json',
+        '',
+        *json,
+        '',
+    ]
+    with page_path.open('w', encoding='utf-8') as pf:
+        pf.write('\n'.join(page_lines) + '\n')
+
+    # Add page to toctree
+    index_lines.append(f'   {fn.stem}')
+
+index_out = examples_target_path / 'index.rst'
+with index_out.open('w', encoding='utf-8') as f:
+    f.write('\n'.join(index_lines) + '\n')
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

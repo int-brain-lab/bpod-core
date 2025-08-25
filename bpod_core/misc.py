@@ -1,24 +1,57 @@
 """Miscellaneous tools that don't fit the other categories."""
 
 import difflib
+import errno
+import json
 import re
-from typing import Any
+import socket
+from collections.abc import Iterator, MutableMapping, Sequence
+from pathlib import Path
+from typing import Any, cast
+
+import msgspec
+from appdirs import user_config_dir
 
 RE_SANITIZE = re.compile(r'[^a-zA-Z0-9_]')
-RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z\d])')
-RE_UNDERSCORES = re.compile(r'_{2,}|_$|^_')
+RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
+RE_UNDERSCORES = re.compile(r'_{2,}')
 
 
-def convert_to_snake_case(input_str: str) -> str:
+def sanitize_string(string: str, substitute='_'):
     """
-    Convert a given string to snake_case.
-
-    This function replaces spaces with underscores and inserts underscores
-    between lowercase and uppercase letters to convert a string to snake_case.
+    Replace non-alphanumeric characters in a string with a given substitute.
 
     Parameters
     ----------
-    input_str : str
+    string : str
+        The input string to be sanitized.
+    substitute : str, optional
+        The character(s) to replace non-alphanumeric characters with.
+        Defaults to '_'.
+
+    Returns
+    -------
+    str
+        A sanitized string where all non-alphanumeric characters have been replaced with
+        the specified substitute.
+
+    Raises
+    ------
+    TypeError
+        If either `string` or `substitute` is not an instance of ``str``.
+    """
+    if not (isinstance(string, str) and isinstance(substitute, str)):
+        raise TypeError('Both `string` and `substitute` must be strings.')
+    return re.sub(RE_SANITIZE, substitute, string)
+
+
+def convert_to_snake_case(string: str) -> str:
+    """
+    Convert a given string to snake_case.
+
+    Parameters
+    ----------
+    string : str
         The input string to be converted.
 
     Returns
@@ -26,11 +59,11 @@ def convert_to_snake_case(input_str: str) -> str:
     str
         The converted snake_case string.
     """
-    input_str = input_str.replace(' ', '_')
-    snake_case_str = RE_SANITIZE.sub('', input_str)
-    snake_case_str = RE_SNAKE_CASE.sub('_', snake_case_str)
-    snake_case_str = RE_UNDERSCORES.sub('_', snake_case_str)
-    return snake_case_str.lower()
+    string = sanitize_string(string)
+    string = RE_SNAKE_CASE.sub('_', string)
+    string = RE_UNDERSCORES.sub('_', string)
+    string = string.strip('_')
+    return string.lower()
 
 
 def suggest_similar(
@@ -66,34 +99,39 @@ def suggest_similar(
     return format_string.format(matches[0]) if len(matches) > 0 else ''
 
 
-def set_nested(d: dict[str, Any], keys: list[str], value: Any) -> None:
+def set_nested(d: MutableMapping, keys: Sequence[Any], value: Any) -> None:
     """
     Set a value in a nested dict, creating intermediate dicts as needed.
 
     Parameters
     ----------
-    d : dict
+    d : MutableMapping
         The dictionary in which to set the value.
-    keys : list of str
-        A list of keys representing the nested path where the value should be set.
+    keys : Sequence
+        A sequence of keys representing the nested path where the value should be set.
     value : Any
         The value to set at the specified path.
     """
+    if not keys:
+        return  # Do nothing if keys is empty
+
+    current = d
     for key in keys[:-1]:
-        d = d.setdefault(key, {})
-    d[keys[-1]] = value
+        current = current.setdefault(key, {})
+
+    current[keys[-1]] = value
 
 
-def get_nested(d: dict[str, Any], keys: list[str], default: Any = None) -> Any:
+def get_nested(d: MutableMapping, keys: Sequence[Any], default: Any = None) -> Any:
     """
-    Retrieve a value from a nested dict using a list of keys.
+    Retrieve a value from a nested dict using a Sequence of keys.
 
     Parameters
     ----------
-    d : dict
+    d : MutableMapping
         The dictionary from which to get a value.
-    keys : list of str
-        A list of keys representing the path to the desired value.
+    keys : Sequence
+        A sequence of keys representing the path to the desired value.
     default : Any, optional
         The value to return if the path does not exist. Defaults to None.
 
@@ -103,7 +141,154 @@ def get_nested(d: dict[str, Any], keys: list[str], default: Any = None) -> Any:
         The value at the nested path, or default if any key in the path is missing.
     """
     for key in keys:
-        if not isinstance(d, dict) or key not in d:
+        if not isinstance(d, MutableMapping) or key not in d:
             return default
         d = d[key]
     return d
+
+
+def get_local_ipv4() -> str:
+    """
+    Determine the primary local IPv4 address of the machine.
+
+    This function attempts to determine the IPv4 address of the local machine
+    that would be used for an outbound connection to the internet. It does this
+    by creating a UDP socket and connecting to a known public IP address
+    (Google DNS at 8.8.8.8). No data is sent, but the OS uses the routing table
+    to select the appropriate local interface.
+
+    Returns
+    -------
+    str
+        The local IPv4 address as a string. If the network is unreachable or
+        unavailable, returns the loopback address `127.0.0.1`.
+
+    Raises
+    ------
+    OSError
+        If an unexpected socket error occurs during interface detection.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(('8.8.8.8', 80))  # Doesn't have to be reachable
+            return str(s.getsockname()[0])
+        except OSError as e:
+            if e.errno in {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL}:
+                return '127.0.0.1'
+            raise
+
+
+class SettingsDict(MutableMapping):
+    """
+    Represents a dictionary-like persistent settings storage.
+
+    This class is a mutable mapping implementation that stores and retrieves key-value
+    pairs, persisting them to a JSON configuration file. The settings are associated
+    with a specific application name and, optionally, an application author to organize
+    the file path appropriately. You can use this class to manage configuration data
+    that needs to be saved and reused across sessions. Changes to the dictionary are
+    automatically saved to the file.
+
+    This class supports standard dictionary operations such as getting, setting,
+    deleting items, checking for the existence of keys, and iterating over keys.
+    Additionally, it provides functionality for accessing nested values using a sequence
+    of keys.
+    """
+
+    def __init__(
+        self,
+        app_name: str,
+        app_author: str | None = None,
+        filename: str = 'settings.json',
+    ) -> None:
+        """Initialize the SettingsDict instance.
+
+        Parameters
+        ----------
+        app_name : str
+            Name of the application.
+        app_author : str, optional
+            Name of the application author.
+        filename : str, optional
+            Name of the settings file. Defaults to 'settings.json'.
+        """
+        config_path = Path(user_config_dir(app_name, app_author))
+        self._path = config_path / filename
+        self._state = self._load_from_file()
+
+    def _load_from_file(self) -> dict:
+        if not self._path.exists():
+            return {}
+        with self._path.open('r') as f:
+            data = f.read()
+        try:
+            return cast('dict', msgspec.json.decode(data))
+        except msgspec.DecodeError:
+            return {}
+
+    def _save_to_file(self) -> None:
+        dictionary = msgspec.to_builtins(self._state)
+        if not self._path.exists():
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.touch(exist_ok=True)
+        with self._path.open('w') as f:
+            json.dump(dictionary, f, indent=2)
+
+    def __getitem__(self, key: Any) -> Any:
+        if key in self._state:
+            return self._state.get(key)
+        else:
+            raise KeyError(key)
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self._state[key] = value
+        self._save_to_file()
+
+    def __contains__(self, key: Any) -> bool:
+        return key in self._state
+
+    def __delitem__(self, key: Any) -> None:
+        if key in self._state:
+            del self._state[key]
+            self._save_to_file()
+        else:
+            raise KeyError(key)
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self._state)
+
+    def __len__(self) -> int:
+        return len(self._state)
+
+    def __repr__(self) -> str:
+        return repr(self._state)
+
+    def get_nested(self, keys: Sequence[Any], default: Any | None = None) -> Any:
+        """Retrieve a nested value using a sequence of keys.
+
+        Parameters
+        ----------
+        keys : Sequence
+            An sequence of keys representing the nested path.
+        default : Any, optional
+            The value to return if the path does not exist. Defaults to None.
+
+        Returns
+        -------
+        Any
+            The value at the nested path, or default if any key in the path is missing.
+        """
+        return get_nested(d=self._state, keys=keys, default=default)
+
+    def set_nested(self, keys: Sequence[Any], value: Any) -> None:
+        """Set a nested value using a sequence of keys.
+
+        Parameters
+        ----------
+        keys : Sequence
+            An sequence of keys representing the nested path.
+        value : Any
+            The value to set at the nested path.
+        """
+        set_nested(d=self._state, keys=keys, value=value)
+        self._save_to_file()

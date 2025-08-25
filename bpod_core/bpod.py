@@ -1,21 +1,18 @@
 """Module for interfacing with the Bpod Finite State Machine."""
 
-import json
 import logging
 import re
 import struct
+import threading
+import traceback
 import weakref
-from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
-from threading import Event as TreadingEvent
-from threading import Thread
 from types import TracebackType
 from typing import Any, NamedTuple, cast
 
+import msgspec
 import numpy as np
-from appdirs import user_data_dir
 from numpy.typing import NDArray
 from pydantic import validate_call
 from serial import SerialException
@@ -23,13 +20,13 @@ from serial.tools.list_ports import comports
 from typing_extensions import Self
 
 from bpod_core import __version__ as bpod_core_version
-from bpod_core.com import ExtendedSerial, ZMQService
+from bpod_core.com import ExtendedSerial
 from bpod_core.fsm import StateMachine
-from bpod_core.misc import get_nested, set_nested, suggest_similar
+from bpod_core.ipc import DualChannelClient, DualChannelHost
+from bpod_core.misc import SettingsDict, suggest_similar
 
 PROJECT_NAME = 'bpod-core'
 AUTHOR_NAME = 'International Brain Laboratory'
-SETTINGS_PATH = Path(user_data_dir(PROJECT_NAME, AUTHOR_NAME)).joinpath('settings.json')
 VENDOR_IDS_BPOD = [0x16C0]  # vendor IDs of supported Bpod devices
 MIN_BPOD_FW_VERSION = (23, 0)  # minimum supported firmware version (major, minor)
 MIN_BPOD_HW_VERSION = 3  # minimum supported hardware version
@@ -53,7 +50,22 @@ MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
 logger = logging.getLogger(__name__)
 
 
-class VersionInfo(NamedTuple):
+class DeviceSettings(msgspec.Struct):
+    """Settings for a specific Bpod device."""
+
+    serial_number: str
+    """Serial number of the device."""
+    name: str = ''
+    """User-defined name of the device."""
+    location: str = ''
+    """User-defined location of the device."""
+    zmq_port_pub: int | None = None
+    """Port number for the ZeroMQ PUB service"""
+    zmq_port_rep: int | None = None
+    """Port number for the ZeroMQ REP service"""
+
+
+class VersionInfo(msgspec.Struct, frozen=True):
     """Represents the Bpod's on-board hardware configuration."""
 
     firmware: tuple[int, int]
@@ -65,8 +77,11 @@ class VersionInfo(NamedTuple):
     pcb: int | None
     """PCB revision, if applicable"""
 
+    def _to_dict(self) -> dict[str, Any]:
+        return {f: getattr(self, f) for f in self.__struct_fields__}
 
-class HardwareConfiguration(NamedTuple):
+
+class HardwareConfiguration(msgspec.Struct, frozen=True):
     """Represents the Bpod's on-board hardware configuration."""
 
     max_states: int
@@ -106,7 +121,7 @@ class BpodError(Exception):
     """
 
 
-class FSMThread(Thread):
+class FSMThread(threading.Thread):
     """A thread for managing the execution of a finite state machine on the Bpod."""
 
     _struct_start = struct.Struct('<Q')
@@ -146,7 +161,7 @@ class FSMThread(Thread):
         super().__init__()
         self.daemon = True
         self.serial = serial
-        self._stop_event = TreadingEvent()
+        self._stop_event = threading.Event()
         self._index = fsm_index
         self._confirm_fsm = confirm_fsm
         self._cycle_period = cycle_period
@@ -182,7 +197,7 @@ class FSMThread(Thread):
         # confirm the state machine
         if self._confirm_fsm:
             if serial.read(1) != b'\x01':
-                raise RuntimeError('State machine #%d was not confirmed by Bpod', index)
+                raise RuntimeError(f'State machine #{index} was not confirmed by Bpod')
             if debug:
                 logger.debug('State machine #%d confirmed by Bpod', index)
 
@@ -255,15 +270,23 @@ class FSMThread(Thread):
         # TODO: handle end of state machine
 
 
-class Bpod:
-    """Bpod class for interfacing with the Bpod Finite State Machine."""
-
-    _settings: dict
-    _name: str | None
+class AbstractBpod:
     _version: VersionInfo
     _hardware: HardwareConfiguration
+
+    @property
+    def version(self) -> VersionInfo:
+        """Version information of the Bpod's firmware and hardware."""
+        return self._version
+
+
+class Bpod(AbstractBpod):
+    """Bpod class for interfacing with the Bpod Finite State Machine."""
+
+    _settings: SettingsDict
+    _name: str | None
     _fsm_thread: FSMThread | None = None
-    _zmq_service: ZMQService | None = None
+    _zmq_service: DualChannelHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
     serial0: ExtendedSerial
@@ -289,7 +312,7 @@ class Bpod:
     ) -> None:
         self._finalizer = weakref.finalize(self, self._finalize)
         logger.info('bpod_core %s', bpod_core_version)
-        self._load_settings()
+        self._settings = SettingsDict(PROJECT_NAME, AUTHOR_NAME)
 
         # initialize members
         self.event_names = []
@@ -325,23 +348,22 @@ class Bpod:
         self._start_zmq()
 
         # log hardware information
-        if logger.isEnabledFor(logging.INFO):
-            logger.info(
-                'Connected to Bpod Finite State Machine %s on %s',
-                self.version.machine_str,
-                self.port,
-            )
-            logger.info(
-                'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
-                *self.version.firmware,
-                self._serial_number,
-                self.version.pcb,
-            )
-            logger.info(
-                'ZeroMQ service started on %s:%d',
-                self._zmq_service.bind_address if self._zmq_service else '?',
-                self._zmq_service.port if self._zmq_service else '?',
-            )
+        logger.info(
+            'Connected to Bpod Finite State Machine %s on %s',
+            self.version.machine_str,
+            self.port,
+        )
+        logger.info(
+            'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
+            *self.version.firmware,
+            self._serial_number,
+            self.version.pcb,
+        )
+        # logger.info(
+        #     'ZeroMQ service started on %s:%d',
+        #     self._zmq_service.bind_address,
+        #     self._zmq_service.port,
+        # )
 
     def __enter__(self) -> Self:
         """Enter context."""
@@ -385,11 +407,45 @@ class Bpod:
         self.close()
         self._stop_zmq()
 
+    def _zmq_handler(self, message: dict) -> dict[str, Any]:
+        msg_type = message.get('type')
+        if msg_type == 'call':
+            method_name = message.get('method', '')
+            args = message.get('args', ())
+            kwargs = message.get('kwargs', {})
+            try:
+                method = getattr(self, method_name)
+                result = method(*args, **kwargs)
+                response = {'success': True, 'result': result}
+            except Exception as e:
+                print(message)
+                response = {
+                    'success': False,
+                    'error': {
+                        'type': type(e).__name__,
+                        'message': str(e),
+                        'traceback': traceback.format_exc(),
+                    },
+                }
+        elif msg_type == 'handshake':
+            response = {
+                'bpod-core': bpod_core_version,
+                'version': self._version._to_dict(),
+            }
+        else:
+            response = {
+                'success': False,
+                'error': f'Unknown message type: {msg_type}',
+            }
+        return response
+
     def _start_zmq(self):
-        port = self._get_setting(['devices', str(self._serial_number), 'zmq_port'])
-        self._zmq_service = ZMQService(
-            f'{self.name}' if self.name else f'bpod_{self._serial_number}',
-            {
+        port_pub = self._get_setting(['devices', self._serial_number, 'port_pub'])
+        port_rep = self._get_setting(['devices', self._serial_number, 'port_rep'])
+        self._zmq_service = DualChannelHost(
+            service_name=self.name if self.name else f'bpod_{self._serial_number}',
+            service_type='_bpod',
+            txt_record={
                 'description': f'Bpod Finite State Machine {self.version.machine_str}',
                 'serial': self._serial_number or '',
                 'name': self.name or '',
@@ -397,37 +453,28 @@ class Bpod:
                 'firmware': '.'.join([str(x) for x in self.version.firmware]),
                 'core': bpod_core_version,
             },
-            port=cast('int | None', port),
-            service_type='_bpod._tcp.local.',
+            event_handler=self._zmq_handler,
+            port_pub=cast('int | None', port_pub),
+            port_rep=cast('int | None', port_rep),
         )
         self._set_setting(
-            ['devices', str(self._serial_number), 'zmq_port'], self._zmq_service.port
+            ['devices', self._serial_number, 'port_pub'],
+            self._zmq_service.pub_tcp_port,
+        )
+        self._set_setting(
+            ['devices', self._serial_number, 'port_rep'],
+            self._zmq_service.rep_tcp_port,
         )
 
     def _stop_zmq(self):
-        if self._zmq_service is not None:
+        if hasattr(self, '_zmq_service'):
             self._zmq_service.close()
 
-    def _save_settings(self) -> None:
-        """Save the current settings to the settings file."""
-        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with SETTINGS_PATH.open('w') as f:
-            json.dump(self._settings, f, indent=2)
-
-    def _load_settings(self) -> None:
-        """Load settings from the settings file."""
-        if SETTINGS_PATH.exists():
-            with SETTINGS_PATH.open('r') as f:
-                self._settings = json.load(f)
-        else:
-            self._settings = {}
-
     def _get_setting(self, keys: list[str], default: Any = None) -> Any:
-        return get_nested(self._settings, keys, default)
+        return self._settings.get_nested(keys, default)
 
     def _set_setting(self, keys: list[str], value: Any = None) -> None:
-        set_nested(self._settings, keys, value)
-        self._save_settings()
+        self._settings.set_nested(keys, value)
 
     def _sends_discovery_byte(
         self,
@@ -547,7 +594,7 @@ class Bpod:
         machine_type_str = MACHINE_TYPES.get(machine_type, 'unknown')
         v_minor = self.serial0.query_struct(b'f', '<H')[0] if v_major > 22 else 0
         v_firmware = (v_major, v_minor)
-        if not (MIN_BPOD_HW_VERSION <= machine_type <= MAX_BPOD_HW_VERSION):
+        if not MIN_BPOD_HW_VERSION <= machine_type <= MAX_BPOD_HW_VERSION:
             raise BpodError(
                 f'The hardware version of the Bpod on {self.port} is not supported.',
             )
@@ -697,7 +744,7 @@ class Bpod:
 
     def _compile_event_names(self) -> None:
         """Compile the list of event names supported by the Bpod hardware."""
-        n_serial_events = sum([len(m.event_names) for m in self.modules])
+        n_serial_events = sum(len(m.event_names) for m in self.modules)
         n_softcodes = self._hardware.max_serial_events - n_serial_events
         n_usb = self._hardware.input_description.count(b'X')
         n_usb_ext = self._hardware.input_description.count(b'Z')
@@ -764,11 +811,7 @@ class Bpod:
         """The port of the Bpod's primary serial device."""
         return self.serial0.port
 
-    @property
-    def version(self) -> VersionInfo:
-        """Version information of the Bpod's firmware and hardware."""
-        return self._version
-
+    @validate_call
     def set_status_led(self, enabled: bool) -> bool:
         """
         Enable or disable the Bpod's status LED.
@@ -860,6 +903,7 @@ class Bpod:
         """
         self.send_state_machine(state_machine, validate_only=True)
 
+    @validate_call(config={'arbitrary_types_allowed': True})
     def send_state_machine(
         self,
         state_machine: StateMachine,
@@ -889,6 +933,8 @@ class Bpod:
         ------
         ValueError
             If the state machine is invalid or exceeds hardware limitations.
+        :exc:`~validate_call.roar.validate_callCallHintViolation`
+            If function arguments don’t match type hints.
         """
         # Disable all active module relays
         if not validate_only:
@@ -918,16 +964,19 @@ class Bpod:
         ):
             if value > maximum_value:
                 raise ValueError(
-                    'Too many %s in state machine - hardware supports a maximum '
-                    'number of %d %s',
-                    name,
-                    maximum_value,
-                    name,
+                    f'Too many {name} in state machine - hardware supports up to '
+                    f'{maximum_value} {name}'
                 )
 
         # Validate states
         valid_targets = list(state_machine.states.keys()) + VALID_OPERATORS
+        max_state_duration = np.iinfo(np.uint32).max / self._hardware.cycle_frequency
         for state_name, state in state_machine.states.items():
+            if state.timer < 0 or state.timer > max_state_duration:
+                raise ValueError(
+                    f"Invalid timer value {state.timer} for state '{state_name}' - "
+                    f'must be between 0 and {max_state_duration} seconds',
+                )
             for condition_name, target in state.state_change_conditions.items():
                 if target not in valid_targets:
                     target_type = 'operator' if target[0] == '>' else 'target state'
@@ -1214,6 +1263,7 @@ class Bpod:
         if self.is_running:
             self._fsm_thread.join()  # type: ignore[union-attr]
 
+    @validate_call
     def run_state_machine(self, *, blocking: bool = True) -> None:
         """Temporary run method for debugging purposes."""
         if self.is_running:
@@ -1282,10 +1332,9 @@ class Bpod:
         self._set_setting(['devices', str(self._serial_number), 'location'], location)
 
 
-class Channel(ABC):
-    """Abstract base class representing a channel on the Bpod device."""
+class Channel:
+    """Base class representing a channel on the Bpod device."""
 
-    @abstractmethod
     def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
         """
         Abstract base class representing a channel on the Bpod device.
@@ -1405,23 +1454,6 @@ class Input(Channel):
 class Output(Channel):
     """Output channel class representing a digital output channel."""
 
-    def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
-        """
-        Output channel class representing a digital output channel.
-
-        Parameters
-        ----------
-        bpod : Bpod
-            The Bpod instance associated with the channel.
-        name : str
-            The name of the channel.
-        io_key : bytes
-            The I/O type of the channel (e.g., b'B', b'V', b'P').
-        index : int
-            The index of the channel.
-        """
-        super().__init__(bpod, name, io_key, index)
-
     def override(self, state: bool | int) -> None:
         """
         Override the state of the output channel.
@@ -1504,3 +1536,77 @@ class Module:
     def relay(self, state: bool) -> None:
         """The current state of the serial relay."""
         self.set_relay(state)
+
+
+class RemoteBpod:
+    def __init__(
+        self,
+        address: str | None = None,
+        name: str | None = None,
+        serial_number: str | None = None,
+        location: str | None = None,
+        timeout: float = 10.0,
+    ):
+        properties = {
+            'address': address,
+            'name': name,
+            'serial': serial_number,
+            'location': location,
+        }
+        properties = {k: v for k, v in properties.items() if v is not None}
+
+        try:
+            self._zmq = DualChannelClient(
+                '_bpod._tcp.local.',
+                address=address,
+                discovery_timeout=timeout,
+                txt_properties=properties,
+            )
+        except TimeoutError as e:
+            raise TimeoutError('Failed to discover remote Bpod.') from e
+        self._handshake()
+
+        # log hardware information
+        logger.info(
+            'Connected to Bpod Finite State Machine %s on %s',
+            self._version['machine_str'],
+            self._zmq._address_req,
+        )
+
+    def _request(self, request_type: str, **kwargs) -> dict:
+        return cast('dict', self._zmq.request(type=request_type, **kwargs))
+
+    def _remote_call(self, method: str, *args, **kwargs) -> Any | None:
+        """
+        Perform a remote procedure call by sending a 'call' type request.
+
+        Parameters
+        ----------
+        method : str
+            The name of the remote method to invoke.
+        *args
+            Positional arguments to pass to the remote method.
+        **kwargs
+            Keyword arguments to pass to the remote method.
+
+        Returns
+        -------
+        Any or None
+            The result returned from the remote method.
+        """
+        reply = self._request('call', method=method, args=args, kwargs=kwargs)
+        if reply.get('success'):
+            return reply['result']
+        logger.error(f'Remote {reply["error"]["type"]}: ' + reply['error']['message'])
+        return None
+
+    def _handshake(self):
+        reply = self._request('handshake')
+        self._version = reply['version']
+        self._version['bpod_core'] = reply['bpod-core']
+
+    def set_status_led(self, enabled: bool) -> None:
+        self._remote_call('set_status_led', enabled)
+
+    def _event_handler(self, message: dict):
+        pass

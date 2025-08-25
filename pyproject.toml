@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "bpod-core"
-version = '0.1.0-alpha.3'
+version = '0.1.0a4'
 description = "Python package for interfacing with the Bpod finite state machine"
 authors = [{ name = "Florian Rau", email = "bimac@users.noreply.github.com" }]
 classifiers = [
@@ -25,6 +25,8 @@ dependencies = [
   "pyzmq>=27.0.1",
   "zeroconf>=0.147.0",
   "appdirs>=1.4.4",
+  "msgspec>=0.19.0",
+  "packaging>=25.0",
 ]
 license = { text = "MIT" }
 readme = "README.md"
@@ -59,6 +61,7 @@ test = [
   "tox>=4.25.0",
   "tox-uv>=0.7.2",
   "packaging>=25.0",
+  "pytest-mock>=3.14.1",
 ]
 typing = [
   "appdirs-stubs>=0.1.0",
@@ -91,7 +94,7 @@ source-include = [ "tests/*.py", "schema/*.json", "docs/source/**/*" ]
 source-exclude = [ "docs/source/api" ]
 
 [tool.ruff]
-include = ["bpod_core/**/*.py", "tests/**/*.py"]
+include = ["bpod_core/**/*.py", "tests/**/*.py", "examples/**/*.py", "docs/source/**/*.py"]
 target-version = "py310"
 
 [tool.ruff.format]
@@ -135,7 +138,7 @@ select = [
 convention = "numpy"
 
 [tool.mypy]
-packages = "bpod_core"
+packages = [ "bpod_core", "tests" ]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true

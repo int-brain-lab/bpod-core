@@ -1,302 +1,150 @@
 """Module defining classes and types for creating and managing state machines."""
 
-import ctypes
-import re
-from collections import OrderedDict
-from typing import Annotated
+import json
+from typing import Annotated, cast
 
+import msgspec
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import BaseModel, Field, NonNegativeFloat, NonNegativeInt, validate_call
+from pydantic import validate_call
 
-StateName = Annotated[
-    str,
-    Field(
-        min_length=1,
-        title='State Name',
-        description='The name of the state',
-        pattern=re.compile(r'^(?!exit$).*$'),
-    ),
-]
-StateTimer = Annotated[
-    float,
-    Field(
-        ge=0.0,
-        allow_inf_nan=False,
-        default=0.0,
-        title='State Timer',
-        description="The state's timer in seconds",
-    ),
-]
-TargetState = Annotated[
-    str,
-    Field(
-        min_length=1,
-        title='Target State',
-        description='The name of the target state',
-    ),
-]
-StateChangeConditions = Annotated[
-    dict[str, TargetState],
-    Field(
-        default_factory=dict,
-        title='State Change Conditions',
-        description='The conditions for switching from the current state to others',
-    ),
-]
-OutputActionValue = Annotated[
-    int,
-    Field(
-        ge=0,
-        le=255,
-        title='Output Action Value',
-        description='The integer value of the output action',
-    ),
-]
-OutputActions = Annotated[
-    dict[str, OutputActionValue],
-    Field(
-        default_factory=dict,
-        title='Output Actions',
-        description='The actions to be executed during the state',
-    ),
-]
-Comment = Annotated[
-    str,
-    Field(
-        title='Comment',
-        description='An optional comment describing the state.',
-    ),
-]
-GlobalTimerIndex = Annotated[
-    NonNegativeInt,
-    Field(
-        title='Global Timer ID',
-        description='The ID of the global timer',
-    ),
-]
-GlobalTimerDuration = Annotated[
-    NonNegativeFloat,
-    Field(
-        allow_inf_nan=False,
-        title='Global Timer Duration',
-        description='The duration of the global timer in seconds',
-    ),
-]
-GlobalTimerOnsetDelay = Annotated[
-    NonNegativeFloat,
-    Field(
-        allow_inf_nan=False,
-        default=0.0,
-        title='Onset Delay',
-        description='The onset delay of the global timer in seconds',
-    ),
-]
-GlobalTimerChannel = Annotated[
-    str | None,
-    Field(
-        title='Channel',
-        default=None,
-        description='The channel affected by the global timer',
-    ),
-]
-GlobalTimerChannelValue = Annotated[
-    int,
-    Field(
-        ge=0,
-        le=255,
-        default=0,
-        title='Channel Value',
-        description='The value a channel is set to',
-    ),
-]
-GlobalTimerSendEvents = Annotated[
-    bool,
-    Field(
-        default=True,
-        title='Send Events',
-        description='Whether the global timer is sending events',
-    ),
-]
-GlobalTimerLoop = Annotated[
-    int,
-    Field(
-        ge=0,
-        le=255,
-        default=0,
-        title='Loop Mode',
-        description='Whether the global timer is looping or not',
-    ),
-]
-GlobalTimerLoopInterval = Annotated[
-    NonNegativeFloat,
-    Field(
-        default=0.0,
-        title='Loop Interval',
-        description='The interval in seconds that the global timer is looping',
-    ),
-]
-GlobalTimerOnsetTrigger = Annotated[
-    NonNegativeInt | None,
-    Field(
-        default=0,
-        title='Onset Trigger',
-        description='An integer whose bits indicate other global timers to trigger',
-    ),
-]
-GlobalCounterID = Annotated[
-    NonNegativeInt,
-    Field(
-        title='ID',
-        description='The ID of the global counter',
-    ),
-]
-GlobalCounterEvent = Annotated[
-    str,
-    Field(
-        title='Event',
-        description='The name of the event to count',
-    ),
-]
-GlobalCounterThreshold = Annotated[
-    NonNegativeInt,
-    Field(
-        le=ctypes.c_uint32(-1).value,
-        title='Threshold',
-        description='The count threshold to generate an event',
-    ),
-]
-ConditionID = Annotated[
-    NonNegativeInt,
-    Field(
-        title='ID',
-        description='The ID of the condition',
-    ),
-]
-ConditionChannel = Annotated[
-    str,
-    Field(
-        title='Channel',
-        description='The channel or global timer attached to the condition',
-    ),
-]
-ConditionValue = Annotated[
-    bool,
-    Field(
-        title='Value',
-        description='The value of the condition channel if the condition is met',
-    ),
-]
+from bpod_core.fsm_types import (
+    ConditionChannel,
+    ConditionID,
+    ConditionValue,
+    GlobalCounterEvent,
+    GlobalCounterID,
+    GlobalCounterThreshold,
+    GlobalTimerChannel,
+    GlobalTimerChannelValue,
+    GlobalTimerDuration,
+    GlobalTimerIndex,
+    GlobalTimerLoop,
+    GlobalTimerLoopInterval,
+    GlobalTimerOnsetDelay,
+    GlobalTimerOnsetTrigger,
+    GlobalTimerSendEvents,
+    StateActions,
+    StateComment,
+    StateConditions,
+    StateMachineName,
+    StateName,
+    StateTimer,
+)
 
 
-class State(BaseModel):
+class State(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     """Represents a state in the state machine."""
 
-    timer: StateTimer = StateTimer()
+    timer: StateTimer = 0.0
     """The state's timer in seconds."""
 
-    state_change_conditions: StateChangeConditions = StateChangeConditions()
+    state_change_conditions: StateConditions = {}
     """A dictionary mapping conditions to target states for transitions."""
 
-    output_actions: OutputActions = OutputActions()
+    output_actions: StateActions = {}
     """A dictionary of actions to be executed during the state."""
 
-    comment: Comment = Comment()
+    comment: StateComment | None = None
     """An optional comment describing the state."""
 
-    model_config = {
-        'validate_assignment': True,
-        'json_schema_extra': {'additionalProperties': False},
-    }
-    """Configuration for the `State` model."""
 
-
-class GlobalTimer(BaseModel, validate_assignment=True):
+class GlobalTimer(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     timer_id: GlobalTimerIndex
     duration: GlobalTimerDuration
-    onset_delay: GlobalTimerOnsetDelay = GlobalTimerOnsetDelay()
-    channel: GlobalTimerChannel = None
-    value_on: GlobalTimerChannelValue = GlobalTimerChannelValue()
-    value_off: GlobalTimerChannelValue = GlobalTimerChannelValue()
-    send_events: GlobalTimerSendEvents = GlobalTimerSendEvents()
-    loop: GlobalTimerLoop = GlobalTimerLoop()
-    loop_interval: GlobalTimerLoopInterval = GlobalTimerLoopInterval()
-    onset_trigger: GlobalTimerOnsetTrigger = None
+    onset_delay: GlobalTimerOnsetDelay = 0.0
+    channel: GlobalTimerChannel | None = None
+    value_on: GlobalTimerChannelValue = 0
+    value_off: GlobalTimerChannelValue = 0
+    send_events: GlobalTimerSendEvents = True
+    loop: GlobalTimerLoop = 0
+    loop_interval: GlobalTimerLoopInterval = 0.0
+    onset_trigger: GlobalTimerOnsetTrigger = 0
 
 
-class GlobalCounter(BaseModel, validate_assignment=True):
+class GlobalCounter(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     id: GlobalCounterID
     event: GlobalCounterEvent
     threshold: GlobalCounterThreshold
 
 
-class Condition(BaseModel, validate_assignment=True):
+class Condition(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     id: ConditionID
     channel: ConditionChannel
     value: ConditionValue
 
 
-class StateMachine(BaseModel):
+class StateMachine(msgspec.Struct, omit_defaults=True):
     """Represents a state machine with a collection of states."""
 
-    name: str = Field(
-        min_length=1,
-        default='State Machine',
-        title='State Machine Name',
-        description='The name of the state machine',
-    )
+    name: StateMachineName = 'State Machine'
     """The name of the state machine."""
 
-    states: OrderedDict[StateName, State] = Field(
-        description='A collection of states',
-        title='States',
-        default_factory=OrderedDict,
-        json_schema_extra={
-            'propertyNames': {
-                'minLength': 1,
-                'type': 'string',
-                'not': {'const': 'exit'},
+    states: Annotated[
+        dict[StateName, State],
+        msgspec.Meta(
+            title='States',
+            description='A collection of states',
+            min_length=1,
+            extra_json_schema={
+                'propertyNames': {
+                    'pattern': '^((?!>)(?!exit$).)*$',
+                    'minLength': 1,
+                }
             },
-        },
-    )
-    """An ordered dictionary of states in the state machine."""
+        ),
+    ] = {}
+    """A dictionary of states in the state machine."""
 
-    global_timers: OrderedDict[GlobalTimerIndex, GlobalTimer] = Field(
-        description='A collection of global timers',
-        title='Global Timers',
-        default_factory=OrderedDict,
-        json_schema_extra={'propertyNames': {'type': 'int'}},
-    )
-    """An ordered dictionary of global timers in the state machine."""
+    global_timers: Annotated[
+        dict[GlobalTimerIndex, GlobalTimer],
+        msgspec.Meta(
+            title='Global Timers',
+            description='A collection of global timers',
+            extra_json_schema={
+                'propertyNames': {
+                    'pattern': r'^\d+$',
+                }
+            },
+        ),
+    ] = {}
+    """A dictionary of global timers in the state machine."""
 
-    global_counters: OrderedDict[GlobalCounterID, GlobalCounter] = Field(
-        description='A collection of global counters',
-        title='Global Counters',
-        default_factory=OrderedDict,
-        json_schema_extra={'propertyNames': {'type': 'int'}},
-    )
-    """An ordered dictionary of global counters in the state machine."""
+    global_counters: Annotated[
+        dict[GlobalCounterID, GlobalCounter],
+        msgspec.Meta(
+            title='Global Counters',
+            description='A collection of global counters',
+            extra_json_schema={
+                'propertyNames': {
+                    'pattern': r'^\d+$',
+                }
+            },
+        ),
+    ] = {}
+    """A dictionary of global counters in the state machine."""
 
-    conditions: OrderedDict[ConditionID, Condition] = Field(
-        description='A collection of conditions',
-        title='Conditions',
-        default_factory=OrderedDict,
-        json_schema_extra={'propertyNames': {'type': 'int'}},
-    )
-
-    model_config = {
-        'validate_assignment': True,
-        'json_schema_extra': {'additionalProperties': False},
-    }
-    """Configuration for the `StateMachine` model."""
+    conditions: Annotated[
+        dict[ConditionID, Condition],
+        msgspec.Meta(
+            title='Conditions',
+            description='A collection of conditions',
+            extra_json_schema={
+                'propertyNames': {
+                    'pattern': r'^\d+$',
+                }
+            },
+        ),
+    ] = {}
+    """A dictionary of conditions in the state machine."""
 
     @validate_call
     def add_state(
         self,
         name: StateName,
-        timer: StateTimer,
-        state_change_conditions: StateChangeConditions,
-        output_actions: OutputActions,
-        comment: Comment | None = None,
+        timer: StateTimer = 0.0,
+        state_change_conditions: StateConditions | None = None,
+        output_actions: StateActions | None = None,
+        comment: StateComment | None = None,
     ) -> None:
         """
         Adds a new state to the state machine.
@@ -323,10 +171,10 @@ class StateMachine(BaseModel):
         """
         if name in self.states:
             raise ValueError(f"A state named '{name}' is already registered")
-        self.states[name] = State.model_construct(
+        self.states[name] = State(
             timer=timer,
-            state_change_conditions=state_change_conditions,
-            output_actions=output_actions,
+            state_change_conditions=state_change_conditions or {},
+            output_actions=output_actions or {},
             comment=comment,
         )
 
@@ -335,7 +183,7 @@ class StateMachine(BaseModel):
         timer_id: GlobalTimerIndex,
         duration: GlobalTimerDuration,
         onset_delay: GlobalTimerOnsetDelay = 0.0,
-        channel: GlobalTimerChannel = None,
+        channel: GlobalTimerChannel | None = None,
         value_on: GlobalTimerChannelValue = 0,
         value_off: GlobalTimerChannelValue = 0,
         send_events: GlobalTimerSendEvents = True,
@@ -441,8 +289,7 @@ class StateMachine(BaseModel):
             value=value,
         )
 
-    @property
-    def digraph(self) -> Digraph:
+    def to_digraph(self) -> Digraph:
         """
         Returns a graphviz Digraph instance representing the state machine.
 
@@ -461,55 +308,162 @@ class StateMachine(BaseModel):
 
         Notes
         -----
-        This method depends on theGraphviz system libraries to be installed.
+        This method depends on the Graphviz system libraries to be installed.
         See https://graphviz.readthedocs.io/en/stable/manual.html#installation
         """
         # Initialize the Digraph with the name of the state machine
-        digraph = Digraph(self.name)
+        dot = Digraph(self.name)
 
         # Return an empty Digraph if there are no states
         if len(self.states) == 0:
-            return digraph
+            return dot
 
-        # Add the start node represented by a point-shaped node
-        digraph.node(name='', shape='point')
-        digraph.edge('', next(iter(self.states.keys())))
+        # Set default graph attributes and styling
+        fontname = 'Helvetica,Arial,sans-serif'
+        dot.attr(overlap='false', splines='true')
+        dot.attr('graph', fontname=fontname, fontsize='11', bgcolor='transparent')
+        dot.attr('node', fontname=fontname, fontsize='11', bgcolor='white')
+        dot.attr('edge', fontname=fontname, fontsize='10')
 
-        # Add an 'exit' node if any state transitions to 'exit'
-        if 'exit' in [
-            target
-            for state in self.states.values()
-            for target in state.state_change_conditions.values()
-        ]:
-            digraph.node(name='exit', label='<<b>exit</b>>', shape='plain')
+        # Add start node and edge to first state
+        dot.node(
+            name='', shape='circle', style='filled', fillcolor='black', width='0.25'
+        )
+        dot.edge('', next(iter(self.states.keys())))
+        with dot.subgraph() as s:
+            s.attr(rank='source')
+            s.node('')
 
-        # Add nodes for each state
+        # Add exit node if any states transition to it
+        targets = [
+            t for s in self.states.values() for t in s.state_change_conditions.values()
+        ]
+        if 'exit' in targets or '>exit' in targets:
+            dot.node(
+                name='exit',
+                label='',
+                shape='doublecircle',
+                style='filled',
+                fillcolor='black',
+                width='0.125',
+                rank='sink',
+            )
+            with dot.subgraph() as s:
+                s.attr(rank='sink')
+                s.node('exit')
+
+        back_ops = []  # Store back operations for later processing
+
+        # Add nodes and edges for each state
         for state_name, state in self.states.items():
-            # Create table rows for the state's comment and output actions
+            # Create table cells for comment if present
             comment = (
                 f'<TR><TD ALIGN="LEFT" COLSPAN="2" BGCOLOR="LIGHTBLUE">'
                 f'<I>{state.comment}</I></TD></TR>'
                 if state.comment is not None and len(state.comment) > 0
                 else ''
             )
+
+            # Create table rows for output actions
             actions = ''.join(
                 f'<TR><TD ALIGN="LEFT">{k}</TD><TD ALIGN="RIGHT">{v}</TD></TR>'
                 for k, v in state.output_actions.items()
             )
 
-            # Create label for the state node with its name, timer, comment, and actions
+            # Create HTML table label with state info
             label = (
-                f'<<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" ALIGN="LEFT">'
-                f'<TR><TD BGCOLOR="LIGHTBLUE" ALIGN="LEFT"><B>{state_name}  </B></TD>'
-                f'<TD BGCOLOR="LIGHTBLUE" ALIGN="RIGHT">{state.timer:g} s</TD></TR>'
-                f'{comment}{actions}</TABLE>>'
+                '<<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" ALIGN="LEFT" '
+                'BGCOLOR="WHITE"><TR><TD BGCOLOR="LIGHTBLUE" ALIGN="LEFT">'
+                f'<B>{state_name}  </B></TD><TD BGCOLOR="LIGHTBLUE" ALIGN="RIGHT">'
+                f'{state.timer:g} s</TD></TR>{comment}{actions}</TABLE>>'
             )
 
-            # Add the state node to the Digraph
-            digraph.node(name=state_name, label=label, shape='none')
+            # Add state node
+            dot.node(state_name, label, shape='none')
 
-            # Add edges for state transitions based on conditions
-            for condition, target_state in state.state_change_conditions.items():
-                digraph.edge(state_name, target_state, label=condition)
+            # Add edges for state transitions
+            # Use a subgraph to keep edges from the same state on the same rank
+            with dot.subgraph() as s:
+                s.attr(rank='same')
+                for label, target in state.state_change_conditions.items():
+                    if 'exit' in target:
+                        dot.edge(state_name, 'exit', label)
+                    elif target == '>back':
+                        back_ops.append((state_name, label))
+                    else:
+                        dot.edge(state_name, target, label)
+                        s.node(target)
 
-        return digraph
+        # Add edges for back transitions
+        # We label these in red to distinguish them from regular edges
+        for source, label in back_ops:
+            for target, state in self.states.items():
+                if source in state.state_change_conditions.values():
+                    dot.edge(source, target, label, color='red', fontcolor='red')
+
+        return dot
+
+    def to_dict(self) -> dict:
+        """Returns the state machine as a dictionary.
+
+        Returns
+        -------
+        dict
+            A dictionary representation of the state machine.
+        """
+        return cast('dict', msgspec.to_builtins(self))
+
+    def to_json(self, indent: None | int = None, compact: bool = False) -> str:
+        """Returns the state machine as a JSON string.
+
+        Parameters
+        ----------
+        indent : int or None, optional
+            If `indent` is a non-negative integer, then JSON array elements and object
+            members will be pretty-printed with that indent level. An indent level of
+            0 will only insert newlines. None is the most compact representation.
+        compact : bool, optional
+            If True, returns a compact JSON representation without extra whitespace.
+            Overrides the `indent` parameter. Default is False.
+
+        Returns
+        -------
+        str
+            A dictionary representation of the state machine.
+        """
+        if compact:
+            return msgspec.json.encode(self).decode()
+        dictionary = self.to_dict()
+        return json.dumps(dictionary, indent=indent)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'StateMachine':
+        """Creates a StateMachine instance from a dictionary.
+
+        Parameters
+        ----------
+        data : dict
+            A dictionary representation of a state machine.
+
+        Returns
+        -------
+        StateMachine
+            A StateMachine instance created from the provided dictionary.
+        """
+        return msgspec.convert(data, type=StateMachine)
+
+    @classmethod
+    def from_json(cls, json_str: str | bytes) -> 'StateMachine':
+        """Creates a StateMachine instance from a JSON string.
+
+        Parameters
+        ----------
+        json_str : str or bytes
+            A JSON string representation of a state machine.
+
+        Returns
+        -------
+        StateMachine
+            A StateMachine instance created from the provided JSON string.
+        """
+        return msgspec.json.decode(json_str, type=StateMachine)
