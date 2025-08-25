@@ -255,6 +255,14 @@ class TestToFile:
         with pytest.raises(FileNotFoundError):
             state_machine.to_file(path)
 
+    def test_to_file_create_directory_json(self, tmp_path, state_machine):
+        """create_directory=True should create parent dir and write JSON."""
+        path = tmp_path / 'new_dir' / 'machine.json'
+        assert not path.parent.exists()
+        state_machine.to_file(path, create_directory=True)
+        assert path.exists()
+        assert path.read_text() == state_machine.to_json(indent=2)
+
     def test_to_file_graph_formats_call_render(self, tmp_path, state_machine, mocker):
         """Graph formats (.pdf/.svg/.png) should call render with expected args."""
         # Prepare a dummy object with a render method to capture calls
@@ -278,8 +286,13 @@ class TestToFile:
         ]
         for filename, expected_format in cases:
             render_mock.reset_mock()
-            out = tmp_path / filename
-            state_machine.to_file(out)
+            out = tmp_path / 'nested' / filename
+            # ensure parent does not exist
+            if out.parent.exists():
+                # unlikely, but clean up to assert creation behavior
+                pass
+            state_machine.to_file(out, create_directory=True)
+            assert out.parent.exists()
             assert render_mock.call_count == 1
             kwargs = render_mock.call_args.kwargs
             assert kwargs['outfile'] == out

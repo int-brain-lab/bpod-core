@@ -438,7 +438,12 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         dictionary = self.to_dict()
         return json.dumps(dictionary, indent=indent)
 
-    def to_file(self, filename: PathLike | str, overwrite: bool = False) -> None:
+    def to_file(
+        self,
+        filename: PathLike | str,
+        overwrite: bool = False,
+        create_directory: bool = False,
+    ) -> None:
         """Write the state machine to a file.
 
         Depending on the file extension, different outputs are produced:
@@ -452,13 +457,17 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         overwrite : bool, optional
             If False (default) and the file already exists, a FileExistsError is
             raised. If True, existing files will be overwritten.
+        create_directory : bool, optional
+            If True, the parent directory of the destination path will be created if it
+            doesn't exist. Default is False.
 
         Raises
         ------
         FileExistsError
             If the destination file already exists and overwrite is False.
         FileNotFoundError
-            If the parent directory of the destination path does not exist.
+            If the parent directory of the destination path does not exist and
+            create_directory is False.
         ValueError
             If the file extension is not one of: .json, .pdf, .svg, .png.
 
@@ -472,7 +481,10 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         if filename.exists() and not overwrite:
             raise FileExistsError(f"File '{filename}' already exists")
         if not filename.parent.exists():
-            raise FileNotFoundError(f"Directory '{filename.parent}' does not exist")
+            if not create_directory:
+                raise FileNotFoundError(f"Directory '{filename.parent}' does not exist")
+            else:
+                filename.parent.mkdir(parents=True, exist_ok=True)
         suffix = filename.suffix.lower()
 
         # JSON output
