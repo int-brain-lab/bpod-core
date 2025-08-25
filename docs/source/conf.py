@@ -69,9 +69,8 @@ for fn in example_files:
 
     # Generate state machine diagram and save as SVG
     state_machine = module.fsm
-    digraph = state_machine.to_digraph()
     image_file = examples_target_path / fn.with_suffix('.svg').name
-    digraph.render(outfile=image_file, format='svg', cleanup=True, engine='dot')
+    state_machine.to_file(image_file)
 
     # Generate JSON
     json = state_machine.to_json(indent=2).splitlines()
