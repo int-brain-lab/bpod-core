@@ -180,6 +180,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
             comment=comment,
         )
 
+    @validate_call
     def set_global_timer(  # noqa: PLR0913
         self,
         timer_id: GlobalTimerIndex,
@@ -236,6 +237,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
             onset_trigger=onset_trigger,
         )
 
+    @validate_call
     def set_global_counter(
         self,
         counter_id: GlobalCounterID,
@@ -264,6 +266,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
             threshold=threshold,
         )
 
+    @validate_call
     def set_condition(
         self,
         condition_id: ConditionID,
@@ -438,6 +441,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         dictionary = self.to_dict()
         return json.dumps(dictionary, indent=indent)
 
+    @validate_call
     def to_file(
         self,
         filename: PathLike | str,

@@ -48,6 +48,7 @@ StateActionValue = Annotated[
         title='Output Action Value',
         description='The integer value of the output action',
     ),
+    Field(ge=0, le=255),
 ]
 StateActions = Annotated[
     dict[str, StateActionValue],
@@ -70,6 +71,7 @@ GlobalTimerIndex = Annotated[
         title='Global Timer ID',
         description='The ID of the global timer',
     ),
+    Field(ge=0),
 ]
 GlobalTimerDuration = Annotated[
     float,
@@ -78,6 +80,7 @@ GlobalTimerDuration = Annotated[
         title='Global Timer Duration',
         description='The duration of the global timer in seconds',
     ),
+    Field(ge=0.0),
 ]
 GlobalTimerOnsetDelay = Annotated[
     float,
@@ -86,6 +89,7 @@ GlobalTimerOnsetDelay = Annotated[
         title='Onset Delay',
         description='The onset delay of the global timer in seconds',
     ),
+    Field(ge=0.0),
 ]
 GlobalTimerChannel = Annotated[
     str,
@@ -102,6 +106,7 @@ GlobalTimerChannelValue = Annotated[
         title='Channel Value',
         description='The value a channel is set to',
     ),
+    Field(ge=0, le=255),
 ]
 GlobalTimerSendEvents = Annotated[
     bool,
@@ -118,6 +123,7 @@ GlobalTimerLoop = Annotated[
         title='Loop Mode',
         description='Whether the global timer is looping or not',
     ),
+    Field(ge=0, le=255),
 ]
 GlobalTimerLoopInterval = Annotated[
     float,
@@ -126,6 +132,7 @@ GlobalTimerLoopInterval = Annotated[
         title='Loop Interval',
         description='The interval in seconds that the global timer is looping',
     ),
+    Field(ge=0.0),
 ]
 GlobalTimerOnsetTrigger = Annotated[
     int,
@@ -134,6 +141,7 @@ GlobalTimerOnsetTrigger = Annotated[
         title='Onset Trigger',
         description='An integer whose bits indicate other global timers to trigger',
     ),
+    Field(ge=0),
 ]
 GlobalCounterID = Annotated[
     int,
@@ -142,6 +150,7 @@ GlobalCounterID = Annotated[
         title='ID',
         description='The ID of the global counter',
     ),
+    Field(ge=0),
 ]
 GlobalCounterEvent = Annotated[
     str,
@@ -158,6 +167,7 @@ GlobalCounterThreshold = Annotated[
         title='Threshold',
         description='The count threshold to generate an event',
     ),
+    Field(ge=0, le=np.iinfo(np.uint32).max),
 ]
 ConditionID = Annotated[
     int,
@@ -166,6 +176,7 @@ ConditionID = Annotated[
         title='ID',
         description='The ID of the condition',
     ),
+    Field(ge=0),
 ]
 ConditionChannel = Annotated[
     str,
@@ -188,4 +199,5 @@ StateMachineName = Annotated[
         title='State Machine Name',
         description='The name of the state machine',
     ),
+    Field(min_length=1),
 ]
