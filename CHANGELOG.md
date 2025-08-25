@@ -10,12 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- example state machines
+- `ipc.DualChannelHost` and `ipc.DualChannelClient`
 - JSON import/export for state machines
+- example state machines
 
 ### Changed
 
 - improved export of state machines to graphviz
+- improved settings management
 - moved state machine structure from Pydantic Model to msgspec Struct
 
 
