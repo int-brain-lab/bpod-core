@@ -165,3 +165,59 @@ def test_schema():
     schema_from_file = msgspec.json.decode(data)
     schema_from_struct = msgspec.json.schema(StateMachine)
     assert schema_from_file == schema_from_struct, 'schema file is out of date'
+
+
+def test_to_file_json_write_and_overwrite(tmp_path, state_machine):
+    # Write JSON file
+    path = tmp_path / 'machine.json'
+    state_machine.to_file(path)
+    assert path.exists()
+    content = path.read_text()
+    assert content == state_machine.to_json(indent=2)
+    with pytest.raises(FileExistsError):
+        state_machine.to_file(path)
+    state_machine.to_file(path, overwrite=True)
+    assert path.read_text() == state_machine.to_json(indent=2)
+
+
+def test_to_file_unsupported_extension(tmp_path, state_machine):
+    path = tmp_path / 'machine.txt'
+    with pytest.raises(ValueError, match='Unsupported file extension'):
+        state_machine.to_file(path)
+
+
+def test_to_file_missing_directory_raises(tmp_path, state_machine):
+    path = tmp_path / 'missing_dir' / 'machine.json'
+    assert not path.parent.exists()
+    with pytest.raises(FileNotFoundError):
+        state_machine.to_file(path)
+
+
+def test_to_file_graph_formats_call_render(tmp_path, state_machine, mocker):
+    # Prepare a dummy object with a render method to capture calls
+    render_mock = mocker.Mock()
+
+    class DummyGraph:
+        def render(self, **kwargs):
+            return render_mock(**kwargs)
+
+    # Monkeypatch to_digraph to return our dummy graph
+    mocker.patch.object(StateMachine, 'to_digraph', return_value=DummyGraph())
+
+    # Parametrize manually for three formats
+    cases = [
+        ('diagram.pdf', 'pdf'),
+        ('diagram.svg', 'svg'),
+        ('diagram.png', 'png'),
+    ]
+    for filename, expected_format in cases:
+        render_mock.reset_mock()
+        out = tmp_path / filename
+        state_machine.to_file(out)
+        assert render_mock.call_count == 1
+        kwargs = render_mock.call_args.kwargs
+        assert kwargs['filename'] == out.stem
+        assert kwargs['directory'] == out.parent
+        assert kwargs['cleanup'] is True
+        assert kwargs['quiet'] is True
+        assert kwargs['format'] == expected_format

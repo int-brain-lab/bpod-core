@@ -70,7 +70,6 @@ for fn in example_files:
     # Generate state machine diagram and save as SVG
     state_machine = module.fsm
     digraph = state_machine.to_digraph()
-    digraph.attr(rankdir='LR')
     image_file = examples_target_path / fn.with_suffix('.svg').name
     digraph.render(outfile=image_file, format='svg', cleanup=True, engine='dot')
 

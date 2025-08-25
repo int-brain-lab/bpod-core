@@ -1,6 +1,8 @@
 """Module defining classes and types for creating and managing state machines."""
 
 import json
+from os import PathLike
+from pathlib import Path
 from typing import Annotated, cast
 
 import msgspec
@@ -320,7 +322,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
 
         # Set default graph attributes and styling
         fontname = 'Helvetica,Arial,sans-serif'
-        dot.attr(overlap='false', splines='true')
+        dot.attr(overlap='false', splines='true', rankdir='LR')
         dot.attr('graph', fontname=fontname, fontsize='11', bgcolor='transparent')
         dot.attr('node', fontname=fontname, fontsize='11', bgcolor='white')
         dot.attr('edge', fontname=fontname, fontsize='10')
@@ -436,6 +438,16 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         dictionary = self.to_dict()
         return json.dumps(dictionary, indent=indent)
 
+    def to_yaml(self) -> str:
+        """Returns the state machine as a YAML string.
+
+        Returns
+        -------
+        str
+            A YAML representation of the state machine.
+        """
+        return msgspec.yaml.encode(self).decode()
+
     @classmethod
     def from_dict(cls, data: dict) -> 'StateMachine':
         """Creates a StateMachine instance from a dictionary.
@@ -467,3 +479,65 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
             A StateMachine instance created from the provided JSON string.
         """
         return msgspec.json.decode(json_str, type=StateMachine)
+
+    def to_file(self, filename: PathLike | str, overwrite: bool = False) -> None:
+        """Write the state machine to a file.
+
+        Depending on the file extension, different outputs are produced:
+        - .json: writes a pretty-printed JSON representation.
+        - .pdf, .svg, .png: renders a state diagram and stores it to the specified file.
+
+        Parameters
+        ----------
+        filename : os.PathLike or str
+            Destination path. The file extension determines the output type.
+        overwrite : bool, optional
+            If False (default) and the file already exists, a FileExistsError is
+            raised. If True, existing files will be overwritten.
+
+        Raises
+        ------
+        FileExistsError
+            If the destination file already exists and overwrite is False.
+        FileNotFoundError
+            If the parent directory of the destination path does not exist.
+        ValueError
+            If the file extension is not one of: .json, .pdf, .svg, .png.
+
+        Notes
+        -----
+        Rendering diagrams depends on the Graphviz system libraries to be installed.
+        See https://graphviz.readthedocs.io/en/stable/manual.html#installation
+        """
+        # Handle file path
+        filename = Path(filename).resolve()
+        if filename.exists() and not overwrite:
+            raise FileExistsError(f"File '{filename}' already exists")
+        if not filename.parent.exists():
+            raise FileNotFoundError(f"Directory '{filename.parent}' does not exist")
+
+        # JSON output
+        if filename.suffix == '.json':
+            filename.write_text(self.to_json(indent=2), encoding='utf-8')
+
+        # Rendering via Graphviz
+        elif filename.suffix in ('.pdf', '.svg', '.png'):
+            common_opts = {
+                'filename': filename.stem,
+                'directory': filename.parent,
+                'cleanup': True,
+                'quiet': True,
+            }
+            if filename.suffix == '.svg':
+                render_format = 'svg'
+            elif filename.suffix == '.png':
+                render_format = 'png'
+            else:
+                render_format = 'pdf'
+            self.to_digraph().render(**common_opts, format=render_format)
+
+        # Handle unsupported file extension
+        else:
+            raise ValueError(
+                f'Unsupported file extension: {filename.suffix.upper().strip(".")}'
+            )
