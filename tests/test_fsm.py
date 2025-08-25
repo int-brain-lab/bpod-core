@@ -156,6 +156,12 @@ def test_from_json():
     assert json_str == fsm.to_json()  # roundtrip
 
 
+def test_from_invalid_json_raises(tmp_path):
+    json_str = 'not valid json'
+    with pytest.raises(msgspec.DecodeError):
+        StateMachine.from_json(json_str)
+
+
 def test_schema():
     """Test that the schema file exists and is up to date."""
     schema_path = Path(__file__).parents[1].joinpath('schema/statemachine.json')
@@ -165,6 +171,44 @@ def test_schema():
     schema_from_file = msgspec.json.decode(data)
     schema_from_struct = msgspec.json.schema(StateMachine)
     assert schema_from_file == schema_from_struct, 'schema file is out of date'
+
+
+def test_from_file_roundtrip_json(tmp_path, state_machine):
+    # Write JSON to file
+    path = tmp_path / 'machine.json'
+    path.write_text(state_machine.to_json(indent=2), encoding='utf-8')
+
+    # Load via Path
+    fsm = StateMachine.from_file(path)
+    assert isinstance(fsm, StateMachine)
+    assert fsm.to_dict() == state_machine.to_dict()
+
+    # Load via string path
+    fsm2 = StateMachine.from_file(str(path))
+    assert isinstance(fsm2, StateMachine)
+    assert fsm2.to_dict() == state_machine.to_dict()
+
+
+def test_from_file_missing_raises(tmp_path):
+    missing = tmp_path / 'missing.json'
+    assert not missing.exists()
+    with pytest.raises(FileNotFoundError):
+        StateMachine.from_file(missing)
+
+
+def test_from_file_wrong_extension(tmp_path):
+    # Create a non-json file that exists but has wrong extension
+    path = tmp_path / 'machine.txt'
+    path.write_text('{}', encoding='utf-8')
+    with pytest.raises(ValueError, match='Unsupported file extension'):
+        StateMachine.from_file(path)
+
+
+def test_from_file_invalid_json_raises(tmp_path):
+    bad = tmp_path / 'bad.json'
+    bad.write_text('not valid json', encoding='utf-8')
+    with pytest.raises(msgspec.DecodeError):
+        StateMachine.from_file(bad)
 
 
 def test_to_file_json_write_and_overwrite(tmp_path, state_machine):

@@ -438,48 +438,6 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         dictionary = self.to_dict()
         return json.dumps(dictionary, indent=indent)
 
-    def to_yaml(self) -> str:
-        """Returns the state machine as a YAML string.
-
-        Returns
-        -------
-        str
-            A YAML representation of the state machine.
-        """
-        return msgspec.yaml.encode(self).decode()
-
-    @classmethod
-    def from_dict(cls, data: dict) -> 'StateMachine':
-        """Creates a StateMachine instance from a dictionary.
-
-        Parameters
-        ----------
-        data : dict
-            A dictionary representation of a state machine.
-
-        Returns
-        -------
-        StateMachine
-            A StateMachine instance created from the provided dictionary.
-        """
-        return msgspec.convert(data, type=StateMachine)
-
-    @classmethod
-    def from_json(cls, json_str: str | bytes) -> 'StateMachine':
-        """Creates a StateMachine instance from a JSON string.
-
-        Parameters
-        ----------
-        json_str : str or bytes
-            A JSON string representation of a state machine.
-
-        Returns
-        -------
-        StateMachine
-            A StateMachine instance created from the provided JSON string.
-        """
-        return msgspec.json.decode(json_str, type=StateMachine)
-
     def to_file(self, filename: PathLike | str, overwrite: bool = False) -> None:
         """Write the state machine to a file.
 
@@ -541,3 +499,69 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
             raise ValueError(
                 f'Unsupported file extension: {filename.suffix.upper().strip(".")}'
             )
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'StateMachine':
+        """Creates a StateMachine instance from a dictionary.
+
+        Parameters
+        ----------
+        data : dict
+            A dictionary representation of a state machine.
+
+        Returns
+        -------
+        StateMachine
+            A StateMachine instance created from the provided dictionary.
+        """
+        return msgspec.convert(data, type=StateMachine)
+
+    @classmethod
+    def from_json(cls, json_str: str | bytes) -> 'StateMachine':
+        """Creates a StateMachine instance from a JSON string.
+
+        Parameters
+        ----------
+        json_str : str or bytes
+            A JSON string representation of a state machine.
+
+        Returns
+        -------
+        StateMachine
+            A StateMachine instance created from the provided JSON string.
+
+        Raises
+        ------
+        msgspec.DecodeError
+            If the JSON string is not valid.
+        """
+        return msgspec.json.decode(json_str, type=StateMachine)
+
+    @classmethod
+    def from_file(cls, filename: PathLike | str) -> 'StateMachine':
+        """Creates a StateMachine instance from a JSON file.
+
+        Parameters
+        ----------
+        filename : os.PathLike or str
+            The path to the JSON file containing the state machine.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the file does not exist.
+        ValueError
+            If the file extension is not .json.
+        msgspec.DecodeError
+            If the file content is not valid JSON.
+        """
+        # Handle file path
+        filename = Path(filename).resolve()
+        if not filename.exists():
+            raise FileNotFoundError(f"File '{filename}' does not exist")
+        if filename.suffix.lower() != '.json':
+            raise ValueError(f'Unsupported file extension: {filename.suffix.upper()}')
+
+        # Load JSON data and return StateMachine instance
+        data = filename.read_text(encoding='utf-8')
+        return cls.from_json(data)
