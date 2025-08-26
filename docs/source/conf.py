@@ -33,26 +33,13 @@ with schema_root.joinpath('statemachine.json').open('w') as f:
     f.write('\n')  # add final newline
 
 # -- Generate Examples pages --------------------------------------------------
-# Create docs/source/examples/ with one page per example and an index.rst
+# Create docs/source/state_machines/examples/ with one page per example
 examples_source_path = project_root / 'examples'
-examples_target_path = docs_source_path / 'examples'
-examples_target_path.mkdir(exist_ok=True)
-example_files = [f for f in examples_source_path.glob('*.py')]
-
-examples_target_path.mkdir(exist_ok=True)
-
-# Write an index.rst with a toctree listing all example pages
-index_lines = [
-    'Example State Machines',
-    '======================',
-    '',
-    'The following examples illustrate usage and features of the '
-    ':class:`~bpod_core.fsm.StateMachine` class.',
-    '',
-    '.. toctree::',
-    '   :maxdepth: 1',
-    '',
-]
+examples_target_path = docs_source_path / 'state_machines' / 'examples'
+examples_target_path.mkdir(parents=True, exist_ok=True)
+example_files = sorted(
+    [f for f in examples_source_path.glob('*.py')], key=lambda f: f.name
+)
 
 for fn in example_files:
     # Import the example file as a module
@@ -89,7 +76,7 @@ for fn in example_files:
         '',
         '   .. tab-item:: Python',
         '',
-        f'    .. literalinclude:: ../../../examples/{fn.name}',
+        f'    .. literalinclude:: ../../../../examples/{fn.name}',
         '       :language: python',
         '       :start-at: from bpod_core.',
         '',
@@ -103,13 +90,6 @@ for fn in example_files:
     with page_path.open('w', encoding='utf-8') as pf:
         pf.write('\n'.join(page_lines) + '\n')
 
-    # Add page to toctree
-    index_lines.append(f'   {fn.stem}')
-
-index_out = examples_target_path / 'index.rst'
-with index_out.open('w', encoding='utf-8') as f:
-    f.write('\n'.join(index_lines) + '\n')
-
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
@@ -119,10 +99,12 @@ extensions = [
     'sphinx.ext.napoleon',
     'sphinx.ext.autodoc',
     'sphinx.ext.autosummary',
+    'sphinx.ext.graphviz',
     'sphinx_copybutton',
     'sphinx_design',
     'sphinx_autodoc_typehints',
     'sphinx-jsonschema',
+    'sphinx_toolbox.wikipedia',
 ]
 source_suffix = ['.rst', '.md']
 
@@ -183,3 +165,9 @@ napoleon_use_keyword = True
 napoleon_preprocess_types = True
 napoleon_type_aliases = None
 napoleon_attr_annotations = True
+
+graphviz_output_format = 'svg'
+
+numfig = True
+html_static_path = ['_static']
+html_css_files = ['custom.css']

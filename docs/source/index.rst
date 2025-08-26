@@ -6,7 +6,7 @@
    :hidden:
 
    developer_guide
-   examples/index
+   state_machines/index
    api
    schema
    changelog

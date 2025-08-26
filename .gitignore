@@ -179,7 +179,7 @@ instance/
 # Sphinx documentation
 docs/build
 docs/source/api
-docs/source/examples
+docs/source/state_machines/examples
 
 # PyBuilder
 .pybuilder/
