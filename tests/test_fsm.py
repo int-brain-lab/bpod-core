@@ -294,3 +294,15 @@ class TestToFile:
             assert kwargs['cleanup'] is True
             assert kwargs['quiet'] is True
             assert kwargs['format'] == expected_format
+
+
+class TestValidation:
+    def test_validate_assignment(self, state_machine):
+        """Validate assignment of state machine attributes."""
+        with pytest.raises(ValidationError):
+            state_machine.states['state1'].timer = -1
+
+    def test_validate_call(self, state_machine):
+        """Validate call of state machine methods."""
+        with pytest.raises(ValidationError):
+            state_machine.add_state('state3', timer=-1)
