@@ -96,6 +96,15 @@ at creation and assignment:
      Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-1, input_type=int]
        For further information visit https://errors.pydantic.dev/2.11/v/greater_than_equal
 
+.. testcode::
+
+    import pytest
+    from bpod_core.fsm import StateMachine
+
+    with pytest.raises(Exception) as excinfo:
+        fsm = StateMachine()
+        fsm.add_state(name='MyState', timer=-1)
+
 This validation mechanism helps catch errors early in the design phase of an experiment.
 More detailed validation is performed at runtime, when the specific constraints of the
 hardware are known:

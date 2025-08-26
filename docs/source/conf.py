@@ -100,6 +100,7 @@ extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.autosummary',
     'sphinx.ext.graphviz',
+    'sphinx.ext.doctest',
     'sphinx_copybutton',
     'sphinx_design',
     'sphinx_autodoc_typehints',
