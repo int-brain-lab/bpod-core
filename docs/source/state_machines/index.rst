@@ -83,47 +83,69 @@ models. All parameters are strictly typed and come with defined value ranges and
 constraints. Field values are coerced to their respective types and validated both
 at creation and assignment:
 
-.. code-block:: pycon
+.. _Pydantic: https://docs.pydantic.dev/latest/
+
+.. doctest-code-block::
    :caption: Pydantic complaining about an incorrect parameter for the state timer.
+   :group: pydantic-validation
 
    >>> from bpod_core.fsm import StateMachine
    >>> fsm = StateMachine()
    >>> fsm.add_state(name='MyState', timer=-1)
    Traceback (most recent call last):
-     [...]
+      ...
    pydantic_core._pydantic_core.ValidationError: 1 validation error for StateMachine.add_state
    timer
      Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-1, input_type=int]
        For further information visit https://errors.pydantic.dev/2.11/v/greater_than_equal
 
-.. testcode::
-
-    import pytest
-    from bpod_core.fsm import StateMachine
-
-    with pytest.raises(Exception) as excinfo:
-        fsm = StateMachine()
-        fsm.add_state(name='MyState', timer=-1)
-
 This validation mechanism helps catch errors early in the design phase of an experiment.
 More detailed validation is performed at runtime, when the specific constraints of the
 hardware are known:
 
-.. code-block:: pycon
-   :caption: A :exc:`ValueError` is raised when attempting to run a state machine that exceeds the hardware's capabilities.
+.. testsetup:: runtime-validation
 
-   >>> from bpod_core.fsm import StateMachine
+   import atexit
+   import types
+   from unittest.mock import patch
+   from types import SimpleNamespace
+   from bpod_core.bpod import Bpod
+
+
+   original_send = Bpod.send_state_machine
+   original_validate = Bpod.validate_state_machine
+
+   def fake_init(self, *args, **kwargs):
+       self._disable_all_module_relays = lambda: None
+       self._hardware = SimpleNamespace(
+           max_states=256,
+           n_global_timers=16,
+           n_global_counters=16,
+           n_conditions=64,
+           cycle_frequency=1000,
+       )
+       self.send_state_machine = types.MethodType(original_send, self)
+       self.validate_state_machine = types.MethodType(original_validate, self)
+
+   patcher = patch.object(Bpod, "__init__", fake_init)
+   patcher.start()
+   atexit.register(patcher.stop)
+
+
+.. doctest-code-block::
+   :caption: A :exc:`ValueError` is raised when attempting to run a state machine that exceeds the hardware's capabilities.
+   :group: runtime-validation
+
    >>> from bpod_core.bpod import Bpod
+   >>> from bpod_core.fsm import StateMachine
    >>> fsm = StateMachine()
-   >>> fsm.add_state(name='MyState', timer=-1)
-   >>> fsm.set_global_timer(id=42, duration=5)
+   >>> fsm.add_state(name='MyState', timer=1)
+   >>> fsm.set_global_timer(timer_id=5000, duration=5)  # this validates OK
    >>> bpod = Bpod()
    >>> bpod.send_state_machine(fsm)
    Traceback (most recent call last):
-     [...]
+      ...
    ValueError: Too many global timers in state machine - hardware supports up to 16 global timers
-
-.. _Pydantic: https://docs.pydantic.dev/latest/
 
 
 Import and Export
@@ -138,8 +160,35 @@ There are several convenient methods to serialize and visualize state machines:
 - :meth:`~bpod_core.fsm.StateMachine.from_json`, :meth:`~bpod_core.fsm.StateMachine.from_dict`,
   and :meth:`~bpod_core.fsm.StateMachine.from_file` create a StateMachine from serialized data.
 
-.. code-block:: python
-   :caption: Import a :class:`~bpod_core.fsm.StateMachine` from a JSON file and export its state diagram as a PNG file.
+.. testcode-code-block:: python
+   :caption: A roundtrip from :class:`~bpod_core.fsm.StateMachine` to JSON and back to :class:`~bpod_core.fsm.StateMachine`
+   :group: json-roundtrip
+
+   from bpod_core.fsm import StateMachine
+
+   # create a state machine and serialize it as a JSON string
+   fsm1 = StateMachine()
+   fsm1.add_state(name='Pi', timer=3.1415)
+   json_string = fsm1.to_json()
+
+   # create a second, identical state machine from the JSON string
+   fsm2 = StateMachine.from_json(json_string)
+   assert fsm2 == fsm1
+
+.. testsetup:: file-roundtrip
+
+   import atexit
+   from unittest.mock import patch
+   from bpod_core.fsm import StateMachine
+
+   patcher = patch('bpod_core.fsm.StateMachine', autospec=True)
+   patcher.start()
+   atexit.register(patcher.stop)
+
+
+.. testcode-code-block:: python
+   :caption: Importing a :class:`~bpod_core.fsm.StateMachine` from a JSON file and exporting its state diagram as a PNG file.
+   :group: file-roundtrip
 
    from bpod_core.fsm import StateMachine
 

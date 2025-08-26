@@ -8,6 +8,7 @@ from pathlib import Path
 project_root = Path(__file__).parents[2].resolve()
 docs_source_path = Path(__file__).parent.resolve()
 sys.path.insert(0, project_root)
+sys.path.insert(0, str(docs_source_path / '_ext'))
 
 from bpod_core import __version__  # noqa: E402
 from bpod_core.fsm import StateMachine  # noqa: E402
@@ -106,6 +107,7 @@ extensions = [
     'sphinx_autodoc_typehints',
     'sphinx-jsonschema',
     'sphinx_toolbox.wikipedia',
+    'doctest_codeblock',
 ]
 source_suffix = ['.rst', '.md']
 

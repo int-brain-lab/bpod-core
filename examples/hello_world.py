@@ -17,7 +17,6 @@ fsm.add_state(
     state_change_conditions={'Tup': 'World'},  # definition of state transitions
     output_actions={'PWM1': 255},  # an LED connected to PWM1 will light up
 )
-
 fsm.add_state(
     name='World',
     timer=2.0,
