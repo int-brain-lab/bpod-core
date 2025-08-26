@@ -7,197 +7,205 @@ from pydantic import Field
 
 StateName = Annotated[
     str,
-    msgspec.Meta(
-        min_length=1,
+    Field(
         title='State Name',
         description='The name of the state',
-        pattern=r'^(?!>)(?!exit$).*$',
+        min_length=1,
+        pattern=re.compile(r'^(?!>)(?!exit$).+$'),
     ),
-    Field(min_length=1, pattern=re.compile(r'^(?!>)(?!exit$).*$')),
 ]
 StateTimer = Annotated[
     float,
-    msgspec.Meta(
-        ge=0.0,
+    Field(
         title='State Timer',
         description="The state's timer in seconds",
+        default=0.0,
+        allow_inf_nan=False,
+        ge=0.0,
     ),
-    Field(ge=0.0),
 ]
-StateTarget = Annotated[
+Event = Annotated[
     str,
-    msgspec.Meta(
+    Field(
+        title='Event',
+        description='A state machine event',
         min_length=1,
-        title='Target State',
-        description='The name of the target state',
     ),
-    Field(min_length=1),
 ]
-StateConditions = Annotated[
-    dict[str, StateTarget],
-    msgspec.Meta(
+Operator = Annotated[
+    str,
+    Field(
+        title='Operator',
+        description='A state machine operator',
+        pattern=re.compile(r'^(exit)|(>.+)$'),
+    ),
+]
+StateChangeConditions = Annotated[
+    dict[Event, StateName | Operator],
+    Field(
         title='State Change Conditions',
-        description='The conditions for switching from the current state to others',
+        description='A collection of events and their assigned target states',
+        default_factory=dict,
+    ),
+]
+StateActionName = Annotated[
+    str,
+    Field(
+        title='Output Action Name',
+        description='The name of the output action',
+        min_length=1,
     ),
 ]
 StateActionValue = Annotated[
     int,
-    msgspec.Meta(
-        ge=0,
-        le=255,
+    Field(
         title='Output Action Value',
         description='The integer value of the output action',
+        ge=0,
+        le=255,
     ),
-    Field(ge=0, le=255),
 ]
 StateActions = Annotated[
-    dict[str, StateActionValue],
-    msgspec.Meta(
+    dict[StateActionName, StateActionValue],
+    Field(
         title='Output Actions',
-        description='The actions to be executed during the state',
+        description='A collection of output actions and their respective values',
+        default_factory=dict,
     ),
 ]
 StateComment = Annotated[
     str,
-    msgspec.Meta(
+    Field(
         title='Comment',
         description='A comment describing the state.',
     ),
 ]
 GlobalTimerIndex = Annotated[
     int,
-    msgspec.Meta(
-        ge=0,
+    Field(
         title='Global Timer ID',
         description='The ID of the global timer',
+        ge=0,
     ),
-    Field(ge=0),
 ]
 GlobalTimerDuration = Annotated[
     float,
-    msgspec.Meta(
-        ge=0.0,
+    Field(
         title='Global Timer Duration',
         description='The duration of the global timer in seconds',
+        ge=0.0,
     ),
-    Field(ge=0.0),
 ]
 GlobalTimerOnsetDelay = Annotated[
     float,
-    msgspec.Meta(
-        ge=0.0,
+    Field(
         title='Onset Delay',
         description='The onset delay of the global timer in seconds',
+        default=0.0,
+        ge=0.0,
+        allow_inf_nan=False,
     ),
-    Field(ge=0.0),
 ]
 GlobalTimerChannel = Annotated[
     str,
     msgspec.Meta(
         title='Channel',
         description='The channel affected by the global timer',
+        min_length=1,
     ),
 ]
 GlobalTimerChannelValue = Annotated[
     int,
-    msgspec.Meta(
-        ge=0,
-        le=255,
+    Field(
         title='Channel Value',
         description='The value a channel is set to',
+        default=0,
+        ge=0,
+        le=255,
     ),
-    Field(ge=0, le=255),
 ]
 GlobalTimerSendEvents = Annotated[
     bool,
-    msgspec.Meta(
+    Field(
         title='Send Events',
         description='Whether the global timer is sending events',
+        default=True,
     ),
 ]
 GlobalTimerLoop = Annotated[
     int,
-    msgspec.Meta(
-        ge=0,
-        le=255,
+    Field(
         title='Loop Mode',
         description='Whether the global timer is looping or not',
+        default=0,
+        ge=0,
+        le=255,
     ),
-    Field(ge=0, le=255),
 ]
 GlobalTimerLoopInterval = Annotated[
     float,
-    msgspec.Meta(
-        ge=0.0,
+    Field(
         title='Loop Interval',
         description='The interval in seconds that the global timer is looping',
+        default=0.0,
+        ge=0.0,
+        allow_inf_nan=False,
     ),
-    Field(ge=0.0),
 ]
 GlobalTimerOnsetTrigger = Annotated[
     int,
-    msgspec.Meta(
-        ge=0,
+    Field(
         title='Onset Trigger',
         description='An integer whose bits indicate other global timers to trigger',
+        default=0,
+        ge=0,
     ),
-    Field(ge=0),
 ]
 GlobalCounterID = Annotated[
     int,
-    msgspec.Meta(
-        ge=0,
+    Field(
         title='ID',
         description='The ID of the global counter',
-    ),
-    Field(ge=0),
-]
-GlobalCounterEvent = Annotated[
-    str,
-    msgspec.Meta(
-        title='Event',
-        description='The name of the event to count',
+        ge=0,
     ),
 ]
 GlobalCounterThreshold = Annotated[
     int,
-    msgspec.Meta(
-        ge=0,
-        le=np.iinfo(np.uint32).max,
+    Field(
         title='Threshold',
         description='The count threshold to generate an event',
+        ge=0,
+        le=np.iinfo(np.uint32).max,
     ),
-    Field(ge=0, le=np.iinfo(np.uint32).max),
 ]
 ConditionID = Annotated[
     int,
-    msgspec.Meta(
-        ge=0,
+    Field(
         title='ID',
         description='The ID of the condition',
+        ge=0,
     ),
-    Field(ge=0),
 ]
 ConditionChannel = Annotated[
     str,
-    msgspec.Meta(
+    Field(
         title='Channel',
         description='The channel or global timer attached to the condition',
+        min_length=1,
     ),
 ]
 ConditionValue = Annotated[
     bool,
-    msgspec.Meta(
+    Field(
         title='Value',
         description='The value of the condition channel if the condition is met',
     ),
 ]
 StateMachineName = Annotated[
     str,
-    msgspec.Meta(
-        min_length=1,
+    Field(
         title='State Machine Name',
         description='The name of the state machine',
+        min_length=1,
     ),
-    Field(min_length=1),
 ]

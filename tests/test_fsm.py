@@ -125,33 +125,28 @@ class TestSerialization:
     def test_to_json(self, state_machine):
         """Serialize to compact JSON by default (no newlines)."""
         json_str = state_machine.to_json()
-        assert '"name": "Test State Machine"' in json_str
+        assert '"name":"Test State Machine"' in json_str
         assert '"state1"' in json_str
-        assert '"timer": 2.0' in json_str
-        assert '"state_change_conditions": {' in json_str
-        assert '"tup": "state2"' in json_str
-        assert '"output_actions": {' in json_str
-        assert '"action1": 255' in json_str
-        assert '"comment": "First state"' in json_str
+        assert '"timer":2.0' in json_str
+        assert '"state_change_conditions":{' in json_str
+        assert '"tup":"state2"' in json_str
+        assert '"output_actions":{' in json_str
+        assert '"action1":255' in json_str
+        assert '"comment":"First state"' in json_str
         assert '"state2"' in json_str
-        assert '"state_change_conditions": {' in json_str
-        assert '"tup": "exit"' in json_str
-        assert '"output_actions": {' in json_str
-        assert '"action2": 128' in json_str
-        assert '"comment": "Second state"' in json_str
+        assert '"state_change_conditions":{' in json_str
+        assert '"tup":"exit"' in json_str
+        assert '"output_actions":{' in json_str
+        assert '"action2":128' in json_str
+        assert '"comment":"Second state"' in json_str
         assert '\n' not in json_str  # No newlines when `indent` is None
+        assert ': ' not in json_str  # No spaces when `indent` is None
+        assert ', ' not in json_str  # No spaces when `indent` is None
 
     def test_to_json_indent(self, state_machine):
         """Serialize to pretty-printed JSON when indent is provided."""
         json_str = state_machine.to_json(indent=2)
         assert '\n' in json_str
-
-    def test_to_json_compact(self, state_machine):
-        """Serialize to the most compact JSON when compact=True."""
-        json_str = state_machine.to_json(compact=True)
-        assert '\n' not in json_str  # No newlines in compact mode
-        assert ': ' not in json_str  # No spaces after colons in compact mode
-        assert ', ' not in json_str  # No spaces after commas in compact mode
 
 
 class TestFromConstructors:
@@ -170,9 +165,9 @@ class TestFromConstructors:
         assert json_str == fsm.to_json()  # roundtrip
 
     def test_from_invalid_json_raises(self, tmp_path):
-        """Invalid JSON should raise msgspec.DecodeError in from_json."""
+        """Invalid JSON should raise ValidationError in from_json."""
         json_str = 'not valid json'
-        with pytest.raises(msgspec.DecodeError):
+        with pytest.raises(ValidationError):
             StateMachine.from_json(json_str)
 
 
@@ -184,7 +179,7 @@ class TestSchema:
         with schema_path.open('r') as f:
             data = f.read()
         schema_from_file = msgspec.json.decode(data)
-        schema_from_struct = msgspec.json.schema(StateMachine)
+        schema_from_struct = StateMachine.model_json_schema()
         assert schema_from_file == schema_from_struct, 'schema file is out of date'
 
 
@@ -224,7 +219,7 @@ class TestFromFile:
         """Invalid JSON content on disk should raise msgspec.DecodeError."""
         bad = tmp_path / 'bad.json'
         bad.write_text('not valid json', encoding='utf-8')
-        with pytest.raises(msgspec.DecodeError):
+        with pytest.raises(ValidationError):
             StateMachine.from_file(bad)
 
 

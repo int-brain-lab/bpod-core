@@ -1,19 +1,18 @@
 """Module defining classes and types for creating and managing state machines."""
 
-import json
 from os import PathLike
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Any
 
 import msgspec
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import validate_call
+from pydantic import BaseModel, validate_call
 
 from bpod_core.fsm_types import (
     ConditionChannel,
     ConditionID,
     ConditionValue,
-    GlobalCounterEvent,
+    Event,
     GlobalCounterID,
     GlobalCounterThreshold,
     GlobalTimerChannel,
@@ -26,21 +25,35 @@ from bpod_core.fsm_types import (
     GlobalTimerOnsetTrigger,
     GlobalTimerSendEvents,
     StateActions,
+    StateChangeConditions,
     StateComment,
-    StateConditions,
     StateMachineName,
     StateName,
     StateTimer,
 )
 
 
-class State(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
+def enc_hook(obj: Any) -> Any:
+    if isinstance(obj, BaseModel):
+        return obj.model_dump(exclude_defaults=True)
+    else:
+        raise NotImplementedError(f'Objects of type {type(obj)} are not supported')
+
+
+def dec_hook(obj_type: type, obj: dict) -> Any:
+    if issubclass(obj_type, BaseModel):
+        return obj_type.model_validate(obj)
+    else:
+        raise NotImplementedError(f'Objects of type {type} are not supported')
+
+
+class State(BaseModel, validate_assignment=True):
     """Represents a state in the state machine."""
 
     timer: StateTimer = 0.0
     """The state's timer in seconds."""
 
-    state_change_conditions: StateConditions = {}
+    state_change_conditions: StateChangeConditions = {}
     """A dictionary mapping conditions to target states for transitions."""
 
     output_actions: StateActions = {}
@@ -50,7 +63,7 @@ class State(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
     """An optional comment describing the state."""
 
 
-class GlobalTimer(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
+class GlobalTimer(BaseModel, validate_assignment=True):
     timer_id: GlobalTimerIndex
     duration: GlobalTimerDuration
     onset_delay: GlobalTimerOnsetDelay = 0.0
@@ -63,19 +76,19 @@ class GlobalTimer(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True
     onset_trigger: GlobalTimerOnsetTrigger = 0
 
 
-class GlobalCounter(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
+class GlobalCounter(BaseModel, validate_assignment=True):
     id: GlobalCounterID
-    event: GlobalCounterEvent
+    event: Event
     threshold: GlobalCounterThreshold
 
 
-class Condition(msgspec.Struct, forbid_unknown_fields=True, omit_defaults=True):
+class Condition(BaseModel, validate_assignment=True):
     id: ConditionID
     channel: ConditionChannel
     value: ConditionValue
 
 
-class StateMachine(msgspec.Struct, omit_defaults=True):
+class StateMachine(BaseModel, validate_assignment=True):
     """Represents a state machine with a collection of states."""
 
     name: StateMachineName = 'State Machine'
@@ -144,7 +157,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         self,
         name: StateName,
         timer: StateTimer = 0.0,
-        state_change_conditions: StateConditions | None = None,
+        state_change_conditions: StateChangeConditions | None = None,
         output_actions: StateActions | None = None,
         comment: StateComment | None = None,
     ) -> None:
@@ -241,7 +254,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
     def set_global_counter(
         self,
         counter_id: GlobalCounterID,
-        event: GlobalCounterEvent,
+        event: Event,
         threshold: GlobalCounterThreshold,
     ) -> None:
         """
@@ -408,17 +421,23 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
 
         return dot
 
-    def to_dict(self) -> dict:
+    def to_dict(self, exclude_defaults: bool = True) -> dict:
         """Returns the state machine as a dictionary.
+
+        Parameters
+        ----------
+        exclude_defaults: bool, optional
+            Whether to exclude fields that are set to their default values.
+            Defaults to True.
 
         Returns
         -------
         dict
             A dictionary representation of the state machine.
         """
-        return cast('dict', msgspec.to_builtins(self))
+        return self.model_dump(exclude_defaults=exclude_defaults)
 
-    def to_json(self, indent: None | int = None, compact: bool = False) -> str:
+    def to_json(self, indent: None | int = None, exclude_defaults: bool = True) -> str:
         """Returns the state machine as a JSON string.
 
         Parameters
@@ -427,19 +446,16 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
             If `indent` is a non-negative integer, then JSON array elements and object
             members will be pretty-printed with that indent level. An indent level of
             0 will only insert newlines. None is the most compact representation.
-        compact : bool, optional
-            If True, returns a compact JSON representation without extra whitespace.
-            Overrides the `indent` parameter. Default is False.
+        exclude_defaults: bool, optional
+            Whether to exclude fields that are set to their default values.
+            Defaults to True.
 
         Returns
         -------
         str
             A dictionary representation of the state machine.
         """
-        if compact:
-            return msgspec.json.encode(self).decode()
-        dictionary = self.to_dict()
-        return json.dumps(dictionary, indent=indent)
+        return self.model_dump_json(indent=indent, exclude_defaults=exclude_defaults)
 
     @validate_call
     def to_file(
@@ -530,7 +546,7 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
         StateMachine
             A StateMachine instance created from the provided dictionary.
         """
-        return msgspec.convert(data, type=StateMachine)
+        return msgspec.convert(data, type=StateMachine, dec_hook=dec_hook)
 
     @classmethod
     def from_json(cls, json_str: str | bytes) -> 'StateMachine':
@@ -548,10 +564,14 @@ class StateMachine(msgspec.Struct, omit_defaults=True):
 
         Raises
         ------
-        msgspec.DecodeError
+        ValidationError
             If the JSON string is not valid.
+
+        Notes
+        -----
+        This is a thin wrapper around :meth:`~BaseModel.model_validate_json`
         """
-        return msgspec.json.decode(json_str, type=StateMachine)
+        return StateMachine.model_validate_json(json_str)
 
     @classmethod
     def from_file(cls, filename: PathLike | str) -> 'StateMachine':

@@ -5,13 +5,12 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import msgspec
-
 project_root = Path(__file__).parents[2].resolve()
 docs_source_path = Path(__file__).parent.resolve()
 sys.path.insert(0, project_root)
 
-from bpod_core import __version__, fsm  # noqa: E402
+from bpod_core import __version__  # noqa: E402
+from bpod_core.fsm import StateMachine  # noqa: E402
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
@@ -29,7 +28,7 @@ rst_prolog = f"""
 schema_root = project_root / 'schema'
 schema_root.mkdir(exist_ok=True)
 with schema_root.joinpath('statemachine.json').open('w') as f:
-    schema = msgspec.json.schema(fsm.StateMachine)
+    schema = StateMachine.model_json_schema()
     json.dump(schema, f, indent=2)
     f.write('\n')  # add final newline
 
@@ -70,7 +69,7 @@ for fn in example_files:
     # Generate state machine diagram and save as SVG
     state_machine = module.fsm
     image_file = examples_target_path / fn.with_suffix('.svg').name
-    state_machine.to_file(image_file)
+    state_machine.to_file(image_file, overwrite=True)
 
     # Generate JSON
     json = state_machine.to_json(indent=2).splitlines()
@@ -137,10 +136,11 @@ typehints_use_signature_return = False
 
 intersphinx_mapping = {
     'python': ('https://docs.python.org/3.10/', None),
-    'numpy': ('http://docs.scipy.org/doc/numpy/', None),
+    'numpy': ('https://numpy.org/doc/stable/', None),
     'pandas': ('https://pandas.pydata.org/docs/', None),
     'serial': ('https://pyserial.readthedocs.io/en/stable/', None),
     'graphviz': ('https://graphviz.readthedocs.io/en/stable/', None),
+    'pydantic': ('https://docs.pydantic.dev/objects.inv', None),
 }
 
 # -- Options for HTML output -------------------------------------------------
