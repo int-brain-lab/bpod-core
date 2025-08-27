@@ -5,12 +5,25 @@ import errno
 import json
 import re
 import socket
-from collections.abc import Iterator, MutableMapping, Sequence
+from collections.abc import (
+    Iterator,
+    MutableMapping,
+    Sequence,
+)
 from pathlib import Path
-from typing import Any, cast
+from typing import (
+    Any,
+    TypeVar,
+    cast,
+)
 
 import msgspec
 from appdirs import user_config_dir
+from pydantic import RootModel
+
+K = TypeVar('K')
+V = TypeVar('V')
+
 
 RE_SANITIZE = re.compile(r'[^a-zA-Z0-9_]')
 RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
@@ -292,3 +305,55 @@ class SettingsDict(MutableMapping):
         """
         set_nested(d=self._state, keys=keys, value=value)
         self._save_to_file()
+
+
+class ValidatedDict(RootModel[dict[K, V]], MutableMapping):
+    def __getitem__(self, key: K) -> V:
+        return self.root[key]
+
+    def __setitem__(self, key: K, value: V) -> None:
+        validated = type(self).model_validate({key: value}).root
+        self.root[key] = validated[key]
+
+    def __delitem__(self, key: K) -> None:
+        del self.root[key]
+
+    def __iter__(self) -> Iterator[K]:  # type: ignore[override]
+        return iter(self.root)
+
+    def __len__(self) -> int:
+        return len(self.root)
+
+    def __repr__(self) -> str:
+        return repr(self.root)
+
+
+# class ValidatedDict(dict, Generic[K, V]):
+#     """A subclass of dict with optional runtime validation of keys and values."""
+#
+#     def __class_getitem__(cls, type_args):
+#         key_type, value_type = type_args
+#
+#         class ValidatedDictSubclass(cls):
+#             @validate_call
+#             def __setitem__(self, key: key_type, value: value_type):
+#                 super().__setitem__(key, value)
+#
+#         return ValidatedDictSubclass
+#
+#     @classmethod
+#     def __get_pydantic_core_schema__(
+#         cls, source: Any, handler: GetCoreSchemaHandler
+#     ) -> core_schema.CoreSchema:
+#         instance_schema = core_schema.is_instance_schema(cls)
+#         if args := get_args(source):
+#             key_type: TypeAlias = cast('type', args[0])
+#             value_type: TypeAlias = cast('type', args[1])
+#             mapping_type = dict[key_type, value_type]
+#             sequence_t_schema = handler.generate_schema(mapping_type)
+#         else:
+#             sequence_t_schema = handler.generate_schema(dict)
+#         non_instance_schema = core_schema.no_info_after_validator_function(
+#             ValidatedDict, sequence_t_schema
+#         )
+#         return core_schema.union_schema([instance_schema, non_instance_schema])

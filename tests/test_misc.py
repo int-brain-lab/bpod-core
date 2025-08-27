@@ -1,18 +1,27 @@
+"""Tests for bpod_core.misc utilities and helpers."""
+
 import errno
 
 import pytest
+from pydantic import ValidationError
 
 from bpod_core import misc
+from bpod_core.misc import ValidatedDict
 
 
 class TestSanitizeString:
+    """Tests for sanitize_string utility."""
+
     def test_basic_substitution(self):
+        """Replaces spaces and hyphens with underscores."""
         assert misc.sanitize_string(' foo bar-123 ') == '_foo_bar_123_'
 
     def test_custom_substitute(self):
+        """Uses a custom substitute character."""
         assert misc.sanitize_string('foo bar!', substitute='-') == 'foo-bar-'
 
     def test_invalid_types(self):
+        """Raises TypeError on invalid argument types."""
         with pytest.raises(TypeError):
             misc.sanitize_string('foo', substitute=1)  # type: ignore
         with pytest.raises(TypeError):
@@ -33,89 +42,113 @@ class TestSanitizeString:
     ],
 )
 def test_convert_to_snake_case(text, expected):
+    """Converts various input styles to snake_case."""
     assert misc.convert_to_snake_case(text) == expected
 
 
 class TestSuggestSimilar:
+    """Tests for suggest_similar helper."""
+
     @pytest.fixture
     def fruits(self):
+        """Fixture providing sample fruit names."""
         return ['apple', 'banana', 'grape']
 
     def test_close_match(self, fruits):
+        """Returns formatted suggestion for close match."""
         result = misc.suggest_similar('appl', fruits, cutoff=0.6)
         assert result == " - did you mean 'apple'?"
 
     def test_no_close_match(self, fruits):
+        """Returns empty string when no similar items found."""
         result = misc.suggest_similar('xyz', fruits, cutoff=0.6)
         assert result == ''
 
     def test_custom_format_string(self, fruits):
+        """Supports a custom result format string."""
         result = misc.suggest_similar('banan', fruits, format_string='{}?', cutoff=0.6)
         assert result == 'banana?'
 
     def test_empty_valid_strings(self):
+        """Returns empty string if valid_strings is empty."""
         result = misc.suggest_similar('apple', [], cutoff=0.6)
         assert result == ''
 
     def test_invalid_string_is_valid(self, fruits):
+        """Returns suggestion even if input equals a valid string."""
         result = misc.suggest_similar('banana', fruits, cutoff=0.6)
         assert result == " - did you mean 'banana'?"
 
 
 class TestSetNested:
+    """Tests for set_nested utility."""
+
     def test_basic_case(self):
+        """Sets a nested value creating dicts as needed."""
         d = {}
         misc.set_nested(d, ['a', 'b', 'c'], 42)
         assert d == {'a': {'b': {'c': 42}}}
 
     def test_intermediate_dictionaries_exist(self):
+        """Uses existing intermediate dictionaries without overwriting."""
         d = {'a': {'b': {}}}
         misc.set_nested(d, ['a', 'b', 'c'], 42)
         assert d == {'a': {'b': {'c': 42}}}
 
     def test_overwriting_existing_value(self):
+        """Overwrites an existing nested value."""
         d = {'a': {'b': {'c': 10}}}
         misc.set_nested(d, ['a', 'b', 'c'], 42)
         assert d == {'a': {'b': {'c': 42}}}
 
     def test_setting_value_at_top_level(self):
+        """Sets a value at the top level with a single key."""
         d = {}
         misc.set_nested(d, ['a'], 42)
         assert d == {'a': 42}
 
     def test_deeply_nested_value(self):
+        """Handles multiple levels of nesting."""
         d = {}
         misc.set_nested(d, ['a', 'b', 'c', 'd'], 42)
         assert d == {'a': {'b': {'c': {'d': 42}}}}
 
     def test_empty_dict_empty_key_list(self):
+        """No change when key path is empty."""
         d = {}
         misc.set_nested(d, [], 42)  # Should do nothing
         assert d == {}
 
     def test_empty_dict_one_key(self):
+        """Sets single key in an empty dict."""
         d = {}
         misc.set_nested(d, ['a'], 42)  # Should set the key "a" to 42
         assert d == {'a': 42}
 
 
 class TestGetNested:
+    """Tests for get_nested utility."""
+
     def test_existing_value(self):
+        """Returns the value when all keys exist."""
         d = {'a': {'b': {'c': 42}}}
         result = misc.get_nested(d, ['a', 'b', 'c'])
         assert result == 42
 
     def test_missing_key(self):
+        """Returns None by default if a key is missing."""
         d = {'a': {'b': {}}}
         result = misc.get_nested(d, ['a', 'b', 'c'])
         assert result is None  # Default is None
 
     def test_missing_key_with_default(self):
+        """Returns provided default if a key is missing."""
         d = {'a': {'b': {}}}
         result = misc.get_nested(d, ['a', 'b', 'c'], default=99)
         assert result == 99  # Should return the default value
 
     def test_empty_dict(self):
+        """Returns None when the root dict is empty."""
         d = {}
         result = misc.get_nested(d, ['a', 'b', 'c'])
         assert result is None  # Default is None
@@ -293,6 +326,75 @@ class TestSettingsDict:
         assert path.exists()
 
     def test_contains_operator(self, temp_settings):
+        """Test the 'in' operator."""
         temp_settings['present'] = 123
         assert 'present' in temp_settings
         assert 'absent' not in temp_settings
+
+
+class TestValidatedDict:
+    @pytest.fixture
+    def validated_dict(self):
+        return ValidatedDict[str, int]({})
+
+    def test_set_get_contains(self, validated_dict):
+        """Test setting and retrieving a key-value pair."""
+        validated_dict['a'] = 1
+        assert validated_dict['a'] == 1
+        assert 'a' in validated_dict
+
+    def test_len(self, validated_dict):
+        """Test the length is assessed correctly."""
+        assert len(validated_dict) == 0
+        validated_dict['a'] = 1
+        assert len(validated_dict) == 1
+
+    def test_iter(self, validated_dict):
+        """Ensure keys can be iterated over."""
+        assert set(iter(validated_dict)) == set(iter({}))
+        validated_dict['a'] = 1
+        assert set(iter(validated_dict)) == set(iter({'a': 1}))
+
+    def test_delete(self, validated_dict):
+        """Ensure keys can be deleted."""
+        validated_dict['a'] = 1
+        assert 'a' in validated_dict
+        assert len(validated_dict) == 1
+        del validated_dict['a']
+        assert 'a' not in validated_dict
+        assert len(validated_dict) == 0
+
+    def test_repr(self, validated_dict):
+        """Test the repr of the ValidatedDict."""
+        assert repr(validated_dict) == repr({})
+        validated_dict['a'] = 1
+        assert repr(validated_dict) == repr({'a': 1})
+
+    def test_equality(self, validated_dict):
+        """Test equality operator."""
+        assert dict(validated_dict) == {}
+        validated_dict['a'] = 1
+        assert dict(validated_dict) == {'a': 1}
+
+    def test_runtime_validate_key(self, validated_dict):
+        """Test runtime validation of keys."""
+        with pytest.raises(ValidationError):
+            validated_dict[2] = 1  # type: ignore[assignment]
+
+    def test_runtime_validate_value(self, validated_dict):
+        """Test runtime validation of values."""
+        with pytest.raises(ValidationError):
+            validated_dict['a'] = 'b'  # type: ignore[assignment]
+
+    def test_validation_on_overwrite(self, validated_dict):
+        """Test validation on overwrite."""
+        validated_dict['k'] = 1
+        with pytest.raises(ValidationError):
+            validated_dict['k'] = 'a'  # type: ignore[assignment]
+
+    def test_missing_key(self, validated_dict):
+        """Test if KeyError is raised when accessing a missing key."""
+        with pytest.raises(KeyError):
+            _ = validated_dict['missing']
+        with pytest.raises(KeyError):
+            del validated_dict['missing']

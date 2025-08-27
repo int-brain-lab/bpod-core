@@ -21,6 +21,13 @@
       "title": "Condition",
       "type": "object"
     },
+    "Conditions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/Condition"
+      },
+      "title": "Conditions",
+      "type": "object"
+    },
     "GlobalCounter": {
       "properties": {
         "event": {
@@ -42,6 +49,13 @@
         "threshold"
       ],
       "title": "GlobalCounter",
+      "type": "object"
+    },
+    "GlobalCounters": {
+      "additionalProperties": {
+        "$ref": "#/$defs/GlobalCounter"
+      },
+      "title": "GlobalCounters",
       "type": "object"
     },
     "GlobalTimer": {
@@ -122,6 +136,13 @@
       "title": "GlobalTimer",
       "type": "object"
     },
+    "GlobalTimers": {
+      "additionalProperties": {
+        "$ref": "#/$defs/GlobalTimer"
+      },
+      "title": "GlobalTimers",
+      "type": "object"
+    },
     "State": {
       "description": "Represents a state in the state machine.",
       "properties": {
@@ -190,6 +211,19 @@
       },
       "title": "State",
       "type": "object"
+    },
+    "States": {
+      "patternProperties": {
+        "^(?!>)(?!exit$).+$": {
+          "$ref": "#/$defs/State"
+        }
+      },
+      "propertyNames": {
+        "description": "The name of the state",
+        "minLength": 1
+      },
+      "title": "States",
+      "type": "object"
     }
   },
   "description": "Represents a state machine with a collection of states.",
@@ -202,42 +236,35 @@
       "type": "string"
     },
     "states": {
+      "$ref": "#/$defs/States",
       "default": {},
-      "patternProperties": {
-        "^(?!>)(?!exit$).+$": {
-          "$ref": "#/$defs/State"
-        }
-      },
-      "propertyNames": {
-        "description": "The name of the state",
-        "minLength": 1
-      },
-      "title": "States",
-      "type": "object"
+      "description": "A collection of states"
     },
     "global_timers": {
-      "additionalProperties": {
-        "$ref": "#/$defs/GlobalTimer"
-      },
+      "$ref": "#/$defs/GlobalTimers",
       "default": {},
-      "title": "Global Timers",
-      "type": "object"
+      "description": "A collection of global timers",
+      "propertyNames": {
+        "pattern": "^\\d+$"
+      },
+      "title": "Global Timers"
     },
     "global_counters": {
-      "additionalProperties": {
-        "$ref": "#/$defs/GlobalCounter"
-      },
+      "$ref": "#/$defs/GlobalCounters",
       "default": {},
-      "title": "Global Counters",
-      "type": "object"
+      "description": "A collection of global counters",
+      "propertyNames": {
+        "pattern": "^\\d+$"
+      },
+      "title": "Global Counters"
     },
     "conditions": {
-      "additionalProperties": {
-        "$ref": "#/$defs/Condition"
-      },
+      "$ref": "#/$defs/Conditions",
       "default": {},
-      "title": "Conditions",
-      "type": "object"
+      "description": "A collection of conditions",
+      "propertyNames": {
+        "pattern": "^\\d+$"
+      }
     }
   },
   "title": "StateMachine",

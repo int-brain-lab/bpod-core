@@ -6,7 +6,7 @@ from typing import Annotated, Any
 
 import msgspec
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import BaseModel, validate_call
+from pydantic import BaseModel, Field, validate_call
 
 from bpod_core.fsm_types import (
     ConditionChannel,
@@ -31,6 +31,7 @@ from bpod_core.fsm_types import (
     StateName,
     StateTimer,
 )
+from bpod_core.misc import ValidatedDict
 
 
 def enc_hook(obj: Any) -> Any:
@@ -105,6 +106,22 @@ class Condition(BaseModel, validate_assignment=True):
         return f'{self.__class__.__name__}({values})'
 
 
+class States(ValidatedDict[StateName, State]):
+    model_config = {'title': 'States'}
+
+
+class GlobalTimers(ValidatedDict[GlobalTimerIndex, GlobalTimer]):
+    model_config = {'title': 'GlobalTimers'}
+
+
+class GlobalCounters(ValidatedDict[GlobalCounterID, GlobalCounter]):
+    model_config = {'title': 'GlobalCounters'}
+
+
+class Conditions(ValidatedDict[ConditionID, Condition]):
+    model_config = {'title': 'Conditions'}
+
+
 class StateMachine(BaseModel, validate_assignment=True):
     """Represents a state machine with a collection of states."""
 
@@ -112,61 +129,54 @@ class StateMachine(BaseModel, validate_assignment=True):
     """The name of the state machine."""
 
     states: Annotated[
-        dict[StateName, State],
-        msgspec.Meta(
+        States,
+        Field(
             title='States',
             description='A collection of states',
-            min_length=1,
-            extra_json_schema={
-                'propertyNames': {
-                    'pattern': '^((?!>)(?!exit$).)*$',
-                    'minLength': 1,
-                }
-            },
         ),
-    ] = {}
+    ] = States({})
     """A dictionary of states."""
 
     global_timers: Annotated[
-        dict[GlobalTimerIndex, GlobalTimer],
-        msgspec.Meta(
+        GlobalTimers,
+        Field(
             title='Global Timers',
             description='A collection of global timers',
-            extra_json_schema={
+            json_schema_extra={
                 'propertyNames': {
                     'pattern': r'^\d+$',
                 }
             },
         ),
-    ] = {}
+    ] = GlobalTimers({})
     """A dictionary of global timers."""
 
     global_counters: Annotated[
-        dict[GlobalCounterID, GlobalCounter],
-        msgspec.Meta(
+        GlobalCounters,
+        Field(
             title='Global Counters',
             description='A collection of global counters',
-            extra_json_schema={
+            json_schema_extra={
                 'propertyNames': {
                     'pattern': r'^\d+$',
                 }
             },
         ),
-    ] = {}
+    ] = GlobalCounters({})
     """A dictionary of global counters."""
 
     conditions: Annotated[
-        dict[ConditionID, Condition],
-        msgspec.Meta(
+        Conditions,
+        Field(
             title='Conditions',
             description='A collection of conditions',
-            extra_json_schema={
+            json_schema_extra={
                 'propertyNames': {
                     'pattern': r'^\d+$',
                 }
             },
         ),
-    ] = {}
+    ] = Conditions({})
     """A dictionary of conditions."""
 
     def __repr__(self) -> str:

@@ -1,3 +1,4 @@
+from collections.abc import MutableMapping
 from pathlib import Path
 
 import msgspec
@@ -27,7 +28,7 @@ class TestStateMachineBasic:
         """Construct an empty StateMachine and check initial state."""
         sm = StateMachine(name='Test State Machine')
         assert sm.name == 'Test State Machine'
-        assert isinstance(sm.states, dict)
+        assert isinstance(sm.states, MutableMapping)
         assert len(sm.states) == 0
 
     def test_add_state(self):
