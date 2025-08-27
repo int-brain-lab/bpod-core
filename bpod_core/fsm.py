@@ -62,6 +62,11 @@ class State(BaseModel, validate_assignment=True):
     comment: StateComment | None = None
     """An optional comment describing the state."""
 
+    def __repr__(self) -> str:
+        dump = self.model_dump(exclude_defaults=True)
+        values = ', '.join([f'{k}={v}' for k, v in dump.items()])
+        return f'{self.__class__.__name__}({values})'
+
 
 class GlobalTimer(BaseModel, validate_assignment=True):
     timer_id: GlobalTimerIndex
@@ -75,17 +80,32 @@ class GlobalTimer(BaseModel, validate_assignment=True):
     loop_interval: GlobalTimerLoopInterval = 0.0
     onset_trigger: GlobalTimerOnsetTrigger = 0
 
+    def __repr__(self) -> str:
+        dump = self.model_dump(exclude_defaults=True)
+        values = ', '.join([f'{k}={v}' for k, v in dump.items()])
+        return f'{self.__class__.__name__}({values})'
+
 
 class GlobalCounter(BaseModel, validate_assignment=True):
     id: GlobalCounterID
     event: Event
     threshold: GlobalCounterThreshold
 
+    def __repr__(self) -> str:
+        dump = self.model_dump(exclude_defaults=True)
+        values = ', '.join([f'{k}={v}' for k, v in dump.items()])
+        return f'{self.__class__.__name__}({values})'
+
 
 class Condition(BaseModel, validate_assignment=True):
     id: ConditionID
     channel: ConditionChannel
     value: ConditionValue
+
+    def __repr__(self) -> str:
+        dump = self.model_dump(exclude_defaults=True)
+        values = ', '.join([f'{k}={v}' for k, v in dump.items()])
+        return f'{self.__class__.__name__}({values})'
 
 
 class StateMachine(BaseModel, validate_assignment=True):
@@ -151,6 +171,15 @@ class StateMachine(BaseModel, validate_assignment=True):
         ),
     ] = {}
     """A dictionary of conditions in the state machine."""
+
+    def __repr__(self) -> str:
+        fields = [f for f in StateMachine.model_fields if f != 'name']
+        counts = [len(getattr(self, f)) for f in fields]
+        counts = ', '.join(f'{fields[i]}: {n}' for i, n in enumerate(counts))
+        if self.name != StateMachine.model_fields['name'].default:
+            return f"StateMachine(name='{self.name}', {counts})"
+        else:
+            return f'StateMachine({counts})'
 
     @validate_call
     def add_state(
