@@ -85,12 +85,20 @@ at creation and assignment:
 
 .. _Pydantic: https://docs.pydantic.dev/latest/
 
+.. testsetup:: pydantic-validation
+
+   import atexit
+   import types
+   from unittest.mock import patch
+   from types import SimpleNamespace
+   from bpod_core.bpod import Bpod
+   from bpod_core.fsm import StateMachine
+   fsm = StateMachine()
+
 .. doctest-code-block::
-   :caption: Pydantic complaining about an incorrect parameter for the state timer.
+   :caption: Pydantic complaining when trying to add a state with an invalid timer.
    :group: pydantic-validation
 
-   >>> from bpod_core.fsm import StateMachine
-   >>> fsm = StateMachine()
    >>> fsm.add_state(name='MyState', timer=-1)
    Traceback (most recent call last):
       ...
@@ -111,7 +119,6 @@ hardware are known:
    from types import SimpleNamespace
    from bpod_core.bpod import Bpod
 
-
    original_send = Bpod.send_state_machine
    original_validate = Bpod.validate_state_machine
 
@@ -131,16 +138,16 @@ hardware are known:
    patcher.start()
    atexit.register(patcher.stop)
 
+   from bpod_core.bpod import Bpod
+   from bpod_core.fsm import StateMachine
+   fsm = StateMachine()
+   fsm.add_state(name='MyState', timer=1)
 
 .. doctest-code-block::
    :caption: A :exc:`ValueError` is raised when attempting to run a state machine that exceeds the hardware's capabilities.
    :group: runtime-validation
 
-   >>> from bpod_core.bpod import Bpod
-   >>> from bpod_core.fsm import StateMachine
-   >>> fsm = StateMachine()
-   >>> fsm.add_state(name='MyState', timer=1)
-   >>> fsm.set_global_timer(timer_id=5000, duration=5)  # this validates OK
+   >>> fsm.set_global_timer(timer_id=20, duration=5)  # this validates OK
    >>> bpod = Bpod()
    >>> bpod.send_state_machine(fsm)
    Traceback (most recent call last):
