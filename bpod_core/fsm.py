@@ -172,11 +172,11 @@ class StateMachine(BaseModel, validate_assignment=True):
     def __repr__(self) -> str:
         fields = [f for f in StateMachine.model_fields if f != 'name']
         counts = [len(getattr(self, f)) for f in fields]
-        counts = ', '.join(f'{fields[i]}: {n}' for i, n in enumerate(counts))
+        string = ', '.join(f'{fields[i]}: {n}' for i, n in enumerate(counts))
         if self.name != StateMachine.model_fields['name'].default:
-            return f"StateMachine(name='{self.name}', {counts})"
+            return f"{self.__class__.__name__}(name='{self.name}', {string})"
         else:
-            return f'StateMachine({counts})'
+            return f'{self.__class__.__name__}({string})'
 
     @validate_call
     def add_state(
