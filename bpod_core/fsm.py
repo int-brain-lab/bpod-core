@@ -125,7 +125,7 @@ class StateMachine(BaseModel, validate_assignment=True):
             },
         ),
     ] = {}
-    """A dictionary of states in the state machine."""
+    """A dictionary of states."""
 
     global_timers: Annotated[
         dict[GlobalTimerIndex, GlobalTimer],
@@ -139,7 +139,7 @@ class StateMachine(BaseModel, validate_assignment=True):
             },
         ),
     ] = {}
-    """A dictionary of global timers in the state machine."""
+    """A dictionary of global timers."""
 
     global_counters: Annotated[
         dict[GlobalCounterID, GlobalCounter],
@@ -153,7 +153,7 @@ class StateMachine(BaseModel, validate_assignment=True):
             },
         ),
     ] = {}
-    """A dictionary of global counters in the state machine."""
+    """A dictionary of global counters."""
 
     conditions: Annotated[
         dict[ConditionID, Condition],
@@ -167,7 +167,7 @@ class StateMachine(BaseModel, validate_assignment=True):
             },
         ),
     ] = {}
-    """A dictionary of conditions in the state machine."""
+    """A dictionary of conditions."""
 
     def __repr__(self) -> str:
         fields = [f for f in StateMachine.model_fields if f != 'name']
