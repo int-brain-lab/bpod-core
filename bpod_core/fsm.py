@@ -24,7 +24,7 @@ from bpod_core.fsm_types import (
     GlobalTimerOnsetDelay,
     GlobalTimerOnsetTrigger,
     GlobalTimerSendEvents,
-    StateActions,
+    OutputActions,
     StateChangeConditions,
     StateComment,
     StateMachineName,
@@ -54,10 +54,10 @@ class State(BaseModel, validate_assignment=True):
     timer: StateTimer = 0.0
     """The state's timer in seconds."""
 
-    state_change_conditions: StateChangeConditions = {}
+    state_change_conditions: StateChangeConditions = StateChangeConditions({})
     """A dictionary mapping conditions to target states for transitions."""
 
-    output_actions: StateActions = {}
+    output_actions: OutputActions = OutputActions({})
     """A dictionary of actions to be executed during the state."""
 
     comment: StateComment | None = None
@@ -194,7 +194,7 @@ class StateMachine(BaseModel, validate_assignment=True):
         name: StateName,
         timer: StateTimer = 0.0,
         state_change_conditions: StateChangeConditions | None = None,
-        output_actions: StateActions | None = None,
+        output_actions: OutputActions | None = None,
         comment: StateComment | None = None,
     ) -> None:
         """
@@ -224,8 +224,9 @@ class StateMachine(BaseModel, validate_assignment=True):
             raise ValueError(f"A state named '{name}' is already registered")
         self.states[name] = State(
             timer=timer,
-            state_change_conditions=state_change_conditions or {},
-            output_actions=output_actions or {},
+            state_change_conditions=state_change_conditions
+            or StateChangeConditions({}),
+            output_actions=output_actions or OutputActions({}),
             comment=comment,
         )
 

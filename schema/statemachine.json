@@ -143,6 +143,21 @@
       "title": "GlobalTimers",
       "type": "object"
     },
+    "OutputActions": {
+      "additionalProperties": {
+        "description": "The integer value of the output action",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "description": "A collection of output actions and their respective values",
+      "propertyNames": {
+        "description": "The name of the output action",
+        "minLength": 1
+      },
+      "title": "Output Actions",
+      "type": "object"
+    },
     "State": {
       "description": "Represents a state in the state machine.",
       "properties": {
@@ -154,45 +169,12 @@
           "type": "number"
         },
         "state_change_conditions": {
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "description": "The name of the state",
-                "minLength": 1,
-                "pattern": "^(?!>)(?!exit$).+$",
-                "title": "State Name",
-                "type": "string"
-              },
-              {
-                "description": "A state machine operator",
-                "pattern": "^(exit)|(>.+)$",
-                "title": "Operator",
-                "type": "string"
-              }
-            ]
-          },
-          "description": "A collection of events and their assigned target states",
-          "propertyNames": {
-            "description": "A state machine event",
-            "minLength": 1
-          },
-          "title": "State Change Conditions",
-          "type": "object"
+          "$ref": "#/$defs/StateChangeConditions",
+          "default": {}
         },
         "output_actions": {
-          "additionalProperties": {
-            "description": "The integer value of the output action",
-            "maximum": 255,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "description": "A collection of output actions and their respective values",
-          "propertyNames": {
-            "description": "The name of the output action",
-            "minLength": 1
-          },
-          "title": "Output Actions",
-          "type": "object"
+          "$ref": "#/$defs/OutputActions",
+          "default": {}
         },
         "comment": {
           "anyOf": [
@@ -210,6 +192,32 @@
         }
       },
       "title": "State",
+      "type": "object"
+    },
+    "StateChangeConditions": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "description": "The name of the state",
+            "minLength": 1,
+            "pattern": "^(?!>)(?!exit$).+$",
+            "title": "State Name",
+            "type": "string"
+          },
+          {
+            "description": "A state machine operator",
+            "pattern": "^(exit)|(>.+)$",
+            "title": "Operator",
+            "type": "string"
+          }
+        ]
+      },
+      "description": "A collection of events and their assigned target states",
+      "propertyNames": {
+        "description": "A state machine event",
+        "minLength": 1
+      },
+      "title": "State Change Condition",
       "type": "object"
     },
     "States": {

@@ -5,6 +5,8 @@ import msgspec
 import numpy as np
 from pydantic import Field
 
+from bpod_core.misc import ValidatedDict
+
 StateName = Annotated[
     str,
     Field(
@@ -40,15 +42,18 @@ Operator = Annotated[
         pattern=re.compile(r'^(exit)|(>.+)$'),
     ),
 ]
-StateChangeConditions = Annotated[
-    dict[Event, StateName | Operator],
-    Field(
-        title='State Change Conditions',
-        description='A collection of events and their assigned target states',
-        default_factory=dict,
-    ),
-]
-StateActionName = Annotated[
+
+
+class StateChangeConditions(ValidatedDict[Event, StateName | Operator]):
+    model_config = dict(
+        title='State Change Condition',
+        json_schema_extra={
+            'description': 'A collection of events and their assigned target states'
+        },
+    )
+
+
+OutputActionName = Annotated[
     str,
     Field(
         title='Output Action Name',
@@ -56,7 +61,7 @@ StateActionName = Annotated[
         min_length=1,
     ),
 ]
-StateActionValue = Annotated[
+OutputActionValue = Annotated[
     int,
     Field(
         title='Output Action Value',
@@ -65,14 +70,17 @@ StateActionValue = Annotated[
         le=255,
     ),
 ]
-StateActions = Annotated[
-    dict[StateActionName, StateActionValue],
-    Field(
+
+
+class OutputActions(ValidatedDict[OutputActionName, OutputActionValue]):
+    model_config = dict(
         title='Output Actions',
-        description='A collection of output actions and their respective values',
-        default_factory=dict,
-    ),
-]
+        json_schema_extra={
+            'description': 'A collection of output actions and their respective values'
+        },
+    )
+
+
 StateComment = Annotated[
     str,
     Field(

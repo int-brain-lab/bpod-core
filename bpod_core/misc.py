@@ -12,7 +12,9 @@ from collections.abc import (
 )
 from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
     Any,
+    Generic,
     TypeVar,
     cast,
 )
@@ -307,12 +309,19 @@ class SettingsDict(MutableMapping):
         self._save_to_file()
 
 
-class ValidatedDict(RootModel[dict[K, V]], MutableMapping):
+class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
+    def __init__(self, root: dict[K, V] | None = None, **data: Any) -> None:
+        if root is None:
+            root = {}
+        if data:
+            root = {**root, **cast('dict[K, V]', data)}
+        super().__init__(root=root)
+
     def __getitem__(self, key: K) -> V:
         return self.root[key]
 
     def __setitem__(self, key: K, value: V) -> None:
-        validated = type(self).model_validate({key: value}).root
+        validated = type(self).model_validate(obj={'root': {key: value}}).root
         self.root[key] = validated[key]
 
     def __delitem__(self, key: K) -> None:
@@ -326,6 +335,15 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping):
 
     def __repr__(self) -> str:
         return repr(self.root)
+
+    def __eq__(self, other: object) -> bool:
+        return self.root == other
+
+    if TYPE_CHECKING:
+
+        def __hash__(self) -> int: ...
+    else:
+        __hash__ = None
 
 
 # class ValidatedDict(dict, Generic[K, V]):
