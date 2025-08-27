@@ -85,19 +85,14 @@ at creation and assignment:
 
 .. _Pydantic: https://docs.pydantic.dev/latest/
 
-.. testsetup:: pydantic-validation
+.. testsetup:: pydantic-validation-1
 
-   import atexit
-   import types
-   from unittest.mock import patch
-   from types import SimpleNamespace
-   from bpod_core.bpod import Bpod
    from bpod_core.fsm import StateMachine
    fsm = StateMachine()
 
 .. doctest-code-block::
    :caption: Pydantic complaining when trying to add a state with an invalid timer.
-   :group: pydantic-validation
+   :group: pydantic-validation-1
 
    >>> fsm.add_state(name='MyState', timer=-1)
    Traceback (most recent call last):
@@ -106,6 +101,26 @@ at creation and assignment:
    timer
      Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-1, input_type=int]
        For further information visit https://errors.pydantic.dev/2.11/v/greater_than_equal
+
+.. testsetup:: pydantic-validation-2
+
+   from bpod_core.fsm import StateMachine
+   fsm = StateMachine()
+
+.. doctest-code-block::
+   :caption: Assignments are validated as well
+   :group: pydantic-validation-2
+
+   >>> fsm.add_state(name='MyState', timer=1)
+   >>> fsm.states['MyState'].output_actions = 42
+   Traceback (most recent call last):
+      ...
+   pydantic_core._pydantic_core.ValidationError: 1 validation error for State
+   output_actions
+     Input should be a valid dictionary [type=dict_type, input_value=42, input_type=int]
+       For further information visit https://errors.pydantic.dev/2.11/v/dict_type
+
+
 
 This validation mechanism helps catch errors early in the design phase of an experiment.
 More detailed validation is performed at runtime, when the specific constraints of the
