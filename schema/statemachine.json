@@ -2,12 +2,6 @@
   "$defs": {
     "Condition": {
       "properties": {
-        "id": {
-          "description": "The ID of the condition",
-          "minimum": 0,
-          "title": "ID",
-          "type": "integer"
-        },
         "channel": {
           "description": "The channel or global timer attached to the condition",
           "minLength": 1,
@@ -21,7 +15,6 @@
         }
       },
       "required": [
-        "id",
         "channel",
         "value"
       ],
@@ -30,12 +23,6 @@
     },
     "GlobalCounter": {
       "properties": {
-        "id": {
-          "description": "The ID of the global counter",
-          "minimum": 0,
-          "title": "ID",
-          "type": "integer"
-        },
         "event": {
           "description": "A state machine event",
           "minLength": 1,
@@ -51,7 +38,6 @@
         }
       },
       "required": [
-        "id",
         "event",
         "threshold"
       ],
@@ -60,12 +46,6 @@
     },
     "GlobalTimer": {
       "properties": {
-        "timer_id": {
-          "description": "The ID of the global timer",
-          "minimum": 0,
-          "title": "Global Timer ID",
-          "type": "integer"
-        },
         "duration": {
           "description": "The duration of the global timer in seconds",
           "minimum": 0.0,
@@ -137,7 +117,6 @@
         }
       },
       "required": [
-        "timer_id",
         "duration"
       ],
       "title": "GlobalTimer",

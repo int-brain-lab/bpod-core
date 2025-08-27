@@ -69,7 +69,6 @@ class State(BaseModel, validate_assignment=True):
 
 
 class GlobalTimer(BaseModel, validate_assignment=True):
-    timer_id: GlobalTimerIndex
     duration: GlobalTimerDuration
     onset_delay: GlobalTimerOnsetDelay = 0.0
     channel: GlobalTimerChannel | None = None
@@ -87,7 +86,6 @@ class GlobalTimer(BaseModel, validate_assignment=True):
 
 
 class GlobalCounter(BaseModel, validate_assignment=True):
-    id: GlobalCounterID
     event: Event
     threshold: GlobalCounterThreshold
 
@@ -98,7 +96,6 @@ class GlobalCounter(BaseModel, validate_assignment=True):
 
 
 class Condition(BaseModel, validate_assignment=True):
-    id: ConditionID
     channel: ConditionChannel
     value: ConditionValue
 
@@ -267,7 +264,6 @@ class StateMachine(BaseModel, validate_assignment=True):
         None
         """
         self.global_timers[timer_id] = GlobalTimer(
-            timer_id=timer_id,
             duration=duration,
             onset_delay=onset_delay,
             channel=channel,
@@ -303,7 +299,6 @@ class StateMachine(BaseModel, validate_assignment=True):
         None
         """
         self.global_counters[counter_id] = GlobalCounter(
-            id=counter_id,
             event=event,
             threshold=threshold,
         )
@@ -331,7 +326,6 @@ class StateMachine(BaseModel, validate_assignment=True):
         None
         """
         self.conditions[condition_id] = Condition(
-            id=condition_id,
             channel=channel,
             value=value,
         )
