@@ -310,6 +310,33 @@ class SettingsDict(MutableMapping):
 
 
 class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
+    """A dict-like container with runtime validation for keys and values.
+
+    This class wraps a standard dict and integrates with Pydantic's RootModel to
+    validate items upon mutation. Assignments go through the model's schema, so both
+    keys and values are checked at runtime according to the generic types K and V (or
+    concrete types provided by subclasses). It behaves like a mutable mapping for all
+    common operations (get, set, delete, iterate, len) and compares equal to regular
+    dicts with the same contents.
+
+    Notes
+    -----
+    Subclass this type to define concrete, validated key/value types, for example:
+    >>> class TestDict(ValidatedDict[str, int]): ...
+    >>> TestDict = TestDict()
+    >>> TestDict['foo'] = 1
+    >>> TestDict[1] = 2
+    Traceback (most recent call last):
+       ...
+    pydantic_core._pydantic_core.ValidationError: 1 validation error for TestDict
+    1.[key]
+      Input should be a valid string [type=string_type, input_value=1, input_type=int]
+        For further information visit https://errors.pydantic.dev/2.11/v/string_type
+
+    Alternatively, you can also instantiate a ValidatedDict directly:
+    >>> my_validated_dict = ValidatedDict[str, int]({'foo': 1, 'bar': 2})
+    """
+
     def __init__(self, root: dict[K, V] | None = None, **data: Any) -> None:
         if root is None:
             root = {}
@@ -344,34 +371,3 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
         def __hash__(self) -> int: ...
     else:
         __hash__ = None
-
-
-# class ValidatedDict(dict, Generic[K, V]):
-#     """A subclass of dict with optional runtime validation of keys and values."""
-#
-#     def __class_getitem__(cls, type_args):
-#         key_type, value_type = type_args
-#
-#         class ValidatedDictSubclass(cls):
-#             @validate_call
-#             def __setitem__(self, key: key_type, value: value_type):
-#                 super().__setitem__(key, value)
-#
-#         return ValidatedDictSubclass
-#
-#     @classmethod
-#     def __get_pydantic_core_schema__(
-#         cls, source: Any, handler: GetCoreSchemaHandler
-#     ) -> core_schema.CoreSchema:
-#         instance_schema = core_schema.is_instance_schema(cls)
-#         if args := get_args(source):
-#             key_type: TypeAlias = cast('type', args[0])
-#             value_type: TypeAlias = cast('type', args[1])
-#             mapping_type = dict[key_type, value_type]
-#             sequence_t_schema = handler.generate_schema(mapping_type)
-#         else:
-#             sequence_t_schema = handler.generate_schema(dict)
-#         non_instance_schema = core_schema.no_info_after_validator_function(
-#             ValidatedDict, sequence_t_schema
-#         )
-#         return core_schema.union_schema([instance_schema, non_instance_schema])
