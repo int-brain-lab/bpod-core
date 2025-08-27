@@ -397,7 +397,7 @@ class StateMachine(BaseModel, validate_assignment=True):
             )
 
             # Add state node
-            dot.node(state_name, label, shape='none', margin="0", height="0")
+            dot.node(state_name, label, shape='none', margin='0', height='0')
 
             # Add edges for state transitions
             # Use a subgraph to keep edges from the same state on the same rank
