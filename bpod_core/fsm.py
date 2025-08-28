@@ -2,11 +2,11 @@
 
 from os import PathLike
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 import msgspec
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import BaseModel, Field, validate_call
+from pydantic import BaseModel, validate_call
 
 from bpod_core.fsm_types import (
     ConditionChannel,
@@ -48,16 +48,16 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
         raise NotImplementedError(f'Objects of type {type} are not supported')
 
 
-class State(BaseModel, validate_assignment=True):
+class State(BaseModel, validate_assignment=True, title='State'):
     """Represents a state in the state machine."""
 
     timer: StateTimer = 0.0
     """The state's timer in seconds."""
 
-    state_change_conditions: StateChangeConditions = StateChangeConditions({})
+    state_change_conditions: StateChangeConditions = StateChangeConditions()
     """A dictionary mapping conditions to target states for transitions."""
 
-    output_actions: OutputActions = OutputActions({})
+    output_actions: OutputActions = OutputActions()
     """A dictionary of actions to be executed during the state."""
 
     comment: StateComment | None = None
@@ -69,7 +69,9 @@ class State(BaseModel, validate_assignment=True):
         return f'{self.__class__.__name__}({values})'
 
 
-class GlobalTimer(BaseModel, validate_assignment=True):
+class GlobalTimer(BaseModel, validate_assignment=True, title='Global Timer'):
+    """Represents a global timer in the state machine."""
+
     duration: GlobalTimerDuration
     onset_delay: GlobalTimerOnsetDelay = 0.0
     channel: GlobalTimerChannel | None = None
@@ -86,7 +88,9 @@ class GlobalTimer(BaseModel, validate_assignment=True):
         return f'{self.__class__.__name__}({values})'
 
 
-class GlobalCounter(BaseModel, validate_assignment=True):
+class GlobalCounter(BaseModel, validate_assignment=True, title='Global Counter'):
+    """Represents a global counter in the state machine."""
+
     event: Event
     threshold: GlobalCounterThreshold
 
@@ -96,7 +100,9 @@ class GlobalCounter(BaseModel, validate_assignment=True):
         return f'{self.__class__.__name__}({values})'
 
 
-class Condition(BaseModel, validate_assignment=True):
+class Condition(BaseModel, validate_assignment=True, title='Condition'):
+    """Represents a condition in the state machine."""
+
     channel: ConditionChannel
     value: ConditionValue
 
@@ -107,19 +113,48 @@ class Condition(BaseModel, validate_assignment=True):
 
 
 class States(ValidatedDict[StateName, State]):
+    """A dictionary of states."""
+
     model_config = {'title': 'States'}
 
 
 class GlobalTimers(ValidatedDict[GlobalTimerIndex, GlobalTimer]):
-    model_config = {'title': 'GlobalTimers'}
+    """A collection of global timers."""
+
+    model_config = {
+        'title': 'Global Timers',
+        'json_schema_extra': {
+            'propertyNames': {
+                'pattern': r'^\d+$',
+            }
+        },
+    }
 
 
-class GlobalCounters(ValidatedDict[GlobalCounterID, GlobalCounter]):
-    model_config = {'title': 'GlobalCounters'}
+class GlobalCounters(ValidatedDict[GlobalCounterID, GlobalCounter]:
+    """A collection of global counters."""
+
+    model_config = {
+        'title': 'Global Counters',
+        'json_schema_extra': {
+            'propertyNames': {
+                'pattern': r'^\d+$',
+            }
+        },
+    }
 
 
 class Conditions(ValidatedDict[ConditionID, Condition]):
-    model_config = {'title': 'Conditions'}
+    """A collection of conditions."""
+
+    model_config = {
+        'title': 'Conditions',
+        'json_schema_extra': {
+            'propertyNames': {
+                'pattern': r'^\d+$',
+            }
+        },
+    }
 
 
 class StateMachine(BaseModel, validate_assignment=True):
@@ -128,55 +163,16 @@ class StateMachine(BaseModel, validate_assignment=True):
     name: StateMachineName = 'State Machine'
     """The name of the state machine."""
 
-    states: Annotated[
-        States,
-        Field(
-            title='States',
-            description='A collection of states',
-        ),
-    ] = States({})
+    states: States = States({})
     """A dictionary of states."""
 
-    global_timers: Annotated[
-        GlobalTimers,
-        Field(
-            title='Global Timers',
-            description='A collection of global timers',
-            json_schema_extra={
-                'propertyNames': {
-                    'pattern': r'^\d+$',
-                }
-            },
-        ),
-    ] = GlobalTimers({})
+    global_timers: GlobalTimers = GlobalTimers()
     """A dictionary of global timers."""
 
-    global_counters: Annotated[
-        GlobalCounters,
-        Field(
-            title='Global Counters',
-            description='A collection of global counters',
-            json_schema_extra={
-                'propertyNames': {
-                    'pattern': r'^\d+$',
-                }
-            },
-        ),
-    ] = GlobalCounters({})
+    global_counters: GlobalCounters = GlobalCounters()
     """A dictionary of global counters."""
 
-    conditions: Annotated[
-        Conditions,
-        Field(
-            title='Conditions',
-            description='A collection of conditions',
-            json_schema_extra={
-                'propertyNames': {
-                    'pattern': r'^\d+$',
-                }
-            },
-        ),
-    ] = Conditions({})
+    conditions: Conditions = Conditions()
     """A dictionary of conditions."""
 
     def __repr__(self) -> str:

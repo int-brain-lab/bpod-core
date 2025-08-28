@@ -21,7 +21,7 @@ from typing import (
 
 import msgspec
 from appdirs import user_config_dir
-from pydantic import RootModel
+from pydantic import Field, RootModel
 
 K = TypeVar('K')
 V = TypeVar('V')
@@ -312,43 +312,42 @@ class SettingsDict(MutableMapping):
 class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
     """A dict-like container with runtime validation for keys and values.
 
-    This class wraps a standard dict and integrates with Pydantic's RootModel to
-    validate items upon mutation. Assignments go through the model's schema, so both
-    keys and values are checked at runtime according to the generic types K and V (or
-    concrete types provided by subclasses). It behaves like a mutable mapping for all
-    common operations (get, set, delete, iterate, len) and compares equal to regular
-    dicts with the same contents.
+    This class wraps a standard :py:class:`dict` and integrates with Pydantic's
+    :class:`RootModel` to validate keys and values upon mutation. It behaves like a
+    mutable mapping for all common operations (get, set, delete, iterate, len) and
+    compares equal to regular dicts with the same contents.
 
     Notes
     -----
-    Subclass this type to define concrete, validated key/value types, for example:
-    >>> class TestDict(ValidatedDict[str, int]): ...
-    >>> TestDict = TestDict()
-    >>> TestDict['foo'] = 1
-    >>> TestDict[1] = 2
+    Subclass :class:`ValidatedDict` to create a custom type with validation:
+
+    >>> class TestDict(ValidatedDict[str, int]):
+    ...     pass
+
+    You can then instantiate your class ``TestDict`` like a regular dict:
+
+    >>> test_dict = TestDict()
+    >>> test_dict['foo'] = 1
+    >>> test_dict[42] = 2
     Traceback (most recent call last):
        ...
     pydantic_core._pydantic_core.ValidationError: 1 validation error for TestDict
-    1.[key]
-      Input should be a valid string [type=string_type, input_value=1, input_type=int]
+    42.[key]
+      Input should be a valid string [type=string_type, input_value=42, input_type=int]
         For further information visit https://errors.pydantic.dev/2.11/v/string_type
 
     Alternatively, you can also instantiate a ValidatedDict directly:
+
     >>> my_validated_dict = ValidatedDict[str, int]({'foo': 1, 'bar': 2})
     """
 
-    def __init__(self, root: dict[K, V] | None = None, **data: Any) -> None:
-        if root is None:
-            root = {}
-        if data:
-            root = {**root, **cast('dict[K, V]', data)}
-        super().__init__(root=root)
+    root: dict[K, V] = Field(default_factory=dict)
 
     def __getitem__(self, key: K) -> V:
         return self.root[key]
 
     def __setitem__(self, key: K, value: V) -> None:
-        validated = type(self).model_validate(obj={'root': {key: value}}).root
+        validated = type(self).model_validate({key: value}).root
         self.root[key] = validated[key]
 
     def __delitem__(self, key: K) -> None:
