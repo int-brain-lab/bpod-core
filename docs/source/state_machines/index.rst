@@ -112,11 +112,11 @@ at creation and assignment:
    :group: pydantic-validation-2
 
    >>> fsm.add_state(name='MyState', timer=1)
-   >>> fsm.states['MyState'].output_actions = 42
+   >>> fsm.states['MyState'].actions = 42
    Traceback (most recent call last):
       ...
    pydantic_core._pydantic_core.ValidationError: 1 validation error for State
-   output_actions
+   actions
      Input should be a valid dictionary [type=dict_type, input_value=42, input_type=int]
        For further information visit https://errors.pydantic.dev/2.11/v/dict_type
 
@@ -162,7 +162,7 @@ hardware are known:
    :caption: A :exc:`ValueError` is raised when attempting to run a state machine that exceeds the hardware's capabilities.
    :group: runtime-validation
 
-   >>> fsm.set_global_timer(timer_id=20, duration=5)  # this validates OK
+   >>> fsm.set_global_timer(idx=20, duration=5)  # this validates OK
    >>> bpod = Bpod()
    >>> bpod.send_state_machine(fsm)
    Traceback (most recent call last):

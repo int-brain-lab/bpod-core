@@ -948,7 +948,7 @@ class Bpod(AbstractBpod):
         targets_used = {
             target
             for state in state_machine.states.values()
-            for target in state.state_change_conditions.values()
+            for target in state.transitions.values()
         }
         self._use_back_op = '>back' in targets_used
 
@@ -977,7 +977,7 @@ class Bpod(AbstractBpod):
                     f"Invalid timer value {state.timer} for state '{state_name}' - "
                     f'must be between 0 and {max_state_duration} seconds',
                 )
-            for condition_name, target in state.state_change_conditions.items():
+            for condition_name, target in state.transitions.items():
                 if target not in valid_targets:
                     target_type = 'operator' if target[0] == '>' else 'target state'
                     raise ValueError(
@@ -991,7 +991,7 @@ class Bpod(AbstractBpod):
                         f"'{state_name}'"
                         + suggest_similar(condition_name, self.event_names),
                     )
-            actions = set(state.output_actions.keys())
+            actions = set(state.actions.keys())
             if invalid_actions := actions.difference(self.output_actions):
                 invalid_action = invalid_actions.pop()
                 raise ValueError(
@@ -1042,7 +1042,7 @@ class Bpod(AbstractBpod):
         # Compile target indices for state timers and append to bytearray
         # Target indices default to the respective state's index unless 'Tup' is used
         for state_idx, state in enumerate(state_machine.states.values()):
-            for event, target in state.state_change_conditions.items():
+            for event, target in state.transitions.items():
                 if event == 'Tup':
                     byte_array.append(target_indices[target])
                     break
@@ -1056,7 +1056,7 @@ class Bpod(AbstractBpod):
             for state in state_machine.states.values():
                 counter_idx = len(byte_array)
                 byte_array.append(0)
-                for event, target in state.state_change_conditions.items():
+                for event, target in state.transitions.items():
                     if idx0 <= (key_idx := event_indices[event]) < idx1:
                         byte_array[counter_idx] += 1
                         byte_array.extend((key_idx - idx0, target_indices[target]))
@@ -1071,7 +1071,7 @@ class Bpod(AbstractBpod):
         for state in state_machine.states.values():
             counter_pos = len(tmp_list)
             tmp_list.append(0)
-            for invalid_action, value in state.output_actions.items():
+            for invalid_action, value in state.actions.items():
                 if (key_idx := action_indices[invalid_action]) < i1:
                     tmp_list[counter_pos] += 1
                     tmp_list.extend((key_idx, value))
@@ -1090,7 +1090,7 @@ class Bpod(AbstractBpod):
             np.newaxis,
         ] * np.ones((1, 255), dtype=np.uint8)
         for state_idx, state in enumerate(state_machine.states.values()):
-            for event, target in state.state_change_conditions.items():
+            for event, target in state.transitions.items():
                 target_idx = target_indices[target]
                 self._state_transitions[state_idx][event_indices[event]] = target_idx
 
@@ -1160,14 +1160,14 @@ class Bpod(AbstractBpod):
         # Append global counter resets
         if self.version.firmware < (23, 0):
             byte_array.extend(
-                s.output_actions.get('GlobalCounterReset', 0)
+                s.actions.get('GlobalCounterReset', 0)
                 for s in state_machine.states.values()
             )
         else:
             counter_idx = len(byte_array)
             byte_array.append(0)
             for state_idx, state in enumerate(state_machine.states.values()):
-                if (value := state.output_actions.get('GlobalCounterReset', 0)) > 0:
+                if (value := state.actions.get('GlobalCounterReset', 0)) > 0:
                     byte_array[counter_idx] += 1
                     byte_array.extend([state_idx, value])
 
@@ -1187,7 +1187,7 @@ class Bpod(AbstractBpod):
         # Pack global timer triggers and cancels into bytearray
         for key in ('GlobalTimerTrig', 'GlobalTimerCancel'):
             pack_values(
-                [s.output_actions.get(key, 0) for s in state_machine.states.values()],
+                [s.actions.get(key, 0) for s in state_machine.states.values()],
                 format_string,
             )
 

@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "Actions": {
+      "additionalProperties": {
+        "description": "The integer value of the output action",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "description": "A collection of actions.",
+      "propertyNames": {
+        "description": "The name of the output action",
+        "minLength": 1
+      },
+      "title": "Actions",
+      "type": "object"
+    },
     "Condition": {
       "description": "A condition in the state machine.",
       "properties": {
@@ -158,21 +173,6 @@
       "title": "Global Timers",
       "type": "object"
     },
-    "OutputActions": {
-      "additionalProperties": {
-        "description": "The integer value of the output action",
-        "maximum": 255,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "description": "A collection of output actions and their respective values",
-      "propertyNames": {
-        "description": "The name of the output action",
-        "minLength": 1
-      },
-      "title": "Output Actions",
-      "type": "object"
-    },
     "State": {
       "description": "A state in the state machine.",
       "properties": {
@@ -183,20 +183,27 @@
           "title": "State Timer",
           "type": "number"
         },
-        "state_change_conditions": {
-          "$ref": "#/$defs/StateChangeConditions",
+        "transitions": {
+          "$ref": "#/$defs/Transitions",
           "default": {}
         },
-        "output_actions": {
-          "$ref": "#/$defs/OutputActions",
+        "actions": {
+          "$ref": "#/$defs/Actions",
           "default": {}
         },
         "comment": {
           "anyOf": [
             {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
               "description": "A comment describing the state.",
-              "title": "Comment",
-              "type": "string"
+              "title": "Comment"
             },
             {
               "type": "null"
@@ -209,7 +216,21 @@
       "title": "State",
       "type": "object"
     },
-    "StateChangeConditions": {
+    "States": {
+      "description": "A collection of states.",
+      "patternProperties": {
+        "^(?!>)(?!exit$).+$": {
+          "$ref": "#/$defs/State"
+        }
+      },
+      "propertyNames": {
+        "description": "The name of the state",
+        "minLength": 1
+      },
+      "title": "States",
+      "type": "object"
+    },
+    "Transitions": {
       "additionalProperties": {
         "anyOf": [
           {
@@ -227,26 +248,12 @@
           }
         ]
       },
-      "description": "A collection of events and their assigned target states",
+      "description": "A collection of state transitions.",
       "propertyNames": {
         "description": "A state machine event",
         "minLength": 1
       },
-      "title": "State Change Condition",
-      "type": "object"
-    },
-    "States": {
-      "description": "A collection of states.",
-      "patternProperties": {
-        "^(?!>)(?!exit$).+$": {
-          "$ref": "#/$defs/State"
-        }
-      },
-      "propertyNames": {
-        "description": "The name of the state",
-        "minLength": 1
-      },
-      "title": "States",
+      "title": "State Transitions",
       "type": "object"
     }
   },

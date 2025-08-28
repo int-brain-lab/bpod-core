@@ -44,13 +44,10 @@ Operator = Annotated[
 ]
 
 
-class StateChangeConditions(ValidatedDict[Event, StateName | Operator]):
-    model_config = dict(
-        title='State Change Condition',
-        json_schema_extra={
-            'description': 'A collection of events and their assigned target states'
-        },
-    )
+class Transitions(
+    ValidatedDict[Event, StateName | Operator], title='State Transitions'
+):
+    """A collection of state transitions."""
 
 
 OutputActionName = Annotated[
@@ -72,17 +69,12 @@ OutputActionValue = Annotated[
 ]
 
 
-class OutputActions(ValidatedDict[OutputActionName, OutputActionValue]):
-    model_config = dict(
-        title='Output Actions',
-        json_schema_extra={
-            'description': 'A collection of output actions and their respective values'
-        },
-    )
+class Actions(ValidatedDict[OutputActionName, OutputActionValue], title='Actions'):
+    """A collection of actions."""
 
 
 StateComment = Annotated[
-    str,
+    str | None,
     Field(
         title='Comment',
         description='A comment describing the state.',

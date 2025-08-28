@@ -14,11 +14,11 @@ fsm = StateMachine()
 fsm.add_state(
     name='Hello',  # the name of the state
     timer=1.0,  # the state timer (in seconds)
-    state_change_conditions={'Tup': 'World'},  # definition of state transitions
-    output_actions={'PWM1': 255},  # an LED connected to PWM1 will light up
+    transitions={'Tup': 'World'},  # definition of state transitions
+    actions={'PWM1': 255},  # an LED connected to PWM1 will light up
 )
 fsm.add_state(
     name='World',
     timer=2.0,
-    state_change_conditions={'Tup': '>exit'},  # transition to exit
+    transitions={'Tup': '>exit'},  # transition to exit
 )

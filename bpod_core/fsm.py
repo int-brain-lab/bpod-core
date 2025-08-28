@@ -24,8 +24,8 @@ from bpod_core.fsm_types import (
     GlobalTimerOnsetDelay,
     GlobalTimerOnsetTrigger,
     GlobalTimerSendEvents,
-    OutputActions,
-    StateChangeConditions,
+    Actions,
+    Transitions,
     StateComment,
     StateMachineName,
     StateName,
@@ -51,17 +51,10 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
 class State(BaseModel, validate_assignment=True, title='State'):
     """A state in the state machine."""
 
-    timer: StateTimer = 0.0
-    """The state's timer in seconds."""
-
-    state_change_conditions: StateChangeConditions = StateChangeConditions()
-    """A dictionary mapping conditions to target states for transitions."""
-
-    output_actions: OutputActions = OutputActions()
-    """A dictionary of actions to be executed during the state."""
-
+    timer: StateTimer = StateTimer()
+    transitions: Transitions = Transitions()
+    actions: Actions = Actions()
     comment: StateComment | None = None
-    """A comment describing the state."""
 
     def __repr__(self) -> str:
         dump = self.model_dump(exclude_defaults=True)
@@ -189,8 +182,8 @@ class StateMachine(BaseModel, validate_assignment=True):
         self,
         name: StateName,
         timer: StateTimer = 0.0,
-        state_change_conditions: StateChangeConditions | None = None,
-        output_actions: OutputActions | None = None,
+        transitions: Transitions | None = None,
+        actions: Actions | None = None,
         comment: StateComment | None = None,
     ) -> None:
         """
@@ -202,13 +195,13 @@ class StateMachine(BaseModel, validate_assignment=True):
             The name of the state to be added.
         timer : float, optional
             The duration of the state's timer in seconds. Default to 0.
-        state_change_conditions : dict, optional
+        transitions : dict, optional
             A dictionary mapping conditions to target states for transitions.
             Defaults to an empty dictionary.
-        output_actions : dict, optional
+        actions : dict, optional
             A dictionary of actions to be executed on entering the state.
             Defaults to an empty dictionary.
-        comment : Comment, optional
+        comment : str, optional
             An optional comment describing the state.
 
         Raises
@@ -220,16 +213,15 @@ class StateMachine(BaseModel, validate_assignment=True):
             raise ValueError(f"A state named '{name}' is already registered")
         self.states[name] = State(
             timer=timer,
-            state_change_conditions=state_change_conditions
-            or StateChangeConditions({}),
-            output_actions=output_actions or OutputActions({}),
+            transitions=transitions or Transitions(),
+            actions=actions or Actions(),
             comment=comment,
         )
 
     @validate_call
     def set_global_timer(  # noqa: PLR0913
         self,
-        timer_id: GlobalTimerIndex,
+        idx: GlobalTimerIndex,
         duration: GlobalTimerDuration,
         onset_delay: GlobalTimerOnsetDelay = 0.0,
         channel: GlobalTimerChannel | None = None,
@@ -245,7 +237,7 @@ class StateMachine(BaseModel, validate_assignment=True):
 
         Parameters
         ----------
-        timer_id : int
+        idx : int
             The index of the global timer to configure.
         duration : float
             The duration of the global timer in seconds.
@@ -270,7 +262,7 @@ class StateMachine(BaseModel, validate_assignment=True):
         -------
         None
         """
-        self.global_timers[timer_id] = GlobalTimer(
+        self.global_timers[idx] = GlobalTimer(
             duration=duration,
             onset_delay=onset_delay,
             channel=channel,
@@ -383,9 +375,7 @@ class StateMachine(BaseModel, validate_assignment=True):
             s.node('')
 
         # Add exit node if any states transition to it
-        targets = [
-            t for s in self.states.values() for t in s.state_change_conditions.values()
-        ]
+        targets = [t for s in self.states.values() for t in s.transitions.values()]
         if 'exit' in targets or '>exit' in targets:
             dot.node(
                 name='exit',
@@ -415,7 +405,7 @@ class StateMachine(BaseModel, validate_assignment=True):
             # Create table rows for output actions
             actions = ''.join(
                 f'<TR><TD ALIGN="LEFT">{k}</TD><TD ALIGN="RIGHT">{v}</TD></TR>'
-                for k, v in state.output_actions.items()
+                for k, v in state.actions.items()
             )
 
             # Create HTML table label with state info
@@ -433,7 +423,7 @@ class StateMachine(BaseModel, validate_assignment=True):
             # Use a subgraph to keep edges from the same state on the same rank
             with dot.subgraph() as s:
                 s.attr(rank='same')
-                for label, target in state.state_change_conditions.items():
+                for label, target in state.transitions.items():
                     if 'exit' in target:
                         dot.edge(state_name, 'exit', label)
                     elif target == '>back':
@@ -446,7 +436,7 @@ class StateMachine(BaseModel, validate_assignment=True):
         # We label these in red to distinguish them from regular edges
         for source, label in back_ops:
             for target, state in self.states.items():
-                if source in state.state_change_conditions.values():
+                if source in state.transitions.values():
                     dot.edge(source, target, label, color='red', fontcolor='red')
 
         return dot

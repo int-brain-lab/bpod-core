@@ -13,13 +13,13 @@ class TestState:
         """Create a State and verify all fields are set correctly."""
         state = State(
             timer=5.0,
-            state_change_conditions={'condition1': 'exit'},
-            output_actions={'action1': 255},
+            transitions={'condition1': 'exit'},
+            actions={'action1': 255},
             comment='This is a test state',
         )
         assert state.timer == 5.0
-        assert state.state_change_conditions == {'condition1': 'exit'}
-        assert state.output_actions == {'action1': 255}
+        assert state.transitions == {'condition1': 'exit'}
+        assert state.actions == {'action1': 255}
         assert state.comment == 'This is a test state'
 
 
@@ -37,15 +37,15 @@ class TestStateMachineBasic:
         sm.add_state(
             name='state1',
             timer=2.0,
-            state_change_conditions={'condition1': 'state2'},
-            output_actions={'action1': 255},
+            transitions={'condition1': 'state2'},
+            actions={'action1': 255},
             comment='First state',
         )
         assert len(sm.states) == 1
         assert 'state1' in sm.states
         assert sm.states['state1'].timer == 2.0
-        assert sm.states['state1'].state_change_conditions == {'condition1': 'state2'}
-        assert sm.states['state1'].output_actions == {'action1': 255}
+        assert sm.states['state1'].transitions == {'condition1': 'state2'}
+        assert sm.states['state1'].actions == {'action1': 255}
         assert sm.states['state1'].comment == 'First state'
 
     def test_add_duplicate_state(self):
@@ -85,14 +85,14 @@ def state_machine():
     fsm.add_state(
         name='state1',
         timer=2.0,
-        state_change_conditions={'tup': 'state2'},
-        output_actions={'action1': 255},
+        transitions={'tup': 'state2'},
+        actions={'action1': 255},
         comment='First state',
     )
     fsm.add_state(
         name='state2',
-        state_change_conditions={'tup': 'exit', 'condition': '>back'},
-        output_actions={'action2': 128},
+        transitions={'tup': 'exit', 'condition': '>back'},
+        actions={'action2': 128},
         comment='Second state',
     )
     return fsm
@@ -116,10 +116,10 @@ class TestSerialization:
         assert 'state1' in sm['states']
         assert 'state2' in sm['states']
         assert sm['states']['state1']['timer'] == 2.0
-        assert sm['states']['state1']['state_change_conditions'] == {'tup': 'state2'}
-        assert sm['states']['state1']['output_actions'] == {'action1': 255}
+        assert sm['states']['state1']['transitions'] == {'tup': 'state2'}
+        assert sm['states']['state1']['actions'] == {'action1': 255}
         assert sm['states']['state1']['comment'] == 'First state'
-        assert sm['states']['state2']['output_actions'] == {'action2': 128}
+        assert sm['states']['state2']['actions'] == {'action2': 128}
         assert sm['states']['state2']['comment'] == 'Second state'
         assert 'timer' not in sm['states']['state2']  # Default value should be omitted
 
@@ -129,15 +129,15 @@ class TestSerialization:
         assert '"name":"Test State Machine"' in json_str
         assert '"state1"' in json_str
         assert '"timer":2.0' in json_str
-        assert '"state_change_conditions":{' in json_str
+        assert '"transitions":{' in json_str
         assert '"tup":"state2"' in json_str
-        assert '"output_actions":{' in json_str
+        assert '"actions":{' in json_str
         assert '"action1":255' in json_str
         assert '"comment":"First state"' in json_str
         assert '"state2"' in json_str
-        assert '"state_change_conditions":{' in json_str
+        assert '"transitions":{' in json_str
         assert '"tup":"exit"' in json_str
-        assert '"output_actions":{' in json_str
+        assert '"actions":{' in json_str
         assert '"action2":128' in json_str
         assert '"comment":"Second state"' in json_str
         assert '\n' not in json_str  # No newlines when `indent` is None

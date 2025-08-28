@@ -17,18 +17,18 @@ fsm.set_condition(
 fsm.add_state(
     name='Port1Light',
     timer=1,
-    state_change_conditions={'Tup': 'Port2Light'},
-    output_actions={'PWM1': 255},
+    transitions={'Tup': 'Port2Light'},
+    actions={'PWM1': 255},
 )
 fsm.add_state(
     name='Port2Light',
     timer=1,
-    state_change_conditions={'Tup': 'Port3Light', 'Condition2': 'Port3Light'},
-    output_actions={'PWM2': 255},
+    transitions={'Tup': 'Port3Light', 'Condition2': 'Port3Light'},
+    actions={'PWM2': 255},
 )
 fsm.add_state(
     name='Port3Light',
     timer=1,
-    state_change_conditions={'Tup': '>exit'},
-    output_actions={'PWM3': 255},
+    transitions={'Tup': '>exit'},
+    actions={'PWM3': 255},
 )

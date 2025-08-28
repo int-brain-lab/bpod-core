@@ -10,12 +10,12 @@ fsm = StateMachine()
 fsm.add_state(
     name='Port1Light',
     timer=1,
-    state_change_conditions={'BNC1_High': 'Port2Light'},
-    output_actions={'PWM1': 255},
+    transitions={'BNC1_High': 'Port2Light'},
+    actions={'PWM1': 255},
 )
 fsm.add_state(
     name='Port2Light',
     timer=1,
-    state_change_conditions={'Tup': '>exit'},
-    output_actions={'PWM2': 255},
+    transitions={'Tup': '>exit'},
+    actions={'PWM2': 255},
 )
