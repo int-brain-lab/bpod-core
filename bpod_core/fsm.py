@@ -131,7 +131,7 @@ class GlobalTimers(ValidatedDict[GlobalTimerIndex, GlobalTimer]):
     }
 
 
-class GlobalCounters(ValidatedDict[GlobalCounterID, GlobalCounter]:
+class GlobalCounters(ValidatedDict[GlobalCounterID, GlobalCounter]):
     """A collection of global counters."""
 
     model_config = {
