@@ -1,7 +1,7 @@
 {
   "$defs": {
     "Condition": {
-      "description": "Represents a condition in the state machine.",
+      "description": "A condition in the state machine.",
       "properties": {
         "channel": {
           "description": "The channel or global timer attached to the condition",
@@ -34,7 +34,7 @@
       "type": "object"
     },
     "GlobalCounter": {
-      "description": "Represents a global counter in the state machine.",
+      "description": "A global counter in the state machine.",
       "properties": {
         "event": {
           "description": "A state machine event",
@@ -54,7 +54,7 @@
         "event",
         "threshold"
       ],
-      "title": "GlobalCounter",
+      "title": "Global Counter",
       "type": "object"
     },
     "GlobalCounters": {
@@ -69,7 +69,7 @@
       "type": "object"
     },
     "GlobalTimer": {
-      "description": "Represents a global timer in the state machine.",
+      "description": "A global timer in the state machine.",
       "properties": {
         "duration": {
           "description": "The duration of the global timer in seconds",
@@ -174,7 +174,7 @@
       "type": "object"
     },
     "State": {
-      "description": "Represents a state in the state machine.",
+      "description": "A state in the state machine.",
       "properties": {
         "timer": {
           "default": 0.0,
@@ -236,7 +236,7 @@
       "type": "object"
     },
     "States": {
-      "description": "A dictionary of states.",
+      "description": "A collection of states.",
       "patternProperties": {
         "^(?!>)(?!exit$).+$": {
           "$ref": "#/$defs/State"

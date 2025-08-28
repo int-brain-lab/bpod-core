@@ -49,7 +49,7 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
 
 
 class State(BaseModel, validate_assignment=True, title='State'):
-    """Represents a state in the state machine."""
+    """A state in the state machine."""
 
     timer: StateTimer = 0.0
     """The state's timer in seconds."""
@@ -61,7 +61,7 @@ class State(BaseModel, validate_assignment=True, title='State'):
     """A dictionary of actions to be executed during the state."""
 
     comment: StateComment | None = None
-    """An optional comment describing the state."""
+    """A comment describing the state."""
 
     def __repr__(self) -> str:
         dump = self.model_dump(exclude_defaults=True)
@@ -70,7 +70,7 @@ class State(BaseModel, validate_assignment=True, title='State'):
 
 
 class GlobalTimer(BaseModel, validate_assignment=True, title='Global Timer'):
-    """Represents a global timer in the state machine."""
+    """A global timer in the state machine."""
 
     duration: GlobalTimerDuration
     onset_delay: GlobalTimerOnsetDelay = 0.0
@@ -89,7 +89,7 @@ class GlobalTimer(BaseModel, validate_assignment=True, title='Global Timer'):
 
 
 class GlobalCounter(BaseModel, validate_assignment=True, title='Global Counter'):
-    """Represents a global counter in the state machine."""
+    """A global counter in the state machine."""
 
     event: Event
     threshold: GlobalCounterThreshold
@@ -101,7 +101,7 @@ class GlobalCounter(BaseModel, validate_assignment=True, title='Global Counter')
 
 
 class Condition(BaseModel, validate_assignment=True, title='Condition'):
-    """Represents a condition in the state machine."""
+    """A condition in the state machine."""
 
     channel: ConditionChannel
     value: ConditionValue
@@ -113,7 +113,7 @@ class Condition(BaseModel, validate_assignment=True, title='Condition'):
 
 
 class States(ValidatedDict[StateName, State]):
-    """A dictionary of states."""
+    """A collection of states."""
 
     model_config = {'title': 'States'}
 
@@ -163,7 +163,7 @@ class StateMachine(BaseModel, validate_assignment=True):
     name: StateMachineName = 'State Machine'
     """The name of the state machine."""
 
-    states: States = States({})
+    states: States = States()
     """A dictionary of states."""
 
     global_timers: GlobalTimers = GlobalTimers()
