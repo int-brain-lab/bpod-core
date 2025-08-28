@@ -303,7 +303,7 @@ class Bpod(AbstractBpod):
     """Available modules."""
     event_names: list[str]
     """List of event names."""
-    output_actions: list[str]
+    actions: list[str]
     """List of output actions."""
 
     @validate_call
@@ -316,7 +316,7 @@ class Bpod(AbstractBpod):
 
         # initialize members
         self.event_names = []
-        self.output_actions = []
+        self.actions = []
         self._waiting_for_confirmation = False
         self._state_transitions: NDArray[np.uint8] = np.empty((0, 255), dtype=np.uint8)
         self._use_back_op = False
@@ -783,7 +783,7 @@ class Bpod(AbstractBpod):
 
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""
-        self.output_actions = []
+        self.actions = []
 
         # Compile actions for output channels
         counters = dict.fromkeys(CHANNEL_TYPES_OUTPUT, 0)
@@ -796,15 +796,15 @@ class Bpod(AbstractBpod):
                 name = f'{CHANNEL_TYPES_OUTPUT[io_key]}{counters[io_key] + 1}'
             else:
                 continue
-            self.output_actions.append(name)
+            self.actions.append(name)
             counters[io_key] += 1
 
         # Add output actions for global timers, global counters and analog thresholds
-        self.output_actions.extend(
+        self.actions.extend(
             ['GlobalTimerTrig', 'GlobalTimerCancel', 'GlobalCounterReset'],
         )
         if self.version.machine == 4:
-            self.output_actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
+            self.actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
 
     @property
     def port(self) -> str | None:
@@ -981,7 +981,7 @@ class Bpod(AbstractBpod):
                 if target not in valid_targets:
                     target_type = 'operator' if target[0] == '>' else 'target state'
                     raise ValueError(
-                        f"Invalid {target_type} '{target}' for state change condition "
+                        f"Invalid {target_type} '{target}' for transition "
                         f"'{condition_name}' in state '{state_name}'"
                         + suggest_similar(target, valid_targets),
                     )
@@ -992,11 +992,11 @@ class Bpod(AbstractBpod):
                         + suggest_similar(condition_name, self.event_names),
                     )
             actions = set(state.actions.keys())
-            if invalid_actions := actions.difference(self.output_actions):
+            if invalid_actions := actions.difference(self.actions):
                 invalid_action = invalid_actions.pop()
                 raise ValueError(
-                    f"Invalid output action '{invalid_action}' in state '{state_name}'"
-                    + suggest_similar(invalid_action, self.output_actions),
+                    f"Invalid action '{invalid_action}' in state '{state_name}'"
+                    + suggest_similar(invalid_action, self.actions),
                 )
 
         # Compile list of physical channels
@@ -1032,7 +1032,7 @@ class Bpod(AbstractBpod):
         target_indices.update({'exit': n_states, '>exit': n_states})
         target_indices.update({'>back': 255} if self._use_back_op else {})
         event_indices = {k: v for v, k in enumerate(self.event_names)}
-        action_indices = {k: v for v, k in enumerate(self.output_actions)}
+        action_indices = {k: v for v, k in enumerate(self.actions)}
 
         # Initialize bytearray. This will be appended to in the following sections.
         byte_array = bytearray(

@@ -1,36 +1,15 @@
 """Module defining classes and types for creating and managing state machines."""
 
+import re
 from os import PathLike
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import msgspec
+import numpy as np
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import BaseModel, validate_call
+from pydantic import BaseModel, Field, validate_call
 
-from bpod_core.fsm_types import (
-    ConditionChannel,
-    ConditionID,
-    ConditionValue,
-    Event,
-    GlobalCounterID,
-    GlobalCounterThreshold,
-    GlobalTimerChannel,
-    GlobalTimerChannelValue,
-    GlobalTimerDuration,
-    GlobalTimerIndex,
-    GlobalTimerLoop,
-    GlobalTimerLoopInterval,
-    GlobalTimerOnsetDelay,
-    GlobalTimerOnsetTrigger,
-    GlobalTimerSendEvents,
-    Actions,
-    Transitions,
-    StateComment,
-    StateMachineName,
-    StateName,
-    StateTimer,
-)
 from bpod_core.misc import ValidatedDict
 
 
@@ -46,6 +25,200 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
         return obj_type.model_validate(obj)
     else:
         raise NotImplementedError(f'Objects of type {type} are not supported')
+
+
+StateTimer = Annotated[
+    float,
+    Field(
+        title='State Timer',
+        description="The state's timer in seconds",
+        default=0.0,
+        allow_inf_nan=False,
+        ge=0.0,
+    ),
+]
+
+StateComment = Annotated[
+    str,
+    Field(
+        title='Comment',
+        description='A comment describing the state.',
+    ),
+]
+
+GlobalTimerDuration = Annotated[
+    float,
+    Field(
+        title='Global Timer Duration',
+        description='The duration of the global timer in seconds',
+        ge=0.0,
+    ),
+]
+
+GlobalTimerOnsetDelay = Annotated[
+    float,
+    Field(
+        title='Onset Delay',
+        description='The onset delay of the global timer in seconds',
+        default=0.0,
+        ge=0.0,
+        allow_inf_nan=False,
+    ),
+]
+
+GlobalTimerChannel = Annotated[
+    str,
+    msgspec.Meta(
+        title='Channel',
+        description='The channel affected by the global timer',
+        min_length=1,
+    ),
+]
+
+GlobalTimerChannelValue = Annotated[
+    int,
+    Field(
+        title='Channel Value',
+        description='The value a channel is set to',
+        default=0,
+        ge=0,
+        le=255,
+    ),
+]
+
+GlobalTimerSendEvents = Annotated[
+    bool,
+    Field(
+        title='Send Events',
+        description='Whether the global timer is sending events',
+        default=True,
+    ),
+]
+
+GlobalTimerLoop = Annotated[
+    int,
+    Field(
+        title='Loop Mode',
+        description='Whether the global timer is looping or not',
+        default=0,
+        ge=0,
+        le=255,
+    ),
+]
+
+GlobalTimerLoopInterval = Annotated[
+    float,
+    Field(
+        title='Loop Interval',
+        description='The interval in seconds that the global timer is looping',
+        default=0.0,
+        ge=0.0,
+        allow_inf_nan=False,
+    ),
+]
+
+GlobalTimerOnsetTrigger = Annotated[
+    int,
+    Field(
+        title='Onset Trigger',
+        description='An integer whose bits indicate other global timers to trigger',
+        default=0,
+        ge=0,
+    ),
+]
+
+GlobalCounterThreshold = Annotated[
+    int,
+    Field(
+        title='Threshold',
+        description='The count threshold to generate an event',
+        ge=0,
+        le=np.iinfo(np.uint32).max,
+    ),
+]
+
+ConditionChannel = Annotated[
+    str,
+    Field(
+        title='Channel',
+        description='The channel or global timer attached to the condition',
+        min_length=1,
+    ),
+]
+
+ConditionValue = Annotated[
+    bool,
+    Field(
+        title='Value',
+        description='The value of the condition channel if the condition is met',
+    ),
+]
+
+StateMachineName = Annotated[
+    str,
+    Field(
+        title='State Machine Name',
+        description='The name of the state machine',
+        min_length=1,
+    ),
+]
+
+OutputActionName = Annotated[
+    str,
+    Field(
+        title='Output Action Name',
+        description='The name of the output action',
+        min_length=1,
+    ),
+]
+
+OutputActionValue = Annotated[
+    int,
+    Field(
+        title='Output Action Value',
+        description='The integer value of the output action',
+        ge=0,
+        le=255,
+    ),
+]
+
+StateName = Annotated[
+    str,
+    Field(
+        title='State Name',
+        description='The name of the state',
+        min_length=1,
+        pattern=re.compile(r'^(?!>)(?!exit$).+$'),
+    ),
+]
+
+Event = Annotated[
+    str,
+    Field(
+        title='Event',
+        description='A state machine event',
+        min_length=1,
+    ),
+]
+
+Operator = Annotated[
+    str,
+    Field(
+        title='Operator',
+        description='A state machine operator',
+        pattern=re.compile(r'^(exit)|(>.+)$'),
+    ),
+]
+
+
+class Actions(ValidatedDict[OutputActionName, OutputActionValue], title='Actions'):
+    """A collection of actions."""
+
+
+class Transitions(
+    ValidatedDict[Event, StateName | Operator], title='State Transitions'
+):
+    """A collection of state transitions."""
 
 
 class State(BaseModel, validate_assignment=True, title='State'):
@@ -105,52 +278,33 @@ class Condition(BaseModel, validate_assignment=True, title='Condition'):
         return f'{self.__class__.__name__}({values})'
 
 
-class States(ValidatedDict[StateName, State]):
+class States(ValidatedDict[StateName, State], title='States'):
     """A collection of states."""
 
-    model_config = {'title': 'States'}
+
+Index = Annotated[
+    int,
+    Field(
+        title='Index',
+        ge=0,
+        json_schema_extra={'pattern': r'^\d+$'},
+    ),
+]
 
 
-class GlobalTimers(ValidatedDict[GlobalTimerIndex, GlobalTimer]):
+class GlobalTimers(ValidatedDict[Index, GlobalTimer], title='Global Timers'):
     """A collection of global timers."""
 
-    model_config = {
-        'title': 'Global Timers',
-        'json_schema_extra': {
-            'propertyNames': {
-                'pattern': r'^\d+$',
-            }
-        },
-    }
 
-
-class GlobalCounters(ValidatedDict[GlobalCounterID, GlobalCounter]):
+class GlobalCounters(ValidatedDict[Index, GlobalCounter], title='Global Counters'):
     """A collection of global counters."""
 
-    model_config = {
-        'title': 'Global Counters',
-        'json_schema_extra': {
-            'propertyNames': {
-                'pattern': r'^\d+$',
-            }
-        },
-    }
 
-
-class Conditions(ValidatedDict[ConditionID, Condition]):
+class Conditions(ValidatedDict[Index, Condition], title='Conditions'):
     """A collection of conditions."""
 
-    model_config = {
-        'title': 'Conditions',
-        'json_schema_extra': {
-            'propertyNames': {
-                'pattern': r'^\d+$',
-            }
-        },
-    }
 
-
-class StateMachine(BaseModel, validate_assignment=True):
+class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
     """Represents a state machine with a collection of states."""
 
     name: StateMachineName = 'State Machine'
@@ -221,7 +375,7 @@ class StateMachine(BaseModel, validate_assignment=True):
     @validate_call
     def set_global_timer(  # noqa: PLR0913
         self,
-        idx: GlobalTimerIndex,
+        index: Index,
         duration: GlobalTimerDuration,
         onset_delay: GlobalTimerOnsetDelay = 0.0,
         channel: GlobalTimerChannel | None = None,
@@ -237,7 +391,7 @@ class StateMachine(BaseModel, validate_assignment=True):
 
         Parameters
         ----------
-        idx : int
+        index : int
             The index of the global timer to configure.
         duration : float
             The duration of the global timer in seconds.
@@ -262,7 +416,7 @@ class StateMachine(BaseModel, validate_assignment=True):
         -------
         None
         """
-        self.global_timers[idx] = GlobalTimer(
+        self.global_timers[index] = GlobalTimer(
             duration=duration,
             onset_delay=onset_delay,
             channel=channel,
@@ -277,7 +431,7 @@ class StateMachine(BaseModel, validate_assignment=True):
     @validate_call
     def set_global_counter(
         self,
-        counter_id: GlobalCounterID,
+        index: Index,
         event: Event,
         threshold: GlobalCounterThreshold,
     ) -> None:
@@ -286,8 +440,8 @@ class StateMachine(BaseModel, validate_assignment=True):
 
         Parameters
         ----------
-        counter_id : int
-            The ID of the global counter.
+        index : int
+            The index of the global counter.
         event : str
             The name of the event to count.
         threshold : int
@@ -297,7 +451,7 @@ class StateMachine(BaseModel, validate_assignment=True):
         -------
         None
         """
-        self.global_counters[counter_id] = GlobalCounter(
+        self.global_counters[index] = GlobalCounter(
             event=event,
             threshold=threshold,
         )
@@ -305,7 +459,7 @@ class StateMachine(BaseModel, validate_assignment=True):
     @validate_call
     def set_condition(
         self,
-        condition_id: ConditionID,
+        index: Index,
         channel: ConditionChannel,
         value: ConditionValue,
     ) -> None:
@@ -313,8 +467,8 @@ class StateMachine(BaseModel, validate_assignment=True):
 
         Parameters
         ----------
-        condition_id : int
-            The ID of the condition.
+        index : int
+            The index of the condition.
         channel : str
             The channel or global timer attached to the condition.
         value: bool
@@ -324,7 +478,7 @@ class StateMachine(BaseModel, validate_assignment=True):
         -------
         None
         """
-        self.conditions[condition_id] = Condition(
+        self.conditions[index] = Condition(
             channel=channel,
             value=value,
         )

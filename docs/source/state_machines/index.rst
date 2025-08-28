@@ -162,7 +162,7 @@ hardware are known:
    :caption: A :exc:`ValueError` is raised when attempting to run a state machine that exceeds the hardware's capabilities.
    :group: runtime-validation
 
-   >>> fsm.set_global_timer(idx=20, duration=5)  # this validates OK
+   >>> fsm.set_global_timer(index=20, duration=5)  # this validates OK
    >>> bpod = Bpod()
    >>> bpod.send_state_machine(fsm)
    Traceback (most recent call last):

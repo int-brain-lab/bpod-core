@@ -38,12 +38,11 @@
       "type": "object"
     },
     "Conditions": {
-      "additionalProperties": {
-        "$ref": "#/$defs/Condition"
-      },
       "description": "A collection of conditions.",
-      "propertyNames": {
-        "pattern": "^\\d+$"
+      "patternProperties": {
+        "^\\d+$": {
+          "$ref": "#/$defs/Condition"
+        }
       },
       "title": "Conditions",
       "type": "object"
@@ -73,12 +72,11 @@
       "type": "object"
     },
     "GlobalCounters": {
-      "additionalProperties": {
-        "$ref": "#/$defs/GlobalCounter"
-      },
       "description": "A collection of global counters.",
-      "propertyNames": {
-        "pattern": "^\\d+$"
+      "patternProperties": {
+        "^\\d+$": {
+          "$ref": "#/$defs/GlobalCounter"
+        }
       },
       "title": "Global Counters",
       "type": "object"
@@ -163,12 +161,11 @@
       "type": "object"
     },
     "GlobalTimers": {
-      "additionalProperties": {
-        "$ref": "#/$defs/GlobalTimer"
-      },
       "description": "A collection of global timers.",
-      "propertyNames": {
-        "pattern": "^\\d+$"
+      "patternProperties": {
+        "^\\d+$": {
+          "$ref": "#/$defs/GlobalTimer"
+        }
       },
       "title": "Global Timers",
       "type": "object"
@@ -194,16 +191,9 @@
         "comment": {
           "anyOf": [
             {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "description": "A comment describing the state.",
-              "title": "Comment"
+              "title": "Comment",
+              "type": "string"
             },
             {
               "type": "null"
@@ -283,6 +273,6 @@
       "default": {}
     }
   },
-  "title": "StateMachine",
+  "title": "State Machine",
   "type": "object"
 }

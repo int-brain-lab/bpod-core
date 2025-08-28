@@ -9,7 +9,7 @@ from bpod_core.fsm import StateMachine
 fsm = StateMachine()
 
 fsm.set_condition(
-    condition_id=2,
+    index=2,
     channel='Port2',
     value=True,  # condition is true when Port2 is high
 )
