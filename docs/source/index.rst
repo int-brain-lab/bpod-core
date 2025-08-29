@@ -7,10 +7,10 @@
    :maxdepth: 3
    :hidden:
 
-   developer_guide
    state_machines/index
    api
    schema
+   developer_guide
    changelog
 
 .. toctree::

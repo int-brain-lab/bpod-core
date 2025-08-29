@@ -2,41 +2,144 @@ Finite-State Machines
 =====================
 
 This chapter introduces the finite-state machine (FSM) concept and explains how to
-create, validate, visualize, import, and export state machines.
+create, validate, visualize, import, and export state machines with bpod-core.
 
 What is a Finite State Machine?
 -------------------------------
-A :wikipedia:`finite-state machine` is a model of computation made up of a finite number
-of states and transitions between those states. At any given time the machine is in
-exactly one state. Events trigger transitions to other states.
+A :wikipedia:`finite-state machine` (FSM) is a model of computation made up of a finite
+number of *states* and *transitions* between those states. At any given moment, the
+machine is in exactly one state, and certain *events* cause it to move, or transition,
+to another state. Think of the finite-state machine as a flowchart with a list of named
+boxes (states) and arrows (transitions) between them—this type of flowchart is called a
+*state diagram*.
 
 .. graphviz::
    :align: center
    :caption: A state diagram.
-             Start and exit nodes are indicated by filled and double circles, respectively.
 
    digraph example {
        rankdir=LR;
        node [shape=rectangle, fontname="Helvetica, sans-serif", fontsize=11];
-       edge [shape=rectangle, fontname="Helvetica, sans-serif", fontsize=10];
+       edge [fontname="Helvetica, sans-serif", fontsize=10];
+       S1 [label="State 1"];
+       S2 [label="State 2"];
+       S1 -> S2 [label="Event"];
+   }
 
+In practice, finite-state machines are used to model a wide range of systems where
+behavior depends on a sequence of events, making the logic easier to design and
+understand. A simple light switch offers an intuitive example of a finite-state machine.
+It has only two states—*Off* and *On*—and two events that trigger transitions between
+them: *flip up* and *flip down*. At any given moment, the switch is in exactly one
+state, and performing the corresponding flip moves the system to the other.
+
+.. graphviz::
+   :align: center
+   :caption: Flip up, flip down—ad infinitum.
+
+   digraph example {
+       rankdir=LR;
+       node [shape=rectangle, fontname="Helvetica, sans-serif", fontsize=11];
+       edge [fontname="Helvetica, sans-serif", fontsize=10];
+
+       a [label="Off"];
+       b [label="On"];
+
+       a -> b [label="flip up"];
+       a -> b [style="invis"];
+       b -> a [label="flip down"];
+   }
+
+While the light switch illustrates a finite-state machine with no clearly defined start
+or end, many real-world processes have natural beginnings and endings. The scientific
+publication process provides an example. It begins in the *Draft* state, progresses
+through the *Review* state, and (hopefully) concludes with a *Publication*. In a state
+diagram, the *entry* to the finite-state machine is typically indicated by a filled
+circle, while the *exit* is shown with a double circle.
+
+.. graphviz::
+   :align: center
+   :caption: If only the reviewers ever agreed ...
+
+   digraph example {
+       rankdir=LR;
+       node [shape=rectangle, fontname="Helvetica, sans-serif", fontsize=11];
+       edge [fontname="Helvetica, sans-serif", fontsize=10];
 
        s [label="", shape=circle, style=filled, fillcolor=black, width=0.25];
        x [label="", shape=doublecircle, style=filled, fillcolor=black, width=0.125];
 
-       a [label="State 1"];
-       b [label="State 2"];
+       a [label="Draft"];
+       b [label="Review"];
+       c [label="Publication"];
 
-       s -> a;
-       a -> b [label="Event"];
-       b -> x;
+       s -> a
+       a -> b [label="submittal"];
+       a -> b [style="invis"];
+       b -> a [label="rejection"];
+       b -> c [label="approval"];
+       c -> x
    }
 
-In behavioral experiments, FSMs can be used to specify trial structure, stimulus
-presentation, and response contingencies in a clear and reproducible way. The
-`Bpod Finite-State Machine`_ implements an FSM using an :wikipedia:`Arduino`-compatible
-:wikipedia:`microcontroller`, allowing for high temporal fidelity not typically
-achievable in software alone.
+Finite-state machines are also a powerful tool in the design of behavioral experiments.
+In this context, they can be used to specify trial structure, stimulus presentation, and
+response contingencies in a clear and reproducible way. Each state represents a specific
+phase of the experiment, and transitions are triggered by events such as a subject’s
+action or a timer. Timers are particularly usefu to control the duration of states and
+the timing of their associated output actions—such as turning on a light, sounding a
+buzzer, or delivering a reward—which allows fine-grained control over the experimental
+environment. This structured approach clarifies the logic of experimental protocols,
+reduces ambiguity in interpretation, and ensures reproducible, quantifiable results.
+
+.. graphviz::
+   :align: center
+   :caption: A simple trial sequence implemented as a finite-state machine.
+
+   digraph example {
+       rankdir=LR;
+       node [shape=rectangle, fontname="Helvetica, sans-serif", fontsize=11];
+       edge [fontname="Helvetica, sans-serif", fontsize=10];
+
+      s [label="", shape=circle, style=filled, fillcolor=black, width=0.25];
+      x [label="", shape=doublecircle, style=filled, fillcolor=black, width=0.125];
+
+      a [label="Stimulus\nPresentation"];
+      b [label="Reward\nDispensal"];
+      c [label="Buzzing\nSound"];
+
+      { rank=same; b; c; }
+
+      s -> a
+      a -> b [label="lever pressed"];
+      a -> c [label="timeout"];
+      b -> x [label="timeout"];
+      c -> x [label="timeout"];
+   }
+
+
+.. admonition:: Key Concepts
+
+   State
+      A specific configuration of the system at a given moment.
+
+   Event
+      A trigger that causes the system to transition from one state to another.
+
+   Transition
+      The movement of the system from one state to another in response to an event.
+
+   Output action
+      A controlled action that occurs with the onset of the state.
+
+   Timer
+      A time-based event that can trigger a transition after a specified interval.
+
+
+.. In behavioral experiments, FSMs can be used to specify trial structure, stimulus
+.. presentation, and response contingencies in a clear and reproducible way. The
+.. `Bpod Finite-State Machine`_ implements an FSM using an :wikipedia:`Arduino`-compatible
+.. :wikipedia:`microcontroller`, allowing for high temporal fidelity not typically
+.. achievable in software alone.
 
 .. _Bpod Finite-State Machine: https://sanworks.github.io/Bpod_Wiki/
 
