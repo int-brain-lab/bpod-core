@@ -53,9 +53,9 @@ state, and performing the corresponding flip moves the system to the other.
 While the light switch illustrates a finite-state machine with no clearly defined start
 or end, many real-world processes have natural beginnings and endings. The scientific
 publication process provides an example. It begins in the *Draft* state, progresses
-through the *Review* state, and (hopefully) concludes with a *Publication*. In a state
-diagram, the *entry* to the finite-state machine is typically indicated by a filled
-circle, while the *exit* is shown with a double circle.
+through the *Review* state, and—after a few revision—(hopefully) concludes with a
+*Publication*. In a state diagram, the *entry* to the finite-state machine is typically
+indicated by a filled circle, while the *exit* is shown with a double circle.
 
 .. graphviz::
    :align: center
@@ -76,12 +76,13 @@ circle, while the *exit* is shown with a double circle.
        s -> a
        a -> b [label="submittal"];
        a -> b [style="invis"];
-       b -> a [label="rejection"];
+       b -> a [label="R&R"];
        b -> c [label="approval"];
+       b -> x [label="rejection"];
        c -> x
    }
 
-Finite-state machines are also a powerful tool in the design of behavioral experiments.
+Finite-state machines can be a powerful tool in the design of behavioral experiments.
 In this context, they can be used to specify trial structure, stimulus presentation, and
 response contingencies in a clear and reproducible way. Each state represents a specific
 phase of the experiment, and transitions are triggered by events such as a subject’s
@@ -103,10 +104,10 @@ reduces ambiguity in interpretation, and ensures reproducible, quantifiable resu
       s [label="", shape=circle, style=filled, fillcolor=black, width=0.25];
       x [label="", shape=doublecircle, style=filled, fillcolor=black, width=0.125];
 
-      a [label="Stimulus\nPresentation"];
+      a [label="Stimulus"];
       b [label="Wait"];
-      c [label="Reward\nDispensal"];
-      d [label="Buzzing\nSound"];
+      c [label="Reward"];
+      d [label="Buzzer"];
       e [label="End"];
 
       { rank=same; c; d; }
@@ -121,14 +122,14 @@ reduces ambiguity in interpretation, and ensures reproducible, quantifiable resu
    }
 
 The finite-state machine pictured above represents a single trial in a behavioral
-experiment. It heavily relies on timers to define both the duration of states and their
-associated output actions. The *Stimulus Presentation* ends automatically when its timer
+experiment. It heavily relies on timers to deEnd statefine both the duration of states
+and their associated output actions. The *Stimulus* ends automatically when its timer
 expires, moving the subject into the *Wait* state. From there, the trial can proceed in
 two ways: if the subject performs the required action (pressing a lever) within the
-allotted time of the *Wait* state, the machine transitions to *Reward Dispensal*;
-otherwise, a *Buzzing Sound* signals a missed opportunity. The durations of both the
-reward and the sound are again governed by their respective timers, after which either
-state transitions to the trial’s *End* state and, finally, to the trial’s exit.
+allotted time of the *Wait* state, the machine transitions to *Reward*; otherwise, a
+*Buzzer* signals a missed opportunity. The durations of both the reward and the buzzer
+are again governed by their respective timers, after which either state transitions to
+the trial’s *End* state and, finally, to the trial’s exit.
 
 .. admonition:: Key Concepts
 
