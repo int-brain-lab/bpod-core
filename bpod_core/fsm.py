@@ -350,10 +350,10 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             The name of the state to be added.
         timer : float, optional
             The duration of the state's timer in seconds. Default to 0.
-        transitions : dict, optional
+        transitions : MutableMapping, optional
             A dictionary mapping conditions to target states for transitions.
             Defaults to an empty dictionary.
-        actions : dict, optional
+        actions : MutableMapping, optional
             A dictionary of actions to be executed on entering the state.
             Defaults to an empty dictionary.
         comment : str, optional
