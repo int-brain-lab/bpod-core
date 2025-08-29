@@ -1,6 +1,7 @@
 """Module defining classes and types for creating and managing state machines."""
 
 import re
+from collections.abc import MutableMapping
 from os import PathLike
 from pathlib import Path
 from typing import Annotated, Any
@@ -336,8 +337,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         self,
         name: StateName,
         timer: StateTimer = 0.0,
-        transitions: Transitions | None = None,
-        actions: Actions | None = None,
+        transitions: MutableMapping[Event, StateName | Operator] | None = None,
+        actions: MutableMapping[OutputActionName, OutputActionValue] | None = None,
         comment: StateComment | None = None,
     ) -> None:
         """
