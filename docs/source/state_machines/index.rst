@@ -55,7 +55,7 @@ or end, many real-world processes have natural beginnings and endings. The scien
 publication process provides an example. It begins in the *Draft* state, progresses
 through the *Review* state, and—after a few revision—(hopefully) concludes with a
 *Publication*. In a state diagram, the *entry* to the finite-state machine is typically
-indicated by a filled circle, while the *exit* is shown with a double circle.
+indicated by a filled circle, while the *exit* is shown with a double circle:
 
 .. graphviz::
    :align: center
@@ -122,14 +122,14 @@ reduces ambiguity in interpretation, and ensures reproducible, quantifiable resu
    }
 
 The finite-state machine pictured above represents a single trial in a behavioral
-experiment. It heavily relies on timers to deEnd statefine both the duration of states
-and their associated output actions. The *Stimulus* ends automatically when its timer
-expires, moving the subject into the *Wait* state. From there, the trial can proceed in
-two ways: if the subject performs the required action (pressing a lever) within the
-allotted time of the *Wait* state, the machine transitions to *Reward*; otherwise, a
-*Buzzer* signals a missed opportunity. The durations of both the reward and the buzzer
-are again governed by their respective timers, after which either state transitions to
-the trial’s *End* state and, finally, to the trial’s exit.
+experiment. It heavily relies on timers to define both the duration of states and their
+associated output actions. The *Stimulus* ends automatically when its timer expires,
+moving the subject into the *Wait* state. From there, the trial can proceed in two ways:
+if the subject performs the required action (pressing a lever) within the allotted time
+of the *Wait* state, the machine transitions to *Reward*; otherwise, a *Buzzer* signals
+a missed opportunity. The durations of both the reward and the buzzer are again governed
+by their respective timers, after which either state transitions to the trial’s *End*
+state and, finally, to the trial’s exit.
 
 .. admonition:: Key Concepts
 
