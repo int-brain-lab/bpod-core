@@ -85,7 +85,7 @@ Finite-state machines are also a powerful tool in the design of behavioral exper
 In this context, they can be used to specify trial structure, stimulus presentation, and
 response contingencies in a clear and reproducible way. Each state represents a specific
 phase of the experiment, and transitions are triggered by events such as a subject’s
-action or a timer. Timers are particularly usefu to control the duration of states and
+action or a timer. Timers are particularly useful to control the duration of states and
 the timing of their associated output actions—such as turning on a light, sounding a
 buzzer, or delivering a reward—which allows fine-grained control over the experimental
 environment. This structured approach clarifies the logic of experimental protocols,
@@ -104,18 +104,31 @@ reduces ambiguity in interpretation, and ensures reproducible, quantifiable resu
       x [label="", shape=doublecircle, style=filled, fillcolor=black, width=0.125];
 
       a [label="Stimulus\nPresentation"];
-      b [label="Reward\nDispensal"];
-      c [label="Buzzing\nSound"];
+      b [label="Wait"];
+      c [label="Reward\nDispensal"];
+      d [label="Buzzing\nSound"];
+      e [label="End"];
 
-      { rank=same; b; c; }
+      { rank=same; c; d; }
 
       s -> a
-      a -> b [label="lever pressed"];
-      a -> c [label="timeout"];
-      b -> x [label="timeout"];
-      c -> x [label="timeout"];
+      a -> b [label="timeout"];
+      b -> c [label="lever pressed"];
+      b -> d [label="timeout"];
+      c -> e [label="timeout"];
+      d -> e [label="timeout"];
+      e -> x [label="timeout"];
    }
 
+The finite-state machine pictured above represents a single trial in a behavioral
+experiment. It heavily relies on timers to define both the duration of states and their
+associated output actions. The *Stimulus Presentation* ends automatically when its timer
+expires, moving the subject into the *Wait* state. From there, the trial can proceed in
+two ways: if the subject performs the required action (pressing a lever) within the
+allotted time of the *Wait* state, the machine transitions to *Reward Dispensal*;
+otherwise, a *Buzzing Sound* signals a missed opportunity. The durations of both the
+reward and the sound are again governed by their respective timers, after which either
+state transitions to the trial’s *End* state and, finally, to the trial’s exit.
 
 .. admonition:: Key Concepts
 
