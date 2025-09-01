@@ -49,6 +49,7 @@ class BaseCodeBlockDirective(Directive):
 
 class DoctestCodeBlockDirective(BaseCodeBlockDirective):
     """Directive to run doctests in a code block."""
+
     option_spec = spec_codeblock | spec_doctest | {'group': directives.unchanged}
 
     def run(self) -> list[nodes.Node]:
@@ -57,6 +58,7 @@ class DoctestCodeBlockDirective(BaseCodeBlockDirective):
 
 class TestcodeCodeBlockDirective(BaseCodeBlockDirective):
     """Directive to run testcode in a code block."""
+
     option_spec = spec_codeblock | spec_testcode | {'group': directives.unchanged}
 
     def run(self) -> list[nodes.Node]:
