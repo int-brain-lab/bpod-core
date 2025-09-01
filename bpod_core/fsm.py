@@ -1,10 +1,10 @@
 """Module defining classes and types for creating and managing state machines."""
 
 import re
-from collections.abc import MutableMapping
+from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import msgspec
 import numpy as np
@@ -215,11 +215,23 @@ Operator = Annotated[
 class Actions(ValidatedDict[OutputActionName, OutputActionValue], title='Actions'):
     """A collection of actions."""
 
+    if TYPE_CHECKING:
+
+        def __init__(
+            self, root: Mapping[OutputActionName, OutputActionValue] | None = ...
+        ) -> None: ...
+
 
 class Transitions(
     ValidatedDict[Event, StateName | Operator], title='State Transitions'
 ):
     """A collection of state transitions."""
+
+    if TYPE_CHECKING:
+
+        def __init__(
+            self, root: Mapping[Event, StateName | Operator] | None = ...
+        ) -> None: ...
 
 
 class State(BaseModel, validate_assignment=True, title='State'):
@@ -337,8 +349,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         self,
         name: StateName,
         timer: StateTimer = 0.0,
-        transitions: MutableMapping[Event, StateName | Operator] | None = None,
-        actions: MutableMapping[OutputActionName, OutputActionValue] | None = None,
+        transitions: Mapping[Event, StateName | Operator] | None = None,
+        actions: Mapping[OutputActionName, OutputActionValue] | None = None,
         comment: StateComment | None = None,
     ) -> None:
         """
@@ -350,10 +362,10 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             The name of the state to be added.
         timer : float, optional
             The duration of the state's timer in seconds. Default to 0.
-        transitions : MutableMapping, optional
+        transitions : Mapping, optional
             A dictionary mapping conditions to target states for transitions.
             Defaults to an empty dictionary.
-        actions : MutableMapping, optional
+        actions : Mapping, optional
             A dictionary of actions to be executed on entering the state.
             Defaults to an empty dictionary.
         comment : str, optional
@@ -366,10 +378,11 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         """
         if name in self.states:
             raise ValueError(f"A state named '{name}' is already registered")
+
         self.states[name] = State(
             timer=timer,
-            transitions=transitions or Transitions(),
-            actions=actions or Actions(),
+            transitions=Transitions(transitions or {}),
+            actions=Actions(actions or {}),
             comment=comment,
         )
 

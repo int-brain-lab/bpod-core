@@ -7,6 +7,7 @@ import re
 import socket
 from collections.abc import (
     Iterator,
+    Mapping,
     MutableMapping,
     Sequence,
 )
@@ -366,6 +367,8 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
         return self.root == other
 
     if TYPE_CHECKING:
+
+        def __init__(self, root: Mapping[K, V] | None = ...) -> None: ...
 
         def __hash__(self) -> int: ...
     else:
