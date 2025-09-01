@@ -28,49 +28,39 @@ class BaseCodeBlockDirective(Directive):
         output.append('')
         return output
 
+    def _run(self, test_type: str):
+        options = self.options
+        group = options.pop('group', '')
+        language = options.pop('language', None) or next(iter(self.arguments), 'pycon')
+
+        codeblock_opts = {k: v for k, v in options.items() if k in spec_codeblock}
+        doctest_opts = {k: v for k, v in options.items() if k not in spec_codeblock}
+        doctest_opts['hide'] = None
+
+        strings = [f'.. {test_type}:: {group}']
+        strings.extend(self._generate_block(doctest_opts))
+        strings.append(f'.. code-block:: {language}')
+        strings.extend(self._generate_block(codeblock_opts))
+
+        container = nodes.Element()
+        self.state.nested_parse(StringList(strings), self.content_offset, container)
+        return list(container.children)
+
 
 class DoctestCodeBlockDirective(BaseCodeBlockDirective):
+    """Directive to run doctests in a code block."""
     option_spec = spec_codeblock | spec_doctest | {'group': directives.unchanged}
 
     def run(self) -> list[nodes.Node]:
-        options = self.options
-        group = options.pop('group', '')
-        language = options.pop('language', None) or next(iter(self.arguments), 'pycon')
-
-        codeblock_opts = {k: v for k, v in options.items() if k in spec_codeblock}
-        doctest_opts = {k: v for k, v in options.items() if k not in spec_codeblock}
-        doctest_opts['hide'] = None
-
-        strings = [f'.. doctest:: {group}']
-        strings.extend(self._generate_block(doctest_opts))
-        strings.append(f'.. code-block:: {language}')
-        strings.extend(self._generate_block(codeblock_opts))
-
-        container = nodes.Element()
-        self.state.nested_parse(StringList(strings), self.content_offset, container)
-        return list(container.children)
+        return self._run('doctest')
 
 
 class TestcodeCodeBlockDirective(BaseCodeBlockDirective):
+    """Directive to run testcode in a code block."""
     option_spec = spec_codeblock | spec_testcode | {'group': directives.unchanged}
 
     def run(self) -> list[nodes.Node]:
-        options = self.options
-        group = options.pop('group', '')
-        language = options.pop('language', None) or next(iter(self.arguments), 'pycon')
-
-        codeblock_opts = {k: v for k, v in options.items() if k in spec_codeblock}
-        doctest_opts = {k: v for k, v in options.items() if k not in spec_codeblock}
-        doctest_opts['hide'] = None
-
-        strings = [f'.. testcode:: {group}']
-        strings.extend(self._generate_block(doctest_opts))
-        strings.append(f'.. code-block:: {language}')
-        strings.extend(self._generate_block(codeblock_opts))
-
-        container = nodes.Element()
-        self.state.nested_parse(StringList(strings), self.content_offset, container)
-        return list(container.children)
+        return self._run('testcode')
 
 
 def setup(app):
