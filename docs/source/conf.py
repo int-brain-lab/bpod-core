@@ -175,3 +175,19 @@ graphviz_output_format = 'svg'
 numfig = True
 html_static_path = ['_static']
 html_css_files = ['custom.css']
+
+# -- Graphviz settings -----------------------------------
+graphviz_dot = 'dot'
+graphviz_output_format = 'svg'
+graphviz_dot_args = [
+    '-Grankdir=LR',  # Graph layout direction (left-to-right)
+    '-Gfontsize=11',  # Graph-level font size
+    '-Gtooltip= ',  # no graph tooltips
+    '-Nshape=box',  # Node shape
+    '-Nfontname=Helvetica, sans-serif',  # Node font
+    '-Nfontsize=11',  # Node font size
+    '-Ntooltip= ',  # no node tooltips
+    '-Efontname=Helvetica, sans-serif',  # Edge font
+    '-Efontsize=10',  # Edge font size
+    '-Etooltip= ',  # no edge tooltips
+]

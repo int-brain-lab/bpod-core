@@ -1,3 +1,11 @@
 .caption-number {
     font-weight: bold;
 }
+
+figure.align-default {
+    text-align: center;
+}
+
+figure.align-default figcaption {
+    text-align: center;
+}

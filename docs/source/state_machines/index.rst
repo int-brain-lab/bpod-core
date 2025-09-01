@@ -14,16 +14,13 @@ boxes (states) and arrows (transitions) between them—this type of flowchart is
 *state diagram*.
 
 .. graphviz::
-   :align: center
    :caption: A state diagram.
 
-   digraph example {
-       rankdir=LR;
-       node [shape=rectangle, fontname="Helvetica, sans-serif", fontsize=11];
-       edge [fontname="Helvetica, sans-serif", fontsize=10];
-       S1 [label="State 1"];
-       S2 [label="State 2"];
-       S1 -> S2 [label="Event"];
+   digraph {
+      S1 [label="State 1"];
+      S2 [label="State 2"];
+
+      S1 -> S2 [label="Event"];
    }
 
 In practice, finite-state machines are used to model a wide range of systems where
@@ -34,20 +31,15 @@ them: *flip up* and *flip down*. At any given moment, the switch is in exactly o
 state, and performing the corresponding flip moves the system to the other.
 
 .. graphviz::
-   :align: center
    :caption: Flip up, flip down—ad infinitum.
 
-   digraph example {
-       rankdir=LR;
-       node [shape=rectangle, fontname="Helvetica, sans-serif", fontsize=11];
-       edge [fontname="Helvetica, sans-serif", fontsize=10];
+   digraph {
+      a [label="Off"];
+      b [label="On"];
 
-       a [label="Off"];
-       b [label="On"];
-
-       a -> b [label="flip up"];
-       a -> b [style="invis"];
-       b -> a [label="flip down"];
+      a -> b [label="flip up"];
+      a -> b [style="invis"];
+      b -> a [label="flip down"];
    }
 
 While the light switch illustrates a finite-state machine with no clearly defined start
@@ -58,28 +50,24 @@ through the *Review* state, and—after a few revision—(hopefully) concludes w
 indicated by a filled circle, while the *exit* is shown with a double circle:
 
 .. graphviz::
-   :align: center
    :caption: If only the reviewers ever agreed ...
 
-   digraph example {
-       rankdir=LR;
-       node [shape=rectangle, fontname="Helvetica, sans-serif", fontsize=11];
-       edge [fontname="Helvetica, sans-serif", fontsize=10];
+   digraph {
+      s [label="", shape=circle, style=filled, fillcolor=black, width=0.25];
+      x [label="", shape=doublecircle, style=filled, fillcolor=black, width=0.125];
 
-       s [label="", shape=circle, style=filled, fillcolor=black, width=0.25];
-       x [label="", shape=doublecircle, style=filled, fillcolor=black, width=0.125];
+      a [label="Draft"];
+      b [label="Review"];
+      c [label="Publication"];
 
-       a [label="Draft"];
-       b [label="Review"];
-       c [label="Publication"];
 
-       s -> a
-       a -> b [label="submittal"];
-       a -> b [style="invis"];
-       b -> a [label="R&R"];
-       b -> c [label="approval"];
-       b -> x [label="rejection"];
-       c -> x
+      s -> a
+      a -> b [label="submittal"];
+      a -> b [style="invis"];
+      b -> a [label="R&R"];
+      b -> c [label="approval"];
+      b -> x [label="rejection"];
+      c -> x
    }
 
 Finite-state machines can be a powerful tool in the design of behavioral experiments.
@@ -93,14 +81,9 @@ environment. This structured approach clarifies the logic of experimental protoc
 reduces ambiguity in interpretation, and ensures reproducible, quantifiable results.
 
 .. graphviz::
-   :align: center
    :caption: A simple trial sequence implemented as a finite-state machine.
 
-   digraph example {
-       rankdir=LR;
-       node [shape=rectangle, fontname="Helvetica, sans-serif", fontsize=11];
-       edge [fontname="Helvetica, sans-serif", fontsize=10];
-
+   digraph {
       s [label="", shape=circle, style=filled, fillcolor=black, width=0.25];
       x [label="", shape=doublecircle, style=filled, fillcolor=black, width=0.125];
 
@@ -110,8 +93,6 @@ reduces ambiguity in interpretation, and ensures reproducible, quantifiable resu
       d [label="Buzzer"];
       e [label="End"];
 
-      { rank=same; c; d; }
-
       s -> a
       a -> b [label="timeout"];
       b -> c [label="lever pressed"];
@@ -119,6 +100,8 @@ reduces ambiguity in interpretation, and ensures reproducible, quantifiable resu
       c -> e [label="timeout"];
       d -> e [label="timeout"];
       e -> x [label="timeout"];
+
+      { rank=same; c; d; }
    }
 
 The finite-state machine pictured above represents a single trial in a behavioral
