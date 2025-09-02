@@ -3,13 +3,15 @@ import textwrap
 from pathlib import Path
 
 from docutils import nodes
-from docutils.parsers.rst import Directive
+from docutils.parsers.rst import Directive, directives
 from sphinx.util.osutil import ensuredir
 
 
 class SvgExample(Directive):
 
     has_content = True  # directive body will contain Python code
+    option_spec = { 'filename': directives.unchanged }
+
 
     def run(self):
         env = self.state.document.settings.env
@@ -22,12 +24,25 @@ class SvgExample(Directive):
         ensuredir(path_images)
 
         # Unique filename (docname + line number)
-        basename = f'{env.docname.replace("/", "_")}_{self.lineno}.svg'
+        filename_opt = self.options.get('filename')
+        if filename_opt:
+            basename = os.path.basename(filename_opt)
+            if not basename.lower().endswith('.svg'):
+                basename += '.svg'
+        else:
+            basename = f'{env.docname.replace("/", "_")}_{self.lineno}.svg'
+
         path_image = path_images / basename
 
         # Execute code in isolated namespace
-        ns = {'outpath': path_image}
+        from bpod_core.fsm import StateMachine
+
+        fsm = StateMachine()
+        ns = {"fsm": fsm}
         exec(code, ns)
+
+        fsm = ns.get('fsm')
+        fsm.to_file(path_image, overwrite=True)
 
         # Code block (literal Python)
         literal = nodes.literal_block(code, code)

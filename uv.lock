@@ -155,6 +155,7 @@ ci = [
 ]
 dev = [
     { name = "appdirs-stubs" },
+    { name = "docutils-stubs" },
     { name = "mypy" },
     { name = "myst-parser" },
     { name = "packaging" },
@@ -174,6 +175,7 @@ dev = [
     { name = "sphinx-toolbox" },
     { name = "tox" },
     { name = "tox-uv" },
+    { name = "types-docutils" },
     { name = "types-pyserial" },
 ]
 doc = [
@@ -194,6 +196,7 @@ lint = [
 ]
 test = [
     { name = "appdirs-stubs" },
+    { name = "docutils-stubs" },
     { name = "mypy" },
     { name = "packaging" },
     { name = "pytest" },
@@ -202,11 +205,14 @@ test = [
     { name = "ruff" },
     { name = "tox" },
     { name = "tox-uv" },
+    { name = "types-docutils" },
     { name = "types-pyserial" },
 ]
 typing = [
     { name = "appdirs-stubs" },
+    { name = "docutils-stubs" },
     { name = "mypy" },
+    { name = "types-docutils" },
     { name = "types-pyserial" },
 ]
 
@@ -231,6 +237,7 @@ ci = [
 ]
 dev = [
     { name = "appdirs-stubs", specifier = ">=0.1.0" },
+    { name = "docutils-stubs", specifier = ">=0.0.22" },
     { name = "mypy", specifier = ">=1.15.0" },
     { name = "myst-parser", specifier = ">=4.0.1" },
     { name = "packaging", specifier = ">=25.0" },
@@ -249,6 +256,7 @@ dev = [
     { name = "sphinx-toolbox", specifier = ">=4.0.0" },
     { name = "tox", specifier = ">=4.25.0" },
     { name = "tox-uv", specifier = ">=0.7.2" },
+    { name = "types-docutils", specifier = ">=0.22.0.20250822" },
     { name = "types-pyserial", specifier = ">=3.5.0.20250326" },
 ]
 doc = [
@@ -265,6 +273,7 @@ doc = [
 lint = [{ name = "ruff", specifier = ">=0.9.2" }]
 test = [
     { name = "appdirs-stubs", specifier = ">=0.1.0" },
+    { name = "docutils-stubs", specifier = ">=0.0.22" },
     { name = "mypy", specifier = ">=1.15.0" },
     { name = "packaging", specifier = ">=25.0" },
     { name = "pytest", specifier = ">=8.3.5" },
@@ -274,11 +283,14 @@ test = [
     { name = "ruff", specifier = ">=0.11.5" },
     { name = "tox", specifier = ">=4.25.0" },
     { name = "tox-uv", specifier = ">=0.7.2" },
+    { name = "types-docutils", specifier = ">=0.22.0.20250822" },
     { name = "types-pyserial", specifier = ">=3.5.0.20250326" },
 ]
 typing = [
     { name = "appdirs-stubs", specifier = ">=0.1.0" },
+    { name = "docutils-stubs", specifier = ">=0.0.22" },
     { name = "mypy", specifier = ">=1.15.0" },
+    { name = "types-docutils", specifier = ">=0.22.0.20250822" },
     { name = "types-pyserial", specifier = ">=3.5.0.20250326" },
 ]
 
@@ -620,6 +632,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ae/ed/aefcc8cd0ba62a0560c3c18c33925362d46c6075480bfa4df87b28e169a9/docutils-0.21.2.tar.gz", hash = "sha256:3a6b18732edf182daa3cd12775bbb338cf5691468f91eeeb109deff6ebfa986f", size = 2204444, upload-time = "2024-04-23T18:57:18.24Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8f/d7/9322c609343d929e75e7e5e6255e614fcc67572cfd083959cdef3b7aad79/docutils-0.21.2-py3-none-any.whl", hash = "sha256:dafca5b9e384f0e419294eb4d2ff9fa826435bf15f15b7bd45723e8ad76811b2", size = 587408, upload-time = "2024-04-23T18:57:14.835Z" },
+]
+
+[[package]]
+name = "docutils-stubs"
+version = "0.0.22"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "docutils" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/31/fb/3eda037eed8b98d6b2169e4198a8f12a03a461c4d4dc44de1a7790d0f7c7/docutils-stubs-0.0.22.tar.gz", hash = "sha256:1736d9650cfc20cff8c72582806c33a5c642694e2df9e430717e7da7e73efbdf", size = 43699, upload-time = "2022-01-02T11:13:17.499Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/59/85/10507e1011d5370b94567e4b57f93086a2476d1da73caf98dc53aa87004b/docutils_stubs-0.0.22-py3-none-any.whl", hash = "sha256:157807309de24e8c96af9a13afe207410f1fc6e5aab5d974fd6b9191f04de327", size = 87506, upload-time = "2022-01-02T11:13:15.94Z" },
 ]
 
 [[package]]
@@ -2139,6 +2163,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f9/9a/f4b675ebcbd623854129891e87045f80c1d8e91b2957496f1fe6e463f291/tox_uv-1.28.0.tar.gz", hash = "sha256:a06ff909f73232b2b7965de19090d887b12b44e44eb0843b2c07266d2957ade2", size = 23265, upload-time = "2025-08-14T17:53:07.909Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1f/ac/b32555d190c4440b8d2779d4a19439e5fbd5a3950f7e5a17ead7c7d30cad/tox_uv-1.28.0-py3-none-any.whl", hash = "sha256:3fbe13fa6eb6961df5512e63fc4a5cc0c8d264872674ee09164649f441839053", size = 17225, upload-time = "2025-08-14T17:53:06.299Z" },
+]
+
+[[package]]
+name = "types-docutils"
+version = "0.22.0.20250822"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b4/e3/b28d7786f4a5170095f59846d492c2980656c30ef4405ae94156ff63151c/types_docutils-0.22.0.20250822.tar.gz", hash = "sha256:40efebeef8467ae7648a33f3fa6f778bd94d338ca1f4a1c924b206d2f687f60a", size = 56487, upload-time = "2025-08-22T03:03:07.576Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e9/02/4822bbddf4dae6b5dfe28d257c1e1f128c8315da8709e6d1862e055c13f2/types_docutils-0.22.0.20250822-py3-none-any.whl", hash = "sha256:890d5986045b8a532b56e7f0d4979de3afc23b4543de40910ec8c71ec5f3ba99", size = 91786, upload-time = "2025-08-22T03:03:06.522Z" },
 ]
 
 [[package]]

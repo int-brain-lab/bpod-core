@@ -178,12 +178,10 @@ sequences. See section :ref:`examples` for more examples.
 
 
 .. svg-example::
+   :filename: hello_world_2.svg
 
-   from bpod_core.fsm import StateMachine
-   fsm = StateMachine()
    fsm.add_state('hello')
    fsm.add_state('world')
-   fsm.to_file(outpath, overwrite=True)
 
 
 Validation
