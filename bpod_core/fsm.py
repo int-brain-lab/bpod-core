@@ -673,7 +673,9 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         """Write the state machine to a file.
 
         Depending on the file extension, different outputs are produced:
-        - .json: writes a pretty-printed JSON representation.
+
+        - .json: writes a JSON representation of the state machine,
+        - .yaml, .yml: writes a YAML representation of the state machine,
         - .pdf, .svg, .png: renders a state diagram and stores it to the specified file.
 
         Parameters
@@ -738,9 +740,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         # Handle unsupported file extension
         else:
-            raise ValueError(
-                f'Unsupported file extension: {filename.suffix.upper().strip(".")}'
-            )
+            raise ValueError(f'Unsupported file extension: {suffix.upper().strip(".")}')
 
     @classmethod
     def from_dict(cls, data: dict) -> 'StateMachine':
