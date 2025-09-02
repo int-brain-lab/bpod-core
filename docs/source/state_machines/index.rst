@@ -176,6 +176,16 @@ Using this simple concept you can create arbitrarily complex patterns and behavi
 sequences. See section :ref:`examples` for more examples.
 
 
+
+.. svg-example::
+
+   from bpod_core.fsm import StateMachine
+   fsm = StateMachine()
+   fsm.add_state('hello')
+   fsm.add_state('world')
+   fsm.to_file(outpath, overwrite=True)
+
+
 Validation
 ^^^^^^^^^^
 The class :class:`~bpod_core.fsm.StateMachine` and related classes are `Pydantic`_
