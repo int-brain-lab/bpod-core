@@ -201,6 +201,22 @@ class TestFromFile:
         assert isinstance(fsm2, StateMachine)
         assert fsm2.to_dict() == state_machine.to_dict()
 
+    def test_from_file_roundtrip_yaml(self, tmp_path, state_machine):
+        """from_file loads a YAML file and matches original machine."""
+        # Write JSON to file
+        path = tmp_path / 'machine.yaml'
+        path.write_text(state_machine.to_yaml(indent=2), encoding='utf-8')
+
+        # Load via Path
+        fsm = StateMachine.from_file(path)
+        assert isinstance(fsm, StateMachine)
+        assert fsm.to_dict() == state_machine.to_dict()
+
+        # Load via string path
+        fsm2 = StateMachine.from_file(str(path))
+        assert isinstance(fsm2, StateMachine)
+        assert fsm2.to_dict() == state_machine.to_dict()
+
     def test_from_file_missing_raises(self, tmp_path):
         """from_file should raise FileNotFoundError for missing files."""
         missing = tmp_path / 'missing.json'
@@ -237,6 +253,19 @@ class TestToFile:
             state_machine.to_file(path)
         state_machine.to_file(path, overwrite=True)
         assert path.read_text() == state_machine.to_json(indent=2)
+
+    def test_to_file_yaml_write_and_overwrite(self, tmp_path, state_machine):
+        """Write JSON file, prevent overwrite, allow overwrite=True."""
+        # Write JSON file
+        path = tmp_path / 'machine.yaml'
+        state_machine.to_file(path)
+        assert path.exists()
+        content = path.read_text()
+        assert content == state_machine.to_yaml()
+        with pytest.raises(FileExistsError):
+            state_machine.to_file(path)
+        state_machine.to_file(path, overwrite=True)
+        assert path.read_text() == state_machine.to_yaml()
 
     def test_to_file_unsupported_extension(self, tmp_path, state_machine):
         """Unsupported extension should raise ValueError in to_file."""

@@ -144,6 +144,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pydantic" },
     { name = "pyserial" },
+    { name = "pyyaml" },
     { name = "pyzmq" },
     { name = "zeroconf" },
 ]
@@ -228,6 +229,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "pydantic", specifier = ">=2.11" },
     { name = "pyserial", specifier = ">=3.5" },
+    { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "pyzmq", specifier = ">=27.0.1" },
     { name = "zeroconf", specifier = ">=0.147.0" },
 ]

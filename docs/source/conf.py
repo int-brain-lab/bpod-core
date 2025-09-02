@@ -63,6 +63,10 @@ for fn in example_files:
     json = state_machine.to_json(indent=2).splitlines()
     json = [' ' * 7 + line for line in json]
 
+    # Generate YAML
+    yaml = state_machine.to_yaml(indent=2).splitlines()
+    yaml = [' ' * 7 + line for line in yaml]
+
     page_path = examples_target_path.joinpath(f'{fn.stem}.rst')
     page_lines = [
         page_title,
@@ -86,6 +90,12 @@ for fn in example_files:
         '    .. code-block:: json',
         '',
         *json,
+        '',
+        '   .. tab-item:: YAML',
+        '',
+        '    .. code-block:: yaml',
+        '',
+        *yaml,
         '',
     ]
     with page_path.open('w', encoding='utf-8') as pf:

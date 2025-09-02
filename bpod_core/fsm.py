@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import msgspec
 import numpy as np
+import yaml
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field, validate_call
 
@@ -645,6 +646,23 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         """
         return self.model_dump_json(indent=indent, exclude_defaults=exclude_defaults)
 
+    def to_yaml(self, indent: None | int = None, exclude_defaults: bool = True) -> str:
+        """Returns the state machine as a YAML string.
+
+        Parameters
+        ----------
+        exclude_defaults: bool, optional
+            Whether to exclude fields that are set to their default values.
+            Defaults to True.
+
+        Returns
+        -------
+        str
+            A dictionary representation of the state machine.
+        """
+        dictionary = self.model_dump(exclude_defaults=exclude_defaults)
+        return yaml.dump(dictionary, sort_keys=False)
+
     @validate_call
     def to_file(
         self,
@@ -698,6 +716,10 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         # JSON output
         if suffix == '.json':
             filename.write_text(self.to_json(indent=2), encoding='utf-8')
+
+        # YAML output
+        elif suffix in ('.yaml', '.yml'):
+            filename.write_text(self.to_yaml(indent=2), encoding='utf-8')
 
         # Rendering via Graphviz
         elif suffix in ('.pdf', '.svg', '.png'):
@@ -762,30 +784,53 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         return StateMachine.model_validate_json(json_str)
 
     @classmethod
+    def from_yaml(cls, yaml_str: str | bytes) -> 'StateMachine':
+        """Creates a StateMachine instance from a YAML string.
+
+        Parameters
+        ----------
+        yaml_str : str or bytes
+            A YAML string representation of a state machine.
+
+        Returns
+        -------
+        StateMachine
+            A StateMachine instance created from the provided YAML string.
+
+        Raises
+        ------
+        ValidationError
+            If the YAML string is not valid.
+        """
+        dictionary = yaml.safe_load(yaml_str)
+        return StateMachine.model_validate(dictionary)
+
+    @classmethod
     def from_file(cls, filename: PathLike | str) -> 'StateMachine':
-        """Creates a StateMachine instance from a JSON file.
+        """Creates a StateMachine instance from a JSON or YAML file.
 
         Parameters
         ----------
         filename : os.PathLike or str
-            The path to the JSON file containing the state machine.
+            The path to the file containing the state machine.
 
         Raises
         ------
         FileNotFoundError
             If the file does not exist.
         ValueError
-            If the file extension is not .json.
-        msgspec.DecodeError
-            If the file content is not valid JSON.
+            If the file extension is not .json, .yaml or .yml.
         """
         # Handle file path
         filename = Path(filename).resolve()
         if not filename.exists():
             raise FileNotFoundError(f"File '{filename}' does not exist")
-        if filename.suffix.lower() != '.json':
+        if filename.suffix.lower() not in ('.json', '.yaml', '.yml'):
             raise ValueError(f'Unsupported file extension: {filename.suffix.upper()}')
 
-        # Load JSON data and return StateMachine instance
+        # Load data and return StateMachine instance
         data = filename.read_text(encoding='utf-8')
-        return cls.from_json(data)
+        if filename.suffix.lower() == '.json':
+            return cls.from_json(data)
+        else:
+            return cls.from_yaml(data)
