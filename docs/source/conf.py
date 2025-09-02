@@ -108,6 +108,7 @@ extensions = [
     'sphinx-jsonschema',
     'sphinx_toolbox.wikipedia',
     'doctest_codeblock',
+    'fsm_codeblock',
 ]
 source_suffix = ['.rst', '.md']
 

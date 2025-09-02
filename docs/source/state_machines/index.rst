@@ -156,10 +156,26 @@ A state machine can be created by importing and instantiating a
 :class:`~bpod_core.fsm.StateMachine` object and adding states using its
 :meth:`~bpod_core.fsm.StateMachine.add_state` method:
 
-.. literalinclude:: ../../../examples/hello_world.py
-   :language: python
-   :start-at: from bpod_core.
+.. fsm_codeblock::
    :caption: Say hello to your first state machine.
+   :group: hello_world
+   :filename: hello_world_01.svg
+
+   from bpod_core.fsm import StateMachine
+
+   fsm = StateMachine()
+
+   fsm.add_state(
+       name='Hello',  # the name of the state
+       timer=1.0,  # the state timer (in seconds)
+       transitions={'Tup': 'World'},  # definition of state transitions
+       actions={'PWM1': 255},  # an LED connected to PWM1 will light up
+   )
+   fsm.add_state(
+       name='World',
+       timer=2.0,
+       transitions={'Tup': '>exit'},  # transition to exit
+   )
 
 The above commands result in a state machine with the two states  `Hello` and `World`.
 In the `Hello` state, the output channel ``PWM1`` is set to 255. After its 1-second
@@ -167,7 +183,7 @@ state timer expires—emitting a ``Tup`` event—the state transitions to `World
 another two seconds in the `World` state (which has no output action), the state machine
 exits using the ``>exit`` operator:
 
-.. figure:: examples/hello_world.svg
+.. figure:: hello_world_01.svg
    :align: center
 
    A basic state machine created in bpod-core.
