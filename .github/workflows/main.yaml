@@ -15,13 +15,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - name: install graphviz
+      - name: install graphviz (1)
         if: runner.os == 'Linux'
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
           packages: graphviz
           version: 1.0
           execute_install_scripts: true
+      - name: install graphviz (2)
+        if: runner.os == 'Linux'
+        run: apt-get install graphviz
+        shell: bash
       - name: sync dependencies
         run: uv sync --no-default-groups --group test --group ci
       - name: run tox
