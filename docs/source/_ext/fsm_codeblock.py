@@ -1,6 +1,5 @@
 import textwrap
 from pathlib import Path
-from typing import Any
 
 from docutils import nodes
 from docutils.parsers.rst import directives
