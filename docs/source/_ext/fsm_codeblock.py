@@ -33,17 +33,13 @@ class FSMCodeBlock(CodeBlock):
             env._fsm_codeblock_namespaces = {}
         name_space_store = env._fsm_codeblock_namespaces
 
-        # select namespace: shared by group when provided; otherwise isolated
+        # execute code within the selected namespace and save state diagram to file
         name_space = name_space_store.setdefault(group, {}) if group else {}
-
-        # execute code within the selected namespace
         exec(textwrap.dedent('\n'.join(self.content)), name_space)
-
-        # save state diagram to file
-        if 'fsm' in name_space and 'filename' in self.options:
-            app = env.app
-            path_images = Path(app.outdir) / '_images'
-            name_space['fsm'].to_file(path_images / self.options['filename'], True)
+        fsm = name_space.get('fsm')
+        if fsm and 'filename' in self.options:
+            source_path = Path(self.state.document['source']).parent
+            fsm.to_file(source_path / self.options['filename'], True)
 
         container = nodes.Element()
         self.state.nested_parse(
