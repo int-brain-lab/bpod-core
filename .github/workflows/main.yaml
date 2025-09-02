@@ -21,6 +21,7 @@ jobs:
         with:
           packages: graphviz
           version: 1.0
+          execute_install_scripts: true
       - name: sync dependencies
         run: uv sync --no-default-groups --group test --group ci
       - name: run tox
