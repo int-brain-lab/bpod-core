@@ -27,6 +27,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: uv run tox --parallel-no-spinner -- -ci
+      - name: doctests
+        if: runner.os == 'Linux'
+        run: uv run tox -e doctest
   finish:
     needs: tox
     if: ${{ always() }}
