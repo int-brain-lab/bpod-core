@@ -4,6 +4,7 @@
    :end-before: ---
 
 .. toctree::
+   :caption: Sections
    :maxdepth: 3
    :hidden:
 
@@ -18,3 +19,4 @@
    :hidden:
 
    bpod-core on GitHub <https://github.com/int-brain-lab/bpod-core>
+   bpod-core on PyPI <https://pypi.org/project/bpod-core/>

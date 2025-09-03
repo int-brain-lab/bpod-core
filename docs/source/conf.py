@@ -198,6 +198,7 @@ napoleon_type_aliases = {
 napoleon_attr_annotations = True
 
 graphviz_output_format = 'svg'
+graphviz_inline = False
 
 numfig = True
 html_static_path = ['_static']
@@ -214,6 +215,7 @@ graphviz_dot_args = [
     '-Grankdir=LR',  # Graph layout direction (left-to-right)
     '-Gfontsize=11',  # Graph-level font size
     '-Gtooltip= ',  # no graph tooltips
+    '-Gbgcolor=transparent',  # transparent background
     '-Nshape=box',  # Node shape
     '-Nfontname=Helvetica, sans-serif',  # Node font
     '-Nfontsize=11',  # Node font size
