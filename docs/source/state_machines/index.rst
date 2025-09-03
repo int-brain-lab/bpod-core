@@ -178,16 +178,19 @@ visualized using the following state diagram:
 
 See the section `Import and Export`_ for details on how such state diagrams are
 generated. To make things a bit more interesting, let's add a second state named
-`World`, this time with a 1 s state timer:
+`World`, this time with a 1 s state timer. Normally, we could just call the
+:meth:`~bpod_core.fsm.StateMachine.add_state` method again. However, for the sake of
+demonstration, we’ll use a different approach by adding a new entry directly to
+our state machine's :attr:`~bpod_core.fsm.StateMachine.states` dictionary.
 
 .. fsm_codeblock::
    :group: hello_world
    :filename: hello_world_02.svg
 
-   fsm.add_state(name='World', timer=1)
+   fsm.states['World'] = {'timer': 1}
 
 Now our state machine contains two states: `Hello` and `World`. However, they are not
-yet connected, which is clear in the diagram below:
+yet connected, which is obvious in the state diagram below:
 
 .. figure:: hello_world_02.svg
 
@@ -219,9 +222,9 @@ state's name or an operator such as ``>exit`` or ``>back``).
 
 At this point, our state machine is functional: it moves from `Hello` to `World` after
 1.5 seconds, and then exits after 1 more second. However, it still doesn’t *do*
-anything, because we haven’t defined any output actions yet.
-Let’s fix that by adding *actions* to each state. Actions define what happens when a
-state is active, such as turning on an output channel:
+anything, because we haven’t defined any output actions yet. Let’s fix that by adding
+*actions* to each state. Actions define what happens when a state is active, such as
+turning on an output channel:
 
 .. fsm_codeblock::
    :group: hello_world
@@ -230,12 +233,19 @@ state is active, such as turning on an output channel:
    fsm.states['Hello'].actions = {'BNC1': 1}
    fsm.states['World'].actions = {'BNC2': 1}
 
+And with that, our `Hello, World!` example is complete:
+
 .. figure:: hello_world_04.svg
 
    Our finite-state machine is complete.
 
-For convenience, the same state machine can also be defined in a single step, by
-providing timers, transitions, and actions directly when adding the states:
+In the previous examples, we first added bare-bones states and then modified them
+afterward (changing timers, adding transitions, assigning actions). This was done purely
+for demonstration purposes, so you could see that states behave like regular Python
+objects and can be manipulated at any time. In practice, however, you would usually
+choose the more straightforward approach: specify everything a state needs (its timer,
+transitions, and actions) directly in the call to
+:meth:`~bpod_core.fsm.StateMachine.add_state`:
 
 .. fsm_codeblock::
    :group: hello_world
@@ -253,27 +263,25 @@ sequences. See section :ref:`examples` for more examples.
    :class: tip
 
    Adding states
-      Use :meth:`~bpod_core.fsm.StateMachine.add_state` with parameters ``name``, ``timer``, ``transitions``, and ``actions``.
+      Use :meth:`~bpod_core.fsm.StateMachine.add_state` with parameters ``name``,
+      ``timer``, ``transitions``, and ``actions``.
+
+   Modifying states
+      You can create and modify states by directly manipulating the fields of
+      :class:`~bpod_core.fsm.StateMachine`.
 
    Entry state
       The first state you add is always the entry point of the state machine.
 
    State Timers
-      Every state has a timer (default 0 s), which can trigger events.
-
-   'Tup' event
-      When a state timer expires, the event ``Tup`` is emitted.
+      Every state has a timer (default 0 s), which triggers the ``Tup`` events on
+      expiry.
 
    Transitions
       States define transitions in a Python :class:dict, mapping events to targets.
 
    Actions
       States can perform output actions (e.g., activate a port or channel) while active.
-
-   Modifying states
-      States can be updated after creation, since they behave like regular Python objects.
-
-
 
 
 Validation
