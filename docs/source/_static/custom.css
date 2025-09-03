@@ -1,0 +1,36 @@
+.caption-number {
+    font-weight: bold;
+}
+
+figure.align-default {
+    text-align: center;
+}
+
+figure.align-default figcaption {
+    text-align: center;
+}
+
+a.headerlink {
+    visibility: visible !important;
+    opacity: 0.5 !important;
+    transition: opacity 0.2s ease-in-out;
+}
+
+a.headerlink:hover {
+    opacity: 1.0 !important;
+}
+
+.linkcode-link::after {
+    opacity: 0.5 !important;
+    margin-left: 4px;
+    transition: opacity 0.2s ease-in-out;
+}
+
+.linkcode-link:hover::after {
+    opacity: 1.0 !important;
+}
+
+/* Hide the top "View page source" breadcrumb link */
+.wy-breadcrumbs-aside {
+    display: none !important;
+}

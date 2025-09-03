@@ -10,17 +10,17 @@ fsm = StateMachine()
 
 fsm.add_state(
     name='WaitForChoice',
-    state_change_conditions={'Port1_High': 'LightPort1', 'Port2_High': 'LightPort2'},
+    transitions={'Port1_High': 'LightPort1', 'Port2_High': 'LightPort2'},
 )
 fsm.add_state(
     name='LightPort1',
     timer=1,
-    state_change_conditions={'Tup': '>exit'},
-    output_actions={'PWM1': 255},
+    transitions={'Tup': '>exit'},
+    actions={'PWM1': 255},
 )
 fsm.add_state(
     name='LightPort2',
     timer=1,
-    state_change_conditions={'Tup': '>exit'},
-    output_actions={'PWM2': 255},
+    transitions={'Tup': '>exit'},
+    actions={'PWM2': 255},
 )

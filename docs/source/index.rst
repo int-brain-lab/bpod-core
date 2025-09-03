@@ -1,14 +1,17 @@
 .. include:: ../../README.md
    :parser: myst_parser.sphinx_
+   :start-after: </p>
+   :end-before: ---
 
 .. toctree::
+   :caption: Sections
    :maxdepth: 3
    :hidden:
 
-   developer_guide
-   examples/index
+   state_machines/index
    api
    schema
+   developer_guide
    changelog
 
 .. toctree::
@@ -16,3 +19,4 @@
    :hidden:
 
    bpod-core on GitHub <https://github.com/int-brain-lab/bpod-core>
+   bpod-core on PyPI <https://pypi.org/project/bpod-core/>

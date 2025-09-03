@@ -5,12 +5,28 @@ import errno
 import json
 import re
 import socket
-from collections.abc import Iterator, MutableMapping, Sequence
+from collections.abc import (
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from pathlib import Path
-from typing import Any, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    TypeVar,
+    cast,
+)
 
 import msgspec
 from appdirs import user_config_dir
+from pydantic import Field, RootModel
+
+K = TypeVar('K')
+V = TypeVar('V')
+
 
 RE_SANITIZE = re.compile(r'[^a-zA-Z0-9_]')
 RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
@@ -292,3 +308,68 @@ class SettingsDict(MutableMapping):
         """
         set_nested(d=self._state, keys=keys, value=value)
         self._save_to_file()
+
+
+class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
+    """A dict-like container with runtime validation for keys and values.
+
+    This class wraps a standard :py:class:`dict` and integrates with Pydantic's
+    :class:`RootModel` to validate keys and values upon mutation. It behaves like a
+    mutable mapping for all common operations (get, set, delete, iterate, len) and
+    compares equal to regular dicts with the same contents.
+
+    Notes
+    -----
+    Subclass :class:`ValidatedDict` to create a custom type with validation:
+
+    >>> class TestDict(ValidatedDict[str, int]):
+    ...     pass
+
+    You can then instantiate your class ``TestDict`` like a regular dict:
+
+    >>> test_dict = TestDict()
+    >>> test_dict['foo'] = 1
+    >>> test_dict[42] = 2
+    Traceback (most recent call last):
+       ...
+    pydantic_core._pydantic_core.ValidationError: 1 validation error for TestDict
+    42.[key]
+      Input should be a valid string [type=string_type, input_value=42, input_type=int]
+        For further information visit https://errors.pydantic.dev/2.11/v/string_type
+
+    Alternatively, you can also instantiate a ValidatedDict directly:
+
+    >>> my_validated_dict = ValidatedDict[str, int]({'foo': 1, 'bar': 2})
+    """
+
+    root: dict[K, V] = Field(default_factory=dict)
+
+    def __getitem__(self, key: K) -> V:
+        return self.root[key]
+
+    def __setitem__(self, key: K, value: V) -> None:
+        validated = type(self).model_validate({key: value}).root
+        self.root[key] = validated[key]
+
+    def __delitem__(self, key: K) -> None:
+        del self.root[key]
+
+    def __iter__(self) -> Iterator[K]:  # type: ignore[override]
+        return iter(self.root)
+
+    def __len__(self) -> int:
+        return len(self.root)
+
+    def __repr__(self) -> str:
+        return repr(self.root)
+
+    def __eq__(self, other: object) -> bool:
+        return self.root == other
+
+    if TYPE_CHECKING:
+
+        def __init__(self, root: Mapping[K, V] | None = ...) -> None: ...
+
+        def __hash__(self) -> int: ...
+    else:
+        __hash__ = None
