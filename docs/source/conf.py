@@ -13,6 +13,83 @@ sys.path.insert(0, str(docs_source_path / '_ext'))
 from bpod_core import __version__  # noqa: E402
 from bpod_core.fsm import StateMachine  # noqa: E402
 
+
+def generate_fsm_examples(app):
+    if app.builder.name == 'doctest':
+        return
+
+    # Create docs/source/state_machines/examples/ with one page per example
+    examples_source_path = project_root / 'examples'
+    examples_target_path = docs_source_path / 'state_machines' / 'examples'
+    examples_target_path.mkdir(parents=True, exist_ok=True)
+    example_files = sorted(
+        [f for f in examples_source_path.glob('*.py')], key=lambda f: f.name
+    )
+
+    for fn in example_files:
+        # Import the example file as a module
+        spec = importlib.util.spec_from_file_location(fn.stem, str(fn))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[fn.stem] = module
+        spec.loader.exec_module(module)
+
+        # Extract title and description from docstring
+        doc = inspect.getdoc(module)
+        page_title = doc.splitlines()[0].strip('."')
+        description = '\n'.join(doc.splitlines()[1:]).strip('"')
+
+        # Generate state machine diagram and save as SVG
+        state_machine = module.fsm
+        image_file = examples_target_path / fn.with_suffix('.svg').name
+        state_machine.to_file(image_file, overwrite=True)
+
+        # Generate JSON
+        json = state_machine.to_json(indent=2).splitlines()
+        json = [' ' * 7 + line for line in json]
+
+        # Generate YAML
+        yaml = state_machine.to_yaml(indent=2).splitlines()
+        yaml = [' ' * 7 + line for line in yaml]
+
+        page_path = examples_target_path.joinpath(f'{fn.stem}.rst')
+        page_lines = [
+            page_title,
+            '-' * len(page_title),
+            '',
+            description,
+            '',
+            f'.. image:: {image_file.name}',
+            '   :align: center',
+            '',
+            '.. tab-set::',
+            '',
+            '   .. tab-item:: Python',
+            '',
+            f'    .. literalinclude:: ../../../../examples/{fn.name}',
+            '       :language: python',
+            '       :start-at: from bpod_core.',
+            '',
+            '   .. tab-item:: JSON',
+            '',
+            '    .. code-block:: json',
+            '',
+            *json,
+            '',
+            '   .. tab-item:: YAML',
+            '',
+            '    .. code-block:: yaml',
+            '',
+            *yaml,
+            '',
+        ]
+        with page_path.open('w', encoding='utf-8') as pf:
+            pf.write('\n'.join(page_lines) + '\n')
+
+
+def setup(app):
+    app.connect('builder-inited', generate_fsm_examples)
+
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
@@ -40,74 +117,6 @@ with schema_root.joinpath('statemachine.json').open('w') as f:
     schema = StateMachine.model_json_schema()
     json.dump(schema, f, indent=2)
     f.write('\n')  # add final newline
-
-# -- Generate Examples pages --------------------------------------------------
-# Create docs/source/state_machines/examples/ with one page per example
-examples_source_path = project_root / 'examples'
-examples_target_path = docs_source_path / 'state_machines' / 'examples'
-examples_target_path.mkdir(parents=True, exist_ok=True)
-example_files = sorted(
-    [f for f in examples_source_path.glob('*.py')], key=lambda f: f.name
-)
-
-for fn in example_files:
-    # Import the example file as a module
-    spec = importlib.util.spec_from_file_location(fn.stem, str(fn))
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[fn.stem] = module
-    spec.loader.exec_module(module)
-
-    # Extract title and description from docstring
-    doc = inspect.getdoc(module)
-    page_title = doc.splitlines()[0].strip('."')
-    description = '\n'.join(doc.splitlines()[1:]).strip('"')
-
-    # Generate state machine diagram and save as SVG
-    state_machine = module.fsm
-    image_file = examples_target_path / fn.with_suffix('.svg').name
-    state_machine.to_file(image_file, overwrite=True)
-
-    # Generate JSON
-    json = state_machine.to_json(indent=2).splitlines()
-    json = [' ' * 7 + line for line in json]
-
-    # Generate YAML
-    yaml = state_machine.to_yaml(indent=2).splitlines()
-    yaml = [' ' * 7 + line for line in yaml]
-
-    page_path = examples_target_path.joinpath(f'{fn.stem}.rst')
-    page_lines = [
-        page_title,
-        '-' * len(page_title),
-        '',
-        description,
-        '',
-        f'.. image:: {image_file.name}',
-        '   :align: center',
-        '',
-        '.. tab-set::',
-        '',
-        '   .. tab-item:: Python',
-        '',
-        f'    .. literalinclude:: ../../../../examples/{fn.name}',
-        '       :language: python',
-        '       :start-at: from bpod_core.',
-        '',
-        '   .. tab-item:: JSON',
-        '',
-        '    .. code-block:: json',
-        '',
-        *json,
-        '',
-        '   .. tab-item:: YAML',
-        '',
-        '    .. code-block:: yaml',
-        '',
-        *yaml,
-        '',
-    ]
-    with page_path.open('w', encoding='utf-8') as pf:
-        pf.write('\n'.join(page_lines) + '\n')
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
