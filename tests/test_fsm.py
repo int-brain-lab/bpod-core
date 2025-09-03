@@ -3,9 +3,48 @@ from pathlib import Path
 
 import msgspec
 import pytest
-from pydantic import ValidationError
+from pydantic import ValidationError, create_model
 
-from bpod_core.fsm import State, StateMachine
+from bpod_core.fsm import State, StateMachine, dec_hook, enc_hook
+
+
+class TestEncDecHooks:
+    @pytest.fixture
+    def model(self):
+        model = create_model('Model', x=(int, ...), y=(str, 'default'), z=(bool, True))
+        return model(x=1)
+
+    def test_enc_hook_with_pydantic(self, model):
+        """Encode a Pydantic model to dict."""
+        model_instance = model.model_construct(x=1, y='test')
+        result = enc_hook(model_instance)
+        assert result == {'x': 1, 'y': 'test'}
+
+    def test_enc_hook_with_non_pydantic(self):
+        """Encode a non-Pydantic object to dict."""
+        with pytest.raises(NotImplementedError):
+            enc_hook({'id': 1})
+
+    def test_dec_hook_with_pydantic(self, model):
+        """Decode a dict to a Pydantic model."""
+        data = {'x': 2, 'y': 'Bob'}
+        model_instance = dec_hook(type(model), data)
+        assert isinstance(model_instance, type(model))
+        assert model_instance.x == 2
+        assert model_instance.y == 'Bob'
+        assert model_instance.z is True  # default applied
+
+    def test_dec_hook_with_non_pydantic(self):
+        """Decode a non-Pydantic object to dict."""
+        with pytest.raises(NotImplementedError):
+            dec_hook(dict, {'x': 1})
+
+    def test_round_trip(self, model):
+        """Encode a Pydantic model to dict and decode back."""
+        original = model.model_construct(x=3, y='Carol', z=False)
+        encoded = enc_hook(original)
+        decoded = dec_hook(type(model), encoded)
+        assert decoded == original
 
 
 class TestState:
@@ -68,6 +107,37 @@ class TestStateMachineBasic:
         sm = StateMachine(name='Test State Machine')
         with pytest.raises(ValidationError):
             sm.add_state(name='state1', timer=-1.0)
+
+    def test_empty_repr_default_name(self):
+        """Default name should be omitted from __repr__."""
+        fsm = StateMachine()
+        expected = (
+            'StateMachine(states: 0, global_timers: 0, '
+            'global_counters: 0, conditions: 0)'
+        )
+        assert repr(fsm) == expected
+
+    def test_empty_repr_custom_name(self):
+        """Custom name should be included in __repr__."""
+        fsm = StateMachine(name='My FSM')
+        expected = (
+            "StateMachine(name='My FSM', states: 0, global_timers: 0, "
+            'global_counters: 0, conditions: 0)'
+        )
+        assert repr(fsm) == expected
+
+    def test_repr_counts_update(self):
+        fsm = StateMachine()
+        fsm.add_state('a', 1, {'Tup': 'b'}, {'PWM1': 255})
+        fsm.add_state('b', 1, {'Tup': 'a'})
+        fsm.set_global_timer(1, 0.5)
+        fsm.set_global_counter(0, 'Port1_High', 3)
+        fsm.set_condition(2, 'Port2', 1)
+        expected = (
+            'StateMachine(states: 2, global_timers: 1, '
+            'global_counters: 1, conditions: 1)'
+        )
+        assert repr(fsm) == expected
 
 
 class TestToDigraph:
