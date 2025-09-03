@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `fsm.to_file` and `fsm.from_file` for export/import of state machines.
 - YAML import/export for state machines
-- Initial work on documentation: Finite-State Machines
+- Work on documentation: Finite-State Machines
 
 ### Changed
 - moved state machine structure from msgspec Struct back to Pydantic Model
