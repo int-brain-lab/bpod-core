@@ -814,6 +814,11 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         filename : os.PathLike or str
             The path to the file containing the state machine.
 
+        Returns
+        -------
+        StateMachine
+            A StateMachine instance created from the contens of the file.
+
         Raises
         ------
         FileNotFoundError

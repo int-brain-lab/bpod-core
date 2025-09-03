@@ -115,15 +115,15 @@ for fn in example_files:
 extensions = [
     'myst_parser',
     'sphinx.ext.intersphinx',
-    'sphinx.ext.napoleon',
     'sphinx.ext.autodoc',
+    'sphinx.ext.napoleon',
+    'sphinx_autodoc_typehints',
     'sphinx.ext.autosummary',
     'sphinx.ext.graphviz',
     'sphinx.ext.doctest',
     'sphinx_github_style',
     'sphinx_copybutton',
     'sphinx_design',
-    'sphinx_autodoc_typehints',
     'sphinx-jsonschema',
     'sphinx_toolbox.wikipedia',
     'doctest_codeblock',
@@ -167,15 +167,13 @@ autodoc_typehints = 'description'  # 'description', 'signature', 'none', 'both'
 autodoc_typehints_description_target = 'all'  # 'all', 'documented', 'documented_params'
 autodoc_typehints_format = 'short'  # 'fully-qualified', 'short'
 
-typehints_defaults = None
-typehints_use_rtype = False
-typehints_use_signature = False
-typehints_use_signature_return = True
-# always_use_bars_union = True
-# typehints_formatter = lambda x, y: f'``{x}``'
-
 autosummary_generate = True
 autosummary_imported_members = False
+
+typehints_defaults = None
+typehints_use_rtype = True
+typehints_use_signature = False
+typehints_use_signature_return = True
 
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True
@@ -187,10 +185,13 @@ napoleon_use_admonition_for_notes = True
 napoleon_use_admonition_for_references = True
 napoleon_use_ivar = True
 napoleon_use_param = True
-napoleon_use_rtype = False
+napoleon_use_rtype = True
 napoleon_use_keyword = True
 napoleon_preprocess_types = True
 napoleon_type_aliases = {
+    'ndarray': 'numpy.ndarray',
+    'DataFrame': 'pandas.DataFrame',
+    'Series': 'pandas.Series',
     'Mapping': 'collections.abc.Mapping',
     'ValidationError': 'pydantic.ValidationError',
 }
