@@ -71,6 +71,7 @@ typing = [
   "mypy>=1.15.0",
   "types-docutils>=0.22.0.20250822",
   "types-pyserial>=3.5.0.20250326",
+  "types-pyyaml>=6.0.12.20250822",
 ]
 ci = [
   "coveralls>=4.0.1",
