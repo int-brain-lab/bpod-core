@@ -247,6 +247,11 @@ choose the more straightforward approach: specify everything a state needs (its 
 transitions, and actions) directly in the call to
 :meth:`~bpod_core.fsm.StateMachine.add_state`:
 
+.. testcode:: hello_world
+   :hide:
+
+   fsm_original = fsm.copy()
+
 .. fsm_codeblock::
    :group: hello_world
 
@@ -255,6 +260,11 @@ transitions, and actions) directly in the call to
    fsm = StateMachine()
    fsm.add_state(name='Hello', timer=1.5, transitions={'Tup': 'World'}, actions={'BNC1': 1})
    fsm.add_state(name='World', timer=1.0, transitions={'Tup': '>exit'}, actions={'BNC2': 1})
+
+.. testcode:: hello_world
+   :hide:
+
+   assert fsm_original == fsm
 
 Using this simple concept you can create arbitrarily complex patterns and behavioral
 sequences. See section :ref:`examples` for more examples.
