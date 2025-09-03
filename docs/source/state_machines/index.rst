@@ -76,9 +76,7 @@ response contingencies in a clear and reproducible way. Each state represents a 
 phase of the experiment, and transitions are triggered by events such as a subject’s
 action or a timer. Timers are particularly useful to control the duration of states and
 the timing of their associated output actions—such as turning on a light, sounding a
-buzzer, or delivering a reward—which allows fine-grained control over the experimental
-environment. This structured approach clarifies the logic of experimental protocols,
-reduces ambiguity in interpretation, and ensures reproducible, quantifiable results.
+buzzer, or delivering a reward.
 
 .. graphviz::
    :caption: A simple trial sequence implemented as a finite-state machine.
@@ -130,7 +128,8 @@ state and, finally, to the trial’s exit.
       A controlled action that occurs with the onset of the state.
 
    Timer
-      A time-based event that can trigger a transition after a specified interval.
+      A mechanism that, after a set interval, generates an event which may trigger a
+      transition.
 
 
 .. In behavioral experiments, FSMs can be used to specify trial structure, stimulus
@@ -267,7 +266,7 @@ transitions, and actions) directly in the call to
    assert fsm_original == fsm
 
 Using this simple concept you can create arbitrarily complex patterns and behavioral
-sequences. See section :ref:`examples` for more examples.
+sequences. See the section :ref:`examples` for more examples.
 
 .. admonition:: Take-Home Messages
    :class: tip
@@ -288,7 +287,7 @@ sequences. See section :ref:`examples` for more examples.
       expiry.
 
    Transitions
-      States define transitions in a Python :class:dict, mapping events to targets.
+      States define transitions in a Python :class:`dict`, mapping events to targets.
 
    Actions
       States can perform output actions (e.g., activate a port or channel) while active.
@@ -392,15 +391,23 @@ Import and Export
 ^^^^^^^^^^^^^^^^^
 There are several convenient methods to serialize and visualize state machines:
 
-- :meth:`~bpod_core.fsm.StateMachine.to_json` and :meth:`~bpod_core.fsm.StateMachine.to_dict` return in-memory representations as a JSON string and Python dict, respectively.
-- :meth:`~bpod_core.fsm.StateMachine.to_file`, depending on the file extension, writes either:
+- :meth:`~bpod_core.fsm.StateMachine.to_json`,
+  :meth:`~bpod_core.fsm.StateMachine.to_yaml` and
+  :meth:`~bpod_core.fsm.StateMachine.to_dict` return in-memory representations as a JSON
+  string, YAML string and Python dict, respectively.
+- :meth:`~bpod_core.fsm.StateMachine.to_digraph` returns a Graphviz
+  :class:`~graphviz.Digraph` instance which can be used to render the state diagram, for
+  instance in a Jupyter notebook.
+- :meth:`~bpod_core.fsm.StateMachine.to_file`, depending on the file extension, writes
+  either:
 
-  - ``.json``: a pretty-printed JSON serialization of the :class:`~bpod_core.fsm.StateMachine`, or
+  - ``.json``: a JSON serialization of the :class:`~bpod_core.fsm.StateMachine`,
+  - ``.yaml``, ``.yml``: a YAML serialization of the :class:`~bpod_core.fsm.StateMachine`,
   - ``.svg``, ``.png``, ``.pdf``: a rendered state diagram via Graphviz.
 - :meth:`~bpod_core.fsm.StateMachine.from_json`, :meth:`~bpod_core.fsm.StateMachine.from_dict`,
   and :meth:`~bpod_core.fsm.StateMachine.from_file` create a StateMachine from serialized data.
 
-.. testcode-code-block:: python
+.. testcode-code-block:: python3
    :caption: A roundtrip from :class:`~bpod_core.fsm.StateMachine` to JSON and back to :class:`~bpod_core.fsm.StateMachine`
    :group: json-roundtrip
 
@@ -426,7 +433,7 @@ There are several convenient methods to serialize and visualize state machines:
    atexit.register(patcher.stop)
 
 
-.. testcode-code-block:: python
+.. testcode-code-block:: python3
    :caption: Importing a :class:`~bpod_core.fsm.StateMachine` from a JSON file and exporting its state diagram as a PNG file.
    :group: file-roundtrip
 

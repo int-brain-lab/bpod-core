@@ -204,6 +204,8 @@ html_static_path = ['_static']
 html_css_files = ['custom.css']
 
 linkcode_link_text = ' '
+pygments_style = 'default'
+highlight_language = 'python3'
 
 # -- Graphviz settings -----------------------------------
 graphviz_dot = 'dot'
