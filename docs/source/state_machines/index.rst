@@ -115,6 +115,7 @@ by their respective timers, after which either state transitions to the trial’
 state and, finally, to the trial’s exit.
 
 .. admonition:: Key Concepts
+   :class: tip
 
    State
       A specific configuration of the system at a given moment.
@@ -144,52 +145,135 @@ state and, finally, to the trial’s exit.
 The `StateMachine` Data Model
 -----------------------------
 In bpod-core, an FSM is represented by the :class:`~bpod_core.fsm.StateMachine` class.
-It defines states, state transitions, and the actions assigned to each state. It also
-introduces Bpod-specific concepts such as state timers, global timers, conditions, and
-global counters. Finally, it provides tools for validation, visualization, and
+It defines states, state transitions, and the output actions assigned to each state. It
+also introduces Bpod-specific concepts such as state timers, global timers, conditions,
+and global counters. Finally, it provides tools for validation, visualization, and
 importing/exporting to and from other formats.
 
 
 Creating a State Machine
 ^^^^^^^^^^^^^^^^^^^^^^^^
-A state machine can be created by importing and instantiating a
-:class:`~bpod_core.fsm.StateMachine` object and adding states using its
-:meth:`~bpod_core.fsm.StateMachine.add_state` method:
+A state machine is created by instantiating a :class:`~bpod_core.fsm.StateMachine`
+object and adding states with its :meth:`~bpod_core.fsm.StateMachine.add_state` method:
 
 .. fsm_codeblock::
-   :caption: Say hello to your first state machine.
    :group: hello_world
    :filename: hello_world_01.svg
 
    from bpod_core.fsm import StateMachine
 
    fsm = StateMachine()
+   fsm.add_state(name='Hello')
 
-   fsm.add_state(
-       name='Hello',  # the name of the state
-       timer=1.0,  # the state timer (in seconds)
-       transitions={'Tup': 'World'},  # definition of state transitions
-       actions={'PWM1': 255},  # an LED connected to PWM1 will light up
-   )
-   fsm.add_state(
-       name='World',
-       timer=2.0,
-       transitions={'Tup': '>exit'},  # transition to exit
-   )
-
-The above commands result in a state machine with the two states  `Hello` and `World`.
-In the `Hello` state, the output channel ``PWM1`` is set to 255. After its 1-second
-state timer expires—emitting a ``Tup`` event—the state transitions to `World`. Following
-another two seconds in the `World` state (which has no output action), the state machine
-exits using the ``>exit`` operator:
+The commands above create a state machine with a single state named `Hello`. The very
+first state that is added to a state machine automatically becomes the *entry state* —
+this is where execution begins. Every state comes with a *state timer*, which can be
+used to generate timer-based events. By default, this timer is set to 0 s, meaning the
+state will immediately trigger a timeout event. The created state machine can be
+visualized using the following state diagram:
 
 .. figure:: hello_world_01.svg
-   :align: center
 
-   A basic state machine created in bpod-core.
+   Well hello!
+
+See the section `Import and Export`_ for details on how such state diagrams are
+generated. To make things a bit more interesting, let's add a second state named
+`World`, this time with a 1 s state timer:
+
+.. fsm_codeblock::
+   :group: hello_world
+   :filename: hello_world_02.svg
+
+   fsm.add_state(name='World', timer=1)
+
+Now our state machine contains two states: `Hello` and `World`. However, they are not
+yet connected, which is clear in the diagram below:
+
+.. figure:: hello_world_02.svg
+
+   That doesn't look right.
+
+As you can see, we're missing a *transition* from `Hello` to `World`. Fortunately,
+transitions can be added later by directly modifying the fields of the
+:class:`~bpod_core.fsm.StateMachine` instance.
+Let's add a transition from `Hello` to `World`, triggered by the end of `Hello`'s
+state timer. While we're at it, we'll also change `Hello`'s state timer to 1.5 s.
+Finally, we'll add a transition from `World` to the special exit state:
+
+.. fsm_codeblock::
+   :group: hello_world
+   :filename: hello_world_03.svg
+
+   fsm.states['Hello'].transitions = {'Tup': 'World'}
+   fsm.states['Hello'].timer = 1.5
+   fsm.states['World'].transitions = {'Tup': '>exit'}
+
+The end of a state timer is signaled by the ``Tup`` event (short for *time up*).
+A state's transitions are defined in a Python :class:`dict`, where keys are the
+triggering events (e.g. `Tup`), and values are the transition targets (either another
+state's name or an operator such as ``>exit`` or ``>back``).
+
+.. figure:: hello_world_03.svg
+
+   Getting there.
+
+At this point, our state machine is functional: it moves from `Hello` to `World` after
+1.5 seconds, and then exits after 1 more second. However, it still doesn’t *do*
+anything, because we haven’t defined any output actions yet.
+Let’s fix that by adding *actions* to each state. Actions define what happens when a
+state is active, such as turning on an output channel:
+
+.. fsm_codeblock::
+   :group: hello_world
+   :filename: hello_world_04.svg
+
+   fsm.states['Hello'].actions = {'BNC1': 1}
+   fsm.states['World'].actions = {'BNC2': 1}
+
+.. figure:: hello_world_04.svg
+
+   Our finite-state machine is complete.
+
+For convenience, the same state machine can also be defined in a single step, by
+providing timers, transitions, and actions directly when adding the states:
+
+.. fsm_codeblock::
+   :group: hello_world
+
+   from bpod_core.fsm import StateMachine
+
+   fsm = StateMachine()
+   fsm.add_state(name='Hello', timer=1.5, transitions={'Tup': 'World'}, actions={'BNC1': 1})
+   fsm.add_state(name='World', timer=1.0, transitions={'Tup': '>exit'}, actions={'BNC2': 1})
 
 Using this simple concept you can create arbitrarily complex patterns and behavioral
 sequences. See section :ref:`examples` for more examples.
+
+.. admonition:: Take-Home Messages
+   :class: tip
+
+   Adding states
+      Use :meth:`~bpod_core.fsm.StateMachine.add_state` with parameters ``name``, ``timer``, ``transitions``, and ``actions``.
+
+   Entry state
+      The first state you add is always the entry point of the state machine.
+
+   State Timers
+      Every state has a timer (default 0 s), which can trigger events.
+
+   'Tup' event
+      When a state timer expires, the event ``Tup`` is emitted.
+
+   Transitions
+      States define transitions in a Python :class:dict, mapping events to targets.
+
+   Actions
+      States can perform output actions (e.g., activate a port or channel) while active.
+
+   Modifying states
+      States can be updated after creation, since they behave like regular Python objects.
+
+
 
 
 Validation
