@@ -25,6 +25,14 @@ rst_prolog = f"""
 .. |version_code| replace:: ``{version}``
 """
 
+html_context = {
+    'display_github': False,
+    'github_user': 'int-brain-lab',
+    'github_repo': 'bpod-core',
+    'github_version': 'master',
+    'conf_py_path': '/docs/source/',
+}
+
 # -- dump json schema --------------------------------------------------------
 schema_root = project_root / 'schema'
 schema_root.mkdir(exist_ok=True)
@@ -112,6 +120,7 @@ extensions = [
     'sphinx.ext.autosummary',
     'sphinx.ext.graphviz',
     'sphinx.ext.doctest',
+    'sphinx_github_style',
     'sphinx_copybutton',
     'sphinx_design',
     'sphinx_autodoc_typehints',
@@ -124,11 +133,6 @@ source_suffix = ['.rst', '.md']
 
 templates_path = ['_templates']
 exclude_patterns = []
-
-typehints_defaults = None
-typehints_use_rtype = False
-typehints_use_signature = False
-typehints_use_signature_return = False
 
 intersphinx_timeout = 30
 intersphinx_mapping = {
@@ -163,6 +167,13 @@ autodoc_typehints = 'description'  # 'description', 'signature', 'none', 'both'
 autodoc_typehints_description_target = 'all'  # 'all', 'documented', 'documented_params'
 autodoc_typehints_format = 'short'  # 'fully-qualified', 'short'
 
+typehints_defaults = None
+typehints_use_rtype = False
+typehints_use_signature = False
+typehints_use_signature_return = True
+# always_use_bars_union = True
+# typehints_formatter = lambda x, y: f'``{x}``'
+
 autosummary_generate = True
 autosummary_imported_members = False
 
@@ -176,10 +187,13 @@ napoleon_use_admonition_for_notes = True
 napoleon_use_admonition_for_references = True
 napoleon_use_ivar = True
 napoleon_use_param = True
-napoleon_use_rtype = True
+napoleon_use_rtype = False
 napoleon_use_keyword = True
 napoleon_preprocess_types = True
-napoleon_type_aliases = None
+napoleon_type_aliases = {
+    'Mapping': 'collections.abc.Mapping',
+    'ValidationError': 'pydantic.ValidationError',
+}
 napoleon_attr_annotations = True
 
 graphviz_output_format = 'svg'
@@ -187,6 +201,8 @@ graphviz_output_format = 'svg'
 numfig = True
 html_static_path = ['_static']
 html_css_files = ['custom.css']
+
+linkcode_link_text = ' '
 
 # -- Graphviz settings -----------------------------------
 graphviz_dot = 'dot'
