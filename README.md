@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/source/_static/bpod-core.svg" />
+  <img src="https://raw.githubusercontent.com/int-brain-lab/bpod-core/refs/heads/main/docs/source/_static/bpod-core.svg" />
 </p>
 
 # bpod-core
