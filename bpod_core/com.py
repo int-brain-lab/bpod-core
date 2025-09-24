@@ -49,6 +49,11 @@ class ExtendedSerial(Serial):
         -------
         int or None
             Number of bytes written to the serial port.
+
+        Raises
+        ------
+        serial.SerialTimeoutException
+            In case a write timeout is configured for the port and the time is exceeded.
         """
         return super().write(to_bytes(data))
 
@@ -74,6 +79,13 @@ class ExtendedSerial(Serial):
         int | None
             The number of bytes written to the serial port, or None if the write
             operation fails.
+
+        Raises
+        ------
+        struct.error
+            Error occurred during packing of the data into binary format.
+        serial.SerialTimeoutException
+            In case a write timeout is configured for the port and the time is exceeded.
         """
         buffer = struct.pack(format_string, *data)
         return super().write(buffer)
@@ -278,10 +290,11 @@ def to_bytes(data: ByteLike) -> bytes:  # noqa: PLR0911
     Convert data to a bytes object.
 
     This function extends :func:`serial.to_bytes` with support for:
-    - NumPy arrays and scalars
-    - Unsigned 8-bit integers
-    - Strings (encoded as UTF-8)
-    - Arbitrary iterables of ByteLike
+
+    - :class:`numpy.ndarray` and :class:`numpy.generic` scalars
+    - :class:`int` values in the range ``0..255``
+    - :class:`str` (encoded as UTF-8)
+    - Arbitrary iterables of :data:`ByteLike`
 
     Parameters
     ----------
