@@ -219,6 +219,16 @@ class TestSerialization:
         json_str = state_machine.to_json(indent=2)
         assert '\n' in json_str
 
+    def test_to_json_defaults(self, state_machine):
+        """Test that defaults are included in JSON when requested."""
+        assert 'global_timers' not in state_machine.to_json()
+        assert 'global_timers' in state_machine.to_json(exclude_defaults=False)
+
+    def test_to_yaml_defaults(self, state_machine):
+        """Test that defaults are included in YAML when requested."""
+        assert 'global_timers' not in state_machine.to_yaml()
+        assert 'global_timers' in state_machine.to_yaml(exclude_defaults=False)
+
 
 class TestFromConstructors:
     def test_from_dict(self):
