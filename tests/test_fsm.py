@@ -235,11 +235,24 @@ class TestFromConstructors:
         assert isinstance(fsm, StateMachine)
         assert json_str == fsm.to_json()  # roundtrip
 
+    def test_from_yaml(self):
+        """Construct from JSON string and compare round-trip via to_json."""
+        yaml_str = '{}\n'
+        fsm = StateMachine.from_yaml(yaml_str)
+        assert isinstance(fsm, StateMachine)
+        assert yaml_str == fsm.to_yaml()  # roundtrip
+
     def test_from_invalid_json_raises(self, tmp_path):
-        """Invalid JSON should raise ValidationError in from_json."""
+        """Invalid JSON should raise msgspec.DecodeError in from_json."""
         json_str = 'not valid json'
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError, match='Invalid JSON'):
             StateMachine.from_json(json_str)
+
+    def test_from_invalid_yaml_raises(self, tmp_path):
+        """Invalid YAML should raise msgspec.DecodeError in from_json."""
+        yaml_str = 'not valid yaml'
+        with pytest.raises(ValueError, match='Invalid YAML'):
+            StateMachine.from_yaml(yaml_str)
 
 
 class TestSchema:
@@ -306,7 +319,7 @@ class TestFromFile:
         """Invalid JSON content on disk should raise msgspec.DecodeError."""
         bad = tmp_path / 'bad.json'
         bad.write_text('not valid json', encoding='utf-8')
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             StateMachine.from_file(bad)
 
 

@@ -11,7 +11,7 @@ import msgspec
 import numpy as np
 import yaml
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import BaseModel, Field, validate_call
+from pydantic import BaseModel, Field, ValidationError, validate_call
 
 from bpod_core.misc import ValidatedDict
 
@@ -671,8 +671,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         str
             A dictionary representation of the state machine.
         """
-        dictionary = self.model_dump(exclude_defaults=exclude_defaults)
-        return yaml.dump(dictionary, sort_keys=False)
+        return msgspec.yaml.encode(self, enc_hook=enc_hook).decode()
 
     @validate_call
     def to_file(
@@ -766,6 +765,10 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         -------
         StateMachine
             A StateMachine instance created from the provided dictionary.
+
+        Notes
+        -----
+        This is a thin wrapper around :meth:`~BaseModel.model_validate`
         """
         return StateMachine.model_validate(data)
 
@@ -785,14 +788,18 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Raises
         ------
-        ValidationError
-            If the JSON string is not valid.
+        ValueError
+            If the JSON string is not valid or does not represent a
+            :class:`StateMachine`.
 
         Notes
         -----
         This is a thin wrapper around :meth:`~BaseModel.model_validate_json`
         """
-        return StateMachine.model_validate_json(json_str)
+        try:
+            return cls.model_validate_json(json_str)
+        except ValidationError as e:
+            raise ValueError('Invalid JSON string') from e
 
     @classmethod
     def from_yaml(cls, yaml_str: str | bytes) -> 'StateMachine':
@@ -810,11 +817,14 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Raises
         ------
-        ValidationError
-            If the YAML string is not valid.
+        ValueError
+            If the YAML string is not valid or does not represent a
+            :class:`StateMachine`.
         """
-        dictionary = yaml.safe_load(yaml_str)
-        return StateMachine.model_validate(dictionary)
+        try:
+            return cls.model_validate(yaml.safe_load(yaml_str))
+        except (ValidationError, yaml.YAMLError) as e:
+            raise ValueError('Invalid YAML string') from e
 
     @classmethod
     def from_file(cls, filename: PathLike | str) -> 'StateMachine':
@@ -836,6 +846,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             If the file does not exist.
         ValueError
             If the file extension is not .json, .yaml or .yml.
+            If the file content is not valid JSON or YAML.
         """
         # Handle file path
         filename = Path(filename).resolve()
@@ -854,7 +865,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
     @property
     def md5_hash(self) -> str:
         """MD5 hash of the state machine."""
-        json = self.model_dump_json(exclude_defaults=True).encode()
+        json = self.to_json().encode()
         return hashlib.md5(json).hexdigest()
 
     @property
