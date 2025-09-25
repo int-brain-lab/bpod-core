@@ -671,7 +671,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         str
             A dictionary representation of the state machine.
         """
-        return msgspec.yaml.encode(self, enc_hook=enc_hook).decode()
+        return msgspec.yaml.encode(self.to_dict(exclude_defaults)).decode()
 
     @validate_call
     def to_file(
