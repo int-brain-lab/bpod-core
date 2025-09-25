@@ -275,7 +275,7 @@ class TestFromFile:
         """from_file loads a YAML file and matches original machine."""
         # Write JSON to file
         path = tmp_path / 'machine.yaml'
-        path.write_text(state_machine.to_yaml(indent=2), encoding='utf-8')
+        path.write_text(state_machine.to_yaml(), encoding='utf-8')
 
         # Load via Path
         fsm = StateMachine.from_file(path)
