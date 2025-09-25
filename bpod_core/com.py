@@ -2,60 +2,17 @@
 
 import logging
 import struct
-from collections.abc import Iterable
-from typing import Any, TypeAlias
+from typing import Any
 
-import numpy as np
 from serial import Serial
-from serial.serialutil import to_bytes as serial_to_bytes  # type: ignore[attr-defined]
 from serial.threaded import Protocol
 from typing_extensions import Buffer, Self
 
 logger = logging.getLogger(__name__)
 
-ByteLike: TypeAlias = (
-    Buffer | int | np.ndarray | np.generic | str | Iterable['ByteLike']
-)
-"""
-A recursive type alias representing any data that can be converted to bytes for serial
-communication.
-
-Includes:
-
-- Buffer: Any buffer-compatible object (e.g., bytes, bytearray, memoryview)
-- int: Single integer values (interpreted as a single byte)
-- np.ndarray, np.generic: NumPy arrays and scalars (converted via .tobytes())
-- str: Strings (encoded as UTF-8)
-- Iterable['ByteLike']: Nested iterables of ByteLike types (recursively flattened)
-"""
-
 
 class ExtendedSerial(Serial):
     """Enhances :class:`serial.Serial` with additional functionality."""
-
-    def write(self, data: ByteLike) -> int | None:  # type: ignore[override]
-        """
-        Write data to the serial port.
-
-        This method extends :meth:`serial.Serial.write` with support for NumPy types,
-        unsigned 8-bit integers, strings (interpreted as UTF-8) and iterables.
-
-        Parameters
-        ----------
-        data : ByteLike
-            Data to be written to the serial port.
-
-        Returns
-        -------
-        int or None
-            Number of bytes written to the serial port.
-
-        Raises
-        ------
-        serial.SerialTimeoutException
-            In case a write timeout is configured for the port and the time is exceeded.
-        """
-        return super().write(to_bytes(data))
 
     def write_struct(self, format_string: str, *data: Any) -> int | None:  # noqa:ANN401
         """
@@ -88,7 +45,7 @@ class ExtendedSerial(Serial):
             In case a write timeout is configured for the port and the time is exceeded.
         """
         buffer = struct.pack(format_string, *data)
-        return super().write(buffer)
+        return self.write(buffer)
 
     def read_struct(self, format_string: str) -> tuple[Any, ...]:
         """
@@ -114,15 +71,16 @@ class ExtendedSerial(Serial):
         n_bytes = struct.calcsize(format_string)
         return struct.unpack(format_string, super().read(n_bytes))
 
-    def query(self, query: ByteLike, size: int = 1) -> bytes:
+    def query(self, query: Buffer, size: int = 1) -> bytes:
         r"""
         Query data from the serial port.
 
-        This method is a combination of :meth:`write` and :meth:`~serial.Serial.read`.
+        This method is a combination of :meth:`~serial.Serial.write` and
+        :meth:`~serial.Serial.read`.
 
         Parameters
         ----------
-        query : ByteLike
+        query : Buffer
             Query to be sent to the serial port.
         size : int, default: 1
             The number of bytes to receive from the serial port.
@@ -137,7 +95,7 @@ class ExtendedSerial(Serial):
 
     def query_struct(
         self,
-        query: ByteLike,
+        query: Buffer,
         format_string: str,
     ) -> tuple[Any, ...]:
         """
@@ -148,7 +106,7 @@ class ExtendedSerial(Serial):
 
         Parameters
         ----------
-        query : ByteLike
+        query : Buffer
             Query to be sent to the serial port.
         format_string : str
             A format string that specifies the layout of the data to be read. It should
@@ -165,7 +123,7 @@ class ExtendedSerial(Serial):
         self.write(query)
         return self.read_struct(format_string)
 
-    def verify(self, query: ByteLike, expected_response: bytes = b'\x01') -> bool:
+    def verify(self, query: Buffer, expected_response: bytes = b'\x01') -> bool:
         r"""
         Verify the response of the serial port.
 
@@ -174,7 +132,7 @@ class ExtendedSerial(Serial):
 
         Parameters
         ----------
-        query : ByteLike
+        query : Buffer
             The query to be sent to the serial port.
         expected_response : bytes, optional
             The expected response from the serial port. Default: b'\x01'.
@@ -283,48 +241,3 @@ class ChunkedSerialReader(Protocol):
         data_chunk : bytearray
             A contiguous slice of bytes of length `chunk_size`.
         """
-
-
-def to_bytes(data: ByteLike) -> bytes:  # noqa: PLR0911
-    """
-    Convert data to a bytes object.
-
-    This function extends :func:`serial.to_bytes` with support for:
-
-    - :class:`numpy.ndarray` and :class:`numpy.generic` scalars
-    - :class:`int` values in the range ``0..255``
-    - :class:`str` (encoded as UTF-8)
-    - Arbitrary iterables of :data:`ByteLike`
-
-    Parameters
-    ----------
-    data : ByteLike
-        Data to be converted to a bytes object.
-
-    Returns
-    -------
-    bytes
-        Data converted to bytes.
-
-    Raises
-    ------
-    TypeError
-        If the input type cannot be interpreted as bytes
-    ValueError
-        If an integer is out of the 0..255 range when coerced to a single byte.
-    """
-    match data:
-        case bytes():
-            return data
-        case bytearray():
-            return bytes(data)
-        case memoryview() | np.ndarray() | np.generic():
-            return data.tobytes()
-        case int():
-            return bytes([data])
-        case str():
-            return data.encode('utf-8')
-        case _ if isinstance(data, Iterable):
-            return b''.join(map(to_bytes, data))
-        case _:
-            return serial_to_bytes(data)  # type: ignore[no-any-return]

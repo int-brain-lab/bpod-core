@@ -1,6 +1,5 @@
 from unittest.mock import MagicMock, call
 
-import numpy as np
 import pytest
 
 from bpod_core import com
@@ -132,52 +131,3 @@ class TestChunkedSerialReader:
                 call(b'\x02\x00\x00\x00'),
             ],
         )
-
-
-class TestToBytes:
-    """Tests for to_bytes helper function."""
-
-    def test_to_bytes_with_bytes(self):
-        """Bytes input returns unchanged bytes payload."""
-        assert com.to_bytes(b'test') == b'test'
-
-    def test_to_bytes_with_bytearray(self):
-        """Bytearray converts to identical bytes sequence."""
-        assert com.to_bytes(bytearray([1, 2, 3])) == b'\x01\x02\x03'
-
-    def test_to_bytes_with_memoryview(self):
-        """Memoryview is supported and converted to bytes."""
-        data = bytearray([1, 2, 3])
-        assert com.to_bytes(memoryview(data)) == b'\x01\x02\x03'
-
-    def test_to_bytes_with_int(self):
-        """Single int 0–255 converts to one-byte sequence; >255 errors."""
-        assert com.to_bytes(255) == b'\xff'
-        with pytest.raises(ValueError, match='bytes must be in range'):
-            com.to_bytes(256)
-
-    def test_to_bytes_with_numpy_array(self):
-        """Numpy uint8 array converts element-wise to bytes."""
-        array = np.array([1, 2, 3], dtype=np.uint8)
-        assert com.to_bytes(array) == b'\x01\x02\x03'
-
-    def test_to_bytes_with_numpy_scalar(self):
-        """Numpy uint8 scalar converts to a single byte."""
-        scalar = np.uint8(42)
-        assert com.to_bytes(scalar) == b'*'
-
-    def test_to_bytes_with_string(self):
-        """String is encoded to bytes using ASCII."""
-        assert com.to_bytes('test') == b'test'
-
-    def test_to_bytes_with_list(self):
-        """List of integers converts to bytes sequence."""
-        assert com.to_bytes([1, 2, 3]) == b'\x01\x02\x03'
-        assert com.to_bytes([1, [2, 3]]) == b'\x01\x02\x03'
-        with pytest.raises(ValueError, match='bytes must be in range'):
-            com.to_bytes([1, 2, 256])
-
-    def test_to_bytes_with_float(self):
-        """Unsupported type raises TypeError."""
-        with pytest.raises(TypeError):
-            com.to_bytes(42.0)
