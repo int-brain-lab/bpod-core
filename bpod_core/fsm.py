@@ -1,7 +1,6 @@
 """Module defining classes and types for creating and managing state machines."""
 
 import hashlib
-import pickle
 import re
 from collections.abc import Mapping
 from os import PathLike
@@ -788,7 +787,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         ------
         ValidationError
             If the JSON string is not valid.
-validate
+
         Notes
         -----
         This is a thin wrapper around :meth:`~BaseModel.model_validate_json`
