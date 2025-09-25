@@ -173,6 +173,7 @@ class TestToBytes:
     def test_to_bytes_with_list(self):
         """List of integers converts to bytes sequence."""
         assert com.to_bytes([1, 2, 3]) == b'\x01\x02\x03'
+        assert com.to_bytes([1, [2, 3]]) == b'\x01\x02\x03'
         with pytest.raises(ValueError, match='bytes must be in range'):
             com.to_bytes([1, 2, 256])
 

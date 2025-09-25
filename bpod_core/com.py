@@ -325,6 +325,6 @@ def to_bytes(data: ByteLike) -> bytes:  # noqa: PLR0911
         case str():
             return data.encode('utf-8')
         case _ if isinstance(data, Iterable):
-            return b''.join(to_bytes(item) for item in data)
+            return b''.join(map(to_bytes, data))
         case _:
             return serial_to_bytes(data)  # type: ignore[no-any-return]
