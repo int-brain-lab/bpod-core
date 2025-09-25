@@ -868,8 +868,9 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
     def check(self) -> None:
         md5_hash = self.md5_hash
-        if self._validation_md5_hash == md5_hash and self._validation_error:
-            raise self._validation_error
+        if self._validation_md5_hash == md5_hash:
+            if self._validation_error:
+                raise self._validation_error
         else:
             try:
                 self._check()

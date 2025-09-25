@@ -412,13 +412,27 @@ class TestCheck:
     def test_caching(self, mocker):
         """Check results are cached."""
         fsm = StateMachine()
-        wrapped_check = mocker.patch.object(StateMachine, '_check', wraps=fsm._check)
+        _check = mocker.patch.object(StateMachine, '_check', wraps=fsm._check)
+
+        # Calling fsm.check() should call fsm._check()
         with pytest.raises(ValueError, match='No states'):
             fsm.check()
-        wrapped_check.assert_called_once()
+        _check.assert_called_once()
+
+        # Calling fsm.check() again should use cached results
         with pytest.raises(ValueError, match='No states'):
             fsm.check()
-        wrapped_check.assert_called_once()
+        _check.assert_called_once()
+
+        # Adding a state should invalidate the cache
+        fsm.add_state('state1')
+        fsm.check()
+        assert _check.call_count == 2
+        assert fsm._validation_error is None
+
+        # The cache should also work for valid state machines
+        fsm.check()
+        assert _check.call_count == 2
 
     def test_valid_property(self):
         """Check that the valid property works."""
