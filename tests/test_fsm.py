@@ -406,3 +406,34 @@ class TestValidation:
         """Validate call of state machine methods."""
         with pytest.raises(ValidationError):
             state_machine.add_state('state3', timer=-1)
+
+
+class TestCheck:
+    def test_caching(self, mocker):
+        """Check results are cached."""
+        fsm = StateMachine()
+        wrapped_check = mocker.patch.object(StateMachine, '_check', wraps=fsm._check)
+        with pytest.raises(ValueError, match='No states'):
+            fsm.check()
+        wrapped_check.assert_called_once()
+        with pytest.raises(ValueError, match='No states'):
+            fsm.check()
+        wrapped_check.assert_called_once()
+
+    def test_valid_property(self):
+        """Check that the valid property works."""
+        fsm = StateMachine()
+        assert fsm.valid is False
+        fsm.add_state('state1')
+        assert fsm.valid is True
+
+    def test_unreachable_states(self):
+        """Unreachable states should raise ValueError."""
+        fsm = StateMachine()
+        fsm.add_state('state1')
+        fsm.add_state('state2')
+        with pytest.raises(ValueError, match='is unreachable'):
+            fsm.check()
+        fsm.add_state('state3')
+        with pytest.raises(ValueError, match='are unreachable'):
+            fsm.check()
