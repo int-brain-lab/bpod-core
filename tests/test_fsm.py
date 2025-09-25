@@ -312,7 +312,7 @@ class TestFromFile:
         # Create a non-json file that exists but has wrong extension
         path = tmp_path / 'machine.txt'
         path.write_text('{}', encoding='utf-8')
-        with pytest.raises(ValueError, match='Unsupported file extension'):
+        with pytest.raises(NotImplementedError, match='Unsupported file extension'):
             StateMachine.from_file(path)
 
     def test_from_file_invalid_json_raises(self, tmp_path):

@@ -844,8 +844,9 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         ------
         FileNotFoundError
             If the file does not exist.
-        ValueError
+        NotImplementedError
             If the file extension is not .json, .yaml or .yml.
+        ValueError
             If the file content is not valid JSON or YAML.
         """
         # Handle file path
@@ -853,7 +854,9 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         if not filename.exists():
             raise FileNotFoundError(f"File '{filename}' does not exist")
         if filename.suffix.lower() not in ('.json', '.yaml', '.yml'):
-            raise ValueError(f'Unsupported file extension: {filename.suffix.upper()}')
+            raise NotImplementedError(
+                f'Unsupported file extension: {filename.suffix.upper()}'
+            )
 
         # Load data and return StateMachine instance
         data = filename.read_bytes()
