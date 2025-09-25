@@ -172,6 +172,7 @@ dev = [
     { name = "sphinx-autodoc-typehints", version = "3.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "sphinx-copybutton" },
     { name = "sphinx-design" },
+    { name = "sphinx-github-style" },
     { name = "sphinx-jsonschema" },
     { name = "sphinx-rtd-theme" },
     { name = "sphinx-toolbox" },
@@ -179,6 +180,7 @@ dev = [
     { name = "tox-uv" },
     { name = "types-docutils" },
     { name = "types-pyserial" },
+    { name = "types-pyyaml" },
 ]
 doc = [
     { name = "myst-parser" },
@@ -190,6 +192,7 @@ doc = [
     { name = "sphinx-autodoc-typehints", version = "3.2.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "sphinx-copybutton" },
     { name = "sphinx-design" },
+    { name = "sphinx-github-style" },
     { name = "sphinx-jsonschema" },
     { name = "sphinx-rtd-theme" },
     { name = "sphinx-toolbox" },
@@ -210,6 +213,7 @@ test = [
     { name = "tox-uv" },
     { name = "types-docutils" },
     { name = "types-pyserial" },
+    { name = "types-pyyaml" },
 ]
 typing = [
     { name = "appdirs-stubs" },
@@ -217,6 +221,7 @@ typing = [
     { name = "mypy" },
     { name = "types-docutils" },
     { name = "types-pyserial" },
+    { name = "types-pyyaml" },
 ]
 
 [package.metadata]
@@ -255,6 +260,7 @@ dev = [
     { name = "sphinx-autodoc-typehints", specifier = ">=3.0.1" },
     { name = "sphinx-copybutton", specifier = ">=0.5.2" },
     { name = "sphinx-design", specifier = ">=0.6.1" },
+    { name = "sphinx-github-style", specifier = ">=1.2.2" },
     { name = "sphinx-jsonschema", specifier = ">=1.19.1" },
     { name = "sphinx-rtd-theme", specifier = ">=3.0.2" },
     { name = "sphinx-toolbox", specifier = ">=4.0.0" },
@@ -262,6 +268,7 @@ dev = [
     { name = "tox-uv", specifier = ">=0.7.2" },
     { name = "types-docutils", specifier = ">=0.22.0.20250822" },
     { name = "types-pyserial", specifier = ">=3.5.0.20250326" },
+    { name = "types-pyyaml", specifier = ">=6.0.12.20250822" },
 ]
 doc = [
     { name = "myst-parser", specifier = ">=4.0.1" },
@@ -270,6 +277,7 @@ doc = [
     { name = "sphinx-autodoc-typehints", specifier = ">=3.0.1" },
     { name = "sphinx-copybutton", specifier = ">=0.5.2" },
     { name = "sphinx-design", specifier = ">=0.6.1" },
+    { name = "sphinx-github-style", specifier = ">=1.2.2" },
     { name = "sphinx-jsonschema", specifier = ">=1.19.1" },
     { name = "sphinx-rtd-theme", specifier = ">=3.0.2" },
     { name = "sphinx-toolbox", specifier = ">=4.0.0" },
@@ -289,6 +297,7 @@ test = [
     { name = "tox-uv", specifier = ">=0.7.2" },
     { name = "types-docutils", specifier = ">=0.22.0.20250822" },
     { name = "types-pyserial", specifier = ">=3.5.0.20250326" },
+    { name = "types-pyyaml", specifier = ">=6.0.12.20250822" },
 ]
 typing = [
     { name = "appdirs-stubs", specifier = ">=0.1.0" },
@@ -296,6 +305,7 @@ typing = [
     { name = "mypy", specifier = ">=1.15.0" },
     { name = "types-docutils", specifier = ">=0.22.0.20250822" },
     { name = "types-pyserial", specifier = ">=3.5.0.20250326" },
+    { name = "types-pyyaml", specifier = ">=6.0.12.20250822" },
 ]
 
 [[package]]
@@ -1916,6 +1926,19 @@ wheels = [
 ]
 
 [[package]]
+name = "sphinx-github-style"
+version = "1.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sphinx", version = "8.1.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "sphinx", version = "8.2.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/02/27/f0d375d18c45ba795826070e03dd32c13575f3ec4fb7273654e33c12fb08/sphinx-github-style-1.2.2.tar.gz", hash = "sha256:aad6231fcc0a4f59df82531eb3a82dda8a461a94d9e304895c34ac1158d7347c", size = 11963, upload-time = "2024-05-15T05:02:28.25Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4f/43/a1aa363d38363f66a668a286691006c11866a6cb5cc75d7325a17395f337/sphinx_github_style-1.2.2-py3-none-any.whl", hash = "sha256:8f6fd1a2c1a5878428a010050549c8353354a1ca9650f6bb01049c649935677d", size = 12324, upload-time = "2024-05-15T05:02:26.833Z" },
+]
+
+[[package]]
 name = "sphinx-jinja2-compat"
 version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2209,6 +2232,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d2/91/557988ab80b81fadae9ae07e1823642928a71db2135444ba79f3720aac15/types_pyserial-3.5.0.20250822.tar.gz", hash = "sha256:67c3bd4a83df065d7534993ed76bfe171ded455625f49ec81a765e51ba4efcce", size = 19809, upload-time = "2025-08-22T03:03:27.635Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cd/9b/ac3e2542e3b4095f0535ef89b72ed57e0a3b734a767cdc9d1b5321533d63/types_pyserial-3.5.0.20250822-py3-none-any.whl", hash = "sha256:d1e1fe3fc8d2f6e11327bdd3dedab475c3ea0c16f42bf34979a77124c042563c", size = 25341, upload-time = "2025-08-22T03:03:26.781Z" },
+]
+
+[[package]]
+name = "types-pyyaml"
+version = "6.0.12.20250822"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/49/85/90a442e538359ab5c9e30de415006fb22567aa4301c908c09f19e42975c2/types_pyyaml-6.0.12.20250822.tar.gz", hash = "sha256:259f1d93079d335730a9db7cff2bcaf65d7e04b4a56b5927d49a612199b59413", size = 17481, upload-time = "2025-08-22T03:02:16.209Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/8e/8f0aca667c97c0d76024b37cffa39e76e2ce39ca54a38f285a64e6ae33ba/types_pyyaml-6.0.12.20250822-py3-none-any.whl", hash = "sha256:1fe1a5e146aa315483592d292b72a172b65b946a6d98aa6ddd8e4aa838ab7098", size = 20314, upload-time = "2025-08-22T03:02:15.002Z" },
 ]
 
 [[package]]

@@ -50,6 +50,7 @@ doc = [
   "sphinx-jsonschema>=1.19.1",
   "sphinx-design>=0.6.1",
   "sphinx-toolbox>=4.0.0",
+  "sphinx-github-style>=1.2.2",
 ]
 lint = [
   "ruff>=0.9.2",
@@ -71,6 +72,7 @@ typing = [
   "mypy>=1.15.0",
   "types-docutils>=0.22.0.20250822",
   "types-pyserial>=3.5.0.20250326",
+  "types-pyyaml>=6.0.12.20250822",
 ]
 ci = [
   "coveralls>=4.0.1",
@@ -94,8 +96,17 @@ required-environments = [
 [tool.uv.build-backend]
 module-name = "bpod_core"
 module-root = ""
-source-include = [ "tests/*.py", "schema/*.json", "docs/source/**/*", "examples/*" ]
-source-exclude = [ "docs/source/api" ]
+source-include = [
+  "tests/*.py",
+  "schema/*.json",
+  "docs/source/**/*",
+  "examples/*"
+]
+source-exclude = [
+  "docs/source/api",
+  "docs/source/state_machines/*.svg",
+  "docs/source/state_machines/examples"
+]
 
 [tool.ruff]
 include = ["bpod_core/**/*.py", "tests/**/*.py", "examples/**/*.py", "docs/source/**/*.py"]
