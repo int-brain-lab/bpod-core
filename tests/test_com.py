@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -64,49 +65,50 @@ class TestChunkedSerialReader:
 
     def test_initial_buffer_size(self):
         """New reader starts empty with zero buffered bytes."""
-        reader = com.ChunkedSerialReader(chunk_size=2)
-        assert len(reader) == 0
+        reader = com.ChunkedSerialReader(chunk_size=2, callback=MagicMock())
+        assert len(reader._buffer) == 0
+        assert len(reader._buffer) == 0
 
     def test_custom_buffer(self):
         """Supplied buffer object is used internally by the reader."""
         buffer = bytearray()
-        reader = com.ChunkedSerialReader(chunk_size=2, buffer=buffer)
-        assert buffer is reader._buf
+        reader = com.ChunkedSerialReader(
+            chunk_size=2, callback=MagicMock(), buffer=buffer
+        )
+        assert buffer is reader._buffer
 
     def test_call(self):
         """Reader is callable and returns itself for chaining."""
-        reader = com.ChunkedSerialReader(chunk_size=2)
+        reader = com.ChunkedSerialReader(chunk_size=2, callback=MagicMock())
         assert reader.__call__() is reader
 
-    def test_put_data(self):
-        """Appending data increases buffered length accordingly."""
-        reader = com.ChunkedSerialReader(chunk_size=2)
-        reader.put(b'\x01\x02\x03\x04')
-        assert len(reader) == 4
+    def test_connection_made(self, caplog):
+        """connection_made() logs that the serial reader thread has started."""
+        reader = com.ChunkedSerialReader(chunk_size=4, callback=lambda _: None)
+        transport = MagicMock()
+        transport.serial.portstr = 'COM3'
+        with caplog.at_level(logging.DEBUG):
+            reader.connection_made(transport)
+        assert 'Starting serial reader thread for COM3' in caplog.text
+        assert reader._port == 'COM3'
 
-    def test_get_data(self):
-        """Reading all data returns the full bytes and clears buffer."""
-        reader = com.ChunkedSerialReader(chunk_size=2)
-        reader.put(b'\x01\x02\x03\x04')
-        data = reader.get(4)
-        assert data == bytearray(b'\x01\x02\x03\x04')
-        assert len(reader) == 0
-
-    def test_get_partial_data(self):
-        """Partial reads return requested length and retain remainder."""
-        reader = com.ChunkedSerialReader(chunk_size=2)
-        reader.put(b'\x01\x02\x03\x04')
-        data = reader.get(2)
-        assert data == bytearray(b'\x01\x02')
-        assert len(reader) == 2
+    def test_connection_lost(self, caplog):
+        """connection_lost() logs when the reader thread stops."""
+        reader = com.ChunkedSerialReader(chunk_size=4, callback=lambda _: None)
+        reader._port = 'COM3'
+        with caplog.at_level(logging.DEBUG):
+            reader.connection_lost(None)
+        assert 'Stopping serial reader thread for COM3' in caplog.text
+        with pytest.raises(RuntimeError):
+            reader.connection_lost(RuntimeError())
 
     def test_data_received(self):
         """Exact chunk-size frames trigger process() calls with frames."""
-        reader = com.ChunkedSerialReader(chunk_size=4)
-        reader.process = MagicMock()
+        callback = MagicMock()
+        reader = com.ChunkedSerialReader(chunk_size=4, callback=callback)
         reader.data_received(b'\x01\x00\x00\x00\x02\x00\x00\x00')
-        assert len(reader) == 0
-        reader.process.assert_has_calls(
+        assert len(reader._buffer) == 0
+        callback.assert_has_calls(
             [
                 call(b'\x01\x00\x00\x00'),
                 call(b'\x02\x00\x00\x00'),
@@ -115,19 +117,35 @@ class TestChunkedSerialReader:
 
     def test_multiple_data_received(self):
         """Accumulated partial frames are processed once complete."""
-        reader = com.ChunkedSerialReader(chunk_size=4)
-        reader.process = MagicMock()
+        callback = MagicMock()
+        reader = com.ChunkedSerialReader(chunk_size=4, callback=callback)
         reader.data_received(b'\x01\x00')
-        assert len(reader) == 2
+        assert len(reader._buffer) == 2
         reader.data_received(b'\x00\x00')
-        assert len(reader) == 0
+        assert len(reader._buffer) == 0
         reader.data_received(b'\x02\x00')
-        assert len(reader) == 2
+        assert len(reader._buffer) == 2
         reader.data_received(b'\x00\x00')
-        assert len(reader) == 0
-        reader.process.assert_has_calls(
+        assert len(reader._buffer) == 0
+        callback.assert_has_calls(
             [
                 call(b'\x01\x00\x00\x00'),
                 call(b'\x02\x00\x00\x00'),
             ],
         )
+
+    def test_partial_chunk_remains_buffered(self):
+        """Incomplete chunk data stays in the buffer."""
+        callback = MagicMock()
+        reader = com.ChunkedSerialReader(chunk_size=4, callback=callback)
+        reader.data_received(b'\x01\x00')
+        assert len(reader._buffer) == 2
+        callback.assert_not_called()
+
+    def test_non_multiple_chunk_data(self):
+        """Extra data beyond full chunks stays buffered."""
+        callback = MagicMock()
+        reader = com.ChunkedSerialReader(chunk_size=4, callback=callback)
+        reader.data_received(b'\x01\x02\x03\x04\x05')
+        callback.assert_called_once_with(b'\x01\x02\x03\x04')
+        assert reader._buffer == bytearray(b'\x05')

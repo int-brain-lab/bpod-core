@@ -2,10 +2,11 @@
 
 import logging
 import struct
+from collections.abc import Callable
 from typing import Any
 
 from serial import Serial
-from serial.threaded import Protocol
+from serial.threaded import Protocol, ReaderThread
 from typing_extensions import Buffer, Self
 
 logger = logging.getLogger(__name__)
@@ -152,68 +153,62 @@ class ChunkedSerialReader(Protocol):
     This class provides methods to buffer incoming data and retrieve it in chunks.
     """
 
-    def __init__(self, chunk_size: int, buffer: bytearray | None = None) -> None:
+    _port: str | None = None
+
+    def __init__(
+        self,
+        chunk_size: int,
+        callback: Callable[[bytes], Any],
+        buffer: bytearray | None = None,
+    ) -> None:
         """
         Initialize the protocol.
 
         Parameters
         ----------
         chunk_size : int
-            The fixed size of chunks to emit to `process` when enough data has
-            accumulated in the internal buffer.
+            The fixed size of chunks to emit to the callback function when enough data
+            has accumulated in the buffer.
+        callback : Callable
+            A function to call with each chunk of data.
         buffer : bytearray, optional
             Pre-allocated buffer to use for accumulation. If `None`, a new bytearray
             is created.
         """
         self._chunk_size = chunk_size
+        self._callback = callback
         if buffer is None:
-            self._buf = bytearray()
+            self._buffer = bytearray()
         else:
-            self._buf = buffer
+            self._buffer = buffer
 
     def __call__(self) -> Self:
         """Allow the instance to be used as a protocol factory for ReaderThread."""
         return self
 
-    def put(self, data: bytes) -> None:
+    def connection_made(self, transport: 'ReaderThread[Self]') -> None:
         """
-        Add data to the buffer.
+        Called when a connection is made.
 
         Parameters
         ----------
-        data : bytes
-            The binary data to be added to the buffer.
+        transport : ReaderThread
+            The reader thread that created this protocol instance.
         """
-        self._buf.extend(data)
+        self._port = transport.serial.portstr
+        logger.debug('Starting serial reader thread for %s', self._port)
 
-    def get(self, size: int) -> bytearray:
+    def connection_lost(self, exc: BaseException | None) -> None:
         """
-        Retrieve a specified amount of data from the buffer.
+        Called when the serial port is closed or the reader loop terminated otherwise.
 
         Parameters
         ----------
-        size : int
-            The number of bytes to retrieve from the buffer.
-
-        Returns
-        -------
-        bytearray
-            The retrieved data.
+        exc : BaseException, optional
+            The exception that caused the connection to be closed, if any.
         """
-        data: bytearray = self._buf[:size]
-        del self._buf[:size]
-        return data
-
-    def __len__(self) -> int:
-        """
-        Get the current size of the buffer.
-
-        Returns
-        -------
-        int
-            The number of bytes currently in the buffer.
-        """
-        return len(self._buf)
+        super().connection_lost(exc)
+        logger.debug('Stopping serial reader thread for %s', self._port)
 
     def data_received(self, data: bytes) -> None:
         """
@@ -224,20 +219,7 @@ class ChunkedSerialReader(Protocol):
         data : bytes
             The binary data received from the serial port.
         """
-        self.put(data)
-        while len(self) >= self._chunk_size:
-            self.process(self.get(self._chunk_size))
-
-    def process(self, data_chunk: bytearray) -> None:
-        """
-        Process a chunk of data.
-
-        Subclasses should override this method to implement application-specific
-        handling of fixed-size chunks. It is called repeatedly by `data_received`
-        whenever enough bytes have accumulated to reach `chunk_size`.
-
-        Parameters
-        ----------
-        data_chunk : bytearray
-            A contiguous slice of bytes of length `chunk_size`.
-        """
+        self._buffer.extend(data)
+        while len(self._buffer) >= self._chunk_size:
+            self._callback(self._buffer[: self._chunk_size])
+            del self._buffer[: self._chunk_size]
