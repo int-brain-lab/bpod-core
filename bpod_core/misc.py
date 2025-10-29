@@ -335,7 +335,7 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
     pydantic_core._pydantic_core.ValidationError: 1 validation error for TestDict
     42.[key]
       Input should be a valid string [type=string_type, input_value=42, input_type=int]
-        For further information visit https://errors.pydantic.dev/2.11/v/string_type
+      ...
 
     Alternatively, you can also instantiate a ValidatedDict directly:
 
