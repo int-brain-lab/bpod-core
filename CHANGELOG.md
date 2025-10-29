@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0a6] - 2025-10-29
+
+### Added
+- Initial work on cached state machine validation: `fsm.StateMachine.check`
+
+### Changed
+- `com.ExtendedSerial` no longer supports NumPy types, integers, strings and iterables.
+- refactoring of `com.ChunkedSerialReader`
+
+### Removed
+- `com.to_bytes`
+- dependency on Pandas
+
 ## [0.1.0a5] - 2025-09-03
 
 ### Added

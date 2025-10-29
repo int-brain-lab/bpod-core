@@ -881,6 +881,14 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             return False
 
     def check(self) -> None:
+        """
+        Check validity of state machine.
+
+        Raises
+        ------
+        ValueError
+            If the state machine is invalid.
+        """
         md5_hash = self.md5_hash
         if self._validation_md5_hash == md5_hash:
             if self._validation_error:
