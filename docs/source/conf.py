@@ -48,7 +48,7 @@ def generate_fsm_examples(app):
         json = [' ' * 7 + line for line in json]
 
         # Generate YAML
-        yaml = state_machine.to_yaml(indent=2).splitlines()
+        yaml = state_machine.to_yaml().splitlines()
         yaml = [' ' * 7 + line for line in yaml]
 
         page_path = examples_target_path.joinpath(f'{fn.stem}.rst')
