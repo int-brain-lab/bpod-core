@@ -2,55 +2,18 @@
 
 import logging
 import struct
-from collections.abc import Iterable
-from typing import Any, TypeAlias
+from collections.abc import Callable
+from typing import Any
 
-import numpy as np
 from serial import Serial
-from serial.serialutil import to_bytes as serial_to_bytes  # type: ignore[attr-defined]
-from serial.threaded import Protocol
+from serial.threaded import Protocol, ReaderThread
 from typing_extensions import Buffer, Self
 
 logger = logging.getLogger(__name__)
 
-ByteLike: TypeAlias = (
-    Buffer | int | np.ndarray | np.generic | str | Iterable['ByteLike']
-)
-"""
-A recursive type alias representing any data that can be converted to bytes for serial
-communication.
-
-Includes:
-
-- Buffer: Any buffer-compatible object (e.g., bytes, bytearray, memoryview)
-- int: Single integer values (interpreted as a single byte)
-- np.ndarray, np.generic: NumPy arrays and scalars (converted via .tobytes())
-- str: Strings (encoded as UTF-8)
-- Iterable['ByteLike']: Nested iterables of ByteLike types (recursively flattened)
-"""
-
 
 class ExtendedSerial(Serial):
     """Enhances :class:`serial.Serial` with additional functionality."""
-
-    def write(self, data: ByteLike) -> int | None:  # type: ignore[override]
-        """
-        Write data to the serial port.
-
-        This method extends :meth:`serial.Serial.write` with support for NumPy types,
-        unsigned 8-bit integers, strings (interpreted as UTF-8) and iterables.
-
-        Parameters
-        ----------
-        data : ByteLike
-            Data to be written to the serial port.
-
-        Returns
-        -------
-        int or None
-            Number of bytes written to the serial port.
-        """
-        return super().write(to_bytes(data))
 
     def write_struct(self, format_string: str, *data: Any) -> int | None:  # noqa:ANN401
         """
@@ -74,9 +37,16 @@ class ExtendedSerial(Serial):
         int | None
             The number of bytes written to the serial port, or None if the write
             operation fails.
+
+        Raises
+        ------
+        struct.error
+            Error occurred during packing of the data into binary format.
+        serial.SerialTimeoutException
+            In case a write timeout is configured for the port and the time is exceeded.
         """
         buffer = struct.pack(format_string, *data)
-        return super().write(buffer)
+        return self.write(buffer)
 
     def read_struct(self, format_string: str) -> tuple[Any, ...]:
         """
@@ -102,15 +72,16 @@ class ExtendedSerial(Serial):
         n_bytes = struct.calcsize(format_string)
         return struct.unpack(format_string, super().read(n_bytes))
 
-    def query(self, query: ByteLike, size: int = 1) -> bytes:
+    def query(self, query: Buffer, size: int = 1) -> bytes:
         r"""
         Query data from the serial port.
 
-        This method is a combination of :meth:`write` and :meth:`~serial.Serial.read`.
+        This method is a combination of :meth:`~serial.Serial.write` and
+        :meth:`~serial.Serial.read`.
 
         Parameters
         ----------
-        query : ByteLike
+        query : Buffer
             Query to be sent to the serial port.
         size : int, default: 1
             The number of bytes to receive from the serial port.
@@ -125,7 +96,7 @@ class ExtendedSerial(Serial):
 
     def query_struct(
         self,
-        query: ByteLike,
+        query: Buffer,
         format_string: str,
     ) -> tuple[Any, ...]:
         """
@@ -136,7 +107,7 @@ class ExtendedSerial(Serial):
 
         Parameters
         ----------
-        query : ByteLike
+        query : Buffer
             Query to be sent to the serial port.
         format_string : str
             A format string that specifies the layout of the data to be read. It should
@@ -153,7 +124,7 @@ class ExtendedSerial(Serial):
         self.write(query)
         return self.read_struct(format_string)
 
-    def verify(self, query: ByteLike, expected_response: bytes = b'\x01') -> bool:
+    def verify(self, query: Buffer = b'', expected_response: bytes = b'\x01') -> bool:
         r"""
         Verify the response of the serial port.
 
@@ -162,8 +133,8 @@ class ExtendedSerial(Serial):
 
         Parameters
         ----------
-        query : ByteLike
-            The query to be sent to the serial port.
+        query : Buffer, optional
+            The query to be sent to the serial port. Defaults to an empty byte string.
         expected_response : bytes, optional
             The expected response from the serial port. Default: b'\x01'.
 
@@ -182,68 +153,62 @@ class ChunkedSerialReader(Protocol):
     This class provides methods to buffer incoming data and retrieve it in chunks.
     """
 
-    def __init__(self, chunk_size: int, buffer: bytearray | None = None) -> None:
+    _port: str | None = None
+
+    def __init__(
+        self,
+        chunk_size: int,
+        callback: Callable[[bytes], Any],
+        buffer: bytearray | None = None,
+    ) -> None:
         """
         Initialize the protocol.
 
         Parameters
         ----------
         chunk_size : int
-            The fixed size of chunks to emit to `process` when enough data has
-            accumulated in the internal buffer.
+            The fixed size of chunks to emit to the callback function when enough data
+            has accumulated in the buffer.
+        callback : Callable
+            A function to call with each chunk of data.
         buffer : bytearray, optional
             Pre-allocated buffer to use for accumulation. If `None`, a new bytearray
             is created.
         """
         self._chunk_size = chunk_size
+        self._callback = callback
         if buffer is None:
-            self._buf = bytearray()
+            self._buffer = bytearray()
         else:
-            self._buf = buffer
+            self._buffer = buffer
 
     def __call__(self) -> Self:
         """Allow the instance to be used as a protocol factory for ReaderThread."""
         return self
 
-    def put(self, data: bytes) -> None:
+    def connection_made(self, transport: 'ReaderThread[Self]') -> None:
         """
-        Add data to the buffer.
+        Called when a connection is made.
 
         Parameters
         ----------
-        data : bytes
-            The binary data to be added to the buffer.
+        transport : ReaderThread
+            The reader thread that created this protocol instance.
         """
-        self._buf.extend(data)
+        self._port = transport.serial.portstr
+        logger.debug('Starting serial reader thread for %s', self._port)
 
-    def get(self, size: int) -> bytearray:
+    def connection_lost(self, exc: BaseException | None) -> None:
         """
-        Retrieve a specified amount of data from the buffer.
+        Called when the serial port is closed or the reader loop terminated otherwise.
 
         Parameters
         ----------
-        size : int
-            The number of bytes to retrieve from the buffer.
-
-        Returns
-        -------
-        bytearray
-            The retrieved data.
+        exc : BaseException, optional
+            The exception that caused the connection to be closed, if any.
         """
-        data: bytearray = self._buf[:size]
-        del self._buf[:size]
-        return data
-
-    def __len__(self) -> int:
-        """
-        Get the current size of the buffer.
-
-        Returns
-        -------
-        int
-            The number of bytes currently in the buffer.
-        """
-        return len(self._buf)
+        super().connection_lost(exc)
+        logger.debug('Stopping serial reader thread for %s', self._port)
 
     def data_received(self, data: bytes) -> None:
         """
@@ -254,64 +219,7 @@ class ChunkedSerialReader(Protocol):
         data : bytes
             The binary data received from the serial port.
         """
-        self.put(data)
-        while len(self) >= self._chunk_size:
-            self.process(self.get(self._chunk_size))
-
-    def process(self, data_chunk: bytearray) -> None:
-        """
-        Process a chunk of data.
-
-        Subclasses should override this method to implement application-specific
-        handling of fixed-size chunks. It is called repeatedly by `data_received`
-        whenever enough bytes have accumulated to reach `chunk_size`.
-
-        Parameters
-        ----------
-        data_chunk : bytearray
-            A contiguous slice of bytes of length `chunk_size`.
-        """
-
-
-def to_bytes(data: ByteLike) -> bytes:  # noqa: PLR0911
-    """
-    Convert data to a bytes object.
-
-    This function extends :func:`serial.to_bytes` with support for:
-    - NumPy arrays and scalars
-    - Unsigned 8-bit integers
-    - Strings (encoded as UTF-8)
-    - Arbitrary iterables of ByteLike
-
-    Parameters
-    ----------
-    data : ByteLike
-        Data to be converted to a bytes object.
-
-    Returns
-    -------
-    bytes
-        Data converted to bytes.
-
-    Raises
-    ------
-    TypeError
-        If the input type cannot be interpreted as bytes
-    ValueError
-        If an integer is out of the 0..255 range when coerced to a single byte.
-    """
-    match data:
-        case bytes():
-            return data
-        case bytearray():
-            return bytes(data)
-        case memoryview() | np.ndarray() | np.generic():
-            return data.tobytes()
-        case int():
-            return bytes([data])
-        case str():
-            return data.encode('utf-8')
-        case _ if isinstance(data, Iterable):
-            return b''.join(to_bytes(item) for item in data)
-        case _:
-            return serial_to_bytes(data)  # type: ignore[no-any-return]
+        self._buffer.extend(data)
+        while len(self._buffer) >= self._chunk_size:
+            self._callback(self._buffer[: self._chunk_size])
+            del self._buffer[: self._chunk_size]

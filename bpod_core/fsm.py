@@ -1,5 +1,6 @@
 """Module defining classes and types for creating and managing state machines."""
 
+import hashlib
 import re
 from collections.abc import Mapping
 from os import PathLike
@@ -10,7 +11,7 @@ import msgspec
 import numpy as np
 import yaml
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import BaseModel, Field, validate_call
+from pydantic import BaseModel, Field, ValidationError, validate_call
 
 from bpod_core.misc import ValidatedDict
 
@@ -295,6 +296,10 @@ class Condition(BaseModel, validate_assignment=True, title='Condition'):
 class States(ValidatedDict[StateName, State], title='States'):
     """A collection of states."""
 
+    @property
+    def transition_targets(self) -> set[StateName | Operator]:
+        return {t for s in self.values() for t in s.transitions.values()}
+
 
 Index = Annotated[
     int,
@@ -335,6 +340,12 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
     conditions: Conditions = Conditions()
     """A dictionary of conditions."""
+
+    _validation_md5_hash: str = ''
+    """MD5 hash for caching of validation results."""
+
+    _validation_error: Exception | None = None
+    """The latest validation error."""
 
     def __repr__(self) -> str:
         fields = [f for f in StateMachine.model_fields if f != 'name']
@@ -646,7 +657,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         """
         return self.model_dump_json(indent=indent, exclude_defaults=exclude_defaults)
 
-    def to_yaml(self, indent: None | int = None, exclude_defaults: bool = True) -> str:
+    def to_yaml(self, exclude_defaults: bool = True) -> str:
         """Returns the state machine as a YAML string.
 
         Parameters
@@ -660,8 +671,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         str
             A dictionary representation of the state machine.
         """
-        dictionary = self.model_dump(exclude_defaults=exclude_defaults)
-        return yaml.dump(dictionary, sort_keys=False)
+        return msgspec.yaml.encode(self.to_dict(exclude_defaults)).decode()
 
     @validate_call
     def to_file(
@@ -721,7 +731,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         # YAML output
         elif suffix in ('.yaml', '.yml'):
-            filename.write_text(self.to_yaml(indent=2), encoding='utf-8')
+            filename.write_text(self.to_yaml(), encoding='utf-8')
 
         # Rendering via Graphviz
         elif suffix in ('.pdf', '.svg', '.png'):
@@ -755,8 +765,12 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         -------
         StateMachine
             A StateMachine instance created from the provided dictionary.
+
+        Notes
+        -----
+        This is a thin wrapper around :meth:`~BaseModel.model_validate`
         """
-        return msgspec.convert(data, type=StateMachine, dec_hook=dec_hook)
+        return StateMachine.model_validate(data)
 
     @classmethod
     def from_json(cls, json_str: str | bytes) -> 'StateMachine':
@@ -774,14 +788,18 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Raises
         ------
-        ValidationError
-            If the JSON string is not valid.
+        ValueError
+            If the JSON string is not valid or does not represent a
+            :class:`StateMachine`.
 
         Notes
         -----
         This is a thin wrapper around :meth:`~BaseModel.model_validate_json`
         """
-        return StateMachine.model_validate_json(json_str)
+        try:
+            return cls.model_validate_json(json_str)
+        except ValidationError as e:
+            raise ValueError('Invalid JSON string') from e
 
     @classmethod
     def from_yaml(cls, yaml_str: str | bytes) -> 'StateMachine':
@@ -799,11 +817,14 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Raises
         ------
-        ValidationError
-            If the YAML string is not valid.
+        ValueError
+            If the YAML string is not valid or does not represent a
+            :class:`StateMachine`.
         """
-        dictionary = yaml.safe_load(yaml_str)
-        return StateMachine.model_validate(dictionary)
+        try:
+            return cls.model_validate(yaml.safe_load(yaml_str))
+        except (ValidationError, yaml.YAMLError) as e:
+            raise ValueError('Invalid YAML string') from e
 
     @classmethod
     def from_file(cls, filename: PathLike | str) -> 'StateMachine':
@@ -823,19 +844,79 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         ------
         FileNotFoundError
             If the file does not exist.
-        ValueError
+        NotImplementedError
             If the file extension is not .json, .yaml or .yml.
+        ValueError
+            If the file content is not valid JSON or YAML.
         """
         # Handle file path
         filename = Path(filename).resolve()
         if not filename.exists():
             raise FileNotFoundError(f"File '{filename}' does not exist")
         if filename.suffix.lower() not in ('.json', '.yaml', '.yml'):
-            raise ValueError(f'Unsupported file extension: {filename.suffix.upper()}')
+            raise NotImplementedError(
+                f'Unsupported file extension: {filename.suffix.upper()}'
+            )
 
         # Load data and return StateMachine instance
-        data = filename.read_text(encoding='utf-8')
+        data = filename.read_bytes()
         if filename.suffix.lower() == '.json':
             return cls.from_json(data)
         else:
             return cls.from_yaml(data)
+
+    @property
+    def md5_hash(self) -> str:
+        """MD5 hash of the state machine."""
+        json = self.to_json().encode()
+        return hashlib.md5(json).hexdigest()
+
+    @property
+    def valid(self) -> bool:
+        """Returns True if the state machine is valid, False otherwise."""
+        try:
+            self.check()
+            return True
+        except ValueError:
+            return False
+
+    def check(self) -> None:
+        """
+        Check validity of state machine.
+
+        Raises
+        ------
+        ValueError
+            If the state machine is invalid.
+        """
+        md5_hash = self.md5_hash
+        if self._validation_md5_hash == md5_hash:
+            if self._validation_error:
+                raise self._validation_error
+        else:
+            try:
+                self._check()
+                self._validation_error = None
+            except ValueError as e:
+                self._validation_error = e
+                raise
+            finally:
+                self._validation_md5_hash = md5_hash
+
+    def _check(self) -> None:
+        if len(self.states) == 0:
+            raise ValueError('No states defined')
+
+        initial_state = next(iter(self.states.keys()))
+        reachable_states = self.states.transition_targets | {initial_state}
+
+        # Check for unreachable states
+        unreachable_states = [s for s in self.states if s not in reachable_states]
+        if len(unreachable_states) == 1:
+            raise ValueError(f'State "{unreachable_states.pop()}" is unreachable')
+        elif len(unreachable_states) > 1:
+            missed_states_string = (
+                ', '.join([f'"{s}"' for s in unreachable_states[:-1]])
+                + f' and "{unreachable_states[-1]}"'
+            )
+            raise ValueError(f'States {missed_states_string} are unreachable')

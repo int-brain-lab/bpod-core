@@ -219,6 +219,16 @@ class TestSerialization:
         json_str = state_machine.to_json(indent=2)
         assert '\n' in json_str
 
+    def test_to_json_defaults(self, state_machine):
+        """Test that defaults are included in JSON when requested."""
+        assert 'global_timers' not in state_machine.to_json()
+        assert 'global_timers' in state_machine.to_json(exclude_defaults=False)
+
+    def test_to_yaml_defaults(self, state_machine):
+        """Test that defaults are included in YAML when requested."""
+        assert 'global_timers' not in state_machine.to_yaml()
+        assert 'global_timers' in state_machine.to_yaml(exclude_defaults=False)
+
 
 class TestFromConstructors:
     def test_from_dict(self):
@@ -235,11 +245,24 @@ class TestFromConstructors:
         assert isinstance(fsm, StateMachine)
         assert json_str == fsm.to_json()  # roundtrip
 
+    def test_from_yaml(self):
+        """Construct from JSON string and compare round-trip via to_json."""
+        yaml_str = '{}\n'
+        fsm = StateMachine.from_yaml(yaml_str)
+        assert isinstance(fsm, StateMachine)
+        assert yaml_str == fsm.to_yaml()  # roundtrip
+
     def test_from_invalid_json_raises(self, tmp_path):
-        """Invalid JSON should raise ValidationError in from_json."""
+        """Invalid JSON should raise msgspec.DecodeError in from_json."""
         json_str = 'not valid json'
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError, match='Invalid JSON'):
             StateMachine.from_json(json_str)
+
+    def test_from_invalid_yaml_raises(self, tmp_path):
+        """Invalid YAML should raise msgspec.DecodeError in from_json."""
+        yaml_str = 'not valid yaml'
+        with pytest.raises(ValueError, match='Invalid YAML'):
+            StateMachine.from_yaml(yaml_str)
 
 
 class TestSchema:
@@ -275,7 +298,7 @@ class TestFromFile:
         """from_file loads a YAML file and matches original machine."""
         # Write JSON to file
         path = tmp_path / 'machine.yaml'
-        path.write_text(state_machine.to_yaml(indent=2), encoding='utf-8')
+        path.write_text(state_machine.to_yaml(), encoding='utf-8')
 
         # Load via Path
         fsm = StateMachine.from_file(path)
@@ -299,14 +322,14 @@ class TestFromFile:
         # Create a non-json file that exists but has wrong extension
         path = tmp_path / 'machine.txt'
         path.write_text('{}', encoding='utf-8')
-        with pytest.raises(ValueError, match='Unsupported file extension'):
+        with pytest.raises(NotImplementedError, match='Unsupported file extension'):
             StateMachine.from_file(path)
 
     def test_from_file_invalid_json_raises(self, tmp_path):
         """Invalid JSON content on disk should raise msgspec.DecodeError."""
         bad = tmp_path / 'bad.json'
         bad.write_text('not valid json', encoding='utf-8')
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             StateMachine.from_file(bad)
 
 
@@ -406,3 +429,48 @@ class TestValidation:
         """Validate call of state machine methods."""
         with pytest.raises(ValidationError):
             state_machine.add_state('state3', timer=-1)
+
+
+class TestCheck:
+    def test_caching(self, mocker):
+        """Check results are cached."""
+        fsm = StateMachine()
+        _check = mocker.patch.object(StateMachine, '_check', wraps=fsm._check)
+
+        # Calling fsm.check() should call fsm._check()
+        with pytest.raises(ValueError, match='No states'):
+            fsm.check()
+        _check.assert_called_once()
+
+        # Calling fsm.check() again should use cached results
+        with pytest.raises(ValueError, match='No states'):
+            fsm.check()
+        _check.assert_called_once()
+
+        # Adding a state should invalidate the cache
+        fsm.add_state('state1')
+        fsm.check()
+        assert _check.call_count == 2
+        assert fsm._validation_error is None
+
+        # The cache should also work for valid state machines
+        fsm.check()
+        assert _check.call_count == 2
+
+    def test_valid_property(self):
+        """Check that the valid property works."""
+        fsm = StateMachine()
+        assert fsm.valid is False
+        fsm.add_state('state1')
+        assert fsm.valid is True
+
+    def test_unreachable_states(self):
+        """Unreachable states should raise ValueError."""
+        fsm = StateMachine()
+        fsm.add_state('state1')
+        fsm.add_state('state2')
+        with pytest.raises(ValueError, match='is unreachable'):
+            fsm.check()
+        fsm.add_state('state3')
+        with pytest.raises(ValueError, match='are unreachable'):
+            fsm.check()

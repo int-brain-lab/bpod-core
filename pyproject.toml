@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "bpod-core"
-version = '0.1.0a5'
+version = '0.1.0a6'
 description = "Python package for interfacing with the Bpod finite state machine"
 authors = [{ name = "Florian Rau", email = "bimac@users.noreply.github.com" }]
 classifiers = [
@@ -18,16 +18,15 @@ classifiers = [
 ]
 dependencies = [
   "numpy",
-  "pandas",
-  "pydantic>=2.11",
+  "pydantic>=2.0",
   "pyserial>=3.5",
   "graphviz>=0.20.0",
-  "pyzmq>=27.0.1",
+  "pyzmq>=27.0.0",
   "zeroconf>=0.147.0",
-  "appdirs>=1.4.4",
+  "appdirs>=1.4.0",
   "msgspec>=0.19.0",
   "packaging>=25.0",
-  "pyyaml>=6.0.2",
+  "pyyaml>=6.0.0",
 ]
 license = { text = "MIT" }
 readme = "README.md"

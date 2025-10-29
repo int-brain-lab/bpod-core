@@ -289,20 +289,28 @@ class Bpod(AbstractBpod):
     _zmq_service: DualChannelHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
+
     serial0: ExtendedSerial
     """Primary serial device for communication with the Bpod."""
+
     serial1: ExtendedSerial | None = None
     """Secondary serial device for communication with the Bpod."""
+
     serial2: ExtendedSerial | None = None
     """Tertiary serial device for communication with the Bpod - used by Bpod 2+ only."""
+
     inputs: NamedTuple
     """Available input channels."""
+
     outputs: NamedTuple
     """Available output channels."""
+
     modules: NamedTuple
     """Available modules."""
+
     event_names: list[str]
     """List of event names."""
+
     actions: list[str]
     """List of output actions."""
 
@@ -1390,7 +1398,7 @@ class Input(Channel):
         bool
             True if the input channel is active, False otherwise.
         """
-        return self._serial0.verify([b'I', self.index])
+        return self._serial0.verify(struct.pack('<cB', b'I', self.index))
 
     def override(self, state: bool) -> None:
         """
