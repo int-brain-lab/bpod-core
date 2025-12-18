@@ -21,7 +21,7 @@ from typing import (
 )
 
 import msgspec
-from appdirs import user_config_dir
+from platformdirs import user_config_dir
 from pydantic import Field, RootModel
 
 K = TypeVar('K')
