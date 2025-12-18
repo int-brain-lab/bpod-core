@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0a7]
 
 ### Changed
-- replaced unmaintained `appdirs` dependency with `platformdirs`.
+- replace unmaintained `appdirs` dependency with `platformdirs`.
 
 
 ## [0.1.0a6] - 2025-10-29

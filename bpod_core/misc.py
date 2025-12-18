@@ -11,7 +11,6 @@ from collections.abc import (
     MutableMapping,
     Sequence,
 )
-from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -21,7 +20,7 @@ from typing import (
 )
 
 import msgspec
-from platformdirs import user_config_dir
+from platformdirs import user_config_path
 from pydantic import Field, RootModel
 
 K = TypeVar('K')
@@ -228,7 +227,7 @@ class SettingsDict(MutableMapping):
         filename : str, optional
             Name of the settings file. Defaults to 'settings.json'.
         """
-        config_path = Path(user_config_dir(app_name, app_author))
+        config_path = user_config_path(app_name, app_author)
         self._path = config_path / filename
         self._state = self._load_from_file()
 
