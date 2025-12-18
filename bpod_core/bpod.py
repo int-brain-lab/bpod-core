@@ -14,6 +14,7 @@ from typing import Any, NamedTuple, cast
 import msgspec
 import numpy as np
 from numpy.typing import NDArray
+from platformdirs import user_config_path
 from pydantic import validate_call
 from serial import SerialException
 from serial.tools.list_ports import comports
@@ -26,7 +27,6 @@ from bpod_core.ipc import DualChannelClient, DualChannelHost
 from bpod_core.misc import SettingsDict, suggest_similar
 
 PROJECT_NAME = 'bpod-core'
-AUTHOR_NAME = 'International Brain Laboratory'
 VENDOR_IDS_BPOD = [0x16C0]  # vendor IDs of supported Bpod devices
 MIN_BPOD_FW_VERSION = (23, 0)  # minimum supported firmware version (major, minor)
 MIN_BPOD_HW_VERSION = 3  # minimum supported hardware version
@@ -46,6 +46,7 @@ CHANNEL_TYPES_OUTPUT.update({b'V': 'Valve', b'P': 'PWM'})
 N_SERIAL_EVENTS_DEFAULT = 15
 VALID_OPERATORS = ['exit', '>exit', '>back']
 MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
+CONFIG_PATH = user_config_path(PROJECT_NAME, False)
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +321,7 @@ class Bpod(AbstractBpod):
     ) -> None:
         self._finalizer = weakref.finalize(self, self._finalize)
         logger.info('bpod_core %s', bpod_core_version)
-        self._settings = SettingsDict(PROJECT_NAME, AUTHOR_NAME)
+        self._settings = SettingsDict(CONFIG_PATH / 'settings.json')
 
         # initialize members
         self.event_names = []

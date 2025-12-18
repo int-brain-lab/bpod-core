@@ -229,8 +229,7 @@ class TestSettingsDict:
     @pytest.fixture
     def temp_settings(self, tmp_path, mocker):
         """Fixture to create a SettingsDict pointing to a temporary directory."""
-        mocker.patch('bpod_core.misc.user_config_path', return_value=tmp_path)
-        settings = misc.SettingsDict('test_app', 'test_author', 'test_settings.json')
+        settings = misc.SettingsDict(tmp_path / 'settings.json')
         yield settings
 
     def test_set_and_get(self, temp_settings):
@@ -285,8 +284,7 @@ class TestSettingsDict:
         """Test behavior with a corrupted JSON file."""
         corrupted_file = tmp_path / 'test_settings.json'
         corrupted_file.write_text('corrupted json')
-        mocker.patch('bpod_core.misc.user_config_path', return_value=tmp_path)
-        settings = misc.SettingsDict('test_app', 'test_author', 'test_settings.json')
+        settings = misc.SettingsDict(corrupted_file)
         assert len(settings) == 0  # Should recover with an empty dict
 
     def test_repr(self, temp_settings):
@@ -297,12 +295,11 @@ class TestSettingsDict:
 
     def test_persistence_across_instances(self, tmp_path, mocker):
         """Values should persist to disk and be readable by a new instance."""
-        mocker.patch('bpod_core.misc.user_config_path', return_value=tmp_path)
-        s1 = misc.SettingsDict('test_app', 'test_author', 'persist.json')
+        s1 = misc.SettingsDict(tmp_path / 'persist.json')
         s1['a'] = 1
         s1.set_nested(['nested', 'x'], 42)
         # New instance should read previous state
-        s2 = misc.SettingsDict('test_app', 'test_author', 'persist.json')
+        s2 = misc.SettingsDict(tmp_path / 'persist.json')
         assert s2['a'] == 1
         assert s2.get_nested(['nested', 'x']) == 42
 
@@ -316,11 +313,9 @@ class TestSettingsDict:
 
     def test_missing_file_initialization_and_creation_on_write(self, tmp_path, mocker):
         """Dict starts empty and file is created upon first write."""
-        mocker.patch('bpod_core.misc.user_config_path', return_value=tmp_path)
-        file_name = 'new_settings.json'
-        s = misc.SettingsDict('test_app', 'test_author', file_name)
+        path = tmp_path / 'new_settings.json'
+        s = misc.SettingsDict(path)
         assert len(s) == 0
-        path = tmp_path / file_name
         assert not path.exists()
         s['created'] = True
         assert path.exists()
