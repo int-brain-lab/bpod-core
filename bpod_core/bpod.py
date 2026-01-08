@@ -137,6 +137,7 @@ class FSMThread(threading.Thread):
         softcode_handler: Callable,
         state_transitions: NDArray[np.uint8],
         use_back_op: bool,
+        event_names: list[str],
     ) -> None:
         """
         Initialize the FSMThread.
@@ -168,6 +169,7 @@ class FSMThread(threading.Thread):
         self._softcode_handler = softcode_handler
         self._state_transitions = state_transitions
         self._use_back_op = use_back_op
+        self._event_names = event_names
 
     def stop(self):
         self._stop_event.set()
@@ -228,7 +230,9 @@ class FSMThread(threading.Thread):
                 events = event_data_view[:param]
                 for event in events:
                     if debug:
-                        logger.debug('%d µs: Event %d', micros, event)
+                        if not(event == 255):  # exit event
+                            event_name = self._event_names[event] if event < len(self._event_names) else "Unknown"
+                            logger.debug('%d µs: Event: %s (%d)', micros, event_name, event)    
                     # TODO: handle event
 
                 # handle state transitions / exit event
@@ -1292,6 +1296,7 @@ class Bpod(AbstractBpod):
             self._softcode_handler,
             self._state_transitions,
             self._use_back_op,
+            self.event_names,
         )
         self._fsm_thread.start()
         self._waiting_for_confirmation = False
