@@ -9,7 +9,7 @@ from bpod_core.fsm import StateMachine
 fsm = StateMachine()
 
 fsm.set_global_counter(
-    index=0,
+    index=0, # this is zero based, so this is Global Counter 1
     event='Port1High',
     threshold=5,
 )
@@ -23,14 +23,14 @@ fsm.add_state(
 fsm.add_state(
     name='ResetGlobalCounter',
     transitions={'Tup': 'Port1Light'},
-    actions={'GlobalCounterReset': 0},
+    actions={'GlobalCounterReset': 1},
 )
 fsm.add_state(
     name='Port1Light',
     timer=0.25,
     transitions={
         'Tup': 'Port3Light',
-        'GlobalCounter0_End': '>exit',
+        'GlobalCounter1_End': '>exit',
     },
     actions={'PWM1': 255},
 )
@@ -39,7 +39,7 @@ fsm.add_state(
     timer=0.25,
     transitions={
         'Tup': 'Port1Light',
-        'GlobalCounter0_End': '>exit',
+        'GlobalCounter1_End': '>exit',
     },
     actions={'PWM3': 255},
 )
