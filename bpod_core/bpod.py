@@ -792,6 +792,7 @@ class Bpod(AbstractBpod):
         ]:
             self.event_names.extend(event_name.format(i + 1) for i in range(n))
         self.event_names.append('Tup')
+        logger.debug('Compiled event names: %s', self.event_names)
 
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""

@@ -462,7 +462,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         threshold: GlobalCounterThreshold,
     ) -> None:
         """
-        Configure a global timer with the specified parameters.
+        Configure a global counter with the specified parameters.
 
         Parameters
         ----------

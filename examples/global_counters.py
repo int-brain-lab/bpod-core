@@ -9,7 +9,7 @@ from bpod_core.fsm import StateMachine
 fsm = StateMachine()
 
 fsm.set_global_counter(
-    index=1,
+    index=0, # this is zero based, so this is Global Counter 1
     event='Port1High',
     threshold=5,
 )
