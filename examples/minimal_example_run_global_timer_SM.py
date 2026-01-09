@@ -23,7 +23,7 @@ print(f"Logging initialized. All Bpod traffic will be saved to: {LOG_FILE}")
 fsm = StateMachine()
 
 fsm.set_global_timer(
-    index=1,
+    index=0, # this is 0 indexed
     duration=5
 )
 
@@ -32,14 +32,14 @@ fsm.add_state(
     name='StartGlobalTimer',
     timer=0.25,
     transitions={'Tup': 'Port1Light'},
-    actions={'GlobalTimerTrig': 1},
+    actions={'GlobalTimerTrig': 1}, # this is 1 indexed
 )
 fsm.add_state(
     name='Port1Light',
     timer=0.25,
     transitions={
         'Tup': 'Port3Light',
-        'GlobalTimer1_End': '>exit',
+        'GlobalTimer1_End': '>exit', # this is 1 indexed
     },
     actions={'PWM1': 255},
 )
@@ -47,8 +47,8 @@ fsm.add_state(
     name='Port3Light',
     timer=0.25,
     transitions={
-        'Tup': '>exit',
-        'GlobalTimer1_End': '>exit',
+        'Tup': 'Port1Light',
+        'GlobalTimer1_End': '>exit', # this is 1 indexed
     },
     actions={'PWM3': 255},
 )
