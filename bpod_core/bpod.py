@@ -827,6 +827,8 @@ class Bpod(AbstractBpod):
         if self.version.machine == 4:
             self.actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
 
+    
+
     @property
     def port(self) -> str | None:
         """The port of the Bpod's primary serial device."""
@@ -894,6 +896,12 @@ class Bpod(AbstractBpod):
         # update event names and output actions
         self._compile_event_names()
         self._compile_output_actions()
+
+    def load_serial_message(self, module_index, message_id, message_bytes):
+        # Format: ord('L'), module_index(0-based), n_messages(1), msg_id, msg_len, msg_payload
+        header = struct.pack('<BBBB', module_index, 1, message_id, len(message_bytes))
+        self.serial0.write(b'L' + header + message_bytes)
+        return self.serial0.read(1) == b'\x01'
 
     def validate_state_machine(self, state_machine: StateMachine) -> None:
         """
@@ -1265,6 +1273,8 @@ class Bpod(AbstractBpod):
             f'<c2?H{n_bytes}s', b'C', run_asap, self._use_back_op, n_bytes, byte_array
         )
         self._waiting_for_confirmation = True
+        SM_definition = struct.pack(f'<c2?H{n_bytes}s', b'C', run_asap, self._use_back_op, n_bytes, byte_array)
+        logger.debug(SM_definition)
 
         if run_asap:
             self._run_state_machine(blocking=False)
