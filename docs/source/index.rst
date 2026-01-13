@@ -9,6 +9,7 @@
    :hidden:
 
    state_machines/index
+   faq
    api
    schema
    developer_guide
