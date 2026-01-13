@@ -418,7 +418,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         Parameters
         ----------
         index : int
-            The index of the global timer to configure.
+            The index of the global timer to configure. Zero-based.
         duration : float
             The duration of the global timer in seconds.
         onset_delay : float, optional
@@ -467,7 +467,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         Parameters
         ----------
         index : int
-            The index of the global counter.
+            The index of the global counter. Zero-based.
         event : str
             The name of the event to count.
         threshold : int
@@ -494,7 +494,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         Parameters
         ----------
         index : int
-            The index of the condition.
+            The index of the condition. Zero-based.
         channel : str
             The channel or global timer attached to the condition.
         value: bool

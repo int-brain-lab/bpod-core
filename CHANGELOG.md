@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - replace unmaintained `appdirs` dependency with `platformdirs`.
-
+- switch to zero-based indexing for global counters, timers, and conditions.
 
 ## [0.1.0a6] - 2025-10-29
 
