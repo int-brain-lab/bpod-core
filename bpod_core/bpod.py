@@ -768,9 +768,9 @@ class Bpod(AbstractBpod):
             if io_key == b'U':  # Serial
                 names = self.modules[counters[io_key]].event_names
             elif io_key == b'X':  # SoftCode
-                names = (f'{name}{i}' for i in range(n_softcodes_per_usb))
+                names = (f'{name}{i + 1}' for i in range(n_softcodes_per_usb))
             elif io_key == b'Z':  # SoftCodeApp
-                names = (f'{name}{i}' for i in range(n_app_softcodes))
+                names = (f'{name}{i + 1}' for i in range(n_app_softcodes))
             elif io_key == b'F':  # Flex
                 names = (f'{name}{counters[io_key] + 1}_{i + 1}' for i in range(2))
             elif io_key in b'PBW':  # Port, BNC, Wire
