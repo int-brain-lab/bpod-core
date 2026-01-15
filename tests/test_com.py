@@ -3,6 +3,7 @@ import re
 from unittest.mock import MagicMock, call
 
 import pytest
+from serial import SerialException
 
 from bpod_core import com
 
@@ -231,3 +232,46 @@ class TestFindPorts:
         """List can contain regex patterns."""
         result = com.find_ports(device=[re.compile(r'ttyACM'), '/dev/ttyUSB0'])
         assert len(result) == 3
+
+
+class TestVerifySerialDiscovery:
+    @pytest.fixture()
+    def mock_serial(self, mocker):
+        mock_serial = mocker.MagicMock()
+        mock_serial.read.return_value = b'A'
+        mock_serial.__enter__.return_value = mock_serial
+        mocker.patch('bpod_core.com.Serial', return_value=mock_serial)
+        return mock_serial
+
+    def test_success(self, mock_serial):
+        result = com.verify_serial_discovery(
+            port='COM1',
+            expected_message=b'A',
+        )
+        assert result is True
+        mock_serial.read.assert_called_once_with(1)
+
+    def test_wrong_message(self, mock_serial):
+        result = com.verify_serial_discovery(
+            port='COM1',
+            expected_message=b'B',
+        )
+        assert result is False
+
+    def test_trigger_called(self, mock_serial, mocker):
+        trigger = mocker.Mock()
+        result = com.verify_serial_discovery(
+            port='COM1',
+            expected_message=b'A',
+            trigger=trigger,
+        )
+        assert result is True
+        trigger.assert_called_once()
+
+    def test_serial_exception(self, mock_serial):
+        mock_serial.side_effect = SerialException
+        result = com.verify_serial_discovery(
+            port='COM1',
+            expected_message=b'DISCOVERY_OK',
+        )
+        assert result is False
