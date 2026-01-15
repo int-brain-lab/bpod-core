@@ -269,9 +269,9 @@ class TestVerifySerialDiscovery:
         trigger.assert_called_once()
 
     def test_serial_exception(self, mock_serial):
-        mock_serial.side_effect = SerialException
+        mock_serial.read.side_effect = SerialException()
         result = com.verify_serial_discovery(
             port='COM1',
-            expected_message=b'DISCOVERY_OK',
+            expected_message=b'A',
         )
         assert result is False
