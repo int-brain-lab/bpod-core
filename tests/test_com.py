@@ -1,4 +1,5 @@
 import logging
+import re
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -149,3 +150,84 @@ class TestChunkedSerialReader:
         reader.data_received(b'\x01\x02\x03\x04\x05')
         callback.assert_called_once_with(b'\x01\x02\x03\x04')
         assert reader._buffer == bytearray(b'\x05')
+
+
+class TestFindPorts:
+    """Tests for find_ports() filtering functionality."""
+
+    @pytest.fixture
+    def mock_ports(self, mocker):
+        """Fixture providing mock serial ports."""
+        port1 = MagicMock()
+        port1.device = '/dev/ttyACM0'
+        port1.vid = 0x16C0
+        port1.pid = 0x0483
+        port1.serial_number = 'ABC123'
+
+        port2 = MagicMock()
+        port2.device = '/dev/ttyUSB0'
+        port2.vid = 0x0403
+        port2.pid = 0x6001
+        port2.serial_number = 'DEF456'
+
+        port3 = MagicMock()
+        port3.device = '/dev/ttyACM1'
+        port3.vid = 0x16C0
+        port3.pid = 0x048B
+        port3.serial_number = 'GHI789'
+
+        ports = [port1, port2, port3]
+        mocker.patch('bpod_core.com.comports', return_value=ports)
+        return ports
+
+    def test_no_filters(self, mock_ports):
+        """Returns all ports when no filters specified."""
+        result = com.find_ports()
+        assert result == mock_ports
+
+    def test_scalar_filter(self, mock_ports):
+        """Exact match on single attribute returns matching ports."""
+        result = com.find_ports(vid=0x16C0)
+        assert len(result) == 2
+        assert mock_ports[0] in result
+        assert mock_ports[2] in result
+
+    def test_scalar_filter_no_match(self, mock_ports):
+        """Returns empty list when no ports match filter."""
+        result = com.find_ports(vid=0x9999)
+        assert result == []
+
+    def test_list_filter(self, mock_ports):
+        """List filter matches any item (OR logic)."""
+        result = com.find_ports(pid=[0x0483, 0x6001])
+        assert len(result) == 2
+        assert mock_ports[0] in result
+        assert mock_ports[1] in result
+
+    def test_regex_filter(self, mock_ports):
+        """Regex pattern filter matches ports with matching strings."""
+        result = com.find_ports(device=re.compile(r'/dev/ttyACM\d+'))
+        assert len(result) == 2
+        assert mock_ports[0] in result
+        assert mock_ports[2] in result
+
+    def test_combined_filters(self, mock_ports):
+        """Multiple filters combine with AND logic."""
+        result = com.find_ports(vid=0x16C0, pid=0x0483)
+        assert len(result) == 1
+        assert mock_ports[0] in result
+
+    def test_nonexistent_attribute(self, mock_ports):
+        """Filter on missing attribute matches None values."""
+        result = com.find_ports(nonexistent_attr='value')
+        assert result == []
+
+    def test_regex_on_non_string(self, mock_ports):
+        """Regex filter on non-string attribute returns no match."""
+        result = com.find_ports(vid=re.compile(r'16C0'))
+        assert result == []
+
+    def test_list_with_regex(self, mock_ports):
+        """List can contain regex patterns."""
+        result = com.find_ports(device=[re.compile(r'ttyACM'), '/dev/ttyUSB0'])
+        assert len(result) == 3

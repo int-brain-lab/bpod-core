@@ -1,15 +1,75 @@
 """Module providing extended serial communication functionality."""
 
 import logging
+import re
 import struct
 from collections.abc import Callable
 from typing import Any
 
 from serial import Serial
 from serial.threaded import Protocol, ReaderThread
+from serial.tools.list_ports import comports
+from serial.tools.list_ports_common import ListPortInfo
 from typing_extensions import Buffer, Self
 
 logger = logging.getLogger(__name__)
+
+
+def find_ports(**filters: Any) -> list[ListPortInfo]:
+    r"""
+    Find serial ports matching specified criteria.
+
+    Multiple filters use AND logic. Iterables within a single filter use OR logic.
+
+    Parameters
+    ----------
+    **filters : Any
+        Port attributes to filter by. Values can be:
+
+        - Scalar: exact match
+        - List: match any item (OR logic)
+        - re.Pattern: regex match (use re.compile())
+
+    Returns
+    -------
+    list[ListPortInfo]
+        Ports matching all criteria.
+
+    Examples
+    --------
+    Find by vendor ID::
+
+        find_ports(vid=0x16C0)
+
+    Find using regex pattern::
+
+        find_ports(device=re.compile(r'/dev/ttyACM\d+'))
+
+    Find multiple values::
+
+        find_ports(pid=[0x0483, 0x048B])
+
+    Combine filters::
+
+        find_ports(vid=0x16C0, device=re.compile(r'/dev/ttyACM\d+'))
+
+    Notes
+    -----
+    Strings use exact matching. Use re.compile() for regex patterns.
+    """
+
+    def matches(port_val, filter_val):
+        if isinstance(filter_val, list):
+            return any(matches(port_val, v) for v in filter_val)
+        if isinstance(filter_val, re.Pattern):
+            return isinstance(port_val, str) and bool(filter_val.search(port_val))
+        return port_val == filter_val
+
+    return [
+        port
+        for port in comports()
+        if all(matches(getattr(port, k, None), v) for k, v in filters.items())
+    ]
 
 
 class ExtendedSerial(Serial):
