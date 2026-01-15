@@ -5,20 +5,9 @@ import errno
 import json
 import re
 import socket
-from collections.abc import (
-    Iterator,
-    Mapping,
-    MutableMapping,
-    Sequence,
-)
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Generic,
-    TypeVar,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 import msgspec
 from pydantic import Field, RootModel

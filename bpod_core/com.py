@@ -6,70 +6,13 @@ import struct
 from collections.abc import Callable
 from typing import Any
 
-from serial import Serial
+from serial import Serial, SerialException
 from serial.threaded import Protocol, ReaderThread
 from serial.tools.list_ports import comports
 from serial.tools.list_ports_common import ListPortInfo
 from typing_extensions import Buffer, Self
 
 logger = logging.getLogger(__name__)
-
-
-def find_ports(**filters: Any) -> list[ListPortInfo]:
-    r"""
-    Find serial ports matching specified criteria.
-
-    Multiple filters use AND logic. Iterables within a single filter use OR logic.
-
-    Parameters
-    ----------
-    **filters : Any
-        Port attributes to filter by. Values can be:
-
-        - Scalar: exact match
-        - List: match any item (OR logic)
-        - re.Pattern: regex match (use re.compile())
-
-    Returns
-    -------
-    list[ListPortInfo]
-        Ports matching all criteria.
-
-    Examples
-    --------
-    Find by vendor ID::
-
-        find_ports(vid=0x16C0)
-
-    Find using regex pattern::
-
-        find_ports(device=re.compile(r'/dev/ttyACM\d+'))
-
-    Find multiple values::
-
-        find_ports(pid=[0x0483, 0x048B])
-
-    Combine filters::
-
-        find_ports(vid=0x16C0, device=re.compile(r'/dev/ttyACM\d+'))
-
-    Notes
-    -----
-    Strings use exact matching. Use re.compile() for regex patterns.
-    """
-
-    def matches(port_val, filter_val):
-        if isinstance(filter_val, list):
-            return any(matches(port_val, v) for v in filter_val)
-        if isinstance(filter_val, re.Pattern):
-            return isinstance(port_val, str) and bool(filter_val.search(port_val))
-        return port_val == filter_val
-
-    return [
-        port
-        for port in comports()
-        if all(matches(getattr(port, k, None), v) for k, v in filters.items())
-    ]
 
 
 class ExtendedSerial(Serial):
@@ -283,3 +226,99 @@ class ChunkedSerialReader(Protocol):
         while len(self._buffer) >= self._chunk_size:
             self._callback(self._buffer[: self._chunk_size])
             del self._buffer[: self._chunk_size]
+
+
+def find_ports(**filters: Any) -> list[ListPortInfo]:
+    r"""
+    Find serial ports matching specified criteria.
+
+    Multiple filters use AND logic. Iterables within a single filter use OR logic.
+
+    Parameters
+    ----------
+    **filters : Any
+        Port attributes to filter by. Values can be:
+
+        - Scalar: exact match
+        - List: match any item (OR logic)
+        - re.Pattern: regex match (use re.compile())
+
+    Returns
+    -------
+    list[ListPortInfo]
+        Ports matching all criteria.
+
+    Examples
+    --------
+    Find by vendor ID::
+
+        find_ports(vid=0x16C0)
+
+    Find using regex pattern::
+
+        find_ports(device=re.compile(r'/dev/ttyACM\d+'))
+
+    Find multiple values::
+
+        find_ports(pid=[0x0483, 0x048B])
+
+    Combine filters::
+
+        find_ports(vid=0x16C0, device=re.compile(r'/dev/ttyACM\d+'))
+
+    Notes
+    -----
+    Strings use exact matching. Use re.compile() for regex patterns.
+    """
+
+    def matches(key, value):
+        if isinstance(value, list):
+            return any(matches(key, v) for v in value)
+        if isinstance(value, re.Pattern):
+            return isinstance(key, str) and bool(value.search(key))
+        return key == value
+
+    return [
+        port
+        for port in comports()
+        if all(matches(getattr(port, k, None), v) for k, v in filters.items())
+    ]
+
+
+def verify_serial_discovery(
+    port: str,
+    expected_message: bytes,
+    timeout: float = 1,
+    trigger: Callable[[], Any] | None = None,
+) -> bool:
+    r"""Check if a device sends an expected discovery message on a serial port.
+
+    Opens the specified serial port and waits to receive bytes matching the expected
+    discovery message. Optionally executes a function first, which can be used trigger
+    the device's discovery routine, e.g., by sending a command.
+
+    Parameters
+    ----------
+    port : str
+        The serial port to read from (e.g., '/dev/ttyUSB0' or 'COM3').
+    expected_message : bytes
+        The exact byte sequence expected from the device.
+    timeout : float, default: 1
+        Maximum time (in seconds) to wait for the discovery message. Defaults to 1 s.
+    trigger : Callable, optional
+        A function to call before reading. Use this to trigger the device's discovery
+        routine.
+
+    Returns
+    -------
+    bool
+        True if the device sent the expected message within the timeout period,
+        False otherwise (including if the port cannot be opened).
+    """
+    try:
+        with Serial(port, timeout=timeout) as ser:
+            if trigger is not None:
+                trigger()
+            return ser.read(len(expected_message)) == expected_message
+    except SerialException:
+        return False

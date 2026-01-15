@@ -26,10 +26,8 @@ from zeroconf import (
 )
 
 from bpod_core.com import logger
+from bpod_core.constants import IP_ANY, IP_LOOPBACK
 from bpod_core.misc import convert_to_snake_case, get_local_ipv4
-
-IP_LOOPBACK = '127.0.0.1'
-IP_ANY = '0.0.0.0'
 
 
 class DualChannelMessage(msgspec.Struct, omit_defaults=True, array_like=True):

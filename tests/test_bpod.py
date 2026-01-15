@@ -19,85 +19,67 @@ class TestBpodIdentifyBpod:
     @pytest.mark.usefixtures('mock_comports')
     def test_automatic_success(self, mock_bpod):
         """Test successful identification of Bpod without specifying port or serial."""
-        assert Bpod._identify_bpod(mock_bpod) == ('COM3', '12345')
-        mock_bpod.serial0.__init__.assert_called_once_with('COM3', timeout=0.11)
+        assert Bpod._identify_bpod() == ('COM3', '12345')
 
     def test_automatic_unsupported_vid(self, mock_bpod, mock_comports):
         """Test failure to auto identify Bpod when only device has unsupported VID."""
         mock_port_info = mock_comports.return_value
         mock_port_info[0].vid = 0x0000  # unsupported VID
         with pytest.raises(BpodError, match=r'No .* Bpod found'):
-            Bpod._identify_bpod(mock_bpod)
-        mock_bpod.serial0.__init__.assert_not_called()
+            Bpod._identify_bpod()
 
     def test_automatic_no_devices(self, mock_bpod, mock_comports):
         """Test failure to auto identify Bpod when no COM ports are available."""
         mock_comports.return_value = []
         with pytest.raises(BpodError, match=r'No .* Bpod found'):
-            Bpod._identify_bpod(mock_bpod)
-        mock_bpod.serial0.__init__.assert_not_called()
+            Bpod._identify_bpod()
 
     @pytest.mark.usefixtures('mock_comports')
-    def test_automatic_no_discovery_byte(self, mock_bpod):
+    def test_automatic_no_discovery_byte(self, mock_bpod, mock_serial_discovery):
         """Test failure to auto identify Bpod when no discovery byte is received."""
-        mock_bpod.serial0.response_buffer = bytearray()
+        mock_serial_discovery.return_value = False
         with pytest.raises(BpodError, match='No .* Bpod found'):
-            Bpod._identify_bpod(mock_bpod)
-        mock_bpod.serial0.__init__.assert_called_once_with('COM3', timeout=0.11)
-
-    @pytest.mark.usefixtures('mock_comports')
-    def test_automatic_serial_exception(self, mock_bpod):
-        """Test failure to auto identify Bpod when serial read raises exception."""
-        mock_bpod.serial0.read.side_effect = SerialException
-        with pytest.raises(BpodError, match='No .* Bpod found'):
-            Bpod._identify_bpod(mock_bpod)
-        mock_bpod.serial0.__init__.assert_called_once_with('COM3', timeout=0.11)
+            Bpod._identify_bpod()
 
     @pytest.mark.usefixtures('mock_comports')
     def test_serial_success(self, mock_bpod):
         """Test successful identification of Bpod when specifying serial."""
-        port, serial_number = Bpod._identify_bpod(mock_bpod, serial_number='12345')
+        port, serial_number = Bpod._identify_bpod(serial_number='12345')
         assert port == 'COM3'
         assert serial_number == '12345'  # existing serial
-        mock_bpod.serial0.__init__.assert_called_once_with('COM3', timeout=0.11)
 
     @pytest.mark.usefixtures('mock_comports')
     def test_serial_incorrect_serial(self, mock_bpod):
         """Test failure to identify Bpod when specifying incorrect serial."""
         with pytest.raises(BpodError, match='No .* serial number'):
-            Bpod._identify_bpod(mock_bpod, serial_number='00000')
-        mock_bpod.serial0.__init__.assert_not_called()
+            Bpod._identify_bpod(serial_number='00000')
 
     def test_serial_unsupported_vid(self, mock_bpod, mock_comports):
         """Test failure to identify Bpod by serial if device has incompatible VID."""
         mock_port_info = mock_comports.return_value
         mock_port_info[0].vid = 0x0000  # unsupported VID
-        with pytest.raises(BpodError, match='.* not a supported Bpod'):
-            Bpod._identify_bpod(mock_bpod, serial_number='12345')
-        mock_bpod.serial0.__init__.assert_called_once_with('COM3', timeout=0.11)
+        with pytest.raises(BpodError, match='No .* Bpod found matching serial number'):
+            Bpod._identify_bpod(serial_number='12345')
 
     @pytest.mark.usefixtures('mock_comports')
     def test_port_success(self, mock_bpod):
         """Test successful identification of Bpod when specifying port."""
-        port, serial_number = Bpod._identify_bpod(mock_bpod, port='COM3')
+        port, serial_number = Bpod._identify_bpod(port='COM3')
         assert port == 'COM3'
         assert serial_number == '12345'  # existing serial
-        mock_bpod.serial0.__init__.assert_not_called()
 
     @pytest.mark.usefixtures('mock_comports')
     def test_port_incorrect_port(self, mock_bpod):
         """Test failure to identify Bpod when specifying incorrect port."""
         with pytest.raises(BpodError, match='Port not found'):
-            Bpod._identify_bpod(mock_bpod, port='incorrect_port')
-        mock_bpod.serial0.__init__.assert_not_called()
+            Bpod._identify_bpod(port='incorrect_port')
 
     def test_port_unsupported_vid(self, mock_bpod, mock_comports):
         """Test failure to identify Bpod when specifying incorrect port."""
         mock_port_info = mock_comports.return_value
         mock_port_info[0].vid = 0x0000  # unsupported VID
-        with pytest.raises(BpodError, match='.* not .* supported Bpod'):
-            Bpod._identify_bpod(mock_bpod, port='COM3')
-        mock_bpod.serial0.__init__.assert_not_called()
+        with pytest.raises(BpodError, match='No .* Bpod'):
+            Bpod._identify_bpod(port='COM3')
 
 
 class TestGetVersionInfo:

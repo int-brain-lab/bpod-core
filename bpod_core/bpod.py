@@ -6,7 +6,7 @@ import struct
 import threading
 import traceback
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, NamedTuple, cast
@@ -17,20 +17,31 @@ from numpy.typing import NDArray
 from platformdirs import user_config_path
 from pydantic import validate_call
 from serial import SerialException
-from serial.tools.list_ports import comports
+from serial.tools.list_ports_common import ListPortInfo
 from typing_extensions import Self
 
 from bpod_core import __version__ as bpod_core_version
-from bpod_core.com import ExtendedSerial
+from bpod_core.com import ExtendedSerial, find_ports, verify_serial_discovery
+from bpod_core.constants import VID_TEENSY, PIDsTeensy
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import DualChannelClient, DualChannelHost
 from bpod_core.misc import SettingsDict, suggest_similar
 
-PROJECT_NAME = 'bpod-core'
-VENDOR_IDS_BPOD = [0x16C0]  # vendor IDs of supported Bpod devices
-MIN_BPOD_FW_VERSION = (23, 0)  # minimum supported firmware version (major, minor)
-MIN_BPOD_HW_VERSION = 3  # minimum supported hardware version
-MAX_BPOD_HW_VERSION = 4  # maximum supported hardware version
+VIDS_BPOD = [VID_TEENSY]
+"""Vendor IDs of supported Bpod devices"""
+
+PIDS_BPOD = [PIDsTeensy.SERIAL, PIDsTeensy.DUAL_SERIAL, PIDsTeensy.TRIPLE_SERIAL]
+"""List of Product IDs of supported Bpod devices"""
+
+MIN_BPOD_FW_VERSION = (23, 0)
+"""minimum supported firmware version (major, minor)"""
+
+MIN_BPOD_HW_VERSION = 3
+"""minimum supported hardware version"""
+
+MAX_BPOD_HW_VERSION = 4
+"""maximum supported hardware version"""
+
 CHANNEL_TYPES_INPUT = {
     b'U': 'Serial',
     b'X': 'SoftCode',
@@ -46,7 +57,8 @@ CHANNEL_TYPES_OUTPUT.update({b'V': 'Valve', b'P': 'PWM'})
 N_SERIAL_EVENTS_DEFAULT = 15
 VALID_OPERATORS = ['exit', '>exit', '>back']
 MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
-CONFIG_PATH = user_config_path(PROJECT_NAME, False)
+CONFIG_PATH = user_config_path('bpod-core', False)
+DISCOVERY_TIMEOUT = 0.11
 
 logger = logging.getLogger(__name__)
 
@@ -485,43 +497,9 @@ class Bpod(AbstractBpod):
     def _set_setting(self, keys: list[str], value: Any = None) -> None:
         self._settings.set_nested(keys, value)
 
-    def _sends_discovery_byte(
-        self,
-        port: str,
-        byte: bytes = b'\xde',
-        timeout: float = 0.11,
-        trigger: bytes | None = None,
-    ) -> bool:
-        r"""Check if the device on the given port sends a discovery byte.
-
-        Parameters
-        ----------
-        port : str
-            The name of the serial port to check (e.g., '/dev/ttyUSB0' or 'COM3').
-        byte : bytes, optional
-            The discovery byte to expect from the device. Defaults to b'\\xde'.
-        timeout : float, optional
-            Timeout period (in seconds) for the serial read operation. Defaults to 0.11.
-        trigger : bytes, optional
-            An optional command to send on serial0 before reading from the given device.
-
-        Returns
-        -------
-        bool
-            Whether the given device responded with the expected discovery byte or not.
-        """
-        try:
-            with ExtendedSerial(port, timeout=timeout) as ser:
-                if trigger is not None and getattr(self, 'serial0', None) is not None:
-                    self.serial0.write(trigger)
-                return ser.read(1) == byte
-        except SerialException:
-            return False
-
+    @staticmethod
     def _identify_bpod(
-        self,
-        port: str | None = None,
-        serial_number: str | None = None,
+        port: str | None = None, serial_number: str | None = None
     ) -> tuple[str, str | None]:
         """
         Try to identify a supported Bpod based on port or serial number.
@@ -548,41 +526,19 @@ class Bpod(AbstractBpod):
         BpodError
             If no Bpod is found or the indicated device is not supported.
         """
-        # If no port or serial number provided, try to automagically find an idle Bpod
-        if port is None and serial_number is None:
-            try:
-                port_info = next(
-                    p
-                    for p in comports()
-                    if getattr(p, 'vid', None) in VENDOR_IDS_BPOD
-                    and self._sends_discovery_byte(p.device)
-                )
-            except StopIteration as e:
-                raise BpodError('No available Bpod found') from e
+        try:
+            port_info = next(discover_bpods_usb(port, serial_number))
             return port_info.device, port_info.serial_number
-
-        # If a serial number was provided, try to match it with a serial device
-        if serial_number is not None:
-            try:
-                port_info = next(
-                    p
-                    for p in comports()
-                    if p.serial_number == serial_number
-                    and self._sends_discovery_byte(p.device)
-                )
-            except (StopIteration, AttributeError) as e:
-                raise BpodError(f'No device with serial number {serial_number}') from e
-
-        # Else, assure that the provided port exists and the device could be a Bpod
-        else:
-            try:
-                port_info = next(p for p in comports() if p.device == port)
-            except (StopIteration, AttributeError) as e:
-                raise BpodError(f'Port not found: {port}') from e
-
-        if port_info.vid not in VENDOR_IDS_BPOD:
-            raise BpodError('Device is not a supported Bpod')
-        return port_info.device, port_info.serial_number
+        except StopIteration as e:
+            msg = 'No idle Bpod found'
+            if port is not None or serial_number is not None:
+                if port is not None:
+                    if len(find_ports(device=port)) == 0:
+                        raise BpodError(f'Port not found: {port}') from None
+                    msg += f' on {port}'
+                if serial_number is not None:
+                    msg += f' matching serial number {serial_number}'
+            raise BpodError(msg) from e
 
     def _get_version_info(self) -> None:
         """
@@ -670,27 +626,26 @@ class Bpod(AbstractBpod):
         logger.debug('Detecting additional USB-serial ports')
 
         # First, assemble a list of candidate ports
-        candidate_ports = [
-            p.device
-            for p in comports()
-            if p.serial_number == self._serial_number and p.device != self.port
-        ]
+        candidate_ports = find_ports(
+            vid=VIDS_BPOD,
+            pid=[PIDsTeensy.DUAL_SERIAL, PIDsTeensy.TRIPLE_SERIAL],
+            serial_number=self._serial_number,
+            device=re.compile(rf'^(?!{re.escape(str(self.port))}$).*$'),
+        )
 
-        # Exclude those devices from the list that are already sending a discovery byte
-        # NB: this should not be necessary, as we already filter for devices with
-        #     identical USB serial number.
-        # for port in candidate_ports:
-        #     if self._sends_discovery_byte(port):
-        #         candidate_ports.remove(port)
-
-        # Find secondary USB-serial port
+        # Then, try to find the secondary USB-serial port
         if self._version.firmware >= (23, 0):
             for port in candidate_ports:
-                if self._sends_discovery_byte(port, bytes([222]), trigger=b'{'):
+                if verify_serial_discovery(
+                    port.device,
+                    bytes([222]),
+                    timeout=DISCOVERY_TIMEOUT,
+                    trigger=lambda: self.serial0.write(b'{'),
+                ):
                     self.serial1 = ExtendedSerial()
-                    self.serial1.port = port
+                    self.serial1.port = port.device
                     candidate_ports.remove(port)
-                    logger.debug('Detected secondary USB-serial port: %s', port)
+                    logger.debug('Detected secondary USB-serial port: %s', port.device)
                     break
             if self.serial1 is None:
                 raise BpodError('Could not detect secondary serial port')
@@ -698,10 +653,15 @@ class Bpod(AbstractBpod):
         # State Machine 2+ uses a third USB-serial port for FlexIO
         if self.version.machine == 4:
             for port in candidate_ports:
-                if self._sends_discovery_byte(port, bytes([223]), trigger=b'}'):
+                if verify_serial_discovery(
+                    port.device,
+                    bytes([223]),
+                    timeout=DISCOVERY_TIMEOUT,
+                    trigger=lambda: self.serial0.write(b'}'),
+                ):
                     self.serial2 = ExtendedSerial()
-                    self.serial2.port = port
-                    logger.debug('Detected tertiary USB-serial port: %s', port)
+                    self.serial2.port = port.device
+                    logger.debug('Detected tertiary USB-serial port: %s', port.device)
                     break
             if self.serial2 is None:
                 raise BpodError('Could not detect tertiary serial port')
@@ -949,19 +909,14 @@ class Bpod(AbstractBpod):
         if not validate_only:
             self._disable_all_module_relays()
 
-        # Ensure that the state machine has at least one state
-        if (n_states := len(state_machine.states)) == 0:
-            raise ValueError('State machine needs to have at least one state')
+        # Check the general validity of the state machine (independent of hardware)
+        state_machine.check()
 
-        # Check if '>back' operator is being used
-        targets_used = {
-            target
-            for state in state_machine.states.values()
-            for target in state.transitions.values()
-        }
-        self._use_back_op = '>back' in targets_used
+        # Check if the '>back' operator is being used
+        self._use_back_op = '>back' in state_machine.states.transition_targets
 
         # Validate the number of states, global timers, global counters and conditions.
+        n_states = len(state_machine.states)
         n_global_timers = max(state_machine.global_timers.keys(), default=-1) + 1
         n_global_counters = max(state_machine.global_counters.keys(), default=-1) + 1
         n_conditions = max(state_machine.conditions.keys(), default=-1) + 1
@@ -1619,3 +1574,49 @@ class RemoteBpod:
 
     def _event_handler(self, message: dict):
         pass
+
+
+def discover_bpods_usb(
+    port: str | None = None, serial_number: str | None = None
+) -> Iterator[ListPortInfo]:
+    """Identify available Bpod devices connected via USB.
+
+    Scans for USB serial ports matching Bpod vendor/product IDs and verifies each
+    device responds to a discovery message. Yields device paths as they are found.
+
+    Parameters
+    ----------
+    port : str, optional
+        Filter by specific device path (e.g., '/dev/ttyACM0' or 'COM3').
+    serial_number : str, optional
+        Filter by USB serial number.
+
+    Yields
+    ------
+    ListPortInfo
+        Port representing a Bpod devices.
+
+    Examples
+    --------
+    Iterate over available Bpods::
+
+        for device in identify_bpods_usb():
+            print(f"Found Bpod at {device}")
+
+    Get as a list::
+
+        devices = list(identify_bpods_usb())
+    """
+    # create filter dict
+    filters: dict[str, str] = {}
+    if port is not None:
+        filters['device'] = port
+    if serial_number is not None:
+        filters['serial_number'] = serial_number
+
+    # find matching devices
+    for p in find_ports(vid=VIDS_BPOD, pid=PIDS_BPOD, **filters):
+        if verify_serial_discovery(
+            port=p.device, expected_message=b'\xde', timeout=DISCOVERY_TIMEOUT
+        ):
+            yield p
