@@ -3,6 +3,7 @@
 import difflib
 import errno
 import json
+import logging
 import re
 import socket
 from collections.abc import Iterator, Mapping, MutableMapping, Sequence
@@ -14,9 +15,10 @@ import msgspec
 from filelock import FileLock
 from pydantic import Field, RootModel
 
+logger = logging.getLogger(__name__)
+
 K = TypeVar('K')
 V = TypeVar('V')
-
 
 RE_SANITIZE = re.compile(r'[^a-zA-Z0-9_]')
 RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
@@ -229,6 +231,8 @@ class SettingsDict(MutableMapping):
         return self._state[key]
 
     def __setitem__(self, key: Any, value: Any) -> None:
+        if self._state.get(key) == value:
+            return
         self._state[key] = value
         self._save_to_file()
 
@@ -275,6 +279,8 @@ class SettingsDict(MutableMapping):
         value : Any
             The value to set at the nested path.
         """
+        if get_nested(d=self._state, keys=keys) == value:
+            return
         set_nested(d=self._state, keys=keys, value=value)
         self._save_to_file()
 

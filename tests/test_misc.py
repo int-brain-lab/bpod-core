@@ -326,6 +326,46 @@ class TestSettingsDict:
         assert 'present' in temp_settings
         assert 'absent' not in temp_settings
 
+    def test_setitem_skips_write_when_value_unchanged(self, temp_settings, mocker):
+        """Setting the same value should not trigger a file write."""
+        temp_settings['key'] = 'value'
+        spy = mocker.spy(temp_settings, '_save_to_file')
+        temp_settings['key'] = 'value'  # same value
+        spy.assert_not_called()
+
+    def test_setitem_writes_when_value_changed(self, temp_settings, mocker):
+        """Setting a different value should trigger a file write."""
+        temp_settings['key'] = 'value'
+        spy = mocker.spy(temp_settings, '_save_to_file')
+        temp_settings['key'] = 'new_value'
+        spy.assert_called_once()
+
+    def test_set_nested_skips_write_when_value_unchanged(self, temp_settings, mocker):
+        """set_nested with the same value should not trigger a file write."""
+        temp_settings.set_nested(['a', 'b'], 42)
+        spy = mocker.spy(temp_settings, '_save_to_file')
+        temp_settings.set_nested(['a', 'b'], 42)  # same value
+        spy.assert_not_called()
+
+    def test_set_nested_writes_when_value_changed(self, temp_settings, mocker):
+        """set_nested with a different value should trigger a file write."""
+        temp_settings.set_nested(['a', 'b'], 42)
+        spy = mocker.spy(temp_settings, '_save_to_file')
+        temp_settings.set_nested(['a', 'b'], 99)
+        spy.assert_called_once()
+
+    def test_setitem_writes_for_new_key(self, temp_settings, mocker):
+        """Setting a new key should always trigger a file write."""
+        spy = mocker.spy(temp_settings, '_save_to_file')
+        temp_settings['new_key'] = 'value'
+        spy.assert_called_once()
+
+    def test_set_nested_writes_for_new_path(self, temp_settings, mocker):
+        """set_nested with a new path should always trigger a file write."""
+        spy = mocker.spy(temp_settings, '_save_to_file')
+        temp_settings.set_nested(['new', 'path'], 'value')
+        spy.assert_called_once()
+
 
 class TestValidatedDict:
     @pytest.fixture
