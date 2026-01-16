@@ -6,10 +6,12 @@ import json
 import re
 import socket
 from collections.abc import Iterator, Mapping, MutableMapping, Sequence
+from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 import msgspec
+from filelock import FileLock
 from pydantic import Field, RootModel
 
 K = TypeVar('K')
@@ -184,36 +186,33 @@ def get_local_ipv4() -> str:
 
 class SettingsDict(MutableMapping):
     """
-    Represents a dictionary-like persistent settings storage.
+    A dictionary-like persistent settings storage backed by a JSON file.
 
-    This class is a mutable mapping implementation that stores and retrieves key-value
-    pairs, persisting them to a JSON configuration file. The settings are associated
-    with a specific application name and, optionally, an application author to organize
-    the file path appropriately. You can use this class to manage configuration data
-    that needs to be saved and reused across sessions. Changes to the dictionary are
-    automatically saved to the file.
+    This class implements the MutableMapping interface, storing key-value pairs that are
+    automatically persisted to a JSON file on every write. It supports standard
+    dictionary operations (get, set, delete, iterate) as well as nested key access.
 
-    This class supports standard dictionary operations such as getting, setting,
-    deleting items, checking for the existence of keys, and iterating over keys.
-    Additionally, it provides functionality for accessing nested values using a sequence
-    of keys.
+    File access is protected by a file lock for safe concurrent access from multiple
+    processes.
     """
 
-    def __init__(self, json_path: Path) -> None:
+    def __init__(self, json_path: PathLike | str) -> None:
         """Initialize the SettingsDict instance.
 
         Parameters
         ----------
-        json_path : Path
+        json_path : PathLike or str
             Path to the JSON configuration file.
         """
-        self._path = json_path
+        self._json_path = Path(json_path).resolve()
+        self._lock_path = self._json_path.with_suffix('.lock')
+        self._file_lock = FileLock(self._lock_path)
         self._state = self._load_from_file()
 
     def _load_from_file(self) -> dict:
-        if not self._path.exists():
+        if not self._json_path.exists():
             return {}
-        with self._path.open('r') as f:
+        with self._file_lock, self._json_path.open('r') as f:
             data = f.read()
         try:
             return cast('dict', msgspec.json.decode(data))
@@ -222,17 +221,12 @@ class SettingsDict(MutableMapping):
 
     def _save_to_file(self) -> None:
         dictionary = msgspec.to_builtins(self._state)
-        if not self._path.exists():
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.touch(exist_ok=True)
-        with self._path.open('w') as f:
+        self._json_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._file_lock, self._json_path.open('w') as f:
             json.dump(dictionary, f, indent=2)
 
     def __getitem__(self, key: Any) -> Any:
-        if key in self._state:
-            return self._state.get(key)
-        else:
-            raise KeyError(key)
+        return self._state[key]
 
     def __setitem__(self, key: Any, value: Any) -> None:
         self._state[key] = value
@@ -242,14 +236,11 @@ class SettingsDict(MutableMapping):
         return key in self._state
 
     def __delitem__(self, key: Any) -> None:
-        if key in self._state:
-            del self._state[key]
-            self._save_to_file()
-        else:
-            raise KeyError(key)
+        del self._state[key]
+        self._save_to_file()
 
     def __iter__(self) -> Iterator[Any]:
-        return iter(self._state)
+        return iter(list(self._state))
 
     def __len__(self) -> int:
         return len(self._state)
@@ -263,7 +254,7 @@ class SettingsDict(MutableMapping):
         Parameters
         ----------
         keys : Sequence
-            An sequence of keys representing the nested path.
+            A sequence of keys representing the nested path.
         default : Any, optional
             The value to return if the path does not exist. Defaults to None.
 
@@ -280,7 +271,7 @@ class SettingsDict(MutableMapping):
         Parameters
         ----------
         keys : Sequence
-            An sequence of keys representing the nested path.
+            A sequence of keys representing the nested path.
         value : Any
             The value to set at the nested path.
         """

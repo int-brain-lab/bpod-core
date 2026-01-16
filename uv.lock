@@ -134,6 +134,7 @@ name = "bpod-core"
 version = "0.1.0a6"
 source = { editable = "." }
 dependencies = [
+    { name = "filelock" },
     { name = "graphviz" },
     { name = "msgspec" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -224,6 +225,7 @@ typing = [
 
 [package.metadata]
 requires-dist = [
+    { name = "filelock", specifier = ">=3.20.0" },
     { name = "graphviz", specifier = ">=0.20.0" },
     { name = "msgspec", specifier = ">=0.19.0" },
     { name = "numpy" },
