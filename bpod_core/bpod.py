@@ -17,7 +17,6 @@ from numpy.typing import NDArray
 from platformdirs import user_config_path
 from pydantic import validate_call
 from serial import SerialException
-from serial.tools.list_ports_common import ListPortInfo
 from typing_extensions import Self
 
 from bpod_core import __version__ as bpod_core_version
@@ -63,7 +62,7 @@ DISCOVERY_TIMEOUT = 0.11
 logger = logging.getLogger(__name__)
 
 
-class DeviceSettings(msgspec.Struct):
+class BpodSettings(msgspec.Struct):
     """Settings for a specific Bpod device."""
 
     serial_number: str
@@ -73,9 +72,26 @@ class DeviceSettings(msgspec.Struct):
     location: str = ''
     """User-defined location of the device."""
     zmq_port_pub: int | None = None
-    """Port number for the ZeroMQ PUB service"""
+    """Port number for the ZeroMQ PUB service."""
     zmq_port_rep: int | None = None
-    """Port number for the ZeroMQ REP service"""
+    """Port number for the ZeroMQ REP service."""
+
+
+class BpodInfo(msgspec.Struct):
+    """Information about a specific Bpod device."""
+
+    serial_number: str
+    """Serial number of the device."""
+    port: str | None = None
+    """Port on which the device is connected."""
+    name: str = ''
+    """User-defined name of the device."""
+    location: str = ''
+    """User-defined location of the device."""
+    zmq_pub: str | None = None
+    """ZeroMQ PUB service address."""
+    zmq_rep: str | None = None
+    """ZeroMQ REP service address."""
 
 
 class VersionInfo(msgspec.Struct, frozen=True):
@@ -527,17 +543,17 @@ class Bpod(AbstractBpod):
             If no Bpod is found or the indicated device is not supported.
         """
         try:
-            port_info = next(discover_bpods_usb(port, serial_number))
-            return port_info.device, port_info.serial_number
+            port_info = next(discover_bpod(port, serial_number))
+            return cast('str', port_info.port), port_info.serial_number
         except StopIteration as e:
+            if port is not None:
+                if len(find_ports(device=port)) == 0:
+                    raise BpodError(f'Port not found: {port}') from None
+                else:
+                    raise BpodError(f'Device on {port} is not an idle Bpod') from None
             msg = 'No idle Bpod found'
-            if port is not None or serial_number is not None:
-                if port is not None:
-                    if len(find_ports(device=port)) == 0:
-                        raise BpodError(f'Port not found: {port}') from None
-                    msg += f' on {port}'
-                if serial_number is not None:
-                    msg += f' matching serial number {serial_number}'
+            if serial_number is not None:
+                msg += f' matching serial number {serial_number}'
             raise BpodError(msg) from e
 
     def _get_version_info(self) -> None:
@@ -1576,13 +1592,13 @@ class RemoteBpod:
         pass
 
 
-def discover_bpods_usb(
+def discover_bpod(
     port: str | None = None, serial_number: str | None = None
-) -> Iterator[ListPortInfo]:
+) -> Iterator[BpodInfo]:
     """Identify available Bpod devices connected via USB.
 
     Scans for USB serial ports matching Bpod vendor/product IDs and verifies each
-    device responds to a discovery message. Yields device paths as they are found.
+    device responds to a discovery message. Yields information about identified devices.
 
     Parameters
     ----------
@@ -1593,19 +1609,19 @@ def discover_bpods_usb(
 
     Yields
     ------
-    ListPortInfo
-        Port representing a Bpod devices.
+    BpodInfo
+        Information structure describing a Bpod device.
 
     Examples
     --------
     Iterate over available Bpods::
 
-        for device in identify_bpods_usb():
+        for device in discover_bpods():
             print(f"Found Bpod at {device}")
 
     Get as a list::
 
-        devices = list(identify_bpods_usb())
+        devices = list(discover_bpods())
     """
     # create filter dict
     filters: dict[str, str] = {}
@@ -1619,4 +1635,4 @@ def discover_bpods_usb(
         if verify_serial_discovery(
             port=p.device, expected_message=b'\xde', timeout=DISCOVERY_TIMEOUT
         ):
-            yield p
+            yield BpodInfo(port=p.device, serial_number=str(p.serial_number))

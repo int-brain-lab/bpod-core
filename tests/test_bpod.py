@@ -78,7 +78,7 @@ class TestBpodIdentifyBpod:
         """Test failure to identify Bpod when specifying incorrect port."""
         mock_port_info = mock_comports.return_value
         mock_port_info[0].vid = 0x0000  # unsupported VID
-        with pytest.raises(BpodError, match='No .* Bpod'):
+        with pytest.raises(BpodError, match='not an .* Bpod'):
             Bpod._identify_bpod(port='COM3')
 
 
