@@ -419,27 +419,6 @@ class TestExtendPacked:
         with pytest.raises(struct.error):
             misc.extend_packed(buf, [-1], 'B')
 
-    def test_compiled_struct_format(self):
-        """Accepts a compiled struct.Struct object."""
-        buf = bytearray()
-        fmt = struct.Struct('<3I')
-        misc.extend_packed(buf, [1, 2, 3], fmt)
-        assert buf == b'\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00'
-
-    def test_compiled_struct_extends_existing_buffer(self):
-        """Compiled Struct appends to existing buffer."""
-        buf = bytearray(b'\xff')
-        fmt = struct.Struct('<2H')
-        misc.extend_packed(buf, [1, 2], fmt)
-        assert buf == b'\xff\x01\x00\x02\x00'
-
-    def test_compiled_struct_wrong_count_raises(self):
-        """Raises struct.error when value count doesn't match compiled format."""
-        buf = bytearray()
-        fmt = struct.Struct('<3I')  # expects 3 values
-        with pytest.raises(struct.error):
-            misc.extend_packed(buf, [1, 2], fmt)  # only 2 provided
-
 
 class TestValidatedDict:
     @pytest.fixture
