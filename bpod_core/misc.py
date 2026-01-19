@@ -372,6 +372,7 @@ def extend_packed(
 
     Examples
     --------
+    >>> from bpod_core.misc import extend_packed
     >>> buffer = bytearray()
     >>> extend_packed(buffer, [1, 2, 3], 'i')
     >>> len(buffer)
