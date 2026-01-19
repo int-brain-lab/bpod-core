@@ -7,7 +7,7 @@ import logging
 import re
 import socket
 import struct
-from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
@@ -353,7 +353,7 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
 
 def extend_packed(
     byte_array: bytearray,
-    values: Iterable[int],
+    values: Sequence[int],
     fmt: str,
 ) -> None:
     """Extend a bytearray with packed binary values.
@@ -365,7 +365,7 @@ def extend_packed(
     ----------
     byte_array : bytearray
         The bytearray to extend in-place.
-    values : typing.Iterable
+    values : typing.Sequence
         The values to pack and append.
     fmt : str
         Format character (e.g., 'i').
