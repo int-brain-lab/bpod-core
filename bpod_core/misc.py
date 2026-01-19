@@ -358,17 +358,22 @@ def extend_packed(
 ) -> None:
     """Extend a bytearray with packed binary values.
 
-    All values are packed using the same format character. For example, fmt='i' packs
-    all values as 32-bit signed integers.
+    This function takes a sequence of integers, converts each one to bytes using the
+    specified struct format character, and appends the result to the given bytearray.
+    All values use the same format character and are packed in little-endian byte order.
 
     Parameters
     ----------
     byte_array : bytearray
-        The bytearray to extend in-place.
-    values : typing.Sequence
-        The values to pack and append.
+        The bytearray that will be modified in-place by appending the packed binary
+        data.
+    values : Sequence[int]
+        Integer values to convert to binary. The number of values determines how many
+        times the format character is repeated.
     fmt : str
-        Format character (e.g., 'i').
+        A single struct format character that defines how each value is encoded.
+        Common options: 'b' (int8), 'h' (int16), 'i' (int32), 'q' (int64), 'B' (uint8),
+        'H' (uint16), 'I' (uint32), 'Q' (uint64).
 
     Examples
     --------
@@ -379,6 +384,10 @@ def extend_packed(
     12
     >>> buffer.hex()
     '010000000200000003000000'
+
+    References
+    ----------
+    https://docs.python.org/3/library/struct.html#format-characters
     """
     format_string = f'<{len(values)}{fmt}'
     byte_array.extend(struct.pack(format_string, *values))
