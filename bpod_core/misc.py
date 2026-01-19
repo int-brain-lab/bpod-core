@@ -7,7 +7,7 @@ import logging
 import re
 import socket
 import struct
-from collections.abc import Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
@@ -77,23 +77,23 @@ def convert_to_snake_case(string: str) -> str:
 
 def suggest_similar(
     invalid_string: str,
-    valid_strings: list[str],
+    valid_strings: Iterable[str],
     format_string: str = " - did you mean '{}'?",
     cutoff: float = 0.6,
 ) -> str:
     """
     Suggest a similar valid string based on the given invalid string.
 
-    This function uses a similarity matching algorithm to find the closest match from a
-    list of valid strings. If a match is found above the specified cutoff, it returns a
-    formatted suggestion string.
+    This function uses a similarity matching algorithm to find the closest match from an
+    iterable of valid strings. If a match is found above the specified cutoff, it
+    returns a formatted suggestion string.
 
     Parameters
     ----------
     invalid_string : str
         The string that is invalid or misspelled.
-    valid_strings : list[str]
-        A list of valid strings to compare against.
+    valid_strings : Iterable[str]
+        An iterable of valid strings to compare against.
     format_string : str, optional
         The format string for the suggestion. Defaults to " - did you mean '{}'?".
     cutoff : float, optional
