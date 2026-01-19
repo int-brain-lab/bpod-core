@@ -8,6 +8,7 @@ import re
 import socket
 import struct
 from collections.abc import Iterator, Mapping, MutableMapping, Sequence
+from functools import lru_cache
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
@@ -389,5 +390,5 @@ def extend_packed(
     ----------
     https://docs.python.org/3/library/struct.html#format-characters
     """
-    format_string = f'<{len(values)}{fmt}'
-    byte_array.extend(struct.pack(format_string, *values))
+    if values:
+        byte_array.extend(struct.pack(f'<{len(values)}{fmt}', *values))

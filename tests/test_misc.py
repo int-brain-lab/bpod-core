@@ -389,11 +389,13 @@ class TestExtendPacked:
         misc.extend_packed(buf, [1, 0x01020304], 'I')
         assert buf == b'\x01\x00\x00\x00\x04\x03\x02\x01'
 
-    def test_empty_values(self):
+    def test_empty_values(self, mocker):
         """Empty list results in no bytes added."""
+        pack = mocker.spy(struct, 'pack')
         buf = bytearray()
         misc.extend_packed(buf, [], 'I')
         assert buf == b''
+        assert not pack.called
 
     def test_extends_existing_buffer(self):
         """Appends to an existing bytearray without overwriting."""
