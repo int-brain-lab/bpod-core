@@ -234,8 +234,8 @@ class TestSendStateMachine:
     def fsm_global_timers(self):
         fsm = StateMachine()
         fsm.set_global_timer(2, 3, 1.5, 'PWM1', 128, 64, 1, 1, 3, 0)
-        fsm.add_state('a', 1, {'GlobalTimer3_Start': 'b'}, {'GlobalTimerTrig': 4})
-        fsm.add_state('b', 1, {'GlobalTimer3_End': '>exit'})
+        fsm.add_state('a', 1, {'GlobalTimer2_Start': 'b'}, {'GlobalTimerTrig': 3})
+        fsm.add_state('b', 1, {'GlobalTimer2_End': '>exit'})
         return fsm
 
     @pytest.fixture
@@ -243,8 +243,8 @@ class TestSendStateMachine:
         fsm = StateMachine()
         fsm.set_global_counter(2, 'Port1_High', 5)
         fsm.add_state('a', 2, {'Tup': 'b'}, {'PWM2': 255})
-        fsm.add_state('b', 0, {'Tup': 'c'}, {'GlobalCounterReset': 3})
-        fsm.add_state('c', 0, {'GlobalCounter3_End': '>exit'}, {'PWM1': 255})
+        fsm.add_state('b', 0, {'Tup': 'c'}, {'GlobalCounterReset': 2})
+        fsm.add_state('c', 0, {'GlobalCounter2_End': '>exit'}, {'PWM1': 255})
         return fsm
 
     @pytest.fixture
@@ -252,7 +252,7 @@ class TestSendStateMachine:
         fsm = StateMachine()
         fsm.set_condition(1, 'Port2', 1)
         fsm.add_state('a', 1, {'Tup': 'b'}, {'PWM1': 255})
-        fsm.add_state('b', 1, {'Tup': '>exit', 'Condition2': '>exit'}, {'PWM2': 255})
+        fsm.add_state('b', 1, {'Tup': '>exit', 'Condition1': '>exit'}, {'PWM2': 255})
         return fsm
 
     def test_send_state_machine_basic_25(self, fsm_basic, mock_bpod_25):
