@@ -7,7 +7,7 @@ import logging
 import re
 import socket
 import struct
-from collections.abc import Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
@@ -353,16 +353,19 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
 
 def extend_packed(
     byte_array: bytearray,
-    values: list[int],
+    values: Iterable[int],
     fmt: str,
 ) -> None:
     """Extend a bytearray with packed binary values.
+
+    All values are packed using the same format character. For example, fmt='i' packs
+    all values as 32-bit signed integers.
 
     Parameters
     ----------
     byte_array : bytearray
         The bytearray to extend in-place.
-    values : list
+    values : typing.Iterable
         The values to pack and append.
     fmt : str
         Format character (e.g., 'i').
@@ -376,8 +379,5 @@ def extend_packed(
     >>> buffer.hex()
     '010000000200000003000000'
     """
-    if isinstance(fmt, struct.Struct):
-        byte_array.extend(fmt.pack(*values))
-    else:
-        format_string = f'<{len(values)}{fmt}'
-        byte_array.extend(struct.pack(format_string, *values))
+    format_string = f'<{len(values)}{fmt}'
+    byte_array.extend(struct.pack(format_string, *values))
