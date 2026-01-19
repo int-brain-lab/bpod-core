@@ -904,13 +904,13 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
                 self._validation_md5_hash = md5_hash
 
     def _check(self) -> None:
+        # Check for empty state machine
         if len(self.states) == 0:
             raise ValueError('No states defined')
 
+        # Check for unreachable states
         initial_state = next(iter(self.states.keys()))
         reachable_states = self.states.transition_targets | {initial_state}
-
-        # Check for unreachable states
         unreachable_states = [s for s in self.states if s not in reachable_states]
         if len(unreachable_states) == 1:
             raise ValueError(f'State "{unreachable_states.pop()}" is unreachable')
@@ -920,3 +920,6 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
                 + f' and "{unreachable_states[-1]}"'
             )
             raise ValueError(f'States {missed_states_string} are unreachable')
+
+        # TODO: Check for manipulation of unused timers?
+        # TODO: Check for manipulation of unused conditions?
