@@ -24,7 +24,7 @@ from bpod_core.com import ExtendedSerial, find_ports, verify_serial_discovery
 from bpod_core.constants import VID_TEENSY, PIDsTeensy
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import DualChannelClient, DualChannelHost
-from bpod_core.misc import SettingsDict, suggest_similar
+from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
 
 VIDS_BPOD = [VID_TEENSY]
 """Vendor IDs of supported Bpod devices"""
@@ -919,7 +919,7 @@ class Bpod(AbstractBpod):
         ValueError
             If the state machine is invalid or exceeds hardware limitations.
         :exc:`~validate_call.roar.validate_callCallHintViolation`
-            If function arguments don’t match type hints.
+            If function arguments don't match type hints.
         """
         # Disable all active module relays
         if not validate_only:
@@ -1055,16 +1055,9 @@ class Bpod(AbstractBpod):
                 if (key_idx := action_indices[invalid_action]) < i1:
                     tmp_list[counter_pos] += 1
                     tmp_list.extend((key_idx, value))
-        format_string = 'H' if self.version.machine == 4 else 'B'
-        byte_array.extend(
-            struct.pack(
-                f'<{len(tmp_list)}{format_string}',
-                *tmp_list,
-            ),
-        )
+        extend_packed(byte_array, tmp_list, 'H' if self.version.machine == 4 else 'B')
 
         # state transition matrix
-        n_states = len(state_machine.states)
         self._state_transitions = np.arange(n_states, dtype=np.uint8)[
             :,
             np.newaxis,
@@ -1084,10 +1077,6 @@ class Bpod(AbstractBpod):
         timer_channel_indices = {k: v for v, k in enumerate(physical_output_channels)}
         timer_channel_indices[None] = 254
 
-        # Helper function for packing a collection of integers into byte_array
-        def pack_values(values: list[int], format_str: str) -> None:
-            byte_array.extend(struct.pack(f'<{len(values)}{format_str}', *values))
-
         # Append values for global timer channels to byte_array
         idx0 = len(byte_array)
         byte_array.extend(b'\xfe' * n_global_timers)  # default: 254
@@ -1098,7 +1087,8 @@ class Bpod(AbstractBpod):
         # Bpod 2+ uses 16-bit values for value_on and value_off
         format_string = 'H' if self.version.machine == 4 else 'B'
         for field_name in ('value_on', 'value_off'):
-            pack_values(
+            extend_packed(
+                byte_array,
                 [
                     getattr(state_machine.global_timers.get(idx), field_name, 0)
                     for idx in range(n_global_timers)
@@ -1166,13 +1156,15 @@ class Bpod(AbstractBpod):
 
         # Pack global timer triggers and cancels into bytearray
         for key in ('GlobalTimerTrig', 'GlobalTimerCancel'):
-            pack_values(
+            extend_packed(
+                byte_array,
                 [s.actions.get(key, 0) for s in state_machine.states.values()],
                 format_string,
             )
 
         # Pack global timer onset triggers into bytearray
-        pack_values(
+        extend_packed(
+            byte_array,
             [
                 getattr(state_machine.global_timers.get(idx, {}), 'onset_trigger', 0)
                 for idx in range(n_global_timers)
@@ -1181,7 +1173,8 @@ class Bpod(AbstractBpod):
         )
 
         # Pack state timers
-        pack_values(
+        extend_packed(
+            byte_array,
             [
                 round(s.timer * self._hardware.cycle_frequency)
                 for s in state_machine.states.values()
@@ -1191,7 +1184,8 @@ class Bpod(AbstractBpod):
 
         # Pack global timer durations, onset delays and loop intervals
         for key in ('duration', 'onset_delay', 'loop_interval'):
-            pack_values(
+            extend_packed(
+                byte_array,
                 [
                     round(
                         getattr(state_machine.global_timers.get(idx, {}), key, 0)
@@ -1203,7 +1197,8 @@ class Bpod(AbstractBpod):
             )
 
         # Pack global counter thresholds
-        pack_values(
+        extend_packed(
+            byte_array,
             [
                 getattr(state_machine.global_counters.get(idx, {}), 'threshold', 0)
                 for idx in range(n_global_counters)
@@ -1216,7 +1211,7 @@ class Bpod(AbstractBpod):
         if self.version.firmware > (22, 0):
             byte_array.append(0)
 
-        # Send to state machine
+        # Send state machine to Bpod
         self._next_fsm_index += 1
         logger.debug('Sending state machine #%d to Bpod', self._next_fsm_index)
         n_bytes = len(byte_array)

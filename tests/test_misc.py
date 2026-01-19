@@ -1,6 +1,7 @@
 """Tests for bpod_core.misc utilities and helpers."""
 
 import errno
+import struct
 
 import pytest
 from pydantic import ValidationError
@@ -365,6 +366,79 @@ class TestSettingsDict:
         spy = mocker.spy(temp_settings, '_save_to_file')
         temp_settings.set_nested(['new', 'path'], 'value')
         spy.assert_called_once()
+
+
+class TestExtendPacked:
+    """Tests for misc.extend_packed()."""
+
+    def test_pack_unsigned_bytes(self):
+        """Packs a list of unsigned bytes."""
+        buf = bytearray()
+        misc.extend_packed(buf, [1, 2, 255], 'B')
+        assert buf == b'\x01\x02\xff'
+
+    def test_pack_unsigned_shorts(self):
+        """Packs a list of unsigned 16-bit integers (little-endian)."""
+        buf = bytearray()
+        misc.extend_packed(buf, [1, 256, 65535], 'H')
+        assert buf == b'\x01\x00\x00\x01\xff\xff'
+
+    def test_pack_unsigned_ints(self):
+        """Packs a list of unsigned 32-bit integers (little-endian)."""
+        buf = bytearray()
+        misc.extend_packed(buf, [1, 0x01020304], 'I')
+        assert buf == b'\x01\x00\x00\x00\x04\x03\x02\x01'
+
+    def test_empty_values(self):
+        """Empty list results in no bytes added."""
+        buf = bytearray()
+        misc.extend_packed(buf, [], 'I')
+        assert buf == b''
+
+    def test_extends_existing_buffer(self):
+        """Appends to an existing bytearray without overwriting."""
+        buf = bytearray(b'\xaa\xbb')
+        misc.extend_packed(buf, [1, 2], 'B')
+        assert buf == b'\xaa\xbb\x01\x02'
+
+    def test_invalid_format_raises_struct_error(self):
+        """Raises struct.error for an invalid format character."""
+        buf = bytearray()
+        with pytest.raises(struct.error):
+            misc.extend_packed(buf, [1], 'Z')
+
+    def test_value_out_of_range_raises_struct_error(self):
+        """Raises struct.error when value exceeds format range."""
+        buf = bytearray()
+        with pytest.raises(struct.error):
+            misc.extend_packed(buf, [256], 'B')  # max for 'B' is 255
+
+    def test_negative_for_unsigned_raises_struct_error(self):
+        """Raises struct.error for negative value with unsigned format."""
+        buf = bytearray()
+        with pytest.raises(struct.error):
+            misc.extend_packed(buf, [-1], 'B')
+
+    def test_compiled_struct_format(self):
+        """Accepts a compiled struct.Struct object."""
+        buf = bytearray()
+        fmt = struct.Struct('<3I')
+        misc.extend_packed(buf, [1, 2, 3], fmt)
+        assert buf == b'\x01\x00\x00\x00\x02\x00\x00\x00\x03\x00\x00\x00'
+
+    def test_compiled_struct_extends_existing_buffer(self):
+        """Compiled Struct appends to existing buffer."""
+        buf = bytearray(b'\xff')
+        fmt = struct.Struct('<2H')
+        misc.extend_packed(buf, [1, 2], fmt)
+        assert buf == b'\xff\x01\x00\x02\x00'
+
+    def test_compiled_struct_wrong_count_raises(self):
+        """Raises struct.error when value count doesn't match compiled format."""
+        buf = bytearray()
+        fmt = struct.Struct('<3I')  # expects 3 values
+        with pytest.raises(struct.error):
+            misc.extend_packed(buf, [1, 2], fmt)  # only 2 provided
 
 
 class TestValidatedDict:

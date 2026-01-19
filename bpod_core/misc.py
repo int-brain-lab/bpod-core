@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import socket
+import struct
 from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from os import PathLike
 from pathlib import Path
@@ -348,3 +349,35 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
         def __hash__(self) -> int: ...
     else:
         __hash__ = None
+
+
+def extend_packed(
+    byte_array: bytearray,
+    values: list[int],
+    fmt: str,
+) -> None:
+    """Extend a bytearray with packed binary values.
+
+    Parameters
+    ----------
+    byte_array : bytearray
+        The bytearray to extend in-place.
+    values : list
+        The values to pack and append.
+    fmt : str
+        Format character (e.g., 'i').
+
+    Examples
+    --------
+    >>> buffer = bytearray()
+    >>> extend_packed(buffer, [1, 2, 3], 'i')
+    >>> len(buffer)
+    12
+    >>> buffer.hex()
+    '010000000200000003000000'
+    """
+    if isinstance(fmt, struct.Struct):
+        byte_array.extend(fmt.pack(*values))
+    else:
+        format_string = f'<{len(values)}{fmt}'
+        byte_array.extend(struct.pack(format_string, *values))
