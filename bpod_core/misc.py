@@ -8,7 +8,6 @@ import re
 import socket
 import struct
 from collections.abc import Iterator, Mapping, MutableMapping, Sequence
-from functools import lru_cache
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
