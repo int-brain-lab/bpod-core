@@ -8,9 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0a7]
 
+### Added
+- `com.find_ports` for finding serial ports that match given filter criteria.
+- `com.verify_serial_discovery` for checking if a serial device sends an expected
+  discovery message.
+- convenience functions for reading and writing integers in `com.ExtendedSerial`.
+- `misc.extend_packed` for extending a bytearray by multiple values of the same format.
+
 ### Changed
 - replace unmaintained `appdirs` dependency with `platformdirs`.
-- switch to zero-based indexing for global counters, timers, and conditions.
+- switch to zero-based indexing for global counters, timers, conditions and soft-codes.
+- added file locking to `misc.SettingsDict`.
 
 ## [0.1.0a6] - 2025-10-29
 
