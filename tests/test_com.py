@@ -2,6 +2,7 @@ import logging
 import re
 from unittest.mock import MagicMock, call
 
+import numpy as np
 import pytest
 from serial import SerialException
 
@@ -60,6 +61,71 @@ class TestEnhancedSerial:
         assert result is True
         result = mock_serial.verify(b'x', b'\x01')
         assert result is False
+
+    @pytest.mark.parametrize(
+        'fcn',
+        [
+            'write_int8',
+            'write_int16',
+            'write_int32',
+            'write_int64',
+            'write_uint8',
+            'write_uint16',
+            'write_uint32',
+            'write_uint64',
+        ],
+    )
+    def test_write_int(self, mock_serial, fcn):
+        """Test writing integer values."""
+        dtype = getattr(np, fcn.split('_')[1])
+        info = np.iinfo(dtype)
+        length = info.bits // 8
+        signed = info.kind == 'i'
+        for value_type in ['min', 'max']:
+            value = getattr(info, value_type)
+            expected = value.to_bytes(length, 'little', signed=signed)
+            getattr(mock_serial, fcn)(value)
+            mock_serial.super_write.assert_called_with(expected)
+
+    @pytest.mark.parametrize(
+        'fcn',
+        [
+            'read_int8',
+            'read_int16',
+            'read_int32',
+            'read_int64',
+            'read_uint8',
+            'read_uint16',
+            'read_uint32',
+            'read_uint64',
+        ],
+    )
+    def test_read_int(self, mock_serial, fcn):
+        """Test reading integer values."""
+        dtype = getattr(np, fcn.split('_')[1])
+        info = np.iinfo(dtype)
+        length = info.bits // 8
+        signed = info.kind == 'i'
+        for value_type in ['min', 'max']:
+            value = getattr(info, value_type)
+            mock_serial.super_read.return_value = value.to_bytes(
+                length, 'little', signed=signed
+            )
+            value_out = getattr(mock_serial, fcn)()
+            mock_serial.super_read.assert_called_with(length)
+            assert value_out == value
+
+    def test_write_bool(self, mock_serial):
+        """Test reading single character."""
+        mock_serial.write_bool(True)
+        mock_serial.super_write.assert_called_with(b'\x01')
+
+    def test_read_bool(self, mock_serial):
+        """Test reading single character."""
+        mock_serial.super_read.return_value = b'\x01'
+        value_out = mock_serial.read_bool()
+        mock_serial.super_read.assert_called_with(1)
+        assert value_out is True
 
 
 class TestChunkedSerialReader:

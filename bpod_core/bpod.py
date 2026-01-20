@@ -21,7 +21,7 @@ from typing_extensions import Self
 
 from bpod_core import __version__ as bpod_core_version
 from bpod_core.com import ExtendedSerial, find_ports, verify_serial_discovery
-from bpod_core.constants import VID_TEENSY, PIDsTeensy
+from bpod_core.constants import STRUCT_UINT32, VID_TEENSY, PIDsTeensy
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import DualChannelClient, DualChannelHost
 from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
@@ -153,8 +153,6 @@ class BpodError(Exception):
 class FSMThread(threading.Thread):
     """A thread for managing the execution of a finite state machine on the Bpod."""
 
-    _struct_start = struct.Struct('<Q')
-    _struct_cycles = struct.Struct('<I')
     _struct_exit = struct.Struct('<IQ')
 
     def __init__(  # noqa: PLR0913
@@ -207,7 +205,6 @@ class FSMThread(threading.Thread):
         serial = self.serial
         index = self._index
         cycle_period = self._cycle_period
-        struct_cycles = self._struct_cycles
         softcode_handler = self._softcode_handler
         state_transitions = self._state_transitions
         previous_state = np.uint8(0)
@@ -230,8 +227,8 @@ class FSMThread(threading.Thread):
             if debug:
                 logger.debug('State machine #%d confirmed by Bpod', index)
 
-        # read the start time of the state machine (uInt64)
-        t0 = self._struct_start.unpack(serial.read(8))[0]
+        # read the start time of the state machine
+        t0 = serial.read_uint64()
         if debug:
             logger.debug('%d µs: Starting state machine #%d', t0, index)
             logger.debug('%d µs: State %d', t0, current_state)
@@ -250,7 +247,7 @@ class FSMThread(threading.Thread):
                 serial.readinto(event_data_view)
 
                 # unpack the number of cycles, calculate the event's timestamp
-                n_cycles = struct_cycles.unpack_from(event_data_view, param)[0]
+                (n_cycles,) = STRUCT_UINT32.unpack_from(event_data_view, param)
                 micros = t0 + n_cycles * cycle_period
 
                 # handle each event
@@ -822,7 +819,7 @@ class Bpod(AbstractBpod):
         modules = []
         for idx in range(self._hardware.n_modules):
             # check connection state
-            if not (is_connected := self.serial0.read_struct('<?')[0]):
+            if not (is_connected := self.serial0.read_bool()):
                 module_name = f'{CHANNEL_TYPES_INPUT[b"U"]}{idx + 1}'
                 modules.append(Module(_bpod=self, index=idx, name=module_name))
                 continue
@@ -836,14 +833,14 @@ class Bpod(AbstractBpod):
             while more_info:
                 match self.serial0.read(1):
                     case b'#':
-                        n_events = self.serial0.read_struct('<B')[0]
+                        n_events = self.serial0.read_uint8()
                     case b'E':
-                        n_event_names = self.serial0.read_struct('<B')[0]
+                        n_event_names = self.serial0.read_uint8()
                         for _ in range(n_event_names):
-                            n_chars = self.serial0.read_struct('<B')[0]
+                            n_chars = self.serial0.read_uint8()
                             event_name = self.serial0.read_struct(f'<{n_chars}s')[0]
                             custom_event_names.append(event_name.decode('UTF8'))
-                more_info = self.serial0.read_struct('<?')[0]
+                more_info = self.serial0.read_bool()
 
             # create module name with trailing index
             matches = [re.match(rf'^{base_name}(\d$)', m.name) for m in modules]

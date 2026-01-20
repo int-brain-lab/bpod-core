@@ -4,13 +4,25 @@ import logging
 import re
 import struct
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from serial import Serial, SerialException
 from serial.threaded import Protocol, ReaderThread
 from serial.tools.list_ports import comports
 from serial.tools.list_ports_common import ListPortInfo
 from typing_extensions import Buffer, Self
+
+from bpod_core.constants import (
+    STRUCT_BOOL,
+    STRUCT_INT8,
+    STRUCT_INT16,
+    STRUCT_INT32,
+    STRUCT_INT64,
+    STRUCT_UINT8,
+    STRUCT_UINT16,
+    STRUCT_UINT32,
+    STRUCT_UINT64,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +63,42 @@ class ExtendedSerial(Serial):
         buffer = struct.pack(format_string, *data)
         return self.write(buffer)
 
+    def write_int8(self, value: int) -> int | None:
+        """Write an 8-bit signed integer to the serial port."""
+        return self.write(STRUCT_INT8.pack(value))
+
+    def write_int16(self, value: int) -> int | None:
+        """Write a 16-bit signed integer to the serial port (little-endian)."""
+        return self.write(STRUCT_INT16.pack(value))
+
+    def write_int32(self, value: int) -> int | None:
+        """Write a 16-bit signed integer to the serial port (little-endian)."""
+        return self.write(STRUCT_INT32.pack(value))
+
+    def write_int64(self, value: int) -> int | None:
+        """Write a 16-bit signed integer to the serial port (little-endian)."""
+        return self.write(STRUCT_INT64.pack(value))
+
+    def write_uint8(self, value: int) -> int | None:
+        """Write an 8-bit unsigned integer to the serial port."""
+        return self.write(STRUCT_UINT8.pack(value))
+
+    def write_uint16(self, value: int) -> int | None:
+        """Write a 16-bit unsigned integer to the serial port (little-endian)."""
+        return self.write(STRUCT_UINT16.pack(value))
+
+    def write_uint32(self, value: int) -> int | None:
+        """Write a 32-bit unsigned integer to the serial port (little-endian)."""
+        return self.write(STRUCT_UINT32.pack(value))
+
+    def write_uint64(self, value: int) -> int | None:
+        """Write a 64-bit unsigned integer to the serial port (little-endian)."""
+        return self.write(STRUCT_UINT64.pack(value))
+
+    def write_bool(self, value: bool) -> int | None:
+        """Write a boolean value to the serial port."""
+        return self.write(STRUCT_BOOL.pack(value))
+
     def read_struct(self, format_string: str) -> tuple[Any, ...]:
         """
         Read structured data from the serial port.
@@ -74,6 +122,42 @@ class ExtendedSerial(Serial):
         """
         n_bytes = struct.calcsize(format_string)
         return struct.unpack(format_string, super().read(n_bytes))
+
+    def read_int8(self) -> int:
+        """Read an 8-bit signed integer from the serial port."""
+        return cast('int', STRUCT_INT8.unpack(self.read(1))[0])
+
+    def read_int16(self) -> int:
+        """Read a 16-bit signed integer from the serial port (little-endian)."""
+        return cast('int', STRUCT_INT16.unpack(self.read(2))[0])
+
+    def read_int32(self) -> int:
+        """Read a 32-bit signed integer from the serial port (little-endian)."""
+        return cast('int', STRUCT_INT32.unpack(self.read(4))[0])
+
+    def read_int64(self) -> int:
+        """Read a 64-bit signed integer from the serial port (little-endian)."""
+        return cast('int', STRUCT_INT64.unpack(self.read(8))[0])
+
+    def read_uint8(self) -> int:
+        """Read an 8-bit unsigned integer from the serial port."""
+        return cast('int', self.read(1)[0])
+
+    def read_uint16(self) -> int:
+        """Read a 16-bit unsigned integer from the serial port (little-endian)."""
+        return cast('int', STRUCT_UINT16.unpack(self.read(2))[0])
+
+    def read_uint32(self) -> int:
+        """Read a 32-bit unsigned integer from the serial port (little-endian)."""
+        return cast('int', STRUCT_UINT32.unpack(self.read(4))[0])
+
+    def read_uint64(self) -> int:
+        """Read a 64-bit unsigned integer from the serial port (little-endian)."""
+        return cast('int', STRUCT_UINT64.unpack(self.read(8))[0])
+
+    def read_bool(self) -> bool:
+        """Read a boolean value from the serial port."""
+        return cast('bool', STRUCT_BOOL.unpack(self.read(1))[0])
 
     def query(self, query: Buffer, size: int = 1) -> bytes:
         r"""
