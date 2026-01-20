@@ -30,39 +30,6 @@ logger = logging.getLogger(__name__)
 class ExtendedSerial(Serial):
     """Enhances :class:`serial.Serial` with additional functionality."""
 
-    def write_struct(self, format_string: str, *data: Any) -> int | None:  # noqa:ANN401
-        """
-        Write structured data to the serial port.
-
-        This method packs the provided data into a binary format according to the
-        specified format string and writes it to the serial port.
-
-        Parameters
-        ----------
-        format_string : str
-            A format string that specifies the layout of the data. It should be
-            compatible with the `struct` module's format specifications.
-            See https://docs.python.org/3/library/struct.html#format-characters
-        *data : Any
-            Variable-length arguments representing the data to be packed and written,
-            corresponding to the format specifiers in `format_string`.
-
-        Returns
-        -------
-        int | None
-            The number of bytes written to the serial port, or None if the write
-            operation fails.
-
-        Raises
-        ------
-        struct.error
-            Error occurred during packing of the data into binary format.
-        serial.SerialTimeoutException
-            In case a write timeout is configured for the port and the time is exceeded.
-        """
-        buffer = struct.pack(format_string, *data)
-        return self.write(buffer)
-
     def write_int8(self, value: int) -> int | None:
         """Write an 8-bit signed integer to the serial port."""
         return self.write(STRUCT_INT8.pack(value))
@@ -99,30 +66,6 @@ class ExtendedSerial(Serial):
         """Write a boolean value to the serial port."""
         return self.write(STRUCT_BOOL.pack(value))
 
-    def read_struct(self, format_string: str) -> tuple[Any, ...]:
-        """
-        Read structured data from the serial port.
-
-        This method reads a specified number of bytes from the serial port and
-        unpacks it into a tuple according to the provided format string.
-
-        Parameters
-        ----------
-        format_string : str
-            A format string that specifies the layout of the data to be read. It should
-            be compatible with the `struct` module's format specifications.
-            See https://docs.python.org/3/library/struct.html#format-characters
-
-        Returns
-        -------
-        tuple[Any, ...]
-            A tuple containing the unpacked data read from the serial port. The
-            structure of the tuple corresponds to the format specified in
-            `format_string`.
-        """
-        n_bytes = struct.calcsize(format_string)
-        return struct.unpack(format_string, super().read(n_bytes))
-
     def read_int8(self) -> int:
         """Read an 8-bit signed integer from the serial port."""
         return cast('int', STRUCT_INT8.unpack(self.read(1))[0])
@@ -158,6 +101,63 @@ class ExtendedSerial(Serial):
     def read_bool(self) -> bool:
         """Read a boolean value from the serial port."""
         return cast('bool', STRUCT_BOOL.unpack(self.read(1))[0])
+
+    def write_struct(self, format_string: str, *data: Any) -> int | None:  # noqa:ANN401
+        """
+        Write structured data to the serial port.
+
+        This method packs the provided data into a binary format according to the
+        specified format string and writes it to the serial port.
+
+        Parameters
+        ----------
+        format_string : str
+            A format string that specifies the layout of the data. It should be
+            compatible with the `struct` module's format specifications.
+            See https://docs.python.org/3/library/struct.html#format-characters
+        *data : Any
+            Variable-length arguments representing the data to be packed and written,
+            corresponding to the format specifiers in `format_string`.
+
+        Returns
+        -------
+        int | None
+            The number of bytes written to the serial port, or None if the write
+            operation fails.
+
+        Raises
+        ------
+        struct.error
+            Error occurred during packing of the data into binary format.
+        serial.SerialTimeoutException
+            In case a write timeout is configured for the port and the time is exceeded.
+        """
+        buffer = struct.pack(format_string, *data)
+        return self.write(buffer)
+
+    def read_struct(self, format_string: str) -> tuple[Any, ...]:
+        """
+        Read structured data from the serial port.
+
+        This method reads a specified number of bytes from the serial port and
+        unpacks it into a tuple according to the provided format string.
+
+        Parameters
+        ----------
+        format_string : str
+            A format string that specifies the layout of the data to be read. It should
+            be compatible with the `struct` module's format specifications.
+            See https://docs.python.org/3/library/struct.html#format-characters
+
+        Returns
+        -------
+        tuple[Any, ...]
+            A tuple containing the unpacked data read from the serial port. The
+            structure of the tuple corresponds to the format specified in
+            `format_string`.
+        """
+        n_bytes = struct.calcsize(format_string)
+        return struct.unpack(format_string, super().read(n_bytes))
 
     def query(self, query: Buffer, size: int = 1) -> bytes:
         r"""

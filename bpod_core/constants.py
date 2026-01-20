@@ -3,8 +3,6 @@
 from struct import Struct
 
 # pre-compiled structs for common data types
-STRUCT_CHAR = Struct('c')
-"""Compiled struct representing a string of length 1."""
 STRUCT_BOOL = Struct('?')
 """Compiled struct representing a boolean value."""
 STRUCT_UINT8 = Struct('B')
