@@ -469,8 +469,8 @@ class Bpod(AbstractBpod):
         return response
 
     def _start_zmq(self) -> None:
-        port_pub = self._get_setting(['devices', str(self._serial_number), 'port_pub'])
-        port_rep = self._get_setting(['devices', str(self._serial_number), 'port_rep'])
+        port_pub = self._get_setting(['devices', self._serial_number, 'port_pub'])
+        port_rep = self._get_setting(['devices', self._serial_number, 'port_rep'])
         self._zmq_service = DualChannelHost(
             service_name=self.name if self.name else f'bpod_{self._serial_number}',
             service_type='_bpod',
@@ -487,12 +487,10 @@ class Bpod(AbstractBpod):
             port_rep=cast('int | None', port_rep),
         )
         self._set_setting(
-            ['devices', str(self._serial_number), 'port_pub'],
-            self._zmq_service.pub_tcp_port,
+            ['devices', self._serial_number, 'port_pub'], self._zmq_service.pub_tcp_port
         )
         self._set_setting(
-            ['devices', str(self._serial_number), 'port_rep'],
-            self._zmq_service.rep_tcp_port,
+            ['devices', self._serial_number, 'port_rep'], self._zmq_service.rep_tcp_port
         )
 
     def _stop_zmq(self) -> None:
@@ -508,7 +506,7 @@ class Bpod(AbstractBpod):
     @staticmethod
     def _identify_bpod(
         port: str | None = None, serial_number: str | None = None
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str]:
         """
         Try to identify a supported Bpod based on port or serial number.
 
@@ -519,14 +517,14 @@ class Bpod(AbstractBpod):
         ----------
         port : str | None, optional
             The port of the device.
-        serial_number : str | None, optional
+        serial_number : str, optional
             The serial number of the device.
 
         Returns
         -------
         str
             the port of the device
-        str | None
+        str
             the serial number of the device
 
         Raises
@@ -536,7 +534,7 @@ class Bpod(AbstractBpod):
         """
         try:
             port_info = next(discover_bpod(port, serial_number))
-            return cast('str', port_info.port), port_info.serial_number
+            return cast('str', port_info.port), str(port_info.serial_number)
         except StopIteration as e:
             if port is not None:
                 if len(find_ports(device=port)) == 0:
@@ -1300,26 +1298,26 @@ class Bpod(AbstractBpod):
         """Get the name of the Bpod device."""
         return cast(
             'str | None',
-            self._get_setting(['devices', str(self._serial_number), 'name'], None),
+            self._get_setting(['devices', self._serial_number, 'name'], None),
         )
 
     @name.setter
     def name(self, name: str | None) -> None:
         """Set the name of the Bpod device."""
-        self._set_setting(['devices', str(self._serial_number), 'name'], name)
+        self._set_setting(['devices', self._serial_number, 'name'], name)
 
     @property
     def location(self) -> str | None:
         """Get the location of the Bpod device."""
         return cast(
             'str | None',
-            self._get_setting(['devices', str(self._serial_number), 'location'], None),
+            self._get_setting(['devices', self._serial_number, 'location'], None),
         )
 
     @location.setter
     def location(self, location: str | None) -> None:
         """Set the location of the Bpod device."""
-        self._set_setting(['devices', str(self._serial_number), 'location'], location)
+        self._set_setting(['devices', self._serial_number, 'location'], location)
 
 
 class Channel:
