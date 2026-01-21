@@ -185,8 +185,7 @@ class FSMThread(threading.Thread):
         use_back_op : bool
             Whether the state machine makes use of the `>back` operator
         """
-        super().__init__()
-        self.daemon = True
+        super().__init__(daemon=True)
         self.serial = serial
         self._stop_event = threading.Event()
         self._index = fsm_index
@@ -196,7 +195,7 @@ class FSMThread(threading.Thread):
         self._state_transitions = state_transitions
         self._use_back_op = use_back_op
 
-    def stop(self):
+    def stop(self) -> None:
         self._stop_event.set()
 
     def run(self) -> None:
@@ -394,11 +393,6 @@ class Bpod(AbstractBpod):
             self._serial_number,
             self.version.pcb,
         )
-        # logger.info(
-        #     'ZeroMQ service started on %s:%d',
-        #     self._zmq_service.bind_address,
-        #     self._zmq_service.port,
-        # )
 
     def __enter__(self) -> Self:
         """Enter context."""
@@ -443,7 +437,7 @@ class Bpod(AbstractBpod):
         self._stop_zmq()
 
     def _zmq_handler(self, message: dict) -> dict[str, Any]:
-        msg_type = message.get('type')
+        msg_type = message.get('type', 'unknown')
         if msg_type == 'call':
             method_name = message.get('method', '')
             args = message.get('args', ())
@@ -474,9 +468,9 @@ class Bpod(AbstractBpod):
             }
         return response
 
-    def _start_zmq(self):
-        port_pub = self._get_setting(['devices', self._serial_number, 'port_pub'])
-        port_rep = self._get_setting(['devices', self._serial_number, 'port_rep'])
+    def _start_zmq(self) -> None:
+        port_pub = self._get_setting(['devices', str(self._serial_number), 'port_pub'])
+        port_rep = self._get_setting(['devices', str(self._serial_number), 'port_rep'])
         self._zmq_service = DualChannelHost(
             service_name=self.name if self.name else f'bpod_{self._serial_number}',
             service_type='_bpod',
@@ -493,15 +487,15 @@ class Bpod(AbstractBpod):
             port_rep=cast('int | None', port_rep),
         )
         self._set_setting(
-            ['devices', self._serial_number, 'port_pub'],
+            ['devices', str(self._serial_number), 'port_pub'],
             self._zmq_service.pub_tcp_port,
         )
         self._set_setting(
-            ['devices', self._serial_number, 'port_rep'],
+            ['devices', str(self._serial_number), 'port_rep'],
             self._zmq_service.rep_tcp_port,
         )
 
-    def _stop_zmq(self):
+    def _stop_zmq(self) -> None:
         if hasattr(self, '_zmq_service'):
             self._zmq_service.close()
 
@@ -1542,7 +1536,7 @@ class RemoteBpod:
         serial_number: str | None = None,
         location: str | None = None,
         timeout: float = 10.0,
-    ):
+    ) -> None:
         properties = {
             'address': address,
             'name': name,
@@ -1557,6 +1551,7 @@ class RemoteBpod:
                 address=address,
                 discovery_timeout=timeout,
                 txt_properties=properties,
+                event_handler=self._event_handler,
             )
         except TimeoutError as e:
             raise TimeoutError('Failed to discover remote Bpod.') from e
@@ -1569,10 +1564,10 @@ class RemoteBpod:
             self._zmq._address_req,
         )
 
-    def _request(self, request_type: str, **kwargs) -> dict:
+    def _request(self, request_type: str, **kwargs: Any) -> dict:
         return cast('dict', self._zmq.request(type=request_type, **kwargs))
 
-    def _remote_call(self, method: str, *args, **kwargs) -> Any | None:
+    def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any | None:
         """
         Perform a remote procedure call by sending a 'call' type request.
 
@@ -1580,9 +1575,9 @@ class RemoteBpod:
         ----------
         method : str
             The name of the remote method to invoke.
-        *args
+        *args : Any
             Positional arguments to pass to the remote method.
-        **kwargs
+        **kwargs : Any
             Keyword arguments to pass to the remote method.
 
         Returns
@@ -1593,10 +1588,12 @@ class RemoteBpod:
         reply = self._request('call', method=method, args=args, kwargs=kwargs)
         if reply.get('success'):
             return reply['result']
-        logger.error(f'Remote {reply["error"]["type"]}: ' + reply['error']['message'])
+        logger.error(
+            'Remote %s: %s, ', reply['error']['type'], reply['error']['message']
+        )
         return None
 
-    def _handshake(self):
+    def _handshake(self) -> None:
         reply = self._request('handshake')
         self._version = reply['version']
         self._version['bpod_core'] = reply['bpod-core']
@@ -1604,7 +1601,7 @@ class RemoteBpod:
     def set_status_led(self, enabled: bool) -> None:
         self._remote_call('set_status_led', enabled)
 
-    def _event_handler(self, message: dict):
+    def _event_handler(self, message: dict) -> None:
         pass
 
 

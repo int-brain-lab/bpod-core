@@ -65,7 +65,7 @@ class DualChannelBase(ABC):
         return None
 
     @abstractmethod
-    def _event_loop(self): ...
+    def _event_loop(self) -> None: ...
 
     def close(self) -> bool:
         """
@@ -107,7 +107,7 @@ class DualChannelHost(DualChannelBase):
         service_name: str,
         service_type: str,
         txt_record: dict[str | bytes, str | bytes | None] | None = None,
-        event_handler: Callable[[Any | None], Any] | None = None,
+        event_handler: Callable[[Any], Any] | None = None,
         remote: bool = True,
         port_pub: int | None = None,
         port_rep: int | None = None,
@@ -378,7 +378,7 @@ class DualChannelClient(DualChannelBase):
         event_handler: Callable[[dict], Any] | None = None,
         discovery_timeout: float = 10.0,
         txt_properties: dict | None = None,
-    ):
+    ) -> None:
         """
         Initialize a DualChannelClient instance.
 
@@ -423,16 +423,20 @@ class DualChannelClient(DualChannelBase):
         self._handshake()
 
         # connect SUB channel
-        self._socket_pub_sub.connect(self._address_sub)
-        self._socket_pub_sub.setsockopt_string(zmq.SUBSCRIBE, '')
-        logger.debug("Binding SUB socket to '%s'", self._address_sub)
+        if event_handler is not None:
+            self._socket_pub_sub.connect(self._address_sub)
+            self._socket_pub_sub.setsockopt_string(zmq.SUBSCRIBE, '')
+            logger.debug("Binding SUB socket to '%s'", self._address_sub)
+        else:
+            logger.debug('Not binding SUB socket for lack of event handler')
 
         # start event loop for subscription handling
         self._event_handler = event_handler
         self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
-        self._event_thread.start()
+        if event_handler is not None:
+            self._event_thread.start()
 
-    def _event_loop(self):
+    def _event_loop(self) -> None:
         """Process incoming PUB messages."""
         while not self._stop_event_loop.is_set():
             if not self._socket_pub_sub.poll(100):
@@ -440,11 +444,11 @@ class DualChannelClient(DualChannelBase):
             msg = self._socket_pub_sub.recv()
             msg = self._decoder.decode(msg)
             try:
-                self._event_handler(msg)
+                cast('Callable', self._event_handler)(msg)
             except Exception as e:
                 logger.exception('Subscription handler raised an exception', exc_info=e)
 
-    def _handshake(self):
+    def _handshake(self) -> None:
         """Perform handshake with the host."""
         reply_type, reply_data = self._req('H')
         if (
@@ -503,13 +507,13 @@ class DualChannelClient(DualChannelBase):
             # return reply type and data
             return reply.type, reply.data
 
-    def request(self, **kwargs) -> Any:
+    def request(self, **kwargs: Any) -> Any:
         """
         Send a generic request to the server.
 
         Parameters
         ----------
-        **kwargs : dict
+        **kwargs : Any
             Key-value pairs to be sent as the request payload.
 
         Returns
@@ -569,7 +573,9 @@ def discover(
     event = threading.Event()
     txt_record = {}
 
-    def on_state_change(*, name: str, state_change: ServiceStateChange, **_):
+    def on_state_change(
+        *, name: str, state_change: ServiceStateChange, **_: Any
+    ) -> None:
         nonlocal address, protocol, txt_record, event
         if state_change is ServiceStateChange.Added:
             info = zeroconf.get_service_info(service_type, name)

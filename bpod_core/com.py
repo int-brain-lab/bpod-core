@@ -3,7 +3,7 @@
 import logging
 import re
 import struct
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from serial import Serial, SerialException
@@ -312,7 +312,10 @@ class ChunkedSerialReader(Protocol):
             del self._buffer[: self._chunk_size]
 
 
-def find_ports(**filters: Any) -> list[ListPortInfo]:
+FilterValue = str | int | re.Pattern[str] | None | Sequence['FilterValue']
+
+
+def find_ports(**filters: FilterValue) -> list[ListPortInfo]:
     r"""
     Find serial ports matching specified criteria.
 
@@ -320,11 +323,11 @@ def find_ports(**filters: Any) -> list[ListPortInfo]:
 
     Parameters
     ----------
-    **filters : Any
+    **filters : FilterValue
         Port attributes to filter by. Values can be:
 
         - Scalar: exact match
-        - List: match any item (OR logic)
+        - Sequence: match any item (OR logic)
         - re.Pattern: regex match (use re.compile())
 
     Returns
@@ -355,11 +358,11 @@ def find_ports(**filters: Any) -> list[ListPortInfo]:
     Strings use exact matching. Use re.compile() for regex patterns.
     """
 
-    def matches(key, value):
-        if isinstance(value, list):
+    def matches(key: object, value: FilterValue) -> bool:
+        if isinstance(value, Sequence) and not isinstance(value, str):
             return any(matches(key, v) for v in value)
         if isinstance(value, re.Pattern):
-            return isinstance(key, str) and bool(value.search(key))
+            return isinstance(key, str) and value.search(key) is not None
         return key == value
 
     return [

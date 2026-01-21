@@ -26,7 +26,7 @@ RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
 RE_UNDERSCORES = re.compile(r'_{2,}')
 
 
-def sanitize_string(string: str, substitute='_'):
+def sanitize_string(string: str, substitute: str = '_') -> str:
     """
     Replace non-alphanumeric characters in a string with a given substitute.
 

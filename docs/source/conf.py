@@ -22,9 +22,7 @@ def generate_fsm_examples(app):
     examples_source_path = project_root / 'examples'
     examples_target_path = docs_source_path / 'state_machines' / 'examples'
     examples_target_path.mkdir(parents=True, exist_ok=True)
-    example_files = sorted(
-        [f for f in examples_source_path.glob('*.py')], key=lambda f: f.name
-    )
+    example_files = sorted(examples_source_path.glob('*.py'), key=lambda f: f.name)
 
     for fn in example_files:
         # Import the example file as a module
