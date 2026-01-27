@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovery message.
 - convenience functions for reading and writing integers in `com.ExtendedSerial`.
 - `misc.extend_packed` for extending a bytearray by multiple values of the same format.
+- `misc.DocstringInheritanceMixin` for inheriting docstrings from base classes.
 
 ### Changed
 - replace unmaintained `appdirs` dependency with `platformdirs`.

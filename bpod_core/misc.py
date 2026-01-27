@@ -26,6 +26,26 @@ RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
 RE_UNDERSCORES = re.compile(r'_{2,}')
 
 
+class DocstringInheritanceMixin:
+    """Mixin that automatically inherits docstrings from parent classes.
+
+    When a subclass overrides a method or property without providing its own docstring,
+    this mixin copies the docstring from the nearest parent class that defines one. This
+    avoids having to duplicate docstrings across abstract methods and their concrete
+    implementations.
+    """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        for name, attr in vars(cls).items():
+            if (callable(attr) or isinstance(attr, property)) and not attr.__doc__:
+                for base in cls.__mro__[1:]:
+                    base_attr = vars(base).get(name)
+                    if base_attr is not None and base_attr.__doc__:
+                        attr.__doc__ = base_attr.__doc__
+                        break
+
+
 def sanitize_string(string: str, substitute: str = '_') -> str:
     """
     Replace non-alphanumeric characters in a string with a given substitute.
