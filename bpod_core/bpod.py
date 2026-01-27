@@ -218,26 +218,22 @@ class FSMThread(threading.Thread):
         target_exit = np.uint8(state_transitions.shape[0])
         target_back = np.uint8(255)
         use_back_op = self._use_back_op
+        event_names = self._event_names
 
         # create buffers for repeated serial reads
         opcode_buf = bytearray(2)  # buffer for opcodes
         event_data_buf = bytearray(259)  # max 255 events + 4 bytes for n_cycles
 
-        # should we use debug logging?
-        debug = logger.isEnabledFor(logging.DEBUG)
-
         # confirm the state machine
         if self._confirm_fsm:
             if serial.read(1) != b'\x01':
                 raise RuntimeError(f'State machine #{index} was not confirmed by Bpod')
-            if debug:
-                logger.debug('State machine #%d confirmed by Bpod', index)
+            logger.debug('State machine #%d confirmed by Bpod', index)
 
         # read the start time of the state machine
         t0 = serial.read_uint64()
-        if debug:
-            logger.debug('%d µs: Starting state machine #%d', t0, index)
-            logger.debug('%d µs: State %d', t0, current_state)
+        logger.debug('%d µs: Starting state machine #%d', t0, index)
+        logger.debug('%d µs: State %d', t0, current_state)
         # TODO: handle start of state machine
         # TODO: handle start of state
 
@@ -259,13 +255,10 @@ class FSMThread(threading.Thread):
                 # handle each event
                 events = event_data_view[:param]
                 for event in events:
-                    if debug and event != 255:  # exit event
-                        event_name = (
-                            self._event_names[event]
-                            if event < len(self._event_names)
-                            else 'Unknown'
+                    if event != 255:
+                        logger.debug(
+                            '%d µs: Event %d - %s)', micros, event, event_names[event]
                         )
-                        logger.debug('%d µs: Event: %s (%d)', micros, event_name, event)
                     # TODO: handle event
 
                 # handle state transitions / exit event
@@ -285,14 +278,12 @@ class FSMThread(threading.Thread):
                     previous_state = current_state
                     current_state = target_state
                     # TODO: handle start of state
-                    if debug:
-                        logger.debug('%d µs: State %d', micros, current_state)
+                    logger.debug('%d µs: State %d', micros, current_state)
                     break  # only handle the first state transition
 
             elif opcode == 2:  # handle softcodes
                 param -= 1
-                if debug:
-                    logger.debug('Softcode %d', param)
+                logger.debug('Softcode %d', param)
                 softcode_handler(param)
 
             else:
@@ -301,10 +292,9 @@ class FSMThread(threading.Thread):
         # exit state machine
         # read 12 bytes: cycles (uInt32) and micros (uInt64)
         cycles, micros = self._struct_exit.unpack(serial.read(12))
-        if debug:
-            logger.debug(
-                '%d µs: Ending state machine #%d (%d cycles)', micros, index, cycles
-            )
+        logger.debug(
+            '%d µs: Ending state machine #%d (%d cycles)', micros, index, cycles
+        )
         # TODO: handle end of state machine
 
 
@@ -804,7 +794,6 @@ class Bpod(AbstractBpod):
         ]:
             self.event_names.extend(event_name.format(i) for i in range(n))
         self.event_names.append('Tup')
-        logger.debug('Compiled event names: %s', self.event_names)
 
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""
@@ -1269,10 +1258,6 @@ class Bpod(AbstractBpod):
             f'<c2?H{n_bytes}s', b'C', run_asap, self._use_back_op, n_bytes, byte_array
         )
         self._waiting_for_confirmation = True
-        sm_definition = struct.pack(
-            f'<c2?H{n_bytes}s', b'C', run_asap, self._use_back_op, n_bytes, byte_array
-        )
-        logger.debug(sm_definition)
 
         if run_asap:
             self._run_state_machine(blocking=False)
