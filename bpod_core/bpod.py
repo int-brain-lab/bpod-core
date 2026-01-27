@@ -6,6 +6,7 @@ import struct
 import threading
 import traceback
 import weakref
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from types import TracebackType
@@ -24,7 +25,12 @@ from bpod_core.com import ExtendedSerial, find_ports, verify_serial_discovery
 from bpod_core.constants import STRUCT_UINT32, VID_TEENSY, PIDsTeensy
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import DualChannelClient, DualChannelHost
-from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
+from bpod_core.misc import (
+    DocstringInheritanceMixin,
+    SettingsDict,
+    extend_packed,
+    suggest_similar,
+)
 
 VIDS_BPOD = [VID_TEENSY]
 """Vendor IDs of supported Bpod devices"""
@@ -95,7 +101,7 @@ class BpodInfo(msgspec.Struct):
 
 
 class VersionInfo(msgspec.Struct, frozen=True):
-    """Represents the Bpod's on-board hardware configuration."""
+    """Data structure representing various version information."""
 
     firmware: tuple[int, int]
     """Firmware version (major, minor)"""
@@ -105,9 +111,8 @@ class VersionInfo(msgspec.Struct, frozen=True):
     """Machine type (string)"""
     pcb: int | None
     """PCB revision, if applicable"""
-
-    def _to_dict(self) -> dict[str, Any]:
-        return {f: getattr(self, f) for f in self.__struct_fields__}
+    bpod_core: str
+    """bpod-core version"""
 
 
 class HardwareConfiguration(msgspec.Struct, frozen=True):
@@ -296,21 +301,54 @@ class FSMThread(threading.Thread):
         # TODO: handle end of state machine
 
 
-class AbstractBpod:
+class AbstractBpod(DocstringInheritanceMixin, ABC):
+    """Abstract base class for Bpod objects."""
+
     _version: VersionInfo
     _hardware: HardwareConfiguration
+    _serial_number: str
+
+    @property
+    @abstractmethod
+    def name(self) -> str | None:
+        """The Bpod's user-defined name, or :obj:`None` if not set."""
+
+    @property
+    @abstractmethod
+    def location(self) -> str | None:
+        """The Bpod's user-defined location, or :obj:`None` if not set."""
 
     @property
     def version(self) -> VersionInfo:
         """Version information of the Bpod's firmware and hardware."""
         return self._version
 
+    @property
+    def serial_number(self) -> str:
+        """The Bpod's unique serial number."""
+        return self._serial_number
+
+    @abstractmethod
+    def set_status_led(self, enabled: bool) -> bool:
+        """
+        Enable or disable the Bpod's status LED.
+
+        Parameters
+        ----------
+        enabled : bool
+            True to enable the status LED, False to disable.
+
+        Returns
+        -------
+        bool
+            True if the operation was successful, False otherwise.
+        """
+
 
 class Bpod(AbstractBpod):
-    """Bpod class for interfacing with the Bpod Finite State Machine."""
+    """Class for interfacing with a Bpod Finite State Machine."""
 
     _settings: SettingsDict
-    _name: str | None
     _fsm_thread: FSMThread | None = None
     _zmq_service: DualChannelHost
     _next_fsm_index: int = -1
@@ -436,7 +474,7 @@ class Bpod(AbstractBpod):
         self.close()
         self._stop_zmq()
 
-    def _zmq_handler(self, message: dict) -> dict[str, Any]:
+    def _zmq_handler(self, message: dict[str, Any]) -> dict[str, Any]:
         msg_type = message.get('type', 'unknown')
         if msg_type == 'call':
             method_name = message.get('method', '')
@@ -458,8 +496,10 @@ class Bpod(AbstractBpod):
                 }
         elif msg_type == 'handshake':
             response = {
-                'bpod-core': bpod_core_version,
-                'version': self._version._to_dict(),
+                'version': self._version,
+                'serial_number': self._serial_number,
+                'name': self.name,
+                'location': self.location,
             }
         else:
             response = {
@@ -576,7 +616,9 @@ class Bpod(AbstractBpod):
                 f'v{MIN_BPOD_FW_VERSION[0]}.{MIN_BPOD_FW_VERSION[1]} or later.',
             )
         pcv_rev = self.serial0.query_struct(b'v', '<B')[0] if v_major > 22 else None
-        self._version = VersionInfo(v_firmware, machine_type, machine_type_str, pcv_rev)
+        self._version = VersionInfo(
+            v_firmware, machine_type, machine_type_str, pcv_rev, bpod_core_version
+        )
 
     def _get_hardware_configuration(self) -> None:
         """Retrieve the Bpod's onboard hardware configuration."""
@@ -788,19 +830,6 @@ class Bpod(AbstractBpod):
 
     @validate_call
     def set_status_led(self, enabled: bool) -> bool:
-        """
-        Enable or disable the Bpod's status LED.
-
-        Parameters
-        ----------
-        enabled : bool
-            True to enable the status LED, False to disable.
-
-        Returns
-        -------
-        bool
-            True if the operation was successful, False otherwise.
-        """
         self.serial0.write_struct('<c?', b':', enabled)
         return self.serial0.verify(b'')
 
@@ -1526,7 +1555,12 @@ class Module:
         self.set_relay(state)
 
 
-class RemoteBpod:
+class RemoteBpod(AbstractBpod):
+    """Class representing a Bpod connected via zeroMQ."""
+
+    _name: str | None = None
+    _location: str | None = None
+
     def __init__(
         self,
         address: str | None = None,
@@ -1558,7 +1592,7 @@ class RemoteBpod:
         # log hardware information
         logger.info(
             'Connected to Bpod Finite State Machine %s on %s',
-            self._version['machine_str'],
+            self._version.machine_str,
             self._zmq._address_req,
         )
 
@@ -1567,7 +1601,7 @@ class RemoteBpod:
 
     def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any | None:
         """
-        Perform a remote procedure call by sending a 'call' type request.
+        Perform a remote procedure call.
 
         Parameters
         ----------
@@ -1593,14 +1627,24 @@ class RemoteBpod:
 
     def _handshake(self) -> None:
         reply = self._request('handshake')
-        self._version = reply['version']
-        self._version['bpod_core'] = reply['bpod-core']
-
-    def set_status_led(self, enabled: bool) -> None:
-        self._remote_call('set_status_led', enabled)
+        self._version = VersionInfo(**reply['version'])
+        self._serial_number = reply['serial_number']
+        self._name = reply['name']
+        self._location = reply['location']
 
     def _event_handler(self, message: dict) -> None:
         pass
+
+    @property
+    def name(self) -> str | None:
+        return self._name
+
+    @property
+    def location(self) -> str | None:
+        return self._location
+
+    def set_status_led(self, enabled: bool) -> bool:
+        return self._remote_call('set_status_led', enabled) or False
 
 
 def discover_bpod(
