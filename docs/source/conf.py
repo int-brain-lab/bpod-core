@@ -19,7 +19,7 @@ def generate_fsm_examples(app):
         return
 
     # Create docs/source/state_machines/examples/ with one page per example
-    examples_source_path = project_root / 'examples'
+    examples_source_path = project_root / 'examples' / 'state_machines'
     examples_target_path = docs_source_path / 'state_machines' / 'examples'
     examples_target_path.mkdir(parents=True, exist_ok=True)
     example_files = sorted(examples_source_path.glob('*.py'), key=lambda f: f.name)
@@ -63,7 +63,7 @@ def generate_fsm_examples(app):
             '',
             '   .. tab-item:: Python',
             '',
-            f'    .. literalinclude:: ../../../../examples/{fn.name}',
+            f'    .. literalinclude:: ../../../../examples/state_machines/{fn.name}',
             '       :language: python',
             '       :start-at: from bpod_core.',
             '',
