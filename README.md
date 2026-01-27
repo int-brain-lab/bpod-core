@@ -6,6 +6,9 @@
 
 A Python library for communicating with the [*Bpod Finite State Machine*](https://sanworks.io/).
 
+> [!WARNING]
+> bpod-core is under development and not yet ready for production use.
+
 This project is maintained by the software development team at the
 [*International Brain Lab*](https://internationalbrainlab.org/).
 
