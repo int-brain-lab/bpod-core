@@ -15,8 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - convenience functions for reading and writing integers in `com.ExtendedSerial`.
 - `misc.extend_packed` for extending a bytearray by multiple values of the same format.
 - `misc.DocstringInheritanceMixin` for inheriting docstrings from base classes.
+- more examples.
 
 ### Changed
+- more verbose debug logging during state machine runs.
 - replace unmaintained `appdirs` dependency with `platformdirs`.
 - switch to zero-based indexing for global counters, timers, conditions and soft-codes.
 - added file locking to `misc.SettingsDict`.
