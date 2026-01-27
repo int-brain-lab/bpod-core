@@ -898,12 +898,6 @@ class Bpod(AbstractBpod):
         self._compile_event_names()
         self._compile_output_actions()
 
-    def load_serial_message(self, module_index, message_id, message_bytes):
-        # Format: ord('L'), module_index(0-based), n_messages(1), msg_id, msg_len, msg_payload
-        header = struct.pack('<BBBB', module_index, 1, message_id, len(message_bytes))
-        self.serial0.write(b'L' + header + message_bytes)
-        return self.serial0.read(1) == b'\x01'
-
     def validate_state_machine(self, state_machine: StateMachine) -> None:
         """
         Validate the provided state machine for compatibility with the hardware.
@@ -1569,6 +1563,55 @@ class Module:
     def relay(self, state: bool) -> None:
         """The current state of the serial relay."""
         self.set_relay(state)
+
+    @validate_call
+    def load_serial_message(
+        self,
+        message_id: int,
+        message_bytes: bytes,
+    ) -> bool:
+        """
+        Load a serial message targeting the module.
+
+        Serial messages are byte sequences targeting a specific module that can be
+        triggered as output actions during a state machine run. Each message is
+        identified by a ``message_id``.
+
+        Parameters
+        ----------
+        message_id : int
+            Identifier for the message, in the range ``[0, 254]``.
+        message_bytes : bytes
+            The message payload (1 to 3 bytes).
+
+        Returns
+        -------
+        bool
+            :obj:`True` if the Bpod acknowledged the message, :obj:`False` otherwise.
+
+        Raises
+        ------
+        ValidationError
+            If the provided parameters cannot be validated or coerced to the expected
+            type.
+        ValueError
+            If ```message_id``, or ``message_bytes`` length is out of range.
+        """
+        if not (0 <= message_id <= 254):
+            raise ValueError('Message ID must be between 0 and 254')
+        if not (1 <= (message_length := len(message_bytes)) <= 3):
+            raise ValueError('Message must be between 1 and 3 bytes long')
+
+        self._bpod.serial0.write_struct(
+            f'<c4B{message_length}s',
+            b'L',
+            self.index,
+            1,  # number of messages loaded - always 1 for now
+            message_id,
+            message_length,
+            message_bytes,
+        )
+        return self._bpod.serial0.verify()
 
 
 class RemoteBpod(AbstractBpod):
