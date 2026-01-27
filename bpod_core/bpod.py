@@ -169,6 +169,7 @@ class FSMThread(threading.Thread):
         softcode_handler: Callable,
         state_transitions: NDArray[np.uint8],
         use_back_op: bool,
+        event_names: list[str],
     ) -> None:
         """
         Initialize the FSMThread.
@@ -199,6 +200,7 @@ class FSMThread(threading.Thread):
         self._softcode_handler = softcode_handler
         self._state_transitions = state_transitions
         self._use_back_op = use_back_op
+        self._event_names = event_names
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -216,26 +218,22 @@ class FSMThread(threading.Thread):
         target_exit = np.uint8(state_transitions.shape[0])
         target_back = np.uint8(255)
         use_back_op = self._use_back_op
+        event_names = self._event_names
 
         # create buffers for repeated serial reads
         opcode_buf = bytearray(2)  # buffer for opcodes
         event_data_buf = bytearray(259)  # max 255 events + 4 bytes for n_cycles
 
-        # should we use debug logging?
-        debug = logger.isEnabledFor(logging.DEBUG)
-
         # confirm the state machine
         if self._confirm_fsm:
             if serial.read(1) != b'\x01':
                 raise RuntimeError(f'State machine #{index} was not confirmed by Bpod')
-            if debug:
-                logger.debug('State machine #%d confirmed by Bpod', index)
+            logger.debug('State machine #%d confirmed by Bpod', index)
 
         # read the start time of the state machine
         t0 = serial.read_uint64()
-        if debug:
-            logger.debug('%d µs: Starting state machine #%d', t0, index)
-            logger.debug('%d µs: State %d', t0, current_state)
+        logger.debug('%d µs: Starting state machine #%d', t0, index)
+        logger.debug('%d µs: State %d', t0, current_state)
         # TODO: handle start of state machine
         # TODO: handle start of state
 
@@ -257,8 +255,10 @@ class FSMThread(threading.Thread):
                 # handle each event
                 events = event_data_view[:param]
                 for event in events:
-                    if debug:
-                        logger.debug('%d µs: Event %d', micros, event)
+                    if event != 255:
+                        logger.debug(
+                            '%d µs: Event %d - %s)', micros, event, event_names[event]
+                        )
                     # TODO: handle event
 
                 # handle state transitions / exit event
@@ -278,14 +278,12 @@ class FSMThread(threading.Thread):
                     previous_state = current_state
                     current_state = target_state
                     # TODO: handle start of state
-                    if debug:
-                        logger.debug('%d µs: State %d', micros, current_state)
+                    logger.debug('%d µs: State %d', micros, current_state)
                     break  # only handle the first state transition
 
             elif opcode == 2:  # handle softcodes
                 param -= 1
-                if debug:
-                    logger.debug('Softcode %d', param)
+                logger.debug('Softcode %d', param)
                 softcode_handler(param)
 
             else:
@@ -294,10 +292,9 @@ class FSMThread(threading.Thread):
         # exit state machine
         # read 12 bytes: cycles (uInt32) and micros (uInt64)
         cycles, micros = self._struct_exit.unpack(serial.read(12))
-        if debug:
-            logger.debug(
-                '%d µs: Ending state machine #%d (%d cycles)', micros, index, cycles
-            )
+        logger.debug(
+            '%d µs: Ending state machine #%d (%d cycles)', micros, index, cycles
+        )
         # TODO: handle end of state machine
 
 
@@ -1301,6 +1298,7 @@ class Bpod(AbstractBpod):
             self._softcode_handler,
             self._state_transitions,
             self._use_back_op,
+            self.event_names,
         )
         self._fsm_thread.start()
         self._waiting_for_confirmation = False
@@ -1553,6 +1551,55 @@ class Module:
     def relay(self, state: bool) -> None:
         """The current state of the serial relay."""
         self.set_relay(state)
+
+    @validate_call
+    def load_serial_message(
+        self,
+        message_id: int,
+        message_bytes: bytes,
+    ) -> bool:
+        """
+        Load a serial message targeting the module.
+
+        Serial messages are byte sequences targeting a specific module that can be
+        triggered as output actions during a state machine run. Each message is
+        identified by a ``message_id``.
+
+        Parameters
+        ----------
+        message_id : int
+            Identifier for the message, in the range ``[0, 254]``.
+        message_bytes : bytes
+            The message payload (1 to 3 bytes).
+
+        Returns
+        -------
+        bool
+            :obj:`True` if the Bpod acknowledged the message, :obj:`False` otherwise.
+
+        Raises
+        ------
+        ValidationError
+            If the provided parameters cannot be validated or coerced to the expected
+            type.
+        ValueError
+            If ```message_id``, or ``message_bytes`` length is out of range.
+        """
+        if not (0 <= message_id <= 254):
+            raise ValueError('Message ID must be between 0 and 254')
+        if not (1 <= (message_length := len(message_bytes)) <= 3):
+            raise ValueError('Message must be between 1 and 3 bytes long')
+
+        self._bpod.serial0.write_struct(
+            f'<c4B{message_length}s',
+            b'L',
+            self.index,
+            1,  # number of messages loaded - always 1 for now
+            message_id,
+            message_length,
+            message_bytes,
+        )
+        return self._bpod.serial0.verify()
 
 
 class RemoteBpod(AbstractBpod):

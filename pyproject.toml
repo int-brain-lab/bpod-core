@@ -100,7 +100,7 @@ source-include = [
   "tests/*.py",
   "schema/*.json",
   "docs/source/**/*",
-  "examples/*"
+  "examples/**/*"
 ]
 source-exclude = [
   "docs/source/api",
