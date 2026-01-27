@@ -1,29 +1,31 @@
-from bpod_core.fsm import StateMachine
-from bpod_core.bpod import Bpod
 import logging
 import sys
 
+from bpod_core.bpod import Bpod
+from bpod_core.fsm import StateMachine
 
-LOG_FILE = "bpod_debug.log"
+LOG_FILE = 'bpod_debug.log'
 
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(LOG_FILE, mode='w', encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)  # This also keeps logs appearing in the terminal
-    ]
+        logging.StreamHandler(
+            sys.stdout
+        ),  # This also keeps logs appearing in the terminal
+    ],
 )
 
 # 3. Specifically ensure the bpod_core library is set to DEBUG
 logging.getLogger('bpod_core').setLevel(logging.DEBUG)
 
-print(f"Logging initialized. All Bpod traffic will be saved to: {LOG_FILE}")
+print(f'Logging initialized. All Bpod traffic will be saved to: {LOG_FILE}')
 
 fsm = StateMachine()
 
 fsm.set_global_counter(
-    index=0, # this is zero based, so this is Global Counter 1
+    index=0,  # this is zero based, so this is Global Counter 1
     event='BNC1_High',
     threshold=5,
 )
@@ -59,14 +61,13 @@ fsm.add_state(
 )
 
 
-
 with Bpod() as bpod:
-    print(f"Connected to Bpod!")
-    print(f"Found Bpod on port {bpod.serial0.port}")
-    print(f"Firmware Version: {bpod.version.firmware}")
-    print(f"Hardware Version: {bpod.version.machine}")
-    print("Send State machine.")
+    print('Connected to Bpod!')
+    print(f'Found Bpod on port {bpod.serial0.port}')
+    print(f'Firmware Version: {bpod.version.firmware}')
+    print(f'Hardware Version: {bpod.version.machine}')
+    print('Send State machine.')
     bpod.send_state_machine(fsm)
-    print("Run State machine.")
+    print('Run State machine.')
     bpod.run_state_machine()
-    print("State machine finished.")
+    print('State machine finished.')

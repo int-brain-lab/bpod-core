@@ -259,10 +259,13 @@ class FSMThread(threading.Thread):
                 # handle each event
                 events = event_data_view[:param]
                 for event in events:
-                    if debug:
-                        if not(event == 255):  # exit event
-                            event_name = self._event_names[event] if event < len(self._event_names) else "Unknown"
-                            logger.debug('%d µs: Event: %s (%d)', micros, event_name, event)    
+                    if debug and event != 255:  # exit event
+                        event_name = (
+                            self._event_names[event]
+                            if event < len(self._event_names)
+                            else 'Unknown'
+                        )
+                        logger.debug('%d µs: Event: %s (%d)', micros, event_name, event)
                     # TODO: handle event
 
                 # handle state transitions / exit event
@@ -828,8 +831,6 @@ class Bpod(AbstractBpod):
         if self.version.machine == 4:
             self.actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
 
-    
-
     @property
     def port(self) -> str | None:
         """The port of the Bpod's primary serial device."""
@@ -1268,8 +1269,10 @@ class Bpod(AbstractBpod):
             f'<c2?H{n_bytes}s', b'C', run_asap, self._use_back_op, n_bytes, byte_array
         )
         self._waiting_for_confirmation = True
-        SM_definition = struct.pack(f'<c2?H{n_bytes}s', b'C', run_asap, self._use_back_op, n_bytes, byte_array)
-        logger.debug(SM_definition)
+        sm_definition = struct.pack(
+            f'<c2?H{n_bytes}s', b'C', run_asap, self._use_back_op, n_bytes, byte_array
+        )
+        logger.debug(sm_definition)
 
         if run_asap:
             self._run_state_machine(blocking=False)
