@@ -21,7 +21,12 @@ from serial import SerialException
 from typing_extensions import Self
 
 from bpod_core import __version__ as bpod_core_version
-from bpod_core.com import ExtendedSerial, find_ports, verify_serial_discovery
+from bpod_core.com import (
+    ExtendedSerial,
+    USBSerialDevice,
+    find_ports,
+    verify_serial_discovery,
+)
 from bpod_core.constants import STRUCT_UINT32, VID_TEENSY, PIDsTeensy
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import DualChannelClient, DualChannelHost
