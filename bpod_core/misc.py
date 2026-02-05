@@ -451,9 +451,10 @@ def prune_empty_parent_directories(
             f"'{target_directory}' is not a sub-directory of '{root_directory}'"
         )
 
+    if target_directory == root_directory:
+        return
+
     try:
-        if target_directory == root_directory or any(target_directory.iterdir()):
-            return
         target_directory.rmdir()
     except (OSError, PermissionError):
         return
