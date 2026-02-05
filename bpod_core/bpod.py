@@ -18,7 +18,6 @@ from numpy.typing import NDArray
 from platformdirs import user_config_path
 from pydantic import validate_call
 from serial import SerialException
-from typing_extensions import Self
 
 from bpod_core import __version__ as bpod_core_version
 from bpod_core.com import (
