@@ -411,3 +411,53 @@ def extend_packed(
     """
     if values:
         byte_array.extend(struct.pack(f'<{len(values)}{fmt}', *values))
+
+
+def prune_empty_parent_directories(
+    target_directory: PathLike | str, root_directory: PathLike | str
+) -> None:
+    """Remove empty parent directories recursively up to root directory.
+
+    Recursively removes the given directory if empty, then checks and removes parent
+    directories up to (but not including) the root directory.
+
+    Parameters
+    ----------
+    target_directory : PathLike or str
+        Directory to check and remove if empty. Must be a subpath of root_directory.
+    root_directory : PathLike or str
+        Root directory to stop at (won't be removed).
+
+    Raises
+    ------
+    ValueError
+        If target_directory is not a subpath of root_directory.
+    FileNotFoundError
+        If target_directory or root_directory does not exist.
+    NotADirectoryError
+        If target_directory or root_directory is not a directory.
+    """
+    target_directory = Path(target_directory).absolute()
+    root_directory = Path(root_directory).absolute()
+
+    for path in (target_directory, root_directory):
+        if not path.exists():
+            raise FileNotFoundError(f"'{path}' does not exist")
+        if not path.is_dir():
+            raise NotADirectoryError(f"'{path}' is not a directory")
+
+    if not target_directory.is_relative_to(root_directory):
+        raise ValueError(
+            f"'{target_directory}' is not a sub-directory of '{root_directory}'"
+        )
+
+    try:
+        if target_directory == root_directory or any(target_directory.iterdir()):
+            return
+        target_directory.rmdir()
+    except (OSError, PermissionError):
+        return
+
+    parent = target_directory.parent
+    if parent.is_dir():  # Guard against race condition
+        prune_empty_parent_directories(parent, root_directory)
