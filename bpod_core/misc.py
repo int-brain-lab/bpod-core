@@ -456,6 +456,7 @@ def prune_empty_parent_directories(
 
     try:
         target_directory.rmdir()
+        logger.debug('Removed empty directory: %s', target_directory)
     except OSError:
         return
 
