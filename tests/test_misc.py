@@ -615,6 +615,41 @@ class TestPruneEmptyParentDirectories:
         misc.prune_empty_parent_directories(target, root)
         assert target.exists()
 
+    def test_remove_root_true_removes_empty_root(self, tmp_path):
+        """With remove_root=True, empty root directory is removed."""
+        root = tmp_path / 'root'
+        nested = root / 'a' / 'b' / 'c'
+        nested.mkdir(parents=True)
+
+        misc.prune_empty_parent_directories(nested, root, remove_root=True)
+
+        assert not root.exists()
+
+    def test_remove_root_true_preserves_non_empty_root(self, tmp_path):
+        """With remove_root=True, non-empty root is still preserved."""
+        root = tmp_path / 'root'
+        target = root / 'empty'
+        sibling = root / 'sibling.txt'
+        target.mkdir(parents=True)
+        sibling.write_text('content')
+
+        misc.prune_empty_parent_directories(target, root, remove_root=True)
+
+        assert not target.exists()
+        assert root.exists()
+        assert sibling.exists()
+
+    @pytest.mark.parametrize('error_class', (PermissionError, FileNotFoundError))
+    def test_remove_root_handles_errors_gracefully(self, tmp_path, mocker, error_class):
+        """With remove_root=True, OSError on root removal is handled gracefully."""
+        root = tmp_path / 'root'
+        root.mkdir()
+
+        mocker.patch.object(root.__class__, 'rmdir', side_effect=error_class())
+
+        misc.prune_empty_parent_directories(root, root, remove_root=True)
+        assert root.exists()
+
     def test_handles_race_condition(self, tmp_path, mocker):
         """Returns silently if parent is deleted between rmdir and recursion."""
         root = tmp_path / 'root'

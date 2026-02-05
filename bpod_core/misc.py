@@ -414,19 +414,24 @@ def extend_packed(
 
 
 def prune_empty_parent_directories(
-    target_directory: PathLike | str, root_directory: PathLike | str
+    target_directory: PathLike | str,
+    root_directory: PathLike | str,
+    remove_root: bool = False,
 ) -> None:
     """Remove empty parent directories recursively up to root directory.
 
     Recursively removes the given directory if empty, then checks and removes parent
-    directories up to (but not including) the root directory.
+    directories up to (and optionally including) the root directory. Stops at the first
+    non-empty directory encountered.
 
     Parameters
     ----------
     target_directory : PathLike or str
-        Directory to check and remove if empty. Must be a subpath of root_directory.
+        Directory to check and remove if empty.
     root_directory : PathLike or str
-        Root directory to stop at (won't be removed).
+        Root directory to stop at. Must be a parent directory of target_directory.
+    remove_root : bool, optional
+        If True, also remove root_directory if it becomes empty.
 
     Raises
     ------
@@ -452,6 +457,12 @@ def prune_empty_parent_directories(
         )
 
     if target_directory == root_directory:
+        if remove_root:
+            try:
+                root_directory.rmdir()
+                logger.debug('Removed empty root directory: %s', root_directory)
+            except OSError:
+                return
         return
 
     try:
@@ -462,4 +473,8 @@ def prune_empty_parent_directories(
 
     parent = target_directory.parent
     if parent.is_dir():  # Guard against race condition
-        prune_empty_parent_directories(parent, root_directory)
+        prune_empty_parent_directories(
+            target_directory=parent,
+            root_directory=root_directory,
+            remove_root=remove_root,
+        )
