@@ -602,7 +602,7 @@ class TestPruneEmptyParentDirectories:
         assert not target.exists()
         assert root.exists()
 
-    @pytest.mark.parametrize('error_class', (PermissionError, OSError))
+    @pytest.mark.parametrize('error_class', (PermissionError, FileNotFoundError))
     def test_handles_errors_gracefully(self, tmp_path, mocker, error_class):
         """Returns silently when rmdir raises OSError."""
         root = tmp_path / 'root'

@@ -456,7 +456,7 @@ def prune_empty_parent_directories(
 
     try:
         target_directory.rmdir()
-    except (OSError, PermissionError):
+    except OSError:
         return
 
     parent = target_directory.parent
