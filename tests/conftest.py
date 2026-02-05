@@ -120,7 +120,7 @@ def mock_settings(mocker):
 @pytest.fixture
 def mock_bpod_20(mock_comports, mock_ext_serial, mock_settings, mocker):
     mock_ext_serial.mock_responses.update(fixture_bpod_20)
-    mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
+    mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
     mocker.patch('bpod_core.bpod.DualChannelHost')
     return Bpod('COM3')
@@ -129,7 +129,7 @@ def mock_bpod_20(mock_comports, mock_ext_serial, mock_settings, mocker):
 @pytest.fixture
 def mock_bpod_25(mock_comports, mock_ext_serial, mock_settings, mocker):
     mock_ext_serial.mock_responses.update(fixture_bpod_25)
-    mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
+    mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
     mocker.patch('bpod_core.bpod.DualChannelHost')
     return Bpod('COM3')
@@ -138,7 +138,7 @@ def mock_bpod_25(mock_comports, mock_ext_serial, mock_settings, mocker):
 @pytest.fixture
 def mock_bpod_2p(mock_comports, mock_ext_serial, mock_settings, mocker):
     mock_ext_serial.mock_responses.update(fixture_bpod_2p)
-    mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
+    mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
     mocker.patch('bpod_core.bpod.DualChannelHost')
     return Bpod('COM3')

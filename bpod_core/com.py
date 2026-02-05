@@ -4,6 +4,7 @@ import logging
 import re
 import struct
 from collections.abc import Callable, Sequence
+from types import TracebackType
 from typing import Any, cast
 
 from serial import Serial, SerialException
@@ -409,3 +410,124 @@ def verify_serial_discovery(
             return ser.read(len(expected_message)) == expected_message
     except SerialException:
         return False
+
+
+class USBSerialDevice:
+    """Class that interfaces with a USB serial device."""
+
+    _serial: ExtendedSerial
+    """The serial connection to the USB device."""
+
+    _port_info: ListPortInfo
+    """Information about the serial port associated with the device."""
+
+    _device_type: str = 'serial device'
+    """The type of the USB device, e.g., 'Bpod'."""
+
+    def __init__(self, port: str, open_connection: bool = True, **kwargs: Any) -> None:
+        """Initialize the USB serial device.
+
+        Parameters
+        ----------
+        port : str
+            The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3').
+        open_connection : bool, optional
+            Whether to open the connection immediately, by default True.
+        **kwargs
+            Additional arguments for compatibility with subclasses.
+
+        Raises
+        ------
+        serial.SerialException
+            If the specified port does not exist.
+        """
+        try:
+            self._port_info = next(p for p in comports() if p.device == port)
+        except StopIteration as e:
+            raise SerialException(f'Serial port not found: {port}') from e
+        self._serial = ExtendedSerial()
+        self._serial.port = port
+        if open_connection:
+            self.open()
+
+    def __enter__(self) -> Self:
+        """Enter the context manager.
+
+        Returns
+        -------
+        Self
+            The device instance.
+        """
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        """Exit the context manager.
+
+        Closes the serial connection.
+
+        Parameters
+        ----------
+        exc_type : type[BaseException] | None
+            The type of exception raised, if any.
+        exc_val : BaseException | None
+            The exception instance raised, if any.
+        exc_tb : TracebackType | None
+            The traceback object, if any.
+        """
+        self.close()
+
+    def open(self) -> None:
+        """Open the serial connection.
+
+        If the connection is already open, this method does nothing.
+
+        Raises
+        ------
+        serial.SerialException
+            If the connection cannot be opened.
+        """
+        if self._serial.is_open:
+            return
+        logger.debug('Opening connection to %s on %s', self._device_type, self.port)
+        try:
+            self._serial.open()
+        except Exception as e:
+            raise SerialException(
+                f'Failed to open connection to {self._device_type} on {self.port}'
+            ) from e
+
+    def close(self) -> None:
+        """Close the serial connection.
+
+        If the connection is already closed, this method does nothing.
+
+        Raises
+        ------
+        serial.SerialException
+            If the connection cannot be closed.
+        """
+        if not self._serial.is_open:
+            return
+        logger.debug('Closing connection to %s on %s', self._device_type, self.port)
+        try:
+            self._serial.close()
+        except Exception as e:
+            raise SerialException(
+                f'Failed to close connection to {self._device_type} on {self.port}'
+            ) from e
+
+    @property
+    def port(self) -> str:
+        """The name of the serial port.
+
+        Returns
+        -------
+        str
+            The device path of the serial port (e.g., '/dev/ttyACM0').
+        """
+        return self._port_info.device

@@ -341,3 +341,132 @@ class TestVerifySerialDiscovery:
             expected_message=b'A',
         )
         assert result is False
+
+
+class TestUSBSerialDevice:
+    """Tests for USBSerialDevice class."""
+
+    @pytest.fixture
+    def mock_port_info(self, mocker):
+        """Fixture to create a mock port info object."""
+        port_info = mocker.MagicMock()
+        port_info.device = '/dev/ttyACM0'
+        port_info.serial_number = '12345'
+        port_info.vid = 0x16C0
+        port_info.pid = 0x0483
+        return port_info
+
+    @pytest.fixture
+    def mock_comports(self, mocker, mock_port_info):
+        """Fixture to mock available COM ports."""
+        mock = mocker.patch('bpod_core.com.comports')
+        mock.return_value = [mock_port_info]
+        return mock
+
+    @pytest.fixture
+    def mock_extended_serial(self, mocker):
+        """Fixture to mock ExtendedSerial."""
+        mock = mocker.MagicMock(spec=com.ExtendedSerial)
+        mock.is_open = False
+        mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock)
+        return mock
+
+    def test_init_opens_connection_by_default(
+        self, mock_comports, mock_extended_serial
+    ):
+        """Device opens serial connection by default on init."""
+        device = com.USBSerialDevice('/dev/ttyACM0')
+        mock_extended_serial.open.assert_called_once()
+        assert device.port == '/dev/ttyACM0'
+
+    def test_init_without_opening_connection(self, mock_comports, mock_extended_serial):
+        """Device can be initialized without opening connection."""
+        device = com.USBSerialDevice('/dev/ttyACM0', open_connection=False)
+        mock_extended_serial.open.assert_not_called()
+        assert device.port == '/dev/ttyACM0'
+
+    def test_init_port_not_found(self, mock_comports):
+        """Raises SerialException when port does not exist."""
+        mock_comports.return_value = []
+        with pytest.raises(SerialException, match='Serial port not found'):
+            com.USBSerialDevice('/dev/ttyACM0')
+
+    def test_context_manager_enter(self, mock_comports, mock_extended_serial):
+        """Context manager __enter__ returns the device instance."""
+        device = com.USBSerialDevice('/dev/ttyACM0', open_connection=False)
+        result = device.__enter__()
+        assert result is device
+
+    def test_context_manager_exit(self, mock_comports, mock_extended_serial):
+        """Context manager __exit__ closes the connection."""
+        mock_extended_serial.is_open = True
+        device = com.USBSerialDevice('/dev/ttyACM0', open_connection=False)
+        device.__exit__(None, None, None)
+        mock_extended_serial.close.assert_called_once()
+
+    def test_context_manager_with_statement(self, mock_comports, mock_extended_serial):
+        """Device works correctly with 'with' statement."""
+        mock_extended_serial.is_open = True
+        with com.USBSerialDevice('/dev/ttyACM0', open_connection=False) as device:
+            assert device.port == '/dev/ttyACM0'
+        mock_extended_serial.close.assert_called_once()
+
+    def test_open_when_closed(self, mock_comports, mock_extended_serial, caplog):
+        """open() opens connection when not already open."""
+        mock_extended_serial.is_open = False
+        device = com.USBSerialDevice('/dev/ttyACM0', open_connection=False)
+        with caplog.at_level(logging.DEBUG):
+            device.open()
+        mock_extended_serial.open.assert_called_once()
+        assert 'Opening connection' in caplog.text
+
+    def test_open_when_already_open(self, mock_comports, mock_extended_serial):
+        """open() does nothing when connection is already open."""
+        mock_extended_serial.is_open = True
+        device = com.USBSerialDevice('/dev/ttyACM0', open_connection=False)
+        device.open()
+        mock_extended_serial.open.assert_not_called()
+
+    def test_open_raises_on_failure(self, mock_comports, mock_extended_serial):
+        """open() raises SerialException when connection fails."""
+        mock_extended_serial.is_open = False
+        mock_extended_serial.open.side_effect = Exception('Connection failed')
+        device = com.USBSerialDevice('/dev/ttyACM0', open_connection=False)
+        with pytest.raises(SerialException, match='Failed to open connection'):
+            device.open()
+
+    def test_close_when_open(self, mock_comports, mock_extended_serial, caplog):
+        """close() closes connection when open."""
+        mock_extended_serial.is_open = True
+        device = com.USBSerialDevice('/dev/ttyACM0', open_connection=False)
+        with caplog.at_level(logging.DEBUG):
+            device.close()
+        mock_extended_serial.close.assert_called_once()
+        assert 'Closing connection' in caplog.text
+
+    def test_close_when_already_closed(self, mock_comports, mock_extended_serial):
+        """close() does nothing when connection is already closed."""
+        mock_extended_serial.is_open = False
+        device = com.USBSerialDevice('/dev/ttyACM0', open_connection=False)
+        device.close()
+        mock_extended_serial.close.assert_not_called()
+
+    def test_close_raises_on_failure(self, mock_comports, mock_extended_serial):
+        """close() raises SerialException when closing fails."""
+        mock_extended_serial.is_open = True
+        mock_extended_serial.close.side_effect = Exception('Close failed')
+        device = com.USBSerialDevice('/dev/ttyACM0', open_connection=False)
+        with pytest.raises(SerialException, match='Failed to close connection'):
+            device.close()
+
+    def test_port_property(self, mock_comports, mock_extended_serial):
+        """port property returns the device path."""
+        device = com.USBSerialDevice('/dev/ttyACM0', open_connection=False)
+        assert device.port == '/dev/ttyACM0'
+
+    def test_accepts_kwargs(self, mock_comports, mock_extended_serial):
+        """Extra kwargs are accepted for subclass compatibility."""
+        device = com.USBSerialDevice(
+            '/dev/ttyACM0', open_connection=False, custom_arg='value'
+        )
+        assert device.port == '/dev/ttyACM0'

@@ -342,17 +342,15 @@ class AbstractBpod(DocstringInheritanceMixin, ABC):
         """
 
 
-class Bpod(AbstractBpod):
+class Bpod(USBSerialDevice, AbstractBpod):
     """Class for interfacing with a Bpod Finite State Machine."""
 
+    _device_type = 'Bpod Finite State Machine'
     _settings: SettingsDict
     _fsm_thread: FSMThread | None = None
     _zmq_service: DualChannelHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
-
-    serial0: ExtendedSerial
-    """Primary serial device for communication with the Bpod."""
 
     serial1: ExtendedSerial | None = None
     """Secondary serial device for communication with the Bpod."""
@@ -390,13 +388,10 @@ class Bpod(AbstractBpod):
         self._state_transitions: NDArray[np.uint8] = np.empty((0, 255), dtype=np.uint8)
         self._use_back_op = False
 
-        # identify Bpod by port or serial number
-        port, self._serial_number = self._identify_bpod(port, serial_number)
-
-        # open primary serial port
-        self.serial0 = ExtendedSerial()
-        self.serial0.port = port
-        self.open()
+        # identify Bpod by port or serial number, open connection
+        bpod_port, _ = self._identify_bpod(port, serial_number)
+        super().__init__(bpod_port)
+        self._serial_number = self._port_info.serial_number or 'unknown'
 
         # get firmware version and machine type; enforce version requirements
         self._get_version_info()
@@ -429,9 +424,10 @@ class Bpod(AbstractBpod):
             self.version.pcb,
         )
 
-    def __enter__(self) -> Self:
-        """Enter context."""
-        return self
+    @property
+    def serial0(self) -> ExtendedSerial:
+        """Primary serial device for communication with the Bpod."""
+        return self._serial
 
     def __exit__(
         self,
@@ -440,7 +436,7 @@ class Bpod(AbstractBpod):
         exc_tb: TracebackType | None,
     ) -> None:
         """Exit context and close connection."""
-        self.close()
+        super().__exit__(exc_type, exc_val, exc_tb)
         self._stop_zmq()
 
     def open(self) -> None:
@@ -454,18 +450,13 @@ class Bpod(AbstractBpod):
         BpodException
             If the handshake fails.
         """
-        if self.serial0.is_open:
-            return
-        self.serial0.open()
+        super().open()
         self._handshake()
 
     def close(self) -> None:
         """Close the connection to the Bpod."""
         self.stop_state_machine()
-        if hasattr(self, 'serial0') and self.serial0.is_open:
-            logger.debug('Closing connection to Bpod on %s', self.port)
-            self.serial0.write(b'Z')
-            self.serial0.close()
+        super().close()
 
     def _finalize(self) -> None:
         self.close()
@@ -819,11 +810,6 @@ class Bpod(AbstractBpod):
         )
         if self.version.machine == 4:
             self.actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
-
-    @property
-    def port(self) -> str | None:
-        """The port of the Bpod's primary serial device."""
-        return self.serial0.port
 
     @validate_call
     def set_status_led(self, enabled: bool) -> bool:
