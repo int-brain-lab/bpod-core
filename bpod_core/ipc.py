@@ -7,7 +7,6 @@ import os
 import socket
 import sys
 import threading
-import uuid
 import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
@@ -15,7 +14,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
-from weakref import finalize
 
 import msgspec
 import zmq
@@ -55,11 +53,27 @@ class LocalServiceInfo(msgspec.Struct):
     address: str
     pid: int
     uuid: UUID
-    properties: dict[str, Any]
+    properties: dict[str, str | None]
 
 
 class LocalServiceAdvertisement:
+    """
+    File-based local service advertisement for IPC discovery.
+
+    Advertises a service by writing a JSON file to the user's runtime directory.
+    This provides a lightweight alternative to Zeroconf for discovering services
+    on the same machine. Stale advertisements (from dead processes) are automatically
+    cleaned up during discovery.
+
+    The advertisement is automatically removed when the instance is garbage collected
+    or when `stop()` is called explicitly.
+    """
+
     runtime_directory = user_runtime_path('LocalServiceAdvertisements')
+    """Directory where service advertisement files are stored."""
+
+    service_file: Path
+    """Path to the advertisement file."""
 
     @validate_call
     def __init__(
@@ -70,6 +84,22 @@ class LocalServiceAdvertisement:
         uuid: UUID4 | None = None,
         properties: dict[str, str | None] | None = None,
     ) -> None:
+        """
+        Create a local service advertisement.
+
+        Parameters
+        ----------
+        service_type : str
+            The type of service being advertised (e.g., 'bpod').
+        address : str
+            The address where the service can be reached (e.g., 'ipc:///tmp/foo.ipc').
+        pid : int
+            Process ID of the service. Used to detect stale advertisements.
+        uuid : UUID4, optional
+            Unique identifier for this service instance. Generated if not provided.
+        properties : dict, optional
+            Additional key-value properties to advertise with the service.
+        """
         uuid = uuid or uuid4()
         info = LocalServiceInfo(
             service_type=service_type,
@@ -81,13 +111,15 @@ class LocalServiceAdvertisement:
 
         self.service_file = self._get_service_file(service_type, uuid.hex)
         self.service_file.parent.mkdir(parents=True, exist_ok=True)
-        self._finalizer = finalize(self, self._finalize, self.service_file)
+        self._finalizer = weakref.finalize(self, self._stop, self.service_file)
 
         json_data = msgspec.to_builtins(info)
         self.service_file.write_text(json.dumps(json_data, indent=2))
         logger.debug("Advertising local service at '%s'", self.service_file)
 
     def stop(self) -> None:
+        """Remove the service advertisement and clean up empty directories."""
+        self._finalizer.detach()
         self._stop(self.service_file)
 
     @staticmethod
@@ -102,10 +134,6 @@ class LocalServiceAdvertisement:
             )
         except OSError:
             pass
-
-    @staticmethod
-    def _finalize(service_file: Path) -> None:
-        LocalServiceAdvertisement._stop(service_file)
 
     @staticmethod
     def _get_service_directory(service_type: str) -> Path:
@@ -283,7 +311,7 @@ class DualChannelHost(DualChannelBase):
         super().__init__()
 
         self.name = convert_to_snake_case(service_name).strip('_')
-        self.uuid = uuid.uuid4()
+        self.uuid = uuid4()
         self._bind_ip = IP_ANY if remote else IP_LOOPBACK
         self._local_ip = get_local_ipv4() if remote else IP_LOOPBACK
 
@@ -543,7 +571,7 @@ class DualChannelClient(DualChannelBase):
         event_handler: Callable[[dict], Any] | None = None,
         discovery_timeout: float = 10.0,
         txt_properties: dict | None = None,
-        zeroconf: bool = True,
+        remote: bool = True,
     ) -> None:
         """
         Initialize a DualChannelClient instance.
@@ -560,8 +588,8 @@ class DualChannelClient(DualChannelBase):
             Timeout in seconds for service discovery, by default 10.0.
         txt_properties : dict, optional
             Properties for service filtering during discovery, by default None.
-        zeroconf : bool, optional
-            Whether to use Zeroconf for service discovery, by default True.
+        remote : bool, optional
+            Whether to use Zeroconf for discovering remote services, by default True.
         """
         # initialize base class
         super().__init__()
@@ -580,11 +608,11 @@ class DualChannelClient(DualChannelBase):
             self._address_req = address
         else:
             self._address_req, _ = discover(
-                service_type, txt_properties, zeroconf, discovery_timeout
+                service_type, txt_properties, remote, discovery_timeout
             )
         self._socket_req_rep.connect(self._address_req)
         self._lock_req = threading.Lock()
-        logger.debug("Binding REQ socket to '%s'", self._address_req)
+        logger.debug("Connecting REQ socket to '%s'", self._address_req)
         self.is_local = any(x in self._address_req for x in ('127.0.0.1', 'ipc:///'))
 
         # perform handshake
@@ -594,9 +622,9 @@ class DualChannelClient(DualChannelBase):
         if event_handler is not None:
             self._socket_pub_sub.connect(self._address_sub)
             self._socket_pub_sub.setsockopt_string(zmq.SUBSCRIBE, '')
-            logger.debug("Binding SUB socket to '%s'", self._address_sub)
+            logger.debug("Connecting SUB socket to '%s'", self._address_sub)
         else:
-            logger.debug('Not binding SUB socket for lack of event handler')
+            logger.debug('Not connecting SUB socket for lack of event handler')
 
         # start event loop for subscription handling
         self._event_handler = event_handler
@@ -628,7 +656,7 @@ class DualChannelClient(DualChannelBase):
             if self._address_req.startswith('tcp://'):
                 self._socket_req_rep.disconnect(self._address_req)
                 self._address_req = reply_data.get('ipc_req_rep')
-                logger.debug("Rebinding REQ socket to '%s'", self._address_req)
+                logger.debug("Reconnecting REQ socket to '%s'", self._address_req)
                 self._socket_req_rep.connect(self._address_req)
             self._address_sub = reply_data.get('ipc_pub_sub')
         else:
@@ -743,7 +771,7 @@ def discover(
     address = ''
     event = threading.Event()
     txt_record = {}
-    zeroconf_service_type = f'{service_type.strip("_")}._tcp.local.'
+    zeroconf_service_type = f'_{service_type.strip("_")}._tcp.local.'
 
     for local_info in LocalServiceAdvertisement.discover(service_type, properties):
         return local_info.address, local_info.properties
@@ -756,7 +784,7 @@ def discover(
     ) -> None:
         nonlocal address, txt_record, event
         if state_change is ServiceStateChange.Added:
-            remote_info = zeroconf.get_service_info(service_type, name)
+            remote_info = zeroconf.get_service_info(zeroconf_service_type, name)
             if remote_info is None or len(remote_info.addresses) == 0:
                 return
             for k, v in properties.items():
