@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from bpod_core.bpod import HardwareConfiguration, VersionInfo
+from bpod_core.bpod.structs import HardwareConfiguration, VersionInfo
 from bpod_core.misc import DocstringInheritanceMixin
 
 
