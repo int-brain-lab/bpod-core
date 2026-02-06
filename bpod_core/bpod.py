@@ -21,7 +21,7 @@ from serial import SerialException
 from bpod_core import __version__ as bpod_core_version
 from bpod_core.com import (
     ExtendedSerial,
-    USBSerialDevice,
+    SerialDevice,
     find_ports,
     verify_serial_discovery,
 )
@@ -345,10 +345,9 @@ class AbstractBpod(DocstringInheritanceMixin, ABC):
         """
 
 
-class Bpod(USBSerialDevice, AbstractBpod):
+class Bpod(SerialDevice, AbstractBpod):
     """Class for interfacing with a Bpod Finite State Machine."""
 
-    _device_type = 'Bpod Finite State Machine'
     _settings: SettingsDict
     _fsm_thread: FSMThread | None = None
     _zmq_service: DualChannelHost

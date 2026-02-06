@@ -3,6 +3,7 @@
 import logging
 import re
 import struct
+import weakref
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from types import TracebackType
@@ -413,20 +414,38 @@ def verify_serial_discovery(
         return False
 
 
-class USBSerialDevice(AbstractContextManager):
+def _close_serial_connection(serial: Serial, raise_errors: bool = False) -> None:
+    """Close a serial connection if open."""
+    if not getattr(serial, 'is_open', False):
+        return
+    logger.debug('Closing connection to serial device on %s', serial.port)
+    try:
+        serial.close()
+    except Exception as e:
+        if not raise_errors:
+            return
+        raise SerialException(
+            f'Failed to close connection to serial device on {serial.port}'
+        ) from e
+
+
+class SerialDevice(AbstractContextManager):
     """Class that interfaces with a USB serial device."""
 
     _serial: ExtendedSerial
-    """The serial connection to the USB device."""
+    """The serial connection to the device."""
 
     _port_info: ListPortInfo
     """Information about the serial port associated with the device."""
 
-    _device_type: str = 'serial device'
-    """The type of the USB device, e.g., 'Bpod'."""
-
-    def __init__(self, port: str, open_connection: bool = True, **kwargs: Any) -> None:
-        """Initialize the USB serial device.
+    def __init__(
+        self,
+        port: str,
+        open_connection: bool = True,
+        serial_device_name: str = 'serial_device',
+        **kwargs: Any,
+    ) -> None:
+        """Initialize the serial device.
 
         Parameters
         ----------
@@ -446,7 +465,9 @@ class USBSerialDevice(AbstractContextManager):
             self._port_info = next(p for p in comports() if p.device == port)
         except StopIteration as e:
             raise SerialException(f'Serial port not found: {port}') from e
+        self._serial_device_name = serial_device_name
         self._serial = ExtendedSerial()
+        weakref.finalize(self, _close_serial_connection, self._serial)
         self._serial.port = port
         if open_connection:
             self.open()
@@ -470,7 +491,8 @@ class USBSerialDevice(AbstractContextManager):
         exc_tb : TracebackType | None
             The traceback object, if any.
         """
-        self.close()
+        if hasattr(self, '_serial'):
+            _close_serial_connection(self._serial)
 
     def open(self) -> None:
         """Open the serial connection.
@@ -484,12 +506,12 @@ class USBSerialDevice(AbstractContextManager):
         """
         if self._serial.is_open:
             return
-        logger.debug('Opening connection to %s on %s', self._device_type, self.port)
+        logger.debug('Opening connection to serial device on %s', self.port)
         try:
             self._serial.open()
         except Exception as e:
             raise SerialException(
-                f'Failed to open connection to {self._device_type} on {self.port}'
+                f'Failed to open connection to serial device on {self.port}'
             ) from e
 
     def close(self) -> None:
@@ -502,15 +524,8 @@ class USBSerialDevice(AbstractContextManager):
         serial.SerialException
             If the connection cannot be closed.
         """
-        if not (hasattr(self, '_serial') and self._serial.is_open):
-            return
-        logger.debug('Closing connection to %s on %s', self._device_type, self.port)
-        try:
-            self._serial.close()
-        except Exception as e:
-            raise SerialException(
-                f'Failed to close connection to {self._device_type} on {self.port}'
-            ) from e
+        if hasattr(self, '_serial'):
+            _close_serial_connection(self._serial, raise_errors=True)
 
     @property
     def port(self) -> str:
