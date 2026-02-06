@@ -5,7 +5,7 @@ import pytest
 
 from bpod_core.bpod import Bpod
 from bpod_core.com import ExtendedSerial
-from bpod_core.constants import VID_TEENSY, PIDsTeensy
+from bpod_core.constants import VID_TEENSY, TeensyPID
 
 fixture_bpod_all = {
     b'6': b'5',
@@ -57,7 +57,7 @@ def mock_comports(mocker, mock_serial_discovery):
     mock_port_info.device = 'COM3'
     mock_port_info.serial_number = '12345'
     mock_port_info.vid = VID_TEENSY
-    mock_port_info.pid = PIDsTeensy.SERIAL
+    mock_port_info.pid = TeensyPID.SERIAL
     mock_comports = mocker.patch('bpod_core.com.comports')
     mock_comports.return_value = [mock_port_info]
     return mock_comports

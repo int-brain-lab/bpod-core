@@ -1,11 +1,11 @@
 """Constants used by the bpod module."""
 
-from bpod_core.constants import PLATFORMDIRS, VID_TEENSY, PIDsTeensy
+from bpod_core.constants import PLATFORMDIRS, VID_TEENSY, TeensyPID
 
 VIDS_BPOD = [VID_TEENSY]
 """Vendor IDs of supported Bpod devices"""
 
-PIDS_BPOD = [PIDsTeensy.SERIAL, PIDsTeensy.DUAL_SERIAL, PIDsTeensy.TRIPLE_SERIAL]
+PIDS_BPOD = [TeensyPID.SERIAL, TeensyPID.DUAL_SERIAL, TeensyPID.TRIPLE_SERIAL]
 """List of Product IDs of supported Bpod devices"""
 
 MIN_BPOD_FW_VERSION = (23, 0)

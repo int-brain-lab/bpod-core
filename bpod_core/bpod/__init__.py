@@ -39,7 +39,7 @@ from bpod_core.com import (
     find_ports,
     verify_serial_discovery,
 )
-from bpod_core.constants import STRUCT_UINT32, PIDsTeensy
+from bpod_core.constants import STRUCT_UINT32, TeensyPID
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import DualChannelClient, DualChannelHost
 from bpod_core.misc import (
@@ -530,7 +530,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # First, assemble a list of candidate ports
         candidate_ports = find_ports(
             vid=VIDS_BPOD,
-            pid=[PIDsTeensy.DUAL_SERIAL, PIDsTeensy.TRIPLE_SERIAL],
+            pid=[TeensyPID.DUAL_SERIAL, TeensyPID.TRIPLE_SERIAL],
             serial_number=self._serial_number,
             device=re.compile(rf'^(?!{re.escape(str(self.port))}$).*$'),
         )

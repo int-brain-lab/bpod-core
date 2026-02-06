@@ -1,5 +1,6 @@
 """Constants and identifiers used throughout the package."""
 
+from enum import IntEnum
 from struct import Struct
 
 import platformdirs
@@ -35,12 +36,12 @@ VID_TEENSY: int = 0x16C0
 PLATFORMDIRS = platformdirs.PlatformDirs(appname='bpod-core', appauthor=False)
 
 
-class PIDsTeensy:
+class TeensyPID(IntEnum):
     """Product IDs of Teensy microcontrollers."""
 
-    SERIAL: int = 0x0483
+    SERIAL = 0x0483
     """Product ID of Teensy microcontrollers with single USB serial port."""
-    DUAL_SERIAL: int = 0x048B
+    DUAL_SERIAL = 0x048B
     """Product ID of Teensy microcontrollers with dual USB serial ports."""
-    TRIPLE_SERIAL: int = 0x048C
+    TRIPLE_SERIAL = 0x048C
     """Product ID of Teensy microcontrollers with triple USB serial ports."""
