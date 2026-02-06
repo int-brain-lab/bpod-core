@@ -1,4 +1,4 @@
-"""Abstract base classes."""
+"""Abstract base classes used by the bpod module."""
 
 from abc import ABC, abstractmethod
 

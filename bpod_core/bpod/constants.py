@@ -1,3 +1,5 @@
+"""Constants used by the bpod module."""
+
 from bpod_core.constants import PLATFORMDIRS, VID_TEENSY, PIDsTeensy
 
 VIDS_BPOD = [VID_TEENSY]

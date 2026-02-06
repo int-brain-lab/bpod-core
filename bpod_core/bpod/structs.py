@@ -1,4 +1,4 @@
-"""Data structures used by the Bpod module."""
+"""Data structures used by the bpod module."""
 
 import msgspec
 
