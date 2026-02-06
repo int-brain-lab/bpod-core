@@ -511,7 +511,7 @@ class USBSerialDevice:
         serial.SerialException
             If the connection cannot be closed.
         """
-        if not self._serial.is_open:
+        if not (hasattr(self, '_serial') and self._serial.is_open):
             return
         logger.debug('Closing connection to %s on %s', self._device_type, self.port)
         try:

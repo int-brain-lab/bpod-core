@@ -2,6 +2,8 @@
 
 from struct import Struct
 
+import platformdirs
+
 # pre-compiled structs for common data types
 STRUCT_BOOL = Struct('?')
 """Compiled struct representing a boolean value."""
@@ -29,6 +31,8 @@ IP_ANY = '0.0.0.0'
 
 VID_TEENSY: int = 0x16C0
 """Vendor ID of Teensy microcontrollers."""
+
+PLATFORMDIRS = platformdirs.PlatformDirs(appname='bpod-core', appauthor=False)
 
 
 class PIDsTeensy:

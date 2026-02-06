@@ -81,7 +81,7 @@ class TestHost:
         assert mock_service.rep_tcp_port > 0
         assert mock_service.rep_tcp_addr.startswith('tcp://')
         assert mock_service._zeroconf is not None
-        assert mock_service._service_info is not None
+        assert mock_service._zeroconf_service_info is not None
 
     @pytest.mark.parametrize('remote', [True, False])
     def test_bind_address_matches_local_flag(self, mock_zeroconf, remote):

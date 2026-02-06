@@ -1,20 +1,27 @@
 """Inter-process Communication, service discovery and related."""
 
 import contextlib
+import json
+import logging
 import os
-import re
 import socket
 import sys
 import threading
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from pathlib import Path
 from types import TracebackType
 from typing import Any, Literal, cast
+from uuid import UUID, uuid4
+from weakref import finalize
 
 import msgspec
 import zmq
+from platformdirs import user_runtime_path
+from psutil import pid_exists
+from pydantic import UUID4, validate_call
 from typing_extensions import Self
 from zeroconf import (
     InterfaceChoice,
@@ -25,14 +32,145 @@ from zeroconf import (
     Zeroconf,
 )
 
-from bpod_core.com import logger
 from bpod_core.constants import IP_ANY, IP_LOOPBACK
-from bpod_core.misc import convert_to_snake_case, get_local_ipv4
+from bpod_core.misc import (
+    RE_SANITIZE,
+    convert_to_snake_case,
+    get_local_ipv4,
+    prune_empty_parent_directories,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class DualChannelMessage(msgspec.Struct, omit_defaults=True, array_like=True):
     type: str = msgspec.field(name='T')  # message type
     data: Any | None = msgspec.field(default=None, name='D')  # message data
+
+
+class LocalServiceInfo(msgspec.Struct):
+    """Information about a locally advertised service."""
+
+    service_type: str
+    address: str
+    pid: int
+    uuid: UUID
+    properties: dict[str, Any]
+
+
+class LocalServiceAdvertisement:
+    runtime_directory = user_runtime_path('LocalServiceAdvertisements')
+
+    @validate_call
+    def __init__(
+        self,
+        service_type: str,
+        address: str,
+        pid: int,
+        uuid: UUID4 | None = None,
+        properties: dict[str, str | None] | None = None,
+    ) -> None:
+        uuid = uuid or uuid4()
+        info = LocalServiceInfo(
+            service_type=service_type,
+            address=address,
+            uuid=uuid,
+            pid=pid,
+            properties=properties or {},
+        )
+
+        self.service_file = self._get_service_file(service_type, uuid.hex)
+        self.service_file.parent.mkdir(parents=True, exist_ok=True)
+        self._finalizer = finalize(self, self._finalize, self.service_file)
+
+        json_data = msgspec.to_builtins(info)
+        self.service_file.write_text(json.dumps(json_data, indent=2))
+        logger.debug("Advertising local service at '%s'", self.service_file)
+
+    def stop(self) -> None:
+        self._stop(self.service_file)
+
+    @staticmethod
+    def _stop(service_file: Path) -> None:
+        try:
+            service_file.unlink()
+            logger.debug("Removed local service advertisement '%s'", service_file)
+            prune_empty_parent_directories(
+                service_file.parent,
+                LocalServiceAdvertisement.runtime_directory,
+                remove_root=True,
+            )
+        except OSError:
+            pass
+
+    @staticmethod
+    def _finalize(service_file: Path) -> None:
+        LocalServiceAdvertisement._stop(service_file)
+
+    @staticmethod
+    def _get_service_directory(service_type: str) -> Path:
+        """Get the directory for a service type."""
+        runtime_directory = LocalServiceAdvertisement.runtime_directory
+        sanitized = RE_SANITIZE.sub('_', service_type)
+        return runtime_directory / sanitized
+
+    @staticmethod
+    def _get_service_file(service_type: str, uuid: str) -> Path:
+        """Get the path to a local service file."""
+        service_dir = LocalServiceAdvertisement._get_service_directory(service_type)
+        return service_dir / f'{uuid}.json'
+
+    @staticmethod
+    def discover(
+        service_type: str,
+        properties: dict[str, str | None] | None = None,
+    ) -> Iterator[LocalServiceInfo]:
+        """Discover locally advertised services.
+
+        Parameters
+        ----------
+        service_type : str
+            The service type to discover.
+        properties : dict, optional
+            Properties to match against the service's properties.
+
+        Yields
+        ------
+        LocalServiceInfo
+            Information structure describing the discovered services.
+        """
+        service_dir = LocalServiceAdvertisement._get_service_directory(service_type)
+        properties = properties or {}
+
+        if service_dir.exists():
+            for service_file in service_dir.glob('*.json'):
+                # Load service info
+                try:
+                    data = json.loads(service_file.read_text())
+                    info = msgspec.convert(data, LocalServiceInfo)
+                except (
+                    json.JSONDecodeError,
+                    msgspec.ValidationError,
+                    OSError,
+                ):
+                    continue
+
+                # Remove service file if process no longer exists
+                if not pid_exists(info.pid):
+                    service_file.unlink(missing_ok=True)
+                    continue
+
+                # Check if properties match
+                if all(info.properties.get(k) == v for k, v in properties.items()):
+                    yield info
+
+        # Clean up empty directories
+        with contextlib.suppress(OSError, ValueError):
+            prune_empty_parent_directories(
+                service_dir,
+                LocalServiceAdvertisement.runtime_directory,
+                remove_root=True,
+            )
 
 
 class DualChannelBase(ABC):
@@ -97,7 +235,13 @@ class DualChannelBase(ABC):
 
 
 class DualChannelHost(DualChannelBase):
-    """A ZeroMQ host providing REQ/REP and PUB/SUB sockets with Zeroconf discovery."""
+    """
+    A ZeroMQ host providing REQ/REP and PUB/SUB sockets with service discovery.
+
+    When `remote=True`, the service is advertised via Zeroconf (mDNS) for network-wide
+    discovery. When `remote=False`, the service is advertised locally via a file in
+    the user's runtime directory for IPC-only use cases.
+    """
 
     _rep_ipc_addr: str | None = None
     _pub_ipc_addr: str | None = None
@@ -106,7 +250,7 @@ class DualChannelHost(DualChannelBase):
         self,
         service_name: str,
         service_type: str,
-        txt_record: dict[str | bytes, str | bytes | None] | None = None,
+        properties: dict[str, str | None] | None = None,
         event_handler: Callable[[Any], Any] | None = None,
         remote: bool = True,
         port_pub: int | None = None,
@@ -121,9 +265,9 @@ class DualChannelHost(DualChannelBase):
         service_name : str
             Service name to advertise.
         service_type : str
-            Zeroconf service type (e.g., 'my_service').
-        txt_record : dict, optional
-            Additional TXT records for Zeroconf service advertisement.
+            Service type.
+        properties : dict, optional
+            Additional properties for service advertisement.
         event_handler : callable, optional
             Function to handle incoming requests.
         remote : bool, default=True
@@ -203,24 +347,41 @@ class DualChannelHost(DualChannelBase):
         self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
         self._event_thread.start()
 
-        # advertise service via Zeroconf
+        # advertise service
         self._service_type = f'_{service_type.strip("_")}._tcp.local.'
         self._service_name = f'{self.name}.{self._service_type}'
-        self._service_info = ServiceInfo(
-            type_=self._service_type,
-            name=self._service_name,
-            port=self.rep_tcp_port,
-            addresses=[socket.inet_aton(self._local_ip)],
-            properties=txt_record or {},
-            server=f'{socket.gethostname()}.local.',
+
+        # advertise service locally
+        self._zeroconf = None
+        self._zeroconf_service_info = None
+
+        self._local_advertisement = LocalServiceAdvertisement(
+            service_type=service_type,
+            address=self._rep_ipc_addr or self.rep_tcp_addr,
+            pid=os.getpid(),
+            uuid=self.uuid,
+            properties=properties,
         )
-        self._zeroconf = Zeroconf(
-            interfaces=InterfaceChoice.Default if remote else IP_LOOPBACK,
-            ip_version=IPVersion.V4Only,
-        )
-        self._zeroconf.register_service(self._service_info, allow_name_change=True)
-        self._service_name = self._service_info.name
-        logger.debug("Registering Zeroconf service '%s'", self._service_name)
+
+        if remote:
+            # advertise service via Zeroconf for remote discovery
+            self._zeroconf_service_info = ServiceInfo(
+                type_=self._service_type,
+                name=self._service_name,
+                port=self.rep_tcp_port,
+                addresses=[socket.inet_aton(self._local_ip)],
+                properties=properties or {},
+                server=f'{socket.gethostname()}.local.',
+            )
+            self._zeroconf = Zeroconf(
+                interfaces=InterfaceChoice.Default,
+                ip_version=IPVersion.V4Only,
+            )
+            self._zeroconf.register_service(
+                self._zeroconf_service_info, allow_name_change=True
+            )
+            self._service_name = self._zeroconf_service_info.name
+            logger.debug("Registering Zeroconf service '%s'", self._service_name)
 
     @staticmethod
     def _empty_event_handler(_: Any) -> dict:
@@ -353,10 +514,14 @@ class DualChannelHost(DualChannelBase):
         if not super().close():
             return False
 
-        # Unregister Zeroconf service
-        logger.debug("Unregistering Zeroconf service '%s'", self._service_name)
-        self._zeroconf.unregister_service(self._service_info)
-        self._zeroconf.close()
+        # Unregister local service advertisement
+        self._local_advertisement.stop()
+
+        # Unregister zeroconf service advertisement
+        if self._zeroconf is not None and self._zeroconf_service_info is not None:
+            logger.debug("Unregistering Zeroconf service '%s'", self._service_name)
+            self._zeroconf.unregister_service(self._zeroconf_service_info)
+            self._zeroconf.close()
 
         # remove IPC files
         with contextlib.suppress(FileNotFoundError):
@@ -378,6 +543,7 @@ class DualChannelClient(DualChannelBase):
         event_handler: Callable[[dict], Any] | None = None,
         discovery_timeout: float = 10.0,
         txt_properties: dict | None = None,
+        zeroconf: bool = True,
     ) -> None:
         """
         Initialize a DualChannelClient instance.
@@ -385,7 +551,7 @@ class DualChannelClient(DualChannelBase):
         Parameters
         ----------
         service_type : str
-            The mDNS service type to discover or connect to.
+            The service type to discover or connect to.
         address : str, optional
             The direct connection address for the REQ channel, by default None.
         event_handler : callable, optional
@@ -394,6 +560,8 @@ class DualChannelClient(DualChannelBase):
             Timeout in seconds for service discovery, by default 10.0.
         txt_properties : dict, optional
             Properties for service filtering during discovery, by default None.
+        zeroconf : bool, optional
+            Whether to use Zeroconf for service discovery, by default True.
         """
         # initialize base class
         super().__init__()
@@ -412,12 +580,12 @@ class DualChannelClient(DualChannelBase):
             self._address_req = address
         else:
             self._address_req, _ = discover(
-                service_type, txt_properties, discovery_timeout
+                service_type, txt_properties, zeroconf, discovery_timeout
             )
         self._socket_req_rep.connect(self._address_req)
         self._lock_req = threading.Lock()
         logger.debug("Binding REQ socket to '%s'", self._address_req)
-        self.is_local = '127.0.0.1' in self._address_req
+        self.is_local = any(x in self._address_req for x in ('127.0.0.1', 'ipc:///'))
 
         # perform handshake
         self._handshake()
@@ -457,10 +625,11 @@ class DualChannelClient(DualChannelBase):
             and reply_data.get('ipc_req_rep') is not None
             and reply_data.get('ipc_pub_sub') is not None
         ):
-            self._socket_req_rep.disconnect(self._address_req)
-            self._address_req = reply_data.get('ipc_req_rep')
-            logger.debug("Rebinding REQ socket to '%s'", self._address_req)
-            self._socket_req_rep.connect(self._address_req)
+            if self._address_req.startswith('tcp://'):
+                self._socket_req_rep.disconnect(self._address_req)
+                self._address_req = reply_data.get('ipc_req_rep')
+                logger.debug("Rebinding REQ socket to '%s'", self._address_req)
+                self._socket_req_rep.connect(self._address_req)
             self._address_sub = reply_data.get('ipc_pub_sub')
         else:
             self._address_sub = reply_data.get('tcp_pub_sub')
@@ -540,17 +709,20 @@ class DualChannelClient(DualChannelBase):
 def discover(
     service_type: str,
     properties: dict[str, str | None] | None = None,
+    remote: bool = True,
     timeout: float = 10,
-) -> tuple[str, dict[bytes, bytes | None]]:
+) -> tuple[str, dict[str, str | None]]:
     """
-    Discover a Zeroconf device/service on the local network matching given properties.
+    Discover a device/service on the local network matching given properties.
 
     Parameters
     ----------
     service_type : str
-        The Zeroconf service type to discover, e.g., '_zmq._tcp.local.'
+        The service type to discover, e.g., 'bpod'
     properties : dict, optional
         Dictionary of expected service properties to match.
+    remote : bool, optional
+        Whether to search for a matching service on the network, by default True.
     timeout : float, optional
         How many seconds to wait for a matching service before timing out.
         Default is 10.
@@ -569,36 +741,40 @@ def discover(
     """
     properties = properties or {}
     address = ''
-    protocol = (m := re.search(r'_(tcp|udp)\.', service_type)) and m.group(1)
     event = threading.Event()
     txt_record = {}
+    zeroconf_service_type = f'{service_type.strip("_")}._tcp.local.'
+
+    for local_info in LocalServiceAdvertisement.discover(service_type, properties):
+        return local_info.address, local_info.properties
+
+    if not remote:
+        raise RuntimeError('No matching service found locally')
 
     def on_state_change(
         *, name: str, state_change: ServiceStateChange, **_: Any
     ) -> None:
-        nonlocal address, protocol, txt_record, event
+        nonlocal address, txt_record, event
         if state_change is ServiceStateChange.Added:
-            info = zeroconf.get_service_info(service_type, name)
-            if not info or not info.addresses:
+            remote_info = zeroconf.get_service_info(service_type, name)
+            if remote_info is None or len(remote_info.addresses) == 0:
                 return
             for k, v in properties.items():
-                key = k.encode('utf-8') if isinstance(k, str) else k
-                value = v.encode('utf-8') if isinstance(v, str) else v
-                if info.properties.get(key) != value:
+                if remote_info.decoded_properties.get(k) != v:
                     return
-            port = info.port
-            ip = socket.inet_ntoa(info.addresses[0])
+            port = remote_info.port
+            ip = socket.inet_ntoa(remote_info.addresses[0])
             ip = '127.0.0.1' if ip == get_local_ipv4() else ip
-            address = f'{protocol}://{ip}:{port}'
-            txt_record = info.properties
+            address = f'tcp://{ip}:{port}'
+            txt_record = remote_info.decoded_properties
             event.set()
 
     zeroconf = Zeroconf()
     try:
-        ServiceBrowser(zeroconf, service_type, handlers=[on_state_change])
+        ServiceBrowser(zeroconf, zeroconf_service_type, handlers=[on_state_change])
         found = event.wait(timeout)
     finally:
         zeroconf.close()
     if not found:
-        raise TimeoutError('No matching device found via Zeroconf')
+        raise TimeoutError('No matching device found')
     return address, txt_record

@@ -15,7 +15,6 @@ from typing import Any, NamedTuple, cast
 import msgspec
 import numpy as np
 from numpy.typing import NDArray
-from platformdirs import user_config_path
 from pydantic import validate_call
 from serial import SerialException
 
@@ -26,7 +25,7 @@ from bpod_core.com import (
     find_ports,
     verify_serial_discovery,
 )
-from bpod_core.constants import STRUCT_UINT32, VID_TEENSY, PIDsTeensy
+from bpod_core.constants import PLATFORMDIRS, STRUCT_UINT32, VID_TEENSY, PIDsTeensy
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import DualChannelClient, DualChannelHost
 from bpod_core.misc import (
@@ -66,7 +65,7 @@ CHANNEL_TYPES_OUTPUT.update({b'V': 'Valve', b'P': 'PWM'})
 N_SERIAL_EVENTS_DEFAULT = 15
 VALID_OPERATORS = {'exit', '>exit', '>back'}
 MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
-CONFIG_PATH = user_config_path('bpod-core', False)
+CONFIG_PATH = PLATFORMDIRS.user_config_path
 DISCOVERY_TIMEOUT = 0.11
 
 logger = logging.getLogger(__name__)
@@ -379,7 +378,10 @@ class Bpod(USBSerialDevice, AbstractBpod):
 
     @validate_call
     def __init__(
-        self, port: str | None = None, serial_number: str | None = None
+        self,
+        port: str | None = None,
+        serial_number: str | None = None,
+        remote: bool = False,
     ) -> None:
         self._finalizer = weakref.finalize(self, self._finalize)
         logger.info('bpod_core %s', bpod_core_version)
@@ -413,7 +415,7 @@ class Bpod(USBSerialDevice, AbstractBpod):
         self.update_modules()
 
         # start ZeroMQ service
-        self._start_zmq()
+        self._start_zmq(use_zeroconf=remote)
 
         # log hardware information
         logger.info(
@@ -460,6 +462,8 @@ class Bpod(USBSerialDevice, AbstractBpod):
     def close(self) -> None:
         """Close the connection to the Bpod."""
         self.stop_state_machine()
+        if hasattr(self, 'serial0') and self.serial0.is_open:
+            self.serial0.write(b'Z')
         super().close()
 
     def _finalize(self) -> None:
@@ -500,13 +504,13 @@ class Bpod(USBSerialDevice, AbstractBpod):
             }
         return response
 
-    def _start_zmq(self) -> None:
+    def _start_zmq(self, use_zeroconf: bool) -> None:
         port_pub = self._get_setting(['devices', self._serial_number, 'port_pub'])
         port_rep = self._get_setting(['devices', self._serial_number, 'port_rep'])
         self._zmq_service = DualChannelHost(
             service_name=self.name if self.name else f'bpod_{self._serial_number}',
-            service_type='_bpod',
-            txt_record={
+            service_type='bpod',
+            properties={
                 'description': f'Bpod Finite State Machine {self.version.machine_str}',
                 'serial': self._serial_number or '',
                 'name': self.name or '',
@@ -515,6 +519,7 @@ class Bpod(USBSerialDevice, AbstractBpod):
                 'core': bpod_core_version,
             },
             event_handler=self._zmq_handler,
+            remote=use_zeroconf,
             port_pub=cast('int | None', port_pub),
             port_rep=cast('int | None', port_rep),
         )
@@ -1616,7 +1621,7 @@ class RemoteBpod(AbstractBpod):
 
         try:
             self._zmq = DualChannelClient(
-                '_bpod._tcp.local.',
+                service_type='bpod',
                 address=address,
                 discovery_timeout=timeout,
                 txt_properties=properties,
