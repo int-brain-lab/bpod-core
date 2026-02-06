@@ -17,7 +17,21 @@ from pydantic import validate_call
 from serial import SerialException
 
 from bpod_core import __version__ as bpod_core_version
-from bpod_core.abc import AbstractBpod
+from bpod_core.bpod.abc import AbstractBpod
+from bpod_core.bpod.constants import (
+    CHANNEL_TYPES_INPUT,
+    CHANNEL_TYPES_OUTPUT,
+    CONFIG_PATH,
+    DISCOVERY_TIMEOUT,
+    MACHINE_TYPES,
+    MAX_BPOD_HW_VERSION,
+    MIN_BPOD_FW_VERSION,
+    MIN_BPOD_HW_VERSION,
+    N_SERIAL_EVENTS_DEFAULT,
+    PIDS_BPOD,
+    VALID_OPERATORS,
+    VIDS_BPOD,
+)
 from bpod_core.bpod.structs import BpodInfo, HardwareConfiguration, VersionInfo
 from bpod_core.com import (
     ExtendedSerial,
@@ -25,7 +39,7 @@ from bpod_core.com import (
     find_ports,
     verify_serial_discovery,
 )
-from bpod_core.constants import PLATFORMDIRS, STRUCT_UINT32, VID_TEENSY, PIDsTeensy
+from bpod_core.constants import STRUCT_UINT32, PIDsTeensy
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import DualChannelClient, DualChannelHost
 from bpod_core.misc import (
@@ -33,39 +47,6 @@ from bpod_core.misc import (
     extend_packed,
     suggest_similar,
 )
-
-VIDS_BPOD = [VID_TEENSY]
-"""Vendor IDs of supported Bpod devices"""
-
-PIDS_BPOD = [PIDsTeensy.SERIAL, PIDsTeensy.DUAL_SERIAL, PIDsTeensy.TRIPLE_SERIAL]
-"""List of Product IDs of supported Bpod devices"""
-
-MIN_BPOD_FW_VERSION = (23, 0)
-"""minimum supported firmware version (major, minor)"""
-
-MIN_BPOD_HW_VERSION = 3
-"""minimum supported hardware version"""
-
-MAX_BPOD_HW_VERSION = 4
-"""maximum supported hardware version"""
-
-CHANNEL_TYPES_INPUT = {
-    b'U': 'Serial',
-    b'X': 'SoftCode',
-    b'Z': 'SoftCodeApp',
-    b'F': 'Flex',
-    b'D': 'Digital',
-    b'B': 'BNC',
-    b'W': 'Wire',
-    b'P': 'Port',
-}
-CHANNEL_TYPES_OUTPUT = CHANNEL_TYPES_INPUT.copy()
-CHANNEL_TYPES_OUTPUT.update({b'V': 'Valve', b'P': 'PWM'})
-N_SERIAL_EVENTS_DEFAULT = 15
-VALID_OPERATORS = {'exit', '>exit', '>back'}
-MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
-CONFIG_PATH = PLATFORMDIRS.user_config_path
-DISCOVERY_TIMEOUT = 0.11
 
 logger = logging.getLogger(__name__)
 
