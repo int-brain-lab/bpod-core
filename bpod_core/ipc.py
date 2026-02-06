@@ -8,7 +8,7 @@ import socket
 import sys
 import threading
 import weakref
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import TracebackType
@@ -20,7 +20,6 @@ import zmq
 from platformdirs import user_runtime_path
 from psutil import pid_exists
 from pydantic import UUID4, validate_call
-from typing_extensions import Self
 from zeroconf import (
     InterfaceChoice,
     IPVersion,
@@ -52,11 +51,11 @@ class LocalServiceInfo(msgspec.Struct):
     service_type: str
     address: str
     pid: int
-    uuid: UUID
+    uuid: str
     properties: dict[str, str | None]
 
 
-class LocalServiceAdvertisement:
+class LocalServiceAdvertisement(contextlib.AbstractContextManager):
     """
     File-based local service advertisement for IPC discovery.
 
@@ -104,26 +103,34 @@ class LocalServiceAdvertisement:
         info = LocalServiceInfo(
             service_type=service_type,
             address=address,
-            uuid=uuid,
+            uuid=str(uuid),
             pid=pid,
             properties=properties or {},
         )
 
-        self.service_file = self._get_service_file(service_type, uuid.hex)
+        self.service_file = self._get_service_file(service_type, uuid)
         self.service_file.parent.mkdir(parents=True, exist_ok=True)
-        self._finalizer = weakref.finalize(self, self._stop, self.service_file)
+        self._finalizer = weakref.finalize(self, self._close, self.service_file)
 
         json_data = msgspec.to_builtins(info)
         self.service_file.write_text(json.dumps(json_data, indent=2))
         logger.debug("Advertising local service at '%s'", self.service_file)
 
-    def stop(self) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
         """Remove the service advertisement and clean up empty directories."""
         self._finalizer.detach()
-        self._stop(self.service_file)
+        self._close(self.service_file)
 
     @staticmethod
-    def _stop(service_file: Path) -> None:
+    def _close(service_file: Path) -> None:
         try:
             service_file.unlink()
             logger.debug("Removed local service advertisement '%s'", service_file)
@@ -143,10 +150,10 @@ class LocalServiceAdvertisement:
         return runtime_directory / sanitized
 
     @staticmethod
-    def _get_service_file(service_type: str, uuid: str) -> Path:
+    def _get_service_file(service_type: str, uuid: UUID) -> Path:
         """Get the path to a local service file."""
         service_dir = LocalServiceAdvertisement._get_service_directory(service_type)
-        return service_dir / f'{uuid}.json'
+        return service_dir / f'{uuid.hex}.json'
 
     @staticmethod
     def discover(
@@ -201,11 +208,11 @@ class LocalServiceAdvertisement:
             )
 
 
-class DualChannelBase(ABC):
+class DualChannelBase(contextlib.AbstractContextManager):
     _serialization: Literal['json', 'msgpack'] = 'msgpack'
     _encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
     _decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder
-    _event_thread: threading.Thread
+    _event_thread: threading.Thread | None = None
     _socket_req_rep: zmq.Socket
     _socket_pub_sub: zmq.Socket
 
@@ -215,10 +222,6 @@ class DualChannelBase(ABC):
         self._finalizer = weakref.finalize(self, self.close)
         self._zmq_context = zmq.Context()
         self._stop_event_loop = threading.Event()
-
-    def __enter__(self) -> Self:
-        """Enter context manager."""
-        return self
 
     def __exit__(
         self,
@@ -543,7 +546,7 @@ class DualChannelHost(DualChannelBase):
             return False
 
         # Unregister local service advertisement
-        self._local_advertisement.stop()
+        self._local_advertisement.close()
 
         # Unregister zeroconf service advertisement
         if self._zeroconf is not None and self._zeroconf_service_info is not None:

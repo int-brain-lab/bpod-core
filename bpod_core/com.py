@@ -4,6 +4,7 @@ import logging
 import re
 import struct
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from types import TracebackType
 from typing import Any, cast
 
@@ -412,7 +413,7 @@ def verify_serial_discovery(
         return False
 
 
-class USBSerialDevice:
+class USBSerialDevice(AbstractContextManager):
     """Class that interfaces with a USB serial device."""
 
     _serial: ExtendedSerial
@@ -449,16 +450,6 @@ class USBSerialDevice:
         self._serial.port = port
         if open_connection:
             self.open()
-
-    def __enter__(self) -> Self:
-        """Enter the context manager.
-
-        Returns
-        -------
-        Self
-            The device instance.
-        """
-        return self
 
     def __exit__(
         self,

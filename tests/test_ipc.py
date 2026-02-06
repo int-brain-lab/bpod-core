@@ -1,5 +1,6 @@
 import json
 import os
+from uuid import uuid4
 
 import pytest
 
@@ -8,193 +9,148 @@ from bpod_core import ipc
 
 @pytest.fixture
 def mock_zeroconf(mocker):
-    return mocker.patch('bpod_core.ipc.Zeroconf')
+    """Mock Zeroconf class."""
+    return mocker.patch('bpod_core.ipc.Zeroconf', spec=ipc.Zeroconf)
+
+
+@pytest.fixture
+def mock_runtime_dir(tmp_path, mocker):
+    """Mock runtime directory for advertisements."""
+    mocker.patch.object(ipc.LocalServiceAdvertisement, 'runtime_directory', tmp_path)
+    return tmp_path
+
+
+@pytest.fixture
+def mock_advertisement(mock_zeroconf, mock_runtime_dir):
+    """Mock, both, zeroconf and local advertisement."""
+    yield {'zeroconf': mock_zeroconf, 'runtime_dir': mock_runtime_dir}
 
 
 class TestLocalServiceAdvertisement:
     """Tests for LocalServiceAdvertisement class."""
 
-    @pytest.fixture
-    def temp_runtime_dir(self, tmp_path, mocker):
-        """Override runtime directory to use a temp path."""
-        mocker.patch.object(
-            ipc.LocalServiceAdvertisement, 'runtime_directory', tmp_path
-        )
-        return tmp_path
+    def test_context_manager(self, mock_runtime_dir):
+        """Advertisement can be used as a context manager."""
+        with ipc.LocalServiceAdvertisement(
+            service_type='test_service',
+            address='tcp://127.0.0.1:5555',
+            pid=os.getpid(),
+        ) as ad:
+            assert ad.service_file.is_relative_to(mock_runtime_dir)
+            assert ad.service_file.exists()
+            assert ad.service_file.suffix == '.json'
+        assert not ad.service_file.exists()
+        assert not mock_runtime_dir.exists()
 
-    def test_creates_service_file(self, temp_runtime_dir):
-        """Advertisement creates a JSON file in the runtime directory."""
+    def test_close_removes_file(self, mock_runtime_dir):
+        """close() removes the service file and removes empty parent directories."""
         ad = ipc.LocalServiceAdvertisement(
             service_type='test_service',
             address='tcp://127.0.0.1:5555',
             pid=os.getpid(),
         )
         assert ad.service_file.exists()
-        assert ad.service_file.suffix == '.json'
+        ad.close()
+        assert not ad.service_file.exists()
+        assert not mock_runtime_dir.exists()
 
-    def test_file_contains_correct_data(self, temp_runtime_dir):
+    def test_file_contains_correct_data(self, mock_runtime_dir):
         """Service file contains correct JSON data."""
-        ad = ipc.LocalServiceAdvertisement(
+        uuid = uuid4()
+        with ipc.LocalServiceAdvertisement(
             service_type='test_service',
             address='tcp://127.0.0.1:5555',
             pid=12345,
+            uuid=uuid,
             properties={'key': 'value'},
-        )
-        data = json.loads(ad.service_file.read_text())
-        assert data['service_type'] == 'test_service'
-        assert data['address'] == 'tcp://127.0.0.1:5555'
-        assert data['pid'] == 12345
-        assert data['properties'] == {'key': 'value'}
-        assert 'uuid' in data
+        ) as ad:
+            data = json.loads(ad.service_file.read_text())
+            assert data['service_type'] == 'test_service'
+            assert data['address'] == 'tcp://127.0.0.1:5555'
+            assert data['pid'] == 12345
+            assert data['uuid'] == str(uuid)
+            assert data['properties'] == {'key': 'value'}
 
-    def test_stop_removes_file(self, temp_runtime_dir):
-        """stop() removes the service file."""
-        ad = ipc.LocalServiceAdvertisement(
-            service_type='test_service',
-            address='tcp://127.0.0.1:5555',
-            pid=os.getpid(),
-        )
-        service_file = ad.service_file
-        assert service_file.exists()
-
-        ad.stop()
-
-        assert not service_file.exists()
-
-    def test_stop_cleans_up_empty_directories(self, temp_runtime_dir):
-        """stop() removes empty parent directories."""
-        ad = ipc.LocalServiceAdvertisement(
-            service_type='test_service',
-            address='tcp://127.0.0.1:5555',
-            pid=os.getpid(),
-        )
-        service_dir = ad.service_file.parent
-        assert service_dir.exists()
-
-        ad.stop()
-
-        assert not service_dir.exists()
-
-    def test_discover_finds_service(self, temp_runtime_dir):
+    def test_discover_finds_service(self, mock_runtime_dir):
         """discover() yields advertised services."""
-        ad = ipc.LocalServiceAdvertisement(
+        with ipc.LocalServiceAdvertisement(
             service_type='test_service',
             address='tcp://127.0.0.1:5555',
             pid=os.getpid(),
             properties={'name': 'test'},
-        )
+        ):
+            results = list(ipc.LocalServiceAdvertisement.discover('test_service'))
+            assert len(results) == 1
+            assert results[0].address == 'tcp://127.0.0.1:5555'
+            assert results[0].properties == {'name': 'test'}
 
-        results = list(ipc.LocalServiceAdvertisement.discover('test_service'))
-
-        assert len(results) == 1
-        assert results[0].address == 'tcp://127.0.0.1:5555'
-        assert results[0].properties == {'name': 'test'}
-
-        ad.stop()
-
-    def test_discover_filters_by_properties(self, temp_runtime_dir):
+    def test_discover_filters_by_properties(self, mock_runtime_dir):
         """discover() filters services by matching properties."""
-        ad1 = ipc.LocalServiceAdvertisement(
-            service_type='test_service',
-            address='tcp://127.0.0.1:5555',
-            pid=os.getpid(),
-            properties={'name': 'first'},
-        )
-        ad2 = ipc.LocalServiceAdvertisement(
-            service_type='test_service',
-            address='tcp://127.0.0.1:5556',
-            pid=os.getpid(),
-            properties={'name': 'second'},
-        )
-
-        results = list(
-            ipc.LocalServiceAdvertisement.discover(
-                'test_service', properties={'name': 'second'}
+        with (
+            ipc.LocalServiceAdvertisement(
+                service_type='test_service',
+                address='tcp://127.0.0.1:5555',
+                pid=os.getpid(),
+                properties={'name': 'first'},
+            ),
+            ipc.LocalServiceAdvertisement(
+                service_type='test_service',
+                address='tcp://127.0.0.1:5556',
+                pid=os.getpid(),
+                properties={'name': 'second'},
+            ),
+        ):
+            results = list(ipc.LocalServiceAdvertisement.discover('test_service'))
+            assert len(results) == 2
+            results = list(
+                ipc.LocalServiceAdvertisement.discover(
+                    'test_service', properties={'name': 'second'}
+                )
             )
-        )
+            assert len(results) == 1
+            assert results[0].address == 'tcp://127.0.0.1:5556'
 
-        assert len(results) == 1
-        assert results[0].address == 'tcp://127.0.0.1:5556'
-
-        ad1.stop()
-        ad2.stop()
-
-    def test_discover_removes_stale_advertisements(self, temp_runtime_dir, mocker):
+    def test_discover_removes_stale_advertisements(self, mock_runtime_dir, mocker):
         """discover() removes files for dead processes."""
-        ad = ipc.LocalServiceAdvertisement(
+        with ipc.LocalServiceAdvertisement(
             service_type='test_service',
             address='tcp://127.0.0.1:5555',
             pid=99999999,  # non-existent PID
-        )
-        service_file = ad.service_file
-        assert service_file.exists()
+        ) as ad:
+            assert ad.service_file.exists()
+            mocker.patch('bpod_core.ipc.pid_exists', return_value=False)
+            results = list(ipc.LocalServiceAdvertisement.discover('test_service'))
+            assert len(results) == 0
+            assert not ad.service_file.exists()
+            assert not mock_runtime_dir.exists()
 
-        # Mock pid_exists to return False
-        mocker.patch('bpod_core.ipc.pid_exists', return_value=False)
-
-        results = list(ipc.LocalServiceAdvertisement.discover('test_service'))
-
-        assert len(results) == 0
-        assert not service_file.exists()
-
-    def test_discover_returns_empty_for_nonexistent_service(self, temp_runtime_dir):
+    def test_discover_returns_empty_for_nonexistent_service(self, mock_runtime_dir):
         """discover() returns empty iterator for unknown service types."""
-        results = list(ipc.LocalServiceAdvertisement.discover('nonexistent'))
-        assert results == []
+        assert list(ipc.LocalServiceAdvertisement.discover('nonexistent')) == []
 
-    def test_service_type_sanitization(self, temp_runtime_dir):
+    def test_service_type_sanitization(self, mock_runtime_dir):
         """Service types with special characters are sanitized."""
-        ad = ipc.LocalServiceAdvertisement(
+        with ipc.LocalServiceAdvertisement(
             service_type='test-service.local',
             address='tcp://127.0.0.1:5555',
             pid=os.getpid(),
-        )
+        ) as ad:
+            assert '-' not in ad.service_file.parent.name
 
-        # Directory name should be sanitized
-        assert '_' in ad.service_file.parent.name
-
-        ad.stop()
-
-    def test_multiple_services_same_type(self, temp_runtime_dir):
-        """Multiple services of the same type can be advertised."""
-        ad1 = ipc.LocalServiceAdvertisement(
-            service_type='test_service',
-            address='tcp://127.0.0.1:5555',
-            pid=os.getpid(),
-        )
-        ad2 = ipc.LocalServiceAdvertisement(
-            service_type='test_service',
-            address='tcp://127.0.0.1:5556',
-            pid=os.getpid(),
-        )
-
-        results = list(ipc.LocalServiceAdvertisement.discover('test_service'))
-        assert len(results) == 2
-
-        ad1.stop()
-        ad2.stop()
-
-    def test_handles_corrupted_file(self, temp_runtime_dir):
+    def test_handles_corrupted_file(self, mock_runtime_dir):
         """discover() skips corrupted JSON files."""
         # Create a valid advertisement first to get the directory
-        ad = ipc.LocalServiceAdvertisement(
+        with ipc.LocalServiceAdvertisement(
             service_type='test_service',
             address='tcp://127.0.0.1:5555',
             pid=os.getpid(),
-        )
-        service_dir = ad.service_file.parent
-
-        # Create a corrupted file
-        corrupted_file = service_dir / 'corrupted.json'
-        corrupted_file.write_text('not valid json')
-
-        results = list(ipc.LocalServiceAdvertisement.discover('test_service'))
-
-        # Should still find the valid service
-        assert len(results) == 1
-        assert results[0].address == 'tcp://127.0.0.1:5555'
-
-        ad.stop()
+        ) as ad:
+            service_dir = ad.service_file.parent
+            corrupted_file = service_dir / 'corrupted.json'
+            corrupted_file.write_text('not valid json')
+            results = list(ipc.LocalServiceAdvertisement.discover('test_service'))
+            assert len(results) == 1
+            assert results[0].address == 'tcp://127.0.0.1:5555'
 
 
 @pytest.fixture
@@ -206,7 +162,7 @@ class TestClient:
     """Tests for the DualChannelClient class."""
 
     @pytest.fixture
-    def host(self, mock_zeroconf):
+    def host(self, mock_advertisement):
         with ipc.DualChannelHost(
             service_name='TestService',
             service_type='dualtest',
@@ -227,8 +183,7 @@ class TestClient:
         """Verify handshake exchanges addresses and negotiates serialization."""
         assert client._address_req.startswith(('tcp://', 'ipc://'))
         assert client._address_sub.startswith(('tcp://', 'ipc://'))
-        # client should downgrade serialization to host's json
-        assert client._serialization == 'json'
+        assert client._serialization == 'json', 'Serialization should be JSON'
 
     def test_request_response(self, client):
         """Round-trip a request to the host and validate payload."""
@@ -260,31 +215,108 @@ class TestClient:
 class TestHost:
     """Tests for the DualChannelHost class."""
 
-    @pytest.fixture
-    def mock_service(self, mock_zeroconf):
-        with ipc.DualChannelHost('test', 'testservice') as service:
-            yield service
-
-    def test_basic_init_and_properties(self, mock_service):
+    def test_basic_init_and_properties(self, mock_advertisement):
         """Check ports, addresses, and Zeroconf objects are initialized."""
-        assert mock_service.rep_tcp_port > 0
-        assert mock_service.rep_tcp_addr.startswith('tcp://')
-        assert mock_service._zeroconf is not None
-        assert mock_service._zeroconf_service_info is not None
+        with ipc.DualChannelHost('test', 'test_service') as host:
+            assert host.rep_tcp_port > 0
+            assert host.rep_tcp_addr.startswith('tcp://')
+            assert host._zeroconf is not None
+            assert host._zeroconf_service_info is not None
 
-    @pytest.mark.parametrize('remote', [True, False])
-    def test_bind_address_matches_local_flag(self, mock_zeroconf, remote):
+    @pytest.mark.parametrize('remote', [True, False], ids=['remote', 'local'])
+    def test_bind_address(self, mock_advertisement, remote):
         """Validate bind address switches between 0.0.0.0 and 127.0.0.1."""
-        service = ipc.DualChannelHost('test', 'testservice', remote=remote)
-        ip = service._bind_ip
-        expected_ip = '0.0.0.0' if remote else '127.0.0.1'
-        assert ip == expected_ip
+        with ipc.DualChannelHost('test', 'test_service', remote=remote) as host:
+            expected_ip = '0.0.0.0' if remote else '127.0.0.1'
+            assert host._bind_ip == expected_ip, f'Bind IP should be {expected_ip}'
+
+    def test_remote_true_creates_zeroconf_and_local(self, mock_advertisement):
+        """remote=True creates both zeroconf and local advertisement."""
+        with ipc.DualChannelHost('test', 'test_service', remote=True) as host:
+            assert host._zeroconf is not None
+            assert host._zeroconf_service_info is not None
+            host._zeroconf.register_service.assert_called_once()
+            host._zeroconf.close.assert_not_called()
+            assert host._local_advertisement is not None
+            assert host._local_advertisement.service_file.exists()
+        host._zeroconf.close.assert_called_once()
+        assert not host._local_advertisement.service_file.exists()
+        assert not host._local_advertisement.runtime_directory.exists()
+
+    def test_remote_false_creates_only_local(self, mock_advertisement):
+        """remote=False creates only local advertisement, no zeroconf."""
+        with ipc.DualChannelHost('test', 'test_service', remote=False) as host:
+            assert host._zeroconf is None
+            assert host._zeroconf_service_info is None
+            assert host._local_advertisement is not None
+            assert host._local_advertisement.service_file.exists()
+        assert not host._local_advertisement.service_file.exists()
+        assert not host._local_advertisement.runtime_directory.exists()
+
+    def test_close_removes_local_advertisement(self, mock_advertisement):
+        """close() removes the local advertisement file."""
+        host = ipc.DualChannelHost('test', 'test_service', remote=False)
+        service_file = host._local_advertisement.service_file
+        assert service_file.exists()
+        host.close()
+        assert not service_file.exists()
 
 
-class TestDiscover:
-    """Tests for the discover function."""
+class TestLocalDiscovery:
+    """Tests for local vs remote discovery behavior."""
 
-    def test_discover_timeout(self, mocker, mock_zeroconf, mock_service_browser):
+    def test_client_discovers_host_locally(self, mock_advertisement):
+        """Client discovers host via local advertisement without zeroconf."""
+        with (
+            ipc.DualChannelHost('test', 'localtest', remote=False) as host,
+            ipc.DualChannelClient(service_type='localtest', remote=False) as client,
+        ):
+            assert client._address_req.startswith(('tcp://', 'ipc://'))
+            host._user_event_handler = lambda d: {'received': d}
+            reply = client.request(test='value')
+            assert reply == {'received': {'test': 'value'}}
+
+    def test_discover_prefers_local_over_zeroconf(
+        self, mock_advertisement, mock_service_browser
+    ):
+        """discover() returns local service without invoking zeroconf."""
+        with ipc.LocalServiceAdvertisement(
+            service_type='test_service',
+            address='tcp://127.0.0.1:9999',
+            pid=os.getpid(),
+        ):
+            address, properties = ipc.discover('test_service', remote=True, timeout=0)
+            assert address == 'tcp://127.0.0.1:9999'
+            mock_advertisement['zeroconf'].assert_not_called()
+
+    def test_discover_remote_false_raises_if_no_local(self, mock_advertisement):
+        """discover() with remote=False raises if no local service found."""
+        with pytest.raises(RuntimeError, match='No matching service found locally'):
+            ipc.discover('nonexistent', remote=False, timeout=0)
+
+    def test_discover_falls_back_to_zeroconf(
+        self, mocker, mock_advertisement, mock_service_browser
+    ):
+        """discover() falls back to zeroconf when no local service exists."""
+        mocker.patch('threading.Event.wait', return_value=False)
+        with pytest.raises(TimeoutError):
+            ipc.discover('test_service', remote=True, timeout=0)
+        mock_advertisement['zeroconf'].assert_called_once()
+
+    def test_client_remote_false_uses_only_local(self, mock_advertisement):
+        """Client with remote=False only uses local discovery."""
+        with (
+            ipc.DualChannelHost('test', 'localonly', remote=False),
+            ipc.DualChannelClient(service_type='localonly', remote=False),
+        ):
+            mock_advertisement['zeroconf'].assert_not_called()
+
+    def test_client_remote_false_raises_if_no_local(self, mock_advertisement):
+        """Client with remote=False raises if no local service found."""
+        with pytest.raises(RuntimeError, match='No matching service found locally'):
+            ipc.DualChannelClient(service_type='nonexistent', remote=False)
+
+    def test_discover_timeout(self, mocker, mock_advertisement, mock_service_browser):
         """Timeout when no matching service is discovered within deadline."""
         mocker.patch('threading.Event.wait', return_value=False)
         with pytest.raises(TimeoutError):
