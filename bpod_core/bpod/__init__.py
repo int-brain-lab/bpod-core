@@ -310,7 +310,7 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
     @staticmethod
-    def _finalize(serial: ExtendedSerial, zmq_service: DualChannelHost) -> None:wr
+    def _finalize(serial: ExtendedSerial, zmq_service: DualChannelHost) -> None:
         with contextlib.suppress(SerialException):
             Bpod._request_disconnect(serial)
         serial.close()
