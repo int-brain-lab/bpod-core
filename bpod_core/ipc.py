@@ -253,7 +253,7 @@ class DualChannelBase(contextlib.AbstractContextManager):
         is_alive = False
         with contextlib.suppress(Exception):
             is_alive = event_thread is not None and event_thread.is_alive()
-        if is_alive:
+        if event_thread is not None and is_alive:
             with contextlib.suppress(Exception):
                 stop_event.set()
                 event_thread.join(timeout=1)
