@@ -3,6 +3,7 @@ from unittest.mock import PropertyMock
 
 import pytest
 
+from bpod_core import ipc
 from bpod_core.bpod import Bpod
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import VID_TEENSY, TeensyPID
@@ -100,6 +101,25 @@ def mock_ext_serial(mocker):
 
 
 @pytest.fixture
+def mock_zeroconf(mocker):
+    """Mock Zeroconf class."""
+    return mocker.patch('bpod_core.ipc.Zeroconf', spec=ipc.Zeroconf)
+
+
+@pytest.fixture
+def mock_local_discovery_dir(tmp_path, mocker):
+    """Mock runtime directory for local advertisements."""
+    mocker.patch.object(ipc.LocalServiceAdvertisement, 'runtime_directory', tmp_path)
+    return tmp_path
+
+
+@pytest.fixture
+def mock_advertisement(mock_zeroconf, mock_local_discovery_dir):
+    """Mock, both, zeroconf and local advertisement."""
+    yield {'zeroconf': mock_zeroconf, 'runtime_dir': mock_local_discovery_dir}
+
+
+@pytest.fixture
 def mock_bpod(mocker, mock_ext_serial, mock_settings):
     mock_bpod = mocker.MagicMock(spec=Bpod)
     mock_bpod.serial0 = mock_ext_serial
@@ -118,7 +138,9 @@ def mock_settings(mocker):
 
 
 @pytest.fixture
-def mock_bpod_20(mock_comports, mock_ext_serial, mock_settings, mocker):
+def mock_bpod_20(
+    mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
+):
     mock_ext_serial.mock_responses.update(fixture_bpod_20)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
@@ -127,7 +149,9 @@ def mock_bpod_20(mock_comports, mock_ext_serial, mock_settings, mocker):
 
 
 @pytest.fixture
-def mock_bpod_25(mock_comports, mock_ext_serial, mock_settings, mocker):
+def mock_bpod_25(
+    mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
+):
     mock_ext_serial.mock_responses.update(fixture_bpod_25)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
@@ -136,7 +160,9 @@ def mock_bpod_25(mock_comports, mock_ext_serial, mock_settings, mocker):
 
 
 @pytest.fixture
-def mock_bpod_2p(mock_comports, mock_ext_serial, mock_settings, mocker):
+def mock_bpod_2p(
+    mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
+):
     mock_ext_serial.mock_responses.update(fixture_bpod_2p)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')

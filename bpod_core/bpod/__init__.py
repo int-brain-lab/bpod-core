@@ -1,5 +1,6 @@
 """Module for interfacing with the Bpod Finite State Machine."""
 
+import contextlib
 import logging
 import re
 import struct
@@ -125,9 +126,10 @@ class FSMThread(threading.Thread):
         use_back_op = self._use_back_op
         event_names = self._event_names
 
-        # create buffers for repeated serial reads
+        # create buffers / memoryview for repeated serial reads
         opcode_buf = bytearray(2)  # buffer for opcodes
         event_data_buf = bytearray(259)  # max 255 events + 4 bytes for n_cycles
+        event_data_view = memoryview(event_data_buf)
 
         # confirm the state machine
         if self._confirm_fsm:
@@ -137,6 +139,7 @@ class FSMThread(threading.Thread):
 
         # read the start time of the state machine
         t0 = serial.read_uint64()
+        # TODO: get time.perf_counter()
         logger.debug('%d µs: Starting state machine #%d', t0, index)
         logger.debug('%d µs: State %d', t0, current_state)
         # TODO: handle start of state machine
@@ -144,14 +147,26 @@ class FSMThread(threading.Thread):
 
         # enter the reading loop
         while not self._stop_event.is_set():
+            # TODO: thread is blocked by readinto()
+            #
+            # Options:
+            # a) use serial timeout,
+            # b) while serial.in_waiting() < 2:
+            #        if self._stop_event.wait(timeout=0.01):
+            #            break
+            # c) thread entirely controlled by bpod (no _stop_event required)
+            #
+            # readinto returns number of bytes read, so we can use it to check for
+            # timeout
+
             # read the next two opcodes
             serial.readinto(opcode_buf)
+            # TODO: get time.perf_counter()
             opcode, param = opcode_buf
 
             if opcode == 1:  # handle events
                 # read `param` event bytes + 4 bytes for n_cycles (uInt32)
-                event_data_view = memoryview(event_data_buf)[: param + 4]
-                serial.readinto(event_data_view)
+                serial.readinto(event_data_view[: param + 4])
 
                 # unpack the number of cycles, calculate the event's timestamp
                 (n_cycles,) = STRUCT_UINT32.unpack_from(event_data_view, param)
@@ -240,7 +255,6 @@ class Bpod(SerialDevice, AbstractBpod):
         serial_number: str | None = None,
         remote: bool = False,
     ) -> None:
-        self._finalizer = weakref.finalize(self, self._finalize)
         logger.info('bpod_core %s', bpod_core_version)
         self._settings = SettingsDict(CONFIG_PATH / 'settings.json')
 
@@ -253,7 +267,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # identify Bpod by port or serial number, open connection
         bpod_port, _ = self._identify_bpod(port, serial_number)
-        super().__init__(bpod_port)
+        super().__init__(port=bpod_port, open_connection=True)
         self._serial_number = self._port_info.serial_number or 'unknown'
 
         # get firmware version and machine type; enforce version requirements
@@ -274,6 +288,14 @@ class Bpod(SerialDevice, AbstractBpod):
         # start ZeroMQ service
         self._start_zmq(use_zeroconf=remote)
 
+        # register destructor
+        self._finalizer = weakref.finalize(
+            self,
+            Bpod._finalize,
+            self._serial,
+            self._zmq_service,
+        )
+
         # log hardware information
         logger.info(
             'Connected to Bpod Finite State Machine %s on %s',
@@ -287,10 +309,12 @@ class Bpod(SerialDevice, AbstractBpod):
             self.version.pcb,
         )
 
-    @property
-    def serial0(self) -> ExtendedSerial:
-        """Primary serial device for communication with the Bpod."""
-        return self._serial
+    @staticmethod
+    def _finalize(serial: ExtendedSerial, zmq_service: DualChannelHost) -> None:wr
+        with contextlib.suppress(SerialException):
+            Bpod._request_disconnect(serial)
+        serial.close()
+        zmq_service.close()
 
     def __exit__(
         self,
@@ -299,7 +323,8 @@ class Bpod(SerialDevice, AbstractBpod):
         exc_tb: TracebackType | None,
     ) -> None:
         """Exit context and close connection."""
-        super().__exit__(exc_type, exc_val, exc_tb)
+        self._finalizer.detach()
+        self.close()
         self._stop_zmq()
 
     def open(self) -> None:
@@ -317,15 +342,30 @@ class Bpod(SerialDevice, AbstractBpod):
         self._handshake()
 
     def close(self) -> None:
-        """Close the connection to the Bpod."""
+        """
+        Close the connection to the Bpod.
+
+        Raises
+        ------
+        SerialException
+            If the port could not be closed.
+        """
         self.stop_state_machine()
-        if hasattr(self, 'serial0') and self.serial0.is_open:
-            self.serial0.write(b'Z')
+        if hasattr(self, 'serial0'):
+            self._request_disconnect(self.serial0)
         super().close()
 
-    def _finalize(self) -> None:
-        self.close()
-        self._stop_zmq()
+    @staticmethod
+    def _request_disconnect(serial: ExtendedSerial) -> None:
+        """Send a close request to the Bpod."""
+        if getattr(serial, 'is_open', False):
+            logger.debug('Sending close request to Bpod')
+            serial.write(b'Z')
+
+    @property
+    def serial0(self) -> ExtendedSerial:
+        """Primary serial device for communication with the Bpod."""
+        return self._serial
 
     def _zmq_handler(self, message: dict[str, Any]) -> dict[str, Any]:
         msg_type = message.get('type', 'unknown')
@@ -606,6 +646,7 @@ class Bpod(SerialDevice, AbstractBpod):
         return self.serial0.read(1) == b'\x01'
 
     def reset_session_clock(self) -> bool:
+        # TODO: Get timestamp / time.monotonic() / time.perf_counter()
         logger.debug('Resetting session clock')
         return self.serial0.verify(b'*')
 

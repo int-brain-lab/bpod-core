@@ -10,25 +10,6 @@ from bpod_core import misc
 from bpod_core.misc import ValidatedDict
 
 
-class TestSanitizeString:
-    """Tests for sanitize_string utility."""
-
-    def test_basic_substitution(self):
-        """Replaces spaces and hyphens with underscores."""
-        assert misc.sanitize_string(' foo bar-123 ') == '_foo_bar_123_'
-
-    def test_custom_substitute(self):
-        """Uses a custom substitute character."""
-        assert misc.sanitize_string('foo bar!', substitute='-') == 'foo-bar-'
-
-    def test_invalid_types(self):
-        """Raises TypeError on invalid argument types."""
-        with pytest.raises(TypeError):
-            misc.sanitize_string('foo', substitute=1)  # type: ignore
-        with pytest.raises(TypeError):
-            misc.sanitize_string(1)  # type: ignore
-
-
 @pytest.mark.parametrize(
     ('text', 'expected'),
     [
@@ -40,11 +21,12 @@ class TestSanitizeString:
         ('_Foo_Bar_', 'foo_bar'),
         ('123Bar', '123_bar'),
         ('Foo123', 'foo_123'),
+        ('HTTPSConnection', 'https_connection'),
     ],
 )
-def test_convert_to_snake_case(text, expected):
+def test_to_snakecase(text, expected):
     """Converts various input styles to snake_case."""
-    assert misc.convert_to_snake_case(text) == expected
+    assert misc.to_snake_case(text) == expected
 
 
 class TestSuggestSimilar:
