@@ -129,8 +129,11 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
         self.service_file.parent.mkdir(parents=True, exist_ok=True)
         self._finalizer = weakref.finalize(self, self._close, self.service_file)
 
-        json_data = msgspec.to_builtins(info)
-        self.service_file.write_text(json.dumps(json_data, indent=2))
+        # write advertisement to JSON file (atomic)
+        json_data = msgspec.json.encode(info)
+        temp_file = self.service_file.with_suffix('.tmp')
+        temp_file.write_bytes(json_data)
+        temp_file.replace(self.service_file)
         logger.debug("Advertising local service at '%s'", self.service_file)
 
     def __exit__(
@@ -250,10 +253,7 @@ class DualChannelBase(contextlib.AbstractContextManager):
         zmq_context: zmq.Context,
     ) -> None:
         # event thread
-        is_alive = False
-        with contextlib.suppress(Exception):
-            is_alive = event_thread is not None and event_thread.is_alive()
-        if event_thread is not None and is_alive:
+        if event_thread is not None and event_thread.is_alive():
             with contextlib.suppress(Exception):
                 stop_event.set()
                 event_thread.join(timeout=1)
@@ -270,6 +270,8 @@ class DualChannelBase(contextlib.AbstractContextManager):
         # ZMQ context
         with contextlib.suppress(Exception):
             zmq_context.term()
+        with contextlib.suppress(Exception):
+            zmq_context.destroy(linger=0)
 
     def __exit__(
         self,
@@ -794,7 +796,7 @@ class DualChannelClient(DualChannelBase):
             and reply_data.get('ipc_req_rep') is not None
             and reply_data.get('ipc_pub_sub') is not None
         ):
-            if self._address_req.startswith('tcp://'):
+            if self._address_req.startswith(('tcp://', 'tcp4://', 'tcp6://')):
                 self._socket_req_rep.disconnect(self._address_req)
                 self._address_req = reply_data.get('ipc_req_rep')
                 logger.debug("Reconnecting REQ socket to '%s'", self._address_req)
@@ -924,15 +926,15 @@ def discover(
         If no matching device/service is found within the timeout period.
     """
     properties = properties or {}
-    address = ''
-    event = threading.Event()
-    txt_record = {}
-    zeroconf_service_type = f'_{to_snake_case(service_type)}._tcp.local.'
-
     for local_info in LocalServiceAdvertisement.discover(service_type, properties):
         return local_info.address, local_info.properties
     if not remote:
         raise RuntimeError('No matching service found locally')
+
+    event = threading.Event()
+    zc_service_type = f'_{to_snake_case(service_type)}._tcp.local.'
+    address: str | None = None
+    txt_record: dict[str, str | None] = {}
 
     def on_state_change(
         *, name: str, state_change: ServiceStateChange, **_: Any
@@ -941,8 +943,8 @@ def discover(
         if event.is_set():
             return
         if state_change is ServiceStateChange.Added:
-            remote_info = zeroconf.get_service_info(zeroconf_service_type, name)
-            if remote_info is None or len(remote_info.addresses) == 0:
+            remote_info = zc.get_service_info(zc_service_type, name)
+            if not remote_info or not remote_info.addresses:
                 return
             for k, v in properties.items():
                 if remote_info.decoded_properties.get(k) != v:
@@ -954,12 +956,16 @@ def discover(
             txt_record = remote_info.decoded_properties
             event.set()
 
-    zeroconf = Zeroconf()
-    try:
-        ServiceBrowser(zeroconf, zeroconf_service_type, handlers=[on_state_change])
-        found = event.wait(timeout)
-    finally:
-        zeroconf.close()
-    if not found:
+    with Zeroconf() as zc:
+        found = False
+        browser = None
+        try:
+            browser = ServiceBrowser(zc, zc_service_type, handlers=[on_state_change])
+            found = event.wait(timeout)
+        finally:
+            if browser is not None:
+                with contextlib.suppress(Exception):
+                    browser.cancel()
+    if not found or address is None:
         raise TimeoutError('No matching service found')
     return address, txt_record
