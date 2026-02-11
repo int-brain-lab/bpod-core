@@ -83,6 +83,9 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
     service_file: Path
     """Path to the advertisement file."""
 
+    _closed = False
+    """Flag to prevent double-finalization."""
+
     @validate_call
     def __init__(
         self,
@@ -140,21 +143,23 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
 
     def close(self) -> None:
         """Remove the service advertisement and clean up empty directories."""
+        if self._closed:
+            return
+        self._closed = True
         self._finalizer.detach()
         self._close(self.service_file)
 
     @staticmethod
     def _close(service_file: Path) -> None:
-        try:
-            service_file.unlink()
+        with contextlib.suppress(Exception):
+            service_file.unlink(missing_ok=True)
             logger.debug("Removed local service advertisement '%s'", service_file)
+        with contextlib.suppress(Exception):
             prune_empty_parent_directories(
                 service_file.parent,
                 LocalServiceAdvertisement.runtime_directory,
                 remove_root=True,
             )
-        except OSError:
-            pass
 
     @staticmethod
     def _get_service_directory(service_type: str) -> Path:
@@ -245,7 +250,10 @@ class DualChannelBase(contextlib.AbstractContextManager):
         zmq_context: zmq.Context,
     ) -> None:
         # event thread
-        if event_thread is not None and event_thread.is_alive():
+        is_alive = False
+        with contextlib.suppress(Exception):
+            is_alive = event_thread is not None and event_thread.is_alive()
+        if is_alive:
             with contextlib.suppress(Exception):
                 stop_event.set()
                 event_thread.join(timeout=1)
@@ -373,6 +381,9 @@ class DualChannelHost(DualChannelBase):
                 logger.debug("Binding PUB socket to '%s'", pub_ipc_addr)
             except zmq.ZMQError:
                 logger.warning('Failed to bind IPC sockets; continuing without IPC')
+                if rep_ipc_addr:
+                    with contextlib.suppress(zmq.ZMQError):
+                        self._socket_req_rep.unbind(rep_ipc_addr)
                 rep_ipc_addr = None
                 pub_ipc_addr = None
 
@@ -394,7 +405,7 @@ class DualChannelHost(DualChannelBase):
         logger.debug("Binding PUB socket to '%s'", self.pub_tcp_addr)
 
         # select serialization protocol / initialize encoders + decoders
-        self._serialization_protocol = serialization
+        self._serialization = serialization
         if serialization == 'msgpack':
             self._encoder = msgspec.msgpack.Encoder()
             self._decoder = msgspec.msgpack.Decoder(type=DualChannelMessage)
@@ -405,7 +416,7 @@ class DualChannelHost(DualChannelBase):
             raise ValueError(f'Unsupported serialization protocol: {serialization}')
 
         # start event loop for request handling
-        self._event_handler_lock = threading.RLock()
+        self._event_handler_lock = threading.Lock()
         handshake_data = DualChannelHandshake(
             ipc_pub_sub=pub_ipc_addr,
             ipc_req_rep=rep_ipc_addr,
@@ -419,7 +430,7 @@ class DualChannelHost(DualChannelBase):
                 self._socket_req_rep,
                 self._decoder,
                 self._encoder,
-                self._serialization_protocol,
+                self._serialization,
                 event_handler or self._empty_event_handler,
                 self._event_handler_lock,
                 handshake_data,
@@ -533,7 +544,7 @@ class DualChannelHost(DualChannelBase):
         encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder,
         serialization_protocol: str,
         event_handler: Callable[[Any], dict],
-        event_handler_lock: threading.RLock,
+        event_handler_lock: threading.Lock,
         handshake_data: DualChannelHandshake,
     ) -> None:
         """
@@ -582,7 +593,7 @@ class DualChannelHost(DualChannelBase):
                         )
                 except msgspec.DecodeError:
                     logger.exception('Error decoding request from client', exc_info=e1)
-                    reply = format_error(type(e1).__name__, e1.args[0])
+                    reply = format_error(type(e1).__name__, str(e1))
                     try:
                         reply_bytes = encode(reply)
                         send(reply_bytes, copy=False)
@@ -600,7 +611,7 @@ class DualChannelHost(DualChannelBase):
                         logger.exception(
                             'Event handler raised an exception', exc_info=e
                         )
-                        reply = format_error(type(e).__name__, e.args[0])
+                        reply = format_error(type(e).__name__, str(e))
                     else:
                         reply = DualChannelMessage('R', reply_data)
 
@@ -617,7 +628,7 @@ class DualChannelHost(DualChannelBase):
                 reply_bytes = encode(reply)
             except msgspec.EncodeError as e:
                 logger.exception('Error encoding reply to client', exc_info=e)
-                reply = format_error(type(e).__name__, e.args[0])
+                reply = format_error(type(e).__name__, str(e))
                 reply_bytes = encode(reply)
 
             # send reply
@@ -905,7 +916,7 @@ def discover(
     str
         The Zeroconf service address, e.g., 'tcp://192.168.1.10:1234'.
     dict
-        The TXT record of the service
+        A dictionary of service properties.
 
     Raises
     ------
@@ -920,7 +931,6 @@ def discover(
 
     for local_info in LocalServiceAdvertisement.discover(service_type, properties):
         return local_info.address, local_info.properties
-
     if not remote:
         raise RuntimeError('No matching service found locally')
 
@@ -951,5 +961,5 @@ def discover(
     finally:
         zeroconf.close()
     if not found:
-        raise TimeoutError('No matching device found')
+        raise TimeoutError('No matching service found')
     return address, txt_record
