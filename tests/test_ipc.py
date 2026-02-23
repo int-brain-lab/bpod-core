@@ -169,7 +169,10 @@ class TestClient:
     @pytest.fixture
     def client(self, host, mock_service_browser):
         with ipc.DualChannelClient(
-            service_type='dualtest', address=host.rep_tcp_addr, discovery_timeout=0
+            service_type='dualtest',
+            address=host.rep_tcp_addr,
+            discovery_timeout=0,
+            default_data_type=dict,
         ) as client:
             yield client
 
@@ -181,13 +184,13 @@ class TestClient:
 
     def test_request_response(self, client):
         """Round-trip a request to the host and validate payload."""
-        reply = client.request(foo='bar')
+        reply = client.request({'foo': 'bar'})
         assert reply == {'echo': {'foo': 'bar'}}
 
     def test_unknown_request_type(self, client, caplog):
         """Ensure unknown request type is logged as an error by the host."""
         with caplog.at_level('ERROR'):
-            client._req(request_type='invalid')
+            client._req(request_kind='invalid')
 
     def test_error_response(self, mock_advertisement, mock_service_browser, caplog):
         """Verify server exceptions are logged and client gets empty dict."""
@@ -200,8 +203,8 @@ class TestClient:
             ipc.DualChannelClient('service', host.rep_tcp_addr) as client,
         ):
             with caplog.at_level('ERROR'):
-                reply = client.request(foo='bar')
-            assert reply == {}
+                reply = client.request({'foo': 'bar'})
+            assert reply is None
             error_logs = [rec for rec in caplog.records if rec.levelname == 'ERROR']
             assert any(
                 'RuntimeError' in rec.message and 'boom' in rec.message
@@ -268,7 +271,7 @@ class TestLocalDiscovery:
             ipc.DualChannelClient(service_type='service', remote=False) as client,
         ):
             assert client._address_req.startswith(('tcp://', 'ipc://'))
-            reply = client.request(test='value')
+            reply = client.request({'test': 'value'})
             assert reply == {'req': {'test': 'value'}}
 
     def test_discover_prefers_local_over_zeroconf(

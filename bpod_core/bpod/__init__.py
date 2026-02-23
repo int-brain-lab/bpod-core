@@ -1524,6 +1524,7 @@ class RemoteBpod(AbstractBpod):
                 discovery_timeout=timeout,
                 txt_properties=properties,
                 event_handler=self._event_handler,
+                default_data_type=dict,
             )
         except TimeoutError as e:
             raise TimeoutError('Failed to discover remote Bpod.') from e
@@ -1537,7 +1538,7 @@ class RemoteBpod(AbstractBpod):
         )
 
     def _request(self, request_type: str, **kwargs: Any) -> dict:
-        return cast('dict', self._zmq.request(type=request_type, **kwargs))
+        return cast('dict', self._zmq.request({'type': request_type, **kwargs}))
 
     def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any | None:
         """
