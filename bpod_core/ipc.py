@@ -859,10 +859,10 @@ class ServiceClient(ServiceBase, Generic[U]):
         while not stop_event.is_set():
             if not socket_sub.poll(100):
                 continue
-            msg = socket_sub.recv()
-            msg = decoder.decode(msg)
+            frame = socket_sub.recv(copy=False)
+            message = decoder.decode(frame.buffer)
             try:
-                event_handler(msg)
+                event_handler(message)
             except Exception as e:
                 logger.exception('Subscription handler raised an exception', exc_info=e)
 
@@ -928,6 +928,8 @@ class ServiceClient(ServiceBase, Generic[U]):
 
             # decode reply
             try:
+                reply_kind = MessageKind(reply_frames[0].buffer[0])
+                reply_data_buffer = reply_frames[1].buffer
                 if reply_kind == MessageKind.ERROR:
                     reply_data = self._serialization_module.decode(
                         reply_data_buffer, type=ErrorData
