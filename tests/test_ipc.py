@@ -263,23 +263,9 @@ class TestLocalDiscovery:
             reply = client.request({'test': 'value'})
             assert reply == {'req': {'test': 'value'}}
 
-    def test_discover_prefers_local_over_zeroconf(
-        self, mock_advertisement, mock_service_browser
-    ):
-        """discover() returns local service without invoking zeroconf."""
-        with ipc.LocalServiceAdvertisement(
-            service_name='service_name',
-            service_type='service_type',
-            address='tcp://127.0.0.1:9999',
-            pid=os.getpid(),
-        ):
-            address, properties = ipc.discover('service_type', remote=True, timeout=0)
-            assert address == 'tcp://127.0.0.1:9999'
-            mock_advertisement['zeroconf'].assert_not_called()
-
     def test_discover_remote_false_raises_if_no_local(self, mock_advertisement):
         """discover() with remote=False raises if no local service found."""
-        with pytest.raises(RuntimeError, match='No matching service found locally'):
+        with pytest.raises(TimeoutError):
             ipc.discover('nonexistent', remote=False, timeout=0)
 
     def test_discover_falls_back_to_zeroconf(
@@ -301,11 +287,71 @@ class TestLocalDiscovery:
 
     def test_client_remote_false_raises_if_no_local(self, mock_advertisement):
         """Client with remote=False raises if no local service found."""
-        with pytest.raises(RuntimeError, match='No matching service found locally'):
-            ipc.ServiceClient(service_type='nonexistent', remote=False)
+        with pytest.raises(TimeoutError):
+            ipc.ServiceClient(
+                service_type='nonexistent', discovery_timeout=0, remote=False
+            )
 
     def test_discover_timeout(self, mocker, mock_advertisement, mock_service_browser):
         """Timeout when no matching service is discovered within deadline."""
         mocker.patch('threading.Event.wait', return_value=False)
         with pytest.raises(TimeoutError):
             ipc.discover('_svc._tcp.local.', properties=None, timeout=0)
+
+
+class TestIterServices:
+    """Tests for iter_services()."""
+
+    @pytest.fixture
+    def mock_local_advertisement(self, mock_local_discovery_dir):
+        with ipc.LocalServiceAdvertisement(
+            service_name='service_name',
+            service_type='service_type',
+            address='tcp://127.0.0.1:5555',
+            properties={'a': 'b'},
+        ) as advertisement:
+            yield advertisement
+
+    def test_yields_added_event(self, mock_local_advertisement):
+        """`added` event is yielded as a local service appears."""
+        iterator = ipc.iter_services('service_type', remote=False, timeout=1)
+        event = next(iterator)
+        assert event.kind == 'added'
+        assert event.address == 'tcp://127.0.0.1:5555'
+        assert event.properties == {'a': 'b'}
+
+    def test_yields_removed_event(self, mock_local_advertisement):
+        """`removed` event is yielded as a local service disappears."""
+        iterator = ipc.iter_services('service_type', remote=False, timeout=1)
+        next(iterator)
+        mock_local_advertisement.close()
+        event = next(iterator)
+        assert event.kind == 'removed'
+        assert event.address == 'tcp://127.0.0.1:5555'
+        assert event.properties == {'a': 'b'}
+
+    def test_exhausted_when_no_services(self, mock_local_advertisement):
+        """timeout=0 with no services yields nothing."""
+        iterator = ipc.iter_services('nonexistent', remote=False, timeout=0)
+        assert list(iterator) == []
+
+    def test_filters_by_properties(self, mock_local_advertisement):
+        """Only services matching the given properties are yielded."""
+        with ipc.LocalServiceAdvertisement(
+            service_name='another_service_name',
+            service_type='service_type',
+            address='tcp://127.0.0.1:6666',
+            properties={'a': 'b', 'x': 'y'},
+        ):
+            iterator_1 = ipc.iter_services('service_type', {'x': 'y'}, False, 0)
+            iterator_2 = ipc.iter_services('service_type', {'a': 'b'}, False, 0)
+            events_1 = list(iterator_1)
+            events_2 = list(iterator_2)
+        assert len(events_1) == 1
+        assert len(events_2) == 2
+        assert events_1[0].address == 'tcp://127.0.0.1:6666'
+
+    def test_remote_false_no_zeroconf(self, mock_advertisement):
+        """remote=False never instantiates Zeroconf."""
+        list(ipc.iter_services('nonexistent', remote=False, timeout=0))
+        mock_advertisement['zeroconf'].assert_not_called()

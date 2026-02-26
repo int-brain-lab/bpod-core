@@ -142,6 +142,7 @@ dependencies = [
     { name = "pyserial" },
     { name = "pyyaml" },
     { name = "pyzmq" },
+    { name = "watchfiles" },
     { name = "zeroconf" },
 ]
 
@@ -236,6 +237,7 @@ requires-dist = [
     { name = "pyserial", specifier = ">=3.5" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "pyzmq", specifier = ">=27.0.0" },
+    { name = "watchfiles", specifier = ">=1.1.0" },
     { name = "zeroconf", specifier = ">=0.147.0" },
 ]
 

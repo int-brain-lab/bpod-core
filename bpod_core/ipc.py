@@ -4,21 +4,25 @@ import contextlib
 import json
 import logging
 import os
+import queue
 import socket
 import sys
 import threading
+import time
 import traceback
 import weakref
 from abc import abstractmethod
+from collections import deque
 from collections.abc import Callable, Iterator
 from enum import IntEnum
 from pathlib import Path
 from types import ModuleType, TracebackType
-from typing import Any, Generic, Literal, TypeVar, cast, overload
+from typing import Any, Generic, Literal, NamedTuple, TypeVar, cast, overload
 from uuid import UUID, uuid4
 
 import msgspec
 import platformdirs
+import watchfiles
 import zmq
 from platformdirs import user_runtime_path
 from psutil import pid_exists
@@ -125,6 +129,14 @@ class ErrorData(msgspec.Struct):
                 )
             ),
         )
+
+
+class ServiceEvent(NamedTuple):
+    """A service discovery event yielded by :func:`iter_services`."""
+
+    kind: Literal['added', 'removed']
+    address: str
+    properties: dict[str, str | None]
 
 
 class WelcomeData(msgspec.Struct, kw_only=True):
@@ -254,7 +266,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
             )
 
     @staticmethod
-    def _get_service_directory(service_type: str) -> Path:
+    def get_service_directory(service_type: str) -> Path:
         """Get the directory for a service type."""
         runtime_directory = LocalServiceAdvertisement.runtime_directory
         sanitized = RE_NON_ALPHANUMERIC.sub('_', service_type)
@@ -263,7 +275,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
     @staticmethod
     def _get_service_file(service_type: str, uuid: UUID) -> Path:
         """Get the path to a local service file."""
-        service_dir = LocalServiceAdvertisement._get_service_directory(service_type)
+        service_dir = LocalServiceAdvertisement.get_service_directory(service_type)
         return service_dir / f'{uuid.hex}.json'
 
     @staticmethod
@@ -285,7 +297,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
         LocalServiceInfo
             Information structure describing the discovered services.
         """
-        service_dir = LocalServiceAdvertisement._get_service_directory(service_type)
+        service_dir = LocalServiceAdvertisement.get_service_directory(service_type)
         properties = properties or {}
 
         if service_dir.exists():
@@ -1059,47 +1071,214 @@ def discover(
     TimeoutError
         If no matching device/service is found within the timeout period.
     """
-    properties = properties or {}
-    for local_info in LocalServiceAdvertisement.discover(service_type, properties):
-        return local_info.address, local_info.properties
-    if not remote:
-        raise RuntimeError('No matching service found locally')
+    for event in _ServiceIterator(
+        service_type=service_type,
+        properties=properties or {},
+        remote=remote,
+        timeout=timeout,
+    ):
+        return event.address, event.properties
+    raise TimeoutError('No matching service found')
 
-    event = threading.Event()
-    zc_service_type = f'_{to_snake_case(service_type)}._tcp.local.'
-    address: str | None = None
-    txt_record: dict[str, str | None] = {}
 
-    def on_state_change(
-        *, name: str, state_change: ServiceStateChange, **_: Any
+class _ServiceIterator(Iterator[ServiceEvent]):
+    """Iterator returned by :func:`iter_services`."""
+
+    _zc: Zeroconf | None = None
+    _browser: ServiceBrowser | None = None
+
+    def __init__(
+        self,
+        service_type: str,
+        properties: dict[str, str | None],
+        remote: bool,
+        timeout: float | None,
     ) -> None:
-        nonlocal address, txt_record
-        if event.is_set():
-            return
-        if state_change is ServiceStateChange.Added:
-            remote_info = zc.get_service_info(zc_service_type, name)
-            if not remote_info or not remote_info.addresses:
-                return
-            for k, v in properties.items():
-                if remote_info.decoded_properties.get(k) != v:
-                    return
-            port = remote_info.port
-            ip = socket.inet_ntoa(remote_info.addresses[0])
-            ip = '127.0.0.1' if ip == get_local_ipv4() else ip
-            address = f'tcp://{ip}:{port}'
-            txt_record = remote_info.decoded_properties
-            event.set()
+        self._q: queue.Queue[ServiceEvent] = queue.Queue()
+        self._stop = threading.Event()
+        self._deadline = None if timeout is None else time.monotonic() + timeout
 
-    with Zeroconf() as zc:
-        found = False
-        browser = None
-        try:
-            browser = ServiceBrowser(zc, zc_service_type, handlers=[on_state_change])
-            found = event.wait(timeout)
-        finally:
-            if browser is not None:
-                with contextlib.suppress(Exception):
-                    browser.cancel()
-    if not found or address is None:
-        raise TimeoutError('No matching service found')
-    return address, txt_record
+        # Consumer-side event buffer. Background threads write only to _q (thread-safe).
+        # __next__ drains _q into _pending, collapsing add/remove pairs for the same
+        # address, so a service that disappears before being yielded is never seen.
+        self._pending: deque[ServiceEvent] = deque()
+        self._pending_adds: dict[str, int] = {}  # address → # of valid pending 'added'
+
+        def rescan(seen_in: dict[str, ServiceEvent]) -> dict[str, ServiceEvent]:
+            seen_out: dict[str, ServiceEvent] = {}
+            for i in LocalServiceAdvertisement.discover(service_type, properties):
+                seen_out[i.uuid.hex] = ServiceEvent('added', i.address, i.properties)
+            for event in (v for k, v in seen_in.items() if k not in seen_out):
+                self._q.put(ServiceEvent('removed', event.address, event.properties))
+            for event in (v for k, v in seen_out.items() if k not in seen_in):
+                self._q.put(event)
+            return seen_out
+
+        def watch_local(seen: dict[str, ServiceEvent]) -> None:
+            while not self._stop.is_set():
+                try:
+                    for _ in watchfiles.watch(
+                        service_dir,
+                        stop_event=self._stop,
+                        recursive=False,
+                    ):
+                        seen = rescan(seen)
+                except (ValueError, OSError):
+                    self._stop.wait(0.1)
+                    seen = rescan(seen)
+
+        # watch for local service changes
+        service_dir = LocalServiceAdvertisement.get_service_directory(service_type)
+        seen_local = rescan({})
+        self._watcher = threading.Thread(
+            target=watch_local, args=(seen_local,), daemon=True
+        )
+        self._watcher.start()
+
+        if remote:
+            zc_service_type = f'_{to_snake_case(service_type)}._tcp.local.'
+            seen_remote: dict[str, ServiceEvent] = {}
+            local_ipv4 = get_local_ipv4()
+
+            zc = Zeroconf()
+            self._zc = zc
+
+            def on_state_change(
+                *, name: str, state_change: ServiceStateChange, **_: Any
+            ) -> None:
+                if state_change is ServiceStateChange.Added:
+                    info = zc.get_service_info(zc_service_type, name)
+                    if not info or not info.addresses:
+                        return
+                    ip = info.parsed_addresses(IPVersion.V4Only)[0]
+                    if ip == local_ipv4:
+                        return
+                    txt = info.decoded_properties
+                    for k, v in properties.items():
+                        if txt.get(k) != v:
+                            return
+                    event = ServiceEvent('added', f'tcp://{ip}:{info.port}', txt)
+                    seen_remote[name] = event
+                    self._q.put(event)
+                elif state_change is ServiceStateChange.Removed:
+                    if name in seen_remote:
+                        prev = seen_remote.pop(name)
+                        self._q.put(
+                            ServiceEvent('removed', prev.address, prev.properties)
+                        )
+
+            self._browser = ServiceBrowser(
+                zc, zc_service_type, handlers=[on_state_change]
+            )
+
+        self._finalizer = weakref.finalize(
+            self,
+            _ServiceIterator._cleanup,
+            self._stop,
+            self._watcher,
+            self._zc,
+            self._browser,
+        )
+
+    def __iter__(self) -> Iterator[ServiceEvent]:
+        return self
+
+    def _process(self, event: ServiceEvent) -> None:
+        """Add *event* to the pending buffer, collapsing add/remove pairs."""
+        if event.kind == 'removed' and self._pending_adds.get(event.address, 0) > 0:
+            # Paired with an unseen 'added' — suppress both
+            self._pending_adds[event.address] -= 1
+        else:
+            if event.kind == 'added':
+                self._pending_adds[event.address] = (
+                    self._pending_adds.get(event.address, 0) + 1
+                )
+            self._pending.append(event)
+
+    def __next__(self) -> ServiceEvent:
+        while True:
+            # Drain all immediately available events from the queue
+            try:
+                while True:
+                    self._process(self._q.get_nowait())
+            except queue.Empty:
+                pass
+
+            # Yield the next non-cancelled event from the buffer
+            while self._pending:
+                event = self._pending.popleft()
+                if event.kind == 'added':
+                    count = self._pending_adds.get(event.address, 0)
+                    if count == 0:
+                        continue  # cancelled by a subsequent 'removed'
+                    self._pending_adds[event.address] = count - 1
+                return event
+
+            # Buffer empty — block until the next event or timeout
+            remaining = (
+                None if self._deadline is None else self._deadline - time.monotonic()
+            )
+            if remaining is not None and remaining <= 0:
+                self.close()
+                raise StopIteration
+            try:
+                self._process(self._q.get(timeout=remaining))
+            except queue.Empty as e:
+                self.close()
+                raise StopIteration from e
+
+    def close(self) -> None:
+        """Stop monitoring and release all resources."""
+        self._finalizer()
+
+    @staticmethod
+    def _cleanup(
+        stop: threading.Event,
+        watcher: threading.Thread,
+        zc: Zeroconf | None,
+        browser: ServiceBrowser | None,
+    ) -> None:
+        stop.set()
+        with contextlib.suppress(Exception):
+            watcher.join(timeout=2)
+        if browser is not None:
+            with contextlib.suppress(Exception):
+                browser.cancel()
+        if zc is not None:
+            with contextlib.suppress(Exception):
+                zc.close()
+
+
+def iter_services(
+    service_type: str,
+    properties: dict[str, str | None] | None = None,
+    remote: bool = True,
+    timeout: float | None = 10,
+) -> '_ServiceIterator':
+    """
+    Discover all services matching the given type and properties.
+
+    Continuously monitors both local (IPC) and remote (Zeroconf/TCP) services,
+    yielding ``'added'`` and ``'removed'`` events as services appear and
+    disappear. Local services are always preferred — if a service is reachable
+    both via IPC and TCP, only the IPC address is yielded.
+
+    Parameters
+    ----------
+    service_type : str
+        The service type to discover, e.g., 'bpod'.
+    properties : dict, optional
+        Dictionary of expected service properties to match.
+    remote : bool, optional
+        Whether to also search for services on the network, by default True.
+    timeout : float or None, optional
+        How many seconds to monitor, by default 10.
+        Pass ``None`` to monitor indefinitely until the iterator is closed.
+
+    Yields
+    ------
+    ServiceEvent
+        A named tuple of ``(kind, address, properties)`` where ``kind`` is
+        ``'added'`` or ``'removed'``.
+    """
+    return _ServiceIterator(service_type, properties or {}, remote, timeout)
