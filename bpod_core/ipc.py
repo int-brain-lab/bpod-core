@@ -13,8 +13,8 @@ from abc import abstractmethod
 from collections.abc import Callable, Iterator
 from enum import IntEnum
 from pathlib import Path
-from types import TracebackType
-from typing import Any, Generic, Literal, TypeVar, cast, overload, NamedTuple
+from types import ModuleType, TracebackType
+from typing import Any, Generic, Literal, TypeVar, cast, overload
 from uuid import UUID, uuid4
 
 import msgspec
@@ -46,7 +46,23 @@ T = TypeVar('T')
 U = TypeVar('U')
 
 
-class EnvelopeKind(IntEnum):
+class ServiceError(Exception):
+    pass
+
+
+class RemoteError(ServiceError):
+    def __init__(self, error_data: 'ErrorData') -> None:
+        self.original_error = error_data
+        super().__init__(f'Remote {error_data.name}: {error_data.message}')
+
+
+class ClientError(ServiceError):
+    pass
+
+
+class MessageKind(IntEnum):
+    """The types of messages exchanged between host and clients."""
+
     HELLO = 0
     WELCOME = 1
     REQUEST = 2
@@ -54,17 +70,19 @@ class EnvelopeKind(IntEnum):
     ERROR = 4
     GOODBYE = 5
 
+    _as_bytes: bytes
 
-class RemoteError(Exception):
-    """Base class for errors raised by the DualChannelClient."""
+    def __new__(cls, value: int) -> 'MessageKind':
+        if not 0 <= value <= 0xFF:
+            raise ValueError('Values must fit in one byte')
+        obj: MessageKind = int.__new__(cls, value)  # type: ignore[assignment]
+        obj._value_ = value
+        obj._as_bytes = value.to_bytes(1, 'little')
+        return obj
 
-
-class HostError(RemoteError):
-    """Raised when an error occurs on the host side."""
-
-
-class ClientError(RemoteError):
-    """Raised when an error occurs on the client side."""
+    @property
+    def as_bytes(self) -> bytes:
+        return self._as_bytes
 
 
 class ErrorData(msgspec.Struct):
@@ -73,17 +91,47 @@ class ErrorData(msgspec.Struct):
     args: tuple
     traceback: str | None = None
 
+    @staticmethod
+    def from_exception(exception: BaseException | None = None) -> 'ErrorData':
+        """
+        Serialize an exception to :class:`ErrorData`.
+
+        Parameters
+        ----------
+        exception : BaseException, optional
+            The exception to serialize.
+
+        Returns
+        -------
+        ErrorData
+            An ErrorData struct containing the serialized exception data.
+
+        Raises
+        ------
+        ValueError
+            If no exception is provided and no active exception is available.
+        """
+        if exception is None:
+            exception = sys.exc_info()[1]
+            if exception is None:
+                raise ValueError('No exception provided and no active exception')
+        return ErrorData(
+            name=type(exception).__name__,
+            message=str(exception),
+            args=exception.args,
+            traceback=''.join(
+                traceback.format_exception(
+                    type(exception), exception, exception.__traceback__
+                )
+            ),
+        )
+
 
 class WelcomeData(msgspec.Struct, kw_only=True):
     ipc_pub_sub: str | None = None
     ipc_req_rep: str | None = None
     tcp_pub_sub: str
     tcp_req_rep: str
-
-
-class Envelope(msgspec.Struct, Generic[T], omit_defaults=True, array_like=True):
-    kind: EnvelopeKind = msgspec.field(name='T')
-    data: T | None = msgspec.field(default=None, name='D')
 
 
 class ClientInfo(msgspec.Struct):
@@ -271,7 +319,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
             )
 
 
-class DualChannelBase(contextlib.AbstractContextManager):
+class ServiceBase(contextlib.AbstractContextManager):
     _serialization: Literal['json', 'msgpack'] = 'msgpack'
     _encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
     _decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder
@@ -328,7 +376,7 @@ class DualChannelBase(contextlib.AbstractContextManager):
     def close(self) -> None: ...
 
 
-class DualChannelHost(DualChannelBase):
+class ServiceHost(ServiceBase):
     """
     A ZeroMQ host providing REQ/REP and PUB/SUB sockets with service discovery.
 
@@ -338,11 +386,10 @@ class DualChannelHost(DualChannelBase):
     ``event_handler`` callback.
 
     The service is automatically advertised for discovery by
-    :class:`DualChannelClient`. When ``remote=True``, the service is advertised
-    via Zeroconf (mDNS) for network-wide discovery. When ``remote=False``, it is
-    advertised locally via a file in the user's runtime directory for IPC-only use
-    cases. On POSIX systems, clients on the same machine transparently upgrade to IPC
-    for lower latency.
+    :class:`ServiceClient`. It is advertised locally via a file in the user's runtime
+    directory for inter-process communication. When ``remote=True``, the service is
+    additionally advertised via Zeroconf (mDNS) for network-wide discovery and
+    remote-process communication.
     """
 
     _zeroconf: Zeroconf | None = None
@@ -363,7 +410,7 @@ class DualChannelHost(DualChannelBase):
         serialization: Literal['json', 'msgpack'] = 'msgpack',
     ) -> None:
         """
-        Initialize the DualChannelHost.
+        Initialize the ServiceHost.
 
         Parameters
         ----------
@@ -452,10 +499,10 @@ class DualChannelHost(DualChannelBase):
         self._serialization = serialization
         if serialization == 'msgpack':
             self._encoder = msgspec.msgpack.Encoder()
-            self._decoder = msgspec.msgpack.Decoder(type=Envelope)
+            self._decoder = msgspec.msgpack.Decoder()
         elif serialization == 'json':
             self._encoder = msgspec.json.Encoder()
-            self._decoder = msgspec.json.Decoder(type=Envelope)
+            self._decoder = msgspec.json.Decoder()
         else:
             raise ValueError(f'Unsupported serialization protocol: {serialization}')
 
@@ -468,7 +515,7 @@ class DualChannelHost(DualChannelBase):
             tcp_req_rep=self.rep_tcp_addr,
         )
         self._event_thread = threading.Thread(
-            target=DualChannelHost._event_loop,
+            target=ServiceHost._event_loop,
             args=(
                 self._stop_event_loop,
                 self._socket_req_rep,
@@ -520,7 +567,7 @@ class DualChannelHost(DualChannelBase):
         # register finalizer to clean up resources on exit
         self._finalizer = weakref.finalize(
             self,
-            DualChannelHost._finalize,
+            ServiceHost._finalize,
             self._event_thread,
             self._stop_event_loop,
             self._socket_req_rep,
@@ -561,7 +608,7 @@ class DualChannelHost(DualChannelBase):
                 zeroconf.close()
 
         # call base class finalizer
-        DualChannelBase._finalize_base(
+        ServiceBase._finalize_base(
             event_thread,
             stop_event,
             socket_req_rep,
@@ -586,126 +633,98 @@ class DualChannelHost(DualChannelBase):
         req_rep_socket: zmq.Socket,
         decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder,
         encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder,
-        serialization_protocol: str,
+        serialization_protocol: Literal['json', 'msgpack'],
         event_handler: Callable[[Any], dict],
         event_handler_lock: threading.Lock,
         handshake_data: WelcomeData,
     ) -> None:
-        """
-        Handle incoming REQ messages.
-
-        Notes
-        -----
-        - Decodes incoming messages using the configured serialization.
-        - Calls the registered event handler for type 'R'.
-        - Responds with handshake data for type 'H'.
-        - Sends an error for unknown types.
-        """
-        serialize_exception = DualChannelHost._serialize_exception
-
         # avoid overhead of attribute lookups
-        send = req_rep_socket.send
-        recv = req_rep_socket.recv
+        send_multipart = req_rep_socket.send_multipart
+        recv_multipart = req_rep_socket.recv_multipart
         decode = decoder.decode
         encode = encoder.encode
-        reply: Envelope
+        reply_kind: MessageKind
+        reply_data: Any
+        serialize_exception = ErrorData.from_exception
+
+        def encode_and_send(kind: MessageKind, data: Any) -> None:
+            try:
+                reply_frames = [kind.as_bytes, encode(data)]
+            except Exception as e:
+                logger.exception('Error encoding reply to client')
+                reply_frames = [
+                    MessageKind.ERROR.as_bytes,
+                    encode(serialize_exception(e)),
+                ]
+            finally:
+                try:
+                    send_multipart(reply_frames, copy=False)
+                except zmq.ZMQError:
+                    logger.exception('Error sending reply to client')
 
         while not stop_event.is_set():
             # wait for incoming requests (short poll so we can check stop_event)
             if not req_rep_socket.poll(100):
                 continue
 
-            # guard the actual recv with try/except so shutdown can't hang us
+            # receive request
             try:
-                request_frame = recv(copy=False)
+                request_frames = recv_multipart(copy=False)
+                request_data_buffer = request_frames[1].buffer
             except zmq.ZMQError as e:
                 logger.exception('Error receiving request from client', exc_info=e)
                 continue
 
-            # try to decode the request
+            # determine the kind of request
             try:
-                req: Envelope = decode(request_frame.buffer)
-            except msgspec.DecodeError as e1:
+                request_kind = MessageKind(request_frames[0].buffer[0])
+            except ValueError as e:
+                logger.exception(
+                    'Received unknown request type: %s', request_frames[0].bytes
+                )
+                encode_and_send(MessageKind.ERROR, serialize_exception(e))
+                continue
+
+            # decode request
+            try:
+                request_data = decode(request_data_buffer)
+            except msgspec.DecodeError as e:
                 # try the other serialization as a fallback
                 try:
                     if serialization_protocol == 'msgpack':
-                        req = msgspec.json.decode(request_frame.buffer, type=Envelope)
+                        request_data = msgspec.json.decode(request_data_buffer)
                     else:
-                        req = msgspec.msgpack.decode(
-                            request_frame.buffer, type=Envelope
-                        )
+                        request_data = msgspec.msgpack.decode(request_data_buffer)
                 except msgspec.DecodeError:
-                    logger.exception('Error decoding request from client', exc_info=e1)
-                    reply = serialize_exception(e1)
-                    try:
-                        reply_bytes = encode(reply)
-                        send(reply_bytes, copy=False)
-                    except (msgspec.EncodeError, zmq.ZMQError) as e2:
-                        logger.exception('Error sending reply to client', exc_info=e2)
+                    logger.exception('Error decoding request from client', exc_info=e)
+                    encode_and_send(MessageKind.ERROR, serialize_exception(e))
                     continue
 
             # handle request depending on the request type
-            match req.kind:
-                case EnvelopeKind.REQUEST:  # general request
+            match request_kind:
+                case MessageKind.REQUEST:  # general request
+                    reply_kind = MessageKind.REPLY
                     try:
                         with event_handler_lock:
-                            reply_data = event_handler(req.data)
+                            reply_data = event_handler(request_data)
                     except Exception as e:
-                        logger.exception(
-                            'Event handler raised an exception', exc_info=e
-                        )
-                        reply = serialize_exception(e)
-                    else:
-                        reply = Envelope(EnvelopeKind.REPLY, reply_data)
+                        logger.exception('Error during event handler call')
+                        reply_kind = MessageKind.ERROR
+                        reply_data = serialize_exception(e)
 
-                case EnvelopeKind.HELLO:
-                    reply = Envelope(EnvelopeKind.WELCOME, handshake_data)
+                case MessageKind.HELLO:
+                    reply_kind = MessageKind.WELCOME
+                    reply_data = handshake_data
 
-                case _:  # unknown request type
-                    message = f'Unknown request type: {req.kind}'
-                    logger.error(message)
-                    reply = serialize_exception(HostError(message))
+                case _:  # unexpected request type
+                    logger.error('Unexpected request type: %s', request_kind)
+                    reply_kind = MessageKind.ERROR
+                    reply_data = serialize_exception(
+                        ValueError(f'Unexpected request type: {request_kind}')
+                    )
 
-            # encode reply
-            try:
-                reply_bytes = encode(reply)
-            except msgspec.EncodeError as e:
-                logger.exception('Error encoding reply to client', exc_info=e)
-                reply = serialize_exception(e)
-                reply_bytes = encode(reply)
-
-            # send reply
-            try:
-                send(reply_bytes, copy=False)
-            except zmq.ZMQError as e:
-                logger.exception('Error sending reply to client', exc_info=e)
-
-    @staticmethod
-    def _serialize_exception(exception: Exception) -> Envelope[ErrorData]:
-        """
-        Serialize an exception to an error message.
-
-        Parameters
-        ----------
-        exception : Exception
-            The exception to serialize.
-
-        Returns
-        -------
-        Envelope
-            A message containing the serialized exception data.
-        """
-        error_data = ErrorData(
-            name=type(exception).__name__,
-            message=str(exception),
-            args=exception.args,
-            traceback=''.join(
-                traceback.format_exception(
-                    type(exception), exception, exception.__traceback__
-                )
-            ),
-        )
-        return Envelope(kind=EnvelopeKind.ERROR, data=error_data)
+            # encode and send reply
+            encode_and_send(reply_kind, reply_data)
 
     def close(self) -> None:
         """Close the host and clean up resources."""
@@ -728,11 +747,13 @@ class DualChannelHost(DualChannelBase):
             )
 
 
-class DualChannelClient(DualChannelBase, Generic[U]):
-    """A client for communicating with a DualChannelHost."""
+class ServiceClient(ServiceBase, Generic[U]):
+    """A client for communicating with :class:`ServiceHost`."""
 
     is_local: bool
     """Whether the client is connected to a service on localhost."""
+
+    _serialization_module: ModuleType
 
     def __init__(
         self,
@@ -745,7 +766,7 @@ class DualChannelClient(DualChannelBase, Generic[U]):
         default_data_type: type[U] | None = None,
     ) -> None:
         """
-        Initialize a DualChannelClient instance.
+        Initialize a ServiceClient instance.
 
         Parameters
         ----------
@@ -772,13 +793,10 @@ class DualChannelClient(DualChannelBase, Generic[U]):
         self._socket_pub_sub = self._zmq_context.socket(zmq.SUB)
 
         # define msgspec encoder/decoder
-        serialization_module = getattr(msgspec, self._serialization)
-        self._encoder = serialization_module.Encoder()
-        if default_data_type is None:
-            self._default_envelope = Envelope
-        else:
-            self._default_envelope = Envelope[default_data_type]  # type: ignore[valid-type]
-        self._decoder = serialization_module.Decoder(type=self._default_envelope)
+        self._serialization_module = getattr(msgspec, self._serialization)
+        self._encoder = self._serialization_module.Encoder()
+        self._default_data_type = default_data_type or Any
+        self._decoder = self._serialization_module.Decoder(type=self._default_data_type)
 
         # connect REQ channel
         if address is not None:
@@ -790,7 +808,9 @@ class DualChannelClient(DualChannelBase, Generic[U]):
         self._socket_req_rep.connect(self._address_req)
         self._lock_req = threading.Lock()
         logger.debug("Connecting REQ socket to '%s'", self._address_req)
-        self.is_local = any(x in self._address_req for x in ('127.0.0.1', 'ipc://'))
+        self.is_local = any(
+            x in self._address_req for x in ('127.0.0.1', 'ipc://', 'localhost', '::1')
+        )
 
         # perform handshake
         self._handshake()
@@ -805,7 +825,7 @@ class DualChannelClient(DualChannelBase, Generic[U]):
 
         # start event loop for subscription handling
         self._event_thread = threading.Thread(
-            target=DualChannelClient._event_loop,
+            target=ServiceClient._event_loop,
             args=(
                 self._stop_event_loop,
                 self._socket_pub_sub,
@@ -820,7 +840,7 @@ class DualChannelClient(DualChannelBase, Generic[U]):
         # register finalizer to clean up resources on exit
         self._finalizer = weakref.finalize(
             self,
-            DualChannelBase._finalize_base,
+            ServiceBase._finalize_base,
             self._event_thread,
             self._stop_event_loop,
             self._socket_req_rep,
@@ -848,7 +868,7 @@ class DualChannelClient(DualChannelBase, Generic[U]):
 
     def _handshake(self) -> None:
         """Perform handshake with the host."""
-        _, reply_data = self._req(EnvelopeKind.HELLO, reply_type=WelcomeData)
+        _, reply_data = self._req(MessageKind.HELLO, reply_type=WelcomeData)
         if (
             self.is_local
             and os.name == 'posix'
@@ -867,87 +887,92 @@ class DualChannelClient(DualChannelBase, Generic[U]):
     @overload
     def _req(
         self,
-        request_kind: EnvelopeKind,
+        request_kind: MessageKind,
         request_data: Any | None = None,
         *,
         reply_type: type[T],
-    ) -> tuple[EnvelopeKind, T]: ...
+    ) -> tuple[MessageKind, T]: ...
 
     @overload
     def _req(
         self,
-        request_kind: EnvelopeKind,
+        request_kind: MessageKind,
         request_data: Any | None = None,
         *,
         reply_type: None = None,
-    ) -> tuple[EnvelopeKind, U]: ...
+    ) -> tuple[MessageKind, U]: ...
 
     def _req(
         self,
-        request_kind: EnvelopeKind,
+        request_kind: MessageKind,
         request_data: Any | None = None,
         *,
         reply_type: type[T] | None = None,
-    ) -> tuple[EnvelopeKind, Any]:
+    ) -> tuple[MessageKind, Any]:
         with self._lock_req:  # acquire lock
             # encode request
-            request = Envelope(kind=request_kind, data=request_data)
             try:
-                request_bytes = self._encoder.encode(request)
-            except msgspec.EncodeError as e:
+                request_kind_bytes = request_kind.as_bytes
+                request_data_bytes = self._encoder.encode(request_data)
+            except Exception as e:
                 raise ValueError('Error encoding request to host') from e
 
-            # send request
+            # send request / receive reply
             try:
-                self._socket_req_rep.send(request_bytes)
+                self._socket_req_rep.send_multipart(
+                    [request_kind_bytes, request_data_bytes], copy=False
+                )
+                reply_frames = self._socket_req_rep.recv_multipart(copy=False)
             except zmq.ZMQError as e:
-                raise RuntimeError('Error sending request to host') from e
+                raise RuntimeError('Error communicating with host') from e
 
-            # receive reply
+            # decode reply
             try:
-                reply_frame = self._socket_req_rep.recv(copy=False)
-            except zmq.ZMQError as e:
-                raise RuntimeError('Error receiving reply from host') from e
-
-            # receive and decode the host's reply
-            try:
-                if reply_type is None:
-                    reply = self._decoder.decode(reply_frame.buffer)
-                else:
-                    serialization_module = getattr(msgspec, self._serialization)
-                    reply = serialization_module.decode(
-                        reply_frame.buffer,
-                        type=Envelope[reply_type],  # type: ignore[valid-type]
+                if reply_kind == MessageKind.ERROR:
+                    reply_data = self._serialization_module.decode(
+                        reply_data_buffer, type=ErrorData
                     )
-
-            # switch serialization format
-            except msgspec.DecodeError as e:
+                elif reply_type is None:
+                    reply_data = self._decoder.decode(reply_data_buffer)
+                else:
+                    reply_data = self._serialization_module.decode(
+                        reply_data_buffer, type=reply_type
+                    )
+            except Exception as e:
+                # if decoding fails, try the other serialization protocol as a fallback
                 new_format = 'msgpack' if self._serialization == 'json' else 'json'
                 new_serialization_module = getattr(msgspec, new_format)
                 try:
-                    reply = new_serialization_module.decode(
-                        reply_frame.buffer,
-                        type=Envelope[reply_type],  # type: ignore[valid-type]
-                    )
+                    if reply_kind == MessageKind.ERROR:
+                        reply_data = new_serialization_module.decode(
+                            reply_data_buffer, type=ErrorData
+                        )
+                    elif reply_type is None:
+                        reply_data = new_serialization_module.decode(reply_data_buffer)
+                    else:
+                        reply_data = new_serialization_module.decode(
+                            reply_data_buffer, type=reply_type
+                        )
                 except msgspec.DecodeError:
                     raise ValueError('Error decoding reply from host') from e
-                logger.debug('Switching to %s serialization', new_format)
+                logger.debug('Switching to %s serialization', new_format.upper())
+                self._serialization_module = new_serialization_module
                 self._encoder = new_serialization_module.Encoder()
                 self._decoder = new_serialization_module.Decoder(
-                    type=self._default_envelope
+                    type=self._default_data_type
                 )
                 self._serialization = cast('Literal["json", "msgpack"]', new_format)
 
             # return reply kind and data
-            return reply.kind, reply.data
+            return reply_kind, reply_data
 
     @overload
-    def request(self, request_data: Any, response_type: type[T]) -> T | None: ...
+    def request(self, request_data: Any, reply_type: type[T]) -> T: ...
 
     @overload
-    def request(self, request_data: Any) -> U | None: ...
+    def request(self, request_data: Any) -> U: ...
 
-    def request(self, request_data: Any, response_type: type[T] | None = None) -> Any:
+    def request(self, request_data: Any, reply_type: type[T] | None = None) -> Any:
         """
         Send a generic request to the server.
 
@@ -955,28 +980,33 @@ class DualChannelClient(DualChannelBase, Generic[U]):
         ----------
         request_data : Any
             The request payload.
-        response_type : type, optional
-            Override the expected response type.
+        reply_type : type, optional
+            Override the expected reply type.
 
         Returns
         -------
         U or T
-            The reply data from the server. Returns None if an error occurs.
-        """
-        reply_type, reply_data = self._req(
-            request_kind=EnvelopeKind.REQUEST,
-            request_data=request_data,
-            reply_type=response_type,
-        )
+            The reply data from the server.
 
-        if reply_type == EnvelopeKind.REPLY:  # regular reply to a request
+        Raises
+        ------
+        RemoteError
+            If an error occurred on the host side.
+        ServiceError
+            If the host sent an unexpected reply kind.
+        """
+        reply_kind, reply_data = self._req(
+            request_kind=MessageKind.REQUEST,
+            request_data=request_data,
+            reply_type=reply_type,
+        )
+        if reply_kind == MessageKind.REPLY:
             return reply_data
-        elif reply_type == EnvelopeKind.ERROR:  # remote error
-            error_data = ErrorData(**cast(dict, reply_data))
-            logger.error('Remote %s: %s', error_data.name, error_data.message)
+        elif reply_kind == MessageKind.ERROR:
+            error_data = cast('ErrorData', reply_data)
+            raise RemoteError(error_data)
         else:
-            logger.error("Received unexpected reply type: '%s'", reply_type)
-        return None
+            raise ServiceError(f"Received unexpected reply type: '{reply_kind}'")
 
     def close(self) -> None:
         """Close the client and clean up resources."""

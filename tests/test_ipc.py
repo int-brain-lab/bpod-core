@@ -153,11 +153,11 @@ def mock_service_browser(mocker):
 
 
 class TestClient:
-    """Tests for the DualChannelClient class."""
+    """Tests for the ServiceClient class."""
 
     @pytest.fixture
     def host(self, mock_advertisement):
-        with ipc.DualChannelHost(
+        with ipc.ServiceHost(
             service_name='TestService',
             service_type='dualtest',
             event_handler=lambda data: {'echo': data},
@@ -168,7 +168,7 @@ class TestClient:
 
     @pytest.fixture
     def client(self, host, mock_service_browser):
-        with ipc.DualChannelClient(
+        with ipc.ServiceClient(
             service_type='dualtest',
             address=host.rep_tcp_addr,
             discovery_timeout=0,
@@ -187,37 +187,26 @@ class TestClient:
         reply = client.request({'foo': 'bar'})
         assert reply == {'echo': {'foo': 'bar'}}
 
-    def test_unknown_request_type(self, client, caplog):
-        """Ensure unknown request type is logged as an error by the host."""
-        with caplog.at_level('ERROR'):
-            client._req(request_kind='invalid')
-
-    def test_error_response(self, mock_advertisement, mock_service_browser, caplog):
+    def test_error_response(self, mock_advertisement, mock_service_browser):
         """Verify server exceptions are logged and client gets empty dict."""
 
         def bad_handler(_):
             raise RuntimeError('boom')
 
         with (
-            ipc.DualChannelHost('Test', 'service', event_handler=bad_handler) as host,
-            ipc.DualChannelClient('service', host.rep_tcp_addr) as client,
+            ipc.ServiceHost('Test', 'service', event_handler=bad_handler) as host,
+            ipc.ServiceClient('service', host.rep_tcp_addr) as client,
+            pytest.raises(ipc.RemoteError, match='boom'),
         ):
-            with caplog.at_level('ERROR'):
-                reply = client.request({'foo': 'bar'})
-            assert reply is None
-            error_logs = [rec for rec in caplog.records if rec.levelname == 'ERROR']
-            assert any(
-                'RuntimeError' in rec.message and 'boom' in rec.message
-                for rec in error_logs
-            )
+            client.request({'foo': 'bar'})
 
 
 class TestHost:
-    """Tests for the DualChannelHost class."""
+    """Tests for the ServiceHost class."""
 
     def test_basic_init_and_properties(self, mock_advertisement):
         """Check ports, addresses, and Zeroconf objects are initialized."""
-        with ipc.DualChannelHost('test', 'test_service') as host:
+        with ipc.ServiceHost('test', 'test_service') as host:
             assert host.rep_tcp_addr.startswith('tcp://')
             assert host._zeroconf is not None
             assert host._zeroconf_service_info is not None
@@ -225,13 +214,13 @@ class TestHost:
     @pytest.mark.parametrize('remote', [True, False], ids=['remote', 'local'])
     def test_bind_address(self, mock_advertisement, remote):
         """Validate bind address switches between 0.0.0.0 and 127.0.0.1."""
-        with ipc.DualChannelHost('test', 'service_type', remote=remote) as host:
+        with ipc.ServiceHost('test', 'service_type', remote=remote) as host:
             expected_ip = '0.0.0.0' if remote else '127.0.0.1'
             assert host._bind_ip == expected_ip, f'Bind IP should be {expected_ip}'
 
     def test_remote_true_creates_zeroconf_and_local(self, mock_advertisement):
         """remote=True creates both zeroconf and local advertisement."""
-        with ipc.DualChannelHost('test', 'test_service', remote=True) as host:
+        with ipc.ServiceHost('test', 'test_service', remote=True) as host:
             assert host._zeroconf is not None
             assert host._zeroconf_service_info is not None
             host._zeroconf.register_service.assert_called_once()
@@ -244,7 +233,7 @@ class TestHost:
 
     def test_remote_false_creates_only_local(self, mock_advertisement):
         """remote=False creates only local advertisement, no zeroconf."""
-        with ipc.DualChannelHost('test', 'test_service', remote=False) as host:
+        with ipc.ServiceHost('test', 'test_service', remote=False) as host:
             assert host._zeroconf is None
             assert host._zeroconf_service_info is None
             assert host._local_advertisement is not None
@@ -254,7 +243,7 @@ class TestHost:
 
     def test_close_removes_local_advertisement(self, mock_advertisement):
         """close() removes the local advertisement file."""
-        host = ipc.DualChannelHost('test', 'test_service', remote=False)
+        host = ipc.ServiceHost('test', 'test_service', remote=False)
         service_file = host._local_advertisement.service_file
         assert service_file.exists()
         host.close()
@@ -267,8 +256,8 @@ class TestLocalDiscovery:
     def test_client_discovers_host_locally(self, mock_advertisement):
         """Client discovers host via local advertisement without zeroconf."""
         with (
-            ipc.DualChannelHost('test', 'service', event_handler=lambda d: {'req': d}),
-            ipc.DualChannelClient(service_type='service', remote=False) as client,
+            ipc.ServiceHost('test', 'service', event_handler=lambda d: {'req': d}),
+            ipc.ServiceClient(service_type='service', remote=False) as client,
         ):
             assert client._address_req.startswith(('tcp://', 'ipc://'))
             reply = client.request({'test': 'value'})
@@ -305,15 +294,15 @@ class TestLocalDiscovery:
     def test_client_remote_false_uses_only_local(self, mock_advertisement):
         """Client with remote=False only uses local discovery."""
         with (
-            ipc.DualChannelHost('test', 'localonly', remote=False),
-            ipc.DualChannelClient(service_type='localonly', remote=False),
+            ipc.ServiceHost('test', 'localonly', remote=False),
+            ipc.ServiceClient(service_type='localonly', remote=False),
         ):
             mock_advertisement['zeroconf'].assert_not_called()
 
     def test_client_remote_false_raises_if_no_local(self, mock_advertisement):
         """Client with remote=False raises if no local service found."""
         with pytest.raises(RuntimeError, match='No matching service found locally'):
-            ipc.DualChannelClient(service_type='nonexistent', remote=False)
+            ipc.ServiceClient(service_type='nonexistent', remote=False)
 
     def test_discover_timeout(self, mocker, mock_advertisement, mock_service_browser):
         """Timeout when no matching service is discovered within deadline."""

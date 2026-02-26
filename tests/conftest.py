@@ -144,7 +144,7 @@ def mock_bpod_20(
     mock_ext_serial.mock_responses.update(fixture_bpod_20)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
-    mocker.patch('bpod_core.bpod.DualChannelHost')
+    mocker.patch('bpod_core.bpod.ServiceHost')
     return Bpod('COM3')
 
 
@@ -155,7 +155,7 @@ def mock_bpod_25(
     mock_ext_serial.mock_responses.update(fixture_bpod_25)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
-    mocker.patch('bpod_core.bpod.DualChannelHost')
+    mocker.patch('bpod_core.bpod.ServiceHost')
     return Bpod('COM3')
 
 
@@ -166,5 +166,5 @@ def mock_bpod_2p(
     mock_ext_serial.mock_responses.update(fixture_bpod_2p)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
-    mocker.patch('bpod_core.bpod.DualChannelHost')
+    mocker.patch('bpod_core.bpod.ServiceHost')
     return Bpod('COM3')

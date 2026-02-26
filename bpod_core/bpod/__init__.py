@@ -42,12 +42,8 @@ from bpod_core.com import (
 )
 from bpod_core.constants import STRUCT_UINT32, TeensyPID
 from bpod_core.fsm import StateMachine
-from bpod_core.ipc import DualChannelClient, DualChannelHost
-from bpod_core.misc import (
-    SettingsDict,
-    extend_packed,
-    suggest_similar,
-)
+from bpod_core.ipc import ServiceClient, ServiceHost
+from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +219,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
     _settings: SettingsDict
     _fsm_thread: FSMThread | None = None
-    _zmq_service: DualChannelHost
+    _zmq_service: ServiceHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
@@ -310,7 +306,7 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
     @staticmethod
-    def _finalize(serial: ExtendedSerial, zmq_service: DualChannelHost) -> None:
+    def _finalize(serial: ExtendedSerial, zmq_service: ServiceHost) -> None:
         with contextlib.suppress(SerialException):
             Bpod._request_disconnect(serial)
         serial.close()
@@ -367,7 +363,7 @@ class Bpod(SerialDevice, AbstractBpod):
         """Primary serial device for communication with the Bpod."""
         return self._serial
 
-    def _zmq_handler(self, message: dict[str, Any]) -> dict[str, Any]:
+    def _request_handler(self, message: dict[str, Any]) -> dict[str, Any]:
         msg_type = message.get('type', 'unknown')
         if msg_type == 'call':
             method_name = message.get('method', '')
@@ -404,18 +400,18 @@ class Bpod(SerialDevice, AbstractBpod):
     def _start_zmq(self, use_zeroconf: bool) -> None:
         port_pub = self._get_setting(['devices', self._serial_number, 'port_pub'])
         port_rep = self._get_setting(['devices', self._serial_number, 'port_rep'])
-        self._zmq_service = DualChannelHost(
+        self._zmq_service = ServiceHost(
             service_name=self.name if self.name else f'bpod_{self._serial_number}',
             service_type='bpod',
             properties={
                 'description': f'Bpod Finite State Machine {self.version.machine_str}',
-                'serial': self._serial_number or '',
+                'serial': self._serial_number,
                 'name': self.name or '',
                 'location': self.location or '',
                 'firmware': '.'.join([str(x) for x in self.version.firmware]),
                 'core': bpod_core_version,
             },
-            event_handler=self._zmq_handler,
+            event_handler=self._request_handler,
             remote=use_zeroconf,
             port_pub=cast('int | None', port_pub),
             port_rep=cast('int | None', port_rep),
@@ -1518,7 +1514,7 @@ class RemoteBpod(AbstractBpod):
         properties = {k: v for k, v in properties.items() if v is not None}
 
         try:
-            self._zmq = DualChannelClient(
+            self._zmq = ServiceClient(
                 service_type='bpod',
                 address=address,
                 discovery_timeout=timeout,
