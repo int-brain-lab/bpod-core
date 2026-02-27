@@ -810,7 +810,10 @@ class ServiceClient(ServiceBase, Generic[U]):
             self._address_req = address
         else:
             self._address_req, _ = discover(
-                service_type, txt_properties, remote, discovery_timeout
+                service_type=service_type,
+                properties=txt_properties,
+                remote=remote,
+                timeout=discovery_timeout,
             )
         self._socket_req_rep.connect(self._address_req)
         self._lock_req = threading.Lock()
@@ -1036,6 +1039,7 @@ class ServiceClient(ServiceBase, Generic[U]):
 def discover(
     service_type: str,
     properties: dict[str, str | None] | None = None,
+    local: bool = True,
     remote: bool = True,
     timeout: float = 10,
     poll_interval: float = 1,
@@ -1049,6 +1053,8 @@ def discover(
         The service type to discover, e.g., 'bpod'
     properties : dict, optional
         Dictionary of expected service properties to match.
+    local : bool, optional
+        Whether to search for a matching service on the local machine, by default True.
     remote : bool, optional
         Whether to search for a matching service on the network, by default True.
     timeout : float, optional
@@ -1072,6 +1078,7 @@ def discover(
     with ServiceIterator(
         service_type=service_type,
         properties=properties or {},
+        local=local,
         remote=remote,
         timeout=timeout,
         poll_interval=poll_interval,
@@ -1124,16 +1131,44 @@ class _ServiceListenerIterator(ServiceListener):
 
 
 class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager):
-    """Iterator returned by :func:`iter_services`."""
+    """
+    Lazy iterator for service discovery events.
+
+    Monitors both local (IPC) and remote (Zeroconf/TCP) services, yielding
+    :class:`ServiceEvent` instances as services appear and disappear. Local services are
+    always preferred — if a service is reachable both via IPC and TCP, only the IPC
+    address is yielded.
+
+    Prefer :func:`iter_services` over instantiating this class directly.
+    """
 
     def __init__(
         self,
         service_type: str,
         properties: dict[str, str | None],
+        local: bool,
         remote: bool,
         timeout: float | None,
         poll_interval: float,
     ) -> None:
+        """Initialize the ServiceIterator.
+
+        Parameters
+        ----------
+        service_type : str
+            The service type to discover, e.g., ``'bpod'``.
+        properties : dict
+            Dictionary of expected service properties to match.
+        local : bool
+            Whether to search for services on the local machine via IPC.
+        remote : bool
+            Whether to also search for services on the network via Zeroconf.
+        timeout : float or None
+            How many seconds to monitor before stopping. Pass ``None`` to
+            monitor indefinitely until the iterator is explicitly closed.
+        poll_interval : float
+            How often to poll for local service changes, in seconds.
+        """
         self._q: queue.Queue[ServiceEvent] = queue.Queue()
         self._stop = threading.Event()
         self._deadline = None if timeout is None else time.monotonic() + timeout
@@ -1146,24 +1181,29 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
         self._pending: deque[ServiceEvent] = deque()
         self._pending_adds: dict[str, int] = {}  # address → # of valid pending 'added'
 
-        def rescan(previous: dict[str, ServiceEvent]) -> dict[str, ServiceEvent]:
-            current: dict[str, ServiceEvent] = {}
-            for i in LocalServiceAdvertisement.discover(service_type, properties):
-                current[i.uuid.hex] = ServiceEvent('added', i.address, i.properties)
-            for event in (v for k, v in previous.items() if k not in current):
-                self._q.put(ServiceEvent('removed', event.address, event.properties))
-            for event in (v for k, v in current.items() if k not in previous):
-                self._q.put(event)
-            return current
-
-        def watch_local(state: dict[str, ServiceEvent]) -> None:
-            while not self._stop.wait(poll_interval):
-                state = rescan(state)
-
         # watch for local service changes
-        seen = rescan({})
-        self._watcher = threading.Thread(target=watch_local, args=(seen,), daemon=True)
-        self._watcher.start()
+        self._watcher: threading.Thread | None = None
+        if local:
+
+            def rescan(previous: dict[str, ServiceEvent]) -> dict[str, ServiceEvent]:
+                current: dict[str, ServiceEvent] = {}
+                for i in LocalServiceAdvertisement.discover(service_type, properties):
+                    current[i.uuid.hex] = ServiceEvent('added', i.address, i.properties)
+                for event in (v for k, v in previous.items() if k not in current):
+                    self._q.put(ServiceEvent('removed', *event[1:]))
+                for event in (v for k, v in current.items() if k not in previous):
+                    self._q.put(event)
+                return current
+
+            def watch_local(state: dict[str, ServiceEvent]) -> None:
+                while not self._stop.wait(poll_interval):
+                    state = rescan(state)
+
+            seen = rescan({})
+            self._watcher = threading.Thread(
+                target=watch_local, args=(seen,), daemon=True
+            )
+            self._watcher.start()
 
         # watch for remote service changes
         if remote:
@@ -1188,7 +1228,6 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        """Exit context manager."""
         self.close()
 
     def __iter__(self) -> Iterator[ServiceEvent]:
@@ -1230,13 +1269,14 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
     @staticmethod
     def _cleanup(
         stop: threading.Event,
-        watcher: threading.Thread,
+        watcher: threading.Thread | None,
         zc: Zeroconf | None,
         browser: ServiceBrowser | None,
     ) -> None:
         stop.set()
-        with contextlib.suppress(Exception):
-            watcher.join(timeout=2)
+        if watcher is not None:
+            with contextlib.suppress(Exception):
+                watcher.join(timeout=2)
         if browser is not None:
             with contextlib.suppress(Exception):
                 browser.cancel()
@@ -1264,6 +1304,7 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
 def iter_services(
     service_type: str,
     properties: dict[str, str | None] | None = None,
+    local: bool = True,
     remote: bool = True,
     timeout: float | None = 10,
     poll_interval: float = 1,
@@ -1282,6 +1323,8 @@ def iter_services(
         The service type to discover, e.g., 'bpod'.
     properties : dict, optional
         Dictionary of expected service properties to match.
+    local : bool, optional
+        Whether to search for services on the local machine, by default True.
     remote : bool, optional
         Whether to also search for services on the network, by default True.
     timeout : float or None, optional
@@ -1297,5 +1340,10 @@ def iter_services(
         ``'added'`` or ``'removed'``.
     """
     return ServiceIterator(
-        service_type, properties or {}, remote, timeout, poll_interval
+        service_type=service_type,
+        properties=properties or {},
+        local=local,
+        remote=remote,
+        timeout=timeout,
+        poll_interval=poll_interval,
     )

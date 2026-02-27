@@ -263,6 +263,19 @@ class TestLocalDiscovery:
             reply = client.request({'test': 'value'})
             assert reply == {'req': {'test': 'value'}}
 
+    def test_discover_prefers_local_over_zeroconf(
+        self, mock_advertisement, mock_service_browser
+    ):
+        """discover() returns local service without invoking zeroconf."""
+        with ipc.LocalServiceAdvertisement(
+            service_name='service_name',
+            service_type='service_type',
+            address='tcp://127.0.0.1:9999',
+            pid=os.getpid(),
+        ):
+            address, properties = ipc.discover('service_type', remote=True, timeout=0)
+            assert address == 'tcp://127.0.0.1:9999'
+
     def test_discover_remote_false_raises_if_no_local(self, mock_advertisement):
         """discover() with remote=False raises if no local service found."""
         with pytest.raises(TimeoutError):
@@ -343,8 +356,9 @@ class TestIterServices:
             address='tcp://127.0.0.1:6666',
             properties={'a': 'b', 'x': 'y'},
         ):
-            iterator_1 = ipc.iter_services('service_type', {'x': 'y'}, False, 0)
-            iterator_2 = ipc.iter_services('service_type', {'a': 'b'}, False, 0)
+            kwargs = {'local': True, 'remote': False, 'timeout': 0}
+            iterator_1 = ipc.iter_services('service_type', {'x': 'y'}, **kwargs)
+            iterator_2 = ipc.iter_services('service_type', {'a': 'b'}, **kwargs)
             events_1 = list(iterator_1)
             events_2 = list(iterator_2)
         assert len(events_1) == 1
