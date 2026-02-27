@@ -30,7 +30,7 @@ from zeroconf import (
     IPVersion,
     ServiceBrowser,
     ServiceInfo,
-    ServiceStateChange,
+    ServiceListener,
     Zeroconf,
 )
 
@@ -373,6 +373,16 @@ class ServiceBase(contextlib.AbstractContextManager):
     def close(self) -> None: ...
 
 
+def _format_zeroconf_service_type(service_type: str) -> str:
+    service_type = service_type.removesuffix('._tcp.local.')
+    return f'_{to_snake_case(service_type)}._tcp.local.'
+
+
+def _format_zeroconf_service_name(service_name: str, service_type: str) -> str:
+    service_type = _format_zeroconf_service_type(service_type)
+    return f'{service_name}.{service_type}'
+
+
 class ServiceHost(ServiceBase):
     """
     A ZeroMQ host providing REQ/REP and PUB/SUB sockets with service discovery.
@@ -539,8 +549,8 @@ class ServiceHost(ServiceBase):
 
         # advertise service via Zeroconf for remote discovery
         if remote:
-            zeroconf_type = f'_{to_snake_case(service_type)}._tcp.local.'
-            zeroconf_name = f'{service_name}.{zeroconf_type}'
+            zeroconf_type = _format_zeroconf_service_type(service_type)
+            zeroconf_name = _format_zeroconf_service_name(service_name, zeroconf_type)
             self._zeroconf_service_info = ServiceInfo(
                 type_=zeroconf_type,
                 name=zeroconf_name,
@@ -1070,6 +1080,46 @@ def discover(
     raise TimeoutError('No matching service found')
 
 
+class _ServiceIteratorListener(ServiceListener):
+    def __init__(
+        self, q: queue.Queue[ServiceEvent], properties: dict[str, str | None]
+    ) -> None:
+        self._queue = q
+        self._properties = properties
+        self._seen_remote: dict[str, ServiceEvent] = {}
+        self._local_ipv4 = get_local_ipv4()
+
+    def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        # get service info
+        info = zc.get_service_info(type_, name)
+        if info is None or not info.addresses:
+            return
+
+        # check if the service runs on localhost
+        ip = info.parsed_addresses(IPVersion.V4Only)[0]
+        if ip == self._local_ipv4:
+            return
+
+        # check if the service matches the requested properties
+        txt = info.decoded_properties
+        if not all(txt.get(k) == v for k, v in self._properties.items()):
+            return
+
+        # add event to queue
+        event = ServiceEvent('added', f'tcp://{ip}:{info.port}', txt)
+        self._seen_remote[name] = event
+        self._queue.put(event)
+
+    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        if name in self._seen_remote:
+            _, address, props = self._seen_remote.pop(name)
+            event = ServiceEvent('removed', address, props)
+            self._queue.put(event)
+
+    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+        return
+
+
 class _ServiceIterator(Iterator[ServiceEvent]):
     """Iterator returned by :func:`iter_services`."""
 
@@ -1104,53 +1154,23 @@ class _ServiceIterator(Iterator[ServiceEvent]):
                 self._q.put(event)
             return current
 
-        def watch_local(seen: dict[str, ServiceEvent]) -> None:
+        def watch_local(state: dict[str, ServiceEvent]) -> None:
             while not self._stop.wait(poll_interval):
-                seen = rescan(seen)
+                state = rescan(state)
 
         # watch for local service changes
-        seen_local = rescan({})
-        self._watcher = threading.Thread(
-            target=watch_local, args=(seen_local,), daemon=True
-        )
+        seen = rescan({})
+        self._watcher = threading.Thread(target=watch_local, args=(seen,), daemon=True)
         self._watcher.start()
 
+        # watch for remote service changes
         if remote:
-            zc_service_type = f'_{to_snake_case(service_type)}._tcp.local.'
-            seen_remote: dict[str, ServiceEvent] = {}
-            local_ipv4 = get_local_ipv4()
+            self._zc = Zeroconf()
+            zc_service_type = _format_zeroconf_service_type(service_type)
+            handler = _ServiceIteratorListener(self._q, properties)
+            self._browser = ServiceBrowser(self._zc, zc_service_type, handler)
 
-            zc = Zeroconf()
-            self._zc = zc
-
-            def on_state_change(
-                *, name: str, state_change: ServiceStateChange, **_: Any
-            ) -> None:
-                if state_change is ServiceStateChange.Added:
-                    info = zc.get_service_info(zc_service_type, name)
-                    if not info or not info.addresses:
-                        return
-                    ip = info.parsed_addresses(IPVersion.V4Only)[0]
-                    if ip == local_ipv4:
-                        return
-                    txt = info.decoded_properties
-                    for k, v in properties.items():
-                        if txt.get(k) != v:
-                            return
-                    event = ServiceEvent('added', f'tcp://{ip}:{info.port}', txt)
-                    seen_remote[name] = event
-                    self._q.put(event)
-                elif state_change is ServiceStateChange.Removed:
-                    if name in seen_remote:
-                        prev = seen_remote.pop(name)
-                        self._q.put(
-                            ServiceEvent('removed', prev.address, prev.properties)
-                        )
-
-            self._browser = ServiceBrowser(
-                zc, zc_service_type, handlers=[on_state_change]
-            )
-
+        # register finalizer to clean up resources on exit
         self._finalizer = weakref.finalize(
             self,
             _ServiceIterator._cleanup,

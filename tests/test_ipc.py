@@ -294,7 +294,9 @@ class TestLocalDiscovery:
     def test_discover_timeout(self, mock_advertisement, mock_service_browser):
         """Timeout when no matching service is discovered within deadline."""
         with pytest.raises(TimeoutError):
-            ipc.discover('_svc._tcp.local.', properties=None, timeout=0, poll_interval=0.01)
+            ipc.discover(
+                '_svc._tcp.local.', properties=None, timeout=0, poll_interval=0.01
+            )
 
 
 class TestIterServices:
