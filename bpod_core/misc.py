@@ -21,9 +21,14 @@ logger = logging.getLogger(__name__)
 K = TypeVar('K')
 V = TypeVar('V')
 
-RE_SANITIZE = re.compile(r'[^a-zA-Z0-9_]')
-RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
-RE_UNDERSCORES = re.compile(r'_{2,}')
+RE_NON_ALPHANUMERIC = re.compile(r'[^a-zA-Z0-9_]')
+"""Match non-alphanumeric characters except underscores."""
+RE_ACRONYM = re.compile(r'([A-Z]+)([A-Z][a-z])')
+"""Match acronym boundaries."""
+RE_CASE_TRANSITION = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
+"""Match case and digit transitions."""
+RE_MULTIPLE_UNDERSCORES = re.compile(r'_{2,}')
+"""Match multiple consecutive underscores."""
 
 
 class DocstringInheritanceMixin:
@@ -46,35 +51,7 @@ class DocstringInheritanceMixin:
                         break
 
 
-def sanitize_string(string: str, substitute: str = '_') -> str:
-    """
-    Replace non-alphanumeric characters in a string with a given substitute.
-
-    Parameters
-    ----------
-    string : str
-        The input string to be sanitized.
-    substitute : str, optional
-        The character(s) to replace non-alphanumeric characters with.
-        Defaults to '_'.
-
-    Returns
-    -------
-    str
-        A sanitized string where all non-alphanumeric characters have been replaced with
-        the specified substitute.
-
-    Raises
-    ------
-    TypeError
-        If either `string` or `substitute` is not an instance of ``str``.
-    """
-    if not (isinstance(string, str) and isinstance(substitute, str)):
-        raise TypeError('Both `string` and `substitute` must be strings.')
-    return re.sub(RE_SANITIZE, substitute, string)
-
-
-def convert_to_snake_case(string: str) -> str:
+def to_snake_case(string: str) -> str:
     """
     Convert a given string to snake_case.
 
@@ -88,9 +65,10 @@ def convert_to_snake_case(string: str) -> str:
     str
         The converted snake_case string.
     """
-    string = sanitize_string(string)
-    string = RE_SNAKE_CASE.sub('_', string)
-    string = RE_UNDERSCORES.sub('_', string)
+    string = RE_NON_ALPHANUMERIC.sub('_', string)
+    string = RE_ACRONYM.sub(r'\1_\2', string)
+    string = RE_CASE_TRANSITION.sub('_', string)
+    string = RE_MULTIPLE_UNDERSCORES.sub('_', string)
     string = string.strip('_')
     return string.lower()
 
@@ -411,3 +389,70 @@ def extend_packed(
     """
     if values:
         byte_array.extend(struct.pack(f'<{len(values)}{fmt}', *values))
+
+
+def prune_empty_parent_directories(
+    target_directory: PathLike | str,
+    root_directory: PathLike | str,
+    remove_root: bool = False,
+) -> None:
+    """Remove empty parent directories recursively up to root directory.
+
+    Recursively removes the given directory if empty, then checks and removes parent
+    directories up to (and optionally including) the root directory. Stops at the first
+    non-empty directory encountered.
+
+    Parameters
+    ----------
+    target_directory : PathLike or str
+        Directory to check and remove if empty.
+    root_directory : PathLike or str
+        Root directory to stop at. Must be a parent directory of target_directory.
+    remove_root : bool, optional
+        If True, also remove root_directory if it becomes empty.
+
+    Raises
+    ------
+    ValueError
+        If target_directory is not a subpath of root_directory.
+    FileNotFoundError
+        If target_directory or root_directory does not exist.
+    NotADirectoryError
+        If target_directory or root_directory is not a directory.
+    """
+    target_directory = Path(target_directory).absolute()
+    root_directory = Path(root_directory).absolute()
+
+    for path in (target_directory, root_directory):
+        if not path.exists():
+            raise FileNotFoundError(f"'{path}' does not exist")
+        if not path.is_dir():
+            raise NotADirectoryError(f"'{path}' is not a directory")
+
+    if not target_directory.is_relative_to(root_directory):
+        raise ValueError(
+            f"'{target_directory}' is not a sub-directory of '{root_directory}'"
+        )
+
+    if target_directory == root_directory:
+        if remove_root:
+            try:
+                root_directory.rmdir()
+                logger.debug('Removed empty root directory: %s', root_directory)
+            except OSError:
+                return
+        return
+
+    try:
+        target_directory.rmdir()
+        logger.debug('Removed empty directory: %s', target_directory)
+    except OSError:
+        return
+
+    parent = target_directory.parent
+    if parent.is_dir():  # Guard against race condition
+        prune_empty_parent_directories(
+            target_directory=parent,
+            root_directory=root_directory,
+            remove_root=remove_root,
+        )

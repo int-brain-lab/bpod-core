@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - convenience functions for reading and writing integers in `com.ExtendedSerial`.
 - `misc.extend_packed` for extending a bytearray by multiple values of the same format.
 - `misc.DocstringInheritanceMixin` for inheriting docstrings from base classes.
+- `ipc.LocalServiceAdvertisement`: local service advertisement and discovery
 - more examples.
 
 ### Changed
@@ -22,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - replace unmaintained `appdirs` dependency with `platformdirs`.
 - switch to zero-based indexing for global counters, timers, conditions and soft-codes.
 - added file locking to `misc.SettingsDict`.
+- switch to using ZMQ multipart messages for communication.
+- renamed `ipc.DualChannelHost` / `ipc.DualChannelClient` to `ipc.ServiceHost` /
+  `ipc.ServiceClient`.
+- restructured `bpod` module into several submodules.
+- zero-copy behavior on send path of `ipc.ServiceClient` and receive path of
+  `ipc.ServiceHost`.
+
+### Fixed
+- decoupled finalizers and event loops from instance references.
 
 ## [0.1.0a6] - 2025-10-29
 

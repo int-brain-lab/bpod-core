@@ -1,153 +1,51 @@
 """Module for interfacing with the Bpod Finite State Machine."""
 
+import contextlib
 import logging
 import re
 import struct
 import threading
 import traceback
 import weakref
-from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, NamedTuple, cast
 
-import msgspec
 import numpy as np
 from numpy.typing import NDArray
-from platformdirs import user_config_path
 from pydantic import validate_call
 from serial import SerialException
 
 from bpod_core import __version__ as bpod_core_version
+from bpod_core.bpod.abc import AbstractBpod
+from bpod_core.bpod.constants import (
+    CHANNEL_TYPES_INPUT,
+    CHANNEL_TYPES_OUTPUT,
+    CONFIG_PATH,
+    DISCOVERY_TIMEOUT,
+    MACHINE_TYPES,
+    MAX_BPOD_HW_VERSION,
+    MIN_BPOD_FW_VERSION,
+    MIN_BPOD_HW_VERSION,
+    N_SERIAL_EVENTS_DEFAULT,
+    PIDS_BPOD,
+    VALID_OPERATORS,
+    VIDS_BPOD,
+)
+from bpod_core.bpod.structs import BpodInfo, HardwareConfiguration, VersionInfo
 from bpod_core.com import (
     ExtendedSerial,
-    USBSerialDevice,
+    SerialDevice,
     find_ports,
     verify_serial_discovery,
 )
-from bpod_core.constants import STRUCT_UINT32, VID_TEENSY, PIDsTeensy
+from bpod_core.constants import STRUCT_UINT32, TeensyPID
 from bpod_core.fsm import StateMachine
-from bpod_core.ipc import DualChannelClient, DualChannelHost
-from bpod_core.misc import (
-    DocstringInheritanceMixin,
-    SettingsDict,
-    extend_packed,
-    suggest_similar,
-)
-
-VIDS_BPOD = [VID_TEENSY]
-"""Vendor IDs of supported Bpod devices"""
-
-PIDS_BPOD = [PIDsTeensy.SERIAL, PIDsTeensy.DUAL_SERIAL, PIDsTeensy.TRIPLE_SERIAL]
-"""List of Product IDs of supported Bpod devices"""
-
-MIN_BPOD_FW_VERSION = (23, 0)
-"""minimum supported firmware version (major, minor)"""
-
-MIN_BPOD_HW_VERSION = 3
-"""minimum supported hardware version"""
-
-MAX_BPOD_HW_VERSION = 4
-"""maximum supported hardware version"""
-
-CHANNEL_TYPES_INPUT = {
-    b'U': 'Serial',
-    b'X': 'SoftCode',
-    b'Z': 'SoftCodeApp',
-    b'F': 'Flex',
-    b'D': 'Digital',
-    b'B': 'BNC',
-    b'W': 'Wire',
-    b'P': 'Port',
-}
-CHANNEL_TYPES_OUTPUT = CHANNEL_TYPES_INPUT.copy()
-CHANNEL_TYPES_OUTPUT.update({b'V': 'Valve', b'P': 'PWM'})
-N_SERIAL_EVENTS_DEFAULT = 15
-VALID_OPERATORS = {'exit', '>exit', '>back'}
-MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
-CONFIG_PATH = user_config_path('bpod-core', False)
-DISCOVERY_TIMEOUT = 0.11
+from bpod_core.ipc import ServiceClient, ServiceHost
+from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
 
 logger = logging.getLogger(__name__)
-
-
-class BpodSettings(msgspec.Struct):
-    """Settings for a specific Bpod device."""
-
-    serial_number: str
-    """Serial number of the device."""
-    name: str = ''
-    """User-defined name of the device."""
-    location: str = ''
-    """User-defined location of the device."""
-    zmq_port_pub: int | None = None
-    """Port number for the ZeroMQ PUB service."""
-    zmq_port_rep: int | None = None
-    """Port number for the ZeroMQ REP service."""
-
-
-class BpodInfo(msgspec.Struct):
-    """Information about a specific Bpod device."""
-
-    serial_number: str
-    """Serial number of the device."""
-    port: str | None = None
-    """Port on which the device is connected."""
-    name: str = ''
-    """User-defined name of the device."""
-    location: str = ''
-    """User-defined location of the device."""
-    zmq_pub: str | None = None
-    """ZeroMQ PUB service address."""
-    zmq_rep: str | None = None
-    """ZeroMQ REP service address."""
-
-
-class VersionInfo(msgspec.Struct, frozen=True):
-    """Data structure representing various version information."""
-
-    firmware: tuple[int, int]
-    """Firmware version (major, minor)"""
-    machine: int
-    """Machine type (numerical)"""
-    machine_str: str
-    """Machine type (string)"""
-    pcb: int | None
-    """PCB revision, if applicable"""
-    bpod_core: str
-    """bpod-core version"""
-
-
-class HardwareConfiguration(msgspec.Struct, frozen=True):
-    """Represents the Bpod's on-board hardware configuration."""
-
-    max_states: int
-    """Maximum number of supported states in a single state machine description."""
-    cycle_period: int
-    """Period of the state machine's refresh cycle during a trial in microseconds."""
-    max_serial_events: int
-    """Maximum number of behavior events allocatable among connected modules."""
-    max_bytes_per_serial_message: int
-    """Maximum number of bytes allowed per serial message."""
-    n_global_timers: int
-    """Number of global timers supported."""
-    n_global_counters: int
-    """Number of global counters supported."""
-    n_conditions: int
-    """Number of condition-events supported."""
-    n_inputs: int
-    """Number of input channels."""
-    input_description: bytes
-    """Array indicating the state machine's onboard input channel types."""
-    n_outputs: int
-    """Number of channels in the state machine's output channel description array."""
-    output_description: bytes
-    """Array indicating the state machine's onboard output channel types."""
-    cycle_frequency: int
-    """Frequency of the state machine's refresh cycle during a trial in Hertz."""
-    n_modules: int
-    """Number of modules supported by the state machine."""
 
 
 class BpodError(Exception):
@@ -224,9 +122,10 @@ class FSMThread(threading.Thread):
         use_back_op = self._use_back_op
         event_names = self._event_names
 
-        # create buffers for repeated serial reads
+        # create buffers / memoryview for repeated serial reads
         opcode_buf = bytearray(2)  # buffer for opcodes
         event_data_buf = bytearray(259)  # max 255 events + 4 bytes for n_cycles
+        event_data_view = memoryview(event_data_buf)
 
         # confirm the state machine
         if self._confirm_fsm:
@@ -236,6 +135,7 @@ class FSMThread(threading.Thread):
 
         # read the start time of the state machine
         t0 = serial.read_uint64()
+        # TODO: get time.perf_counter()
         logger.debug('%d µs: Starting state machine #%d', t0, index)
         logger.debug('%d µs: State %d', t0, current_state)
         # TODO: handle start of state machine
@@ -243,14 +143,26 @@ class FSMThread(threading.Thread):
 
         # enter the reading loop
         while not self._stop_event.is_set():
+            # TODO: thread is blocked by readinto()
+            #
+            # Options:
+            # a) use serial timeout,
+            # b) while serial.in_waiting() < 2:
+            #        if self._stop_event.wait(timeout=0.01):
+            #            break
+            # c) thread entirely controlled by bpod (no _stop_event required)
+            #
+            # readinto returns number of bytes read, so we can use it to check for
+            # timeout
+
             # read the next two opcodes
             serial.readinto(opcode_buf)
+            # TODO: get time.perf_counter()
             opcode, param = opcode_buf
 
             if opcode == 1:  # handle events
                 # read `param` event bytes + 4 bytes for n_cycles (uInt32)
-                event_data_view = memoryview(event_data_buf)[: param + 4]
-                serial.readinto(event_data_view)
+                serial.readinto(event_data_view[: param + 4])
 
                 # unpack the number of cycles, calculate the event's timestamp
                 (n_cycles,) = STRUCT_UINT32.unpack_from(event_data_view, param)
@@ -302,57 +214,12 @@ class FSMThread(threading.Thread):
         # TODO: handle end of state machine
 
 
-class AbstractBpod(DocstringInheritanceMixin, ABC):
-    """Abstract base class for Bpod objects."""
-
-    _version: VersionInfo
-    _hardware: HardwareConfiguration
-    _serial_number: str
-
-    @property
-    @abstractmethod
-    def name(self) -> str | None:
-        """The Bpod's user-defined name, or :obj:`None` if not set."""
-
-    @property
-    @abstractmethod
-    def location(self) -> str | None:
-        """The Bpod's user-defined location, or :obj:`None` if not set."""
-
-    @property
-    def version(self) -> VersionInfo:
-        """Version information of the Bpod's firmware and hardware."""
-        return self._version
-
-    @property
-    def serial_number(self) -> str:
-        """The Bpod's unique serial number."""
-        return self._serial_number
-
-    @abstractmethod
-    def set_status_led(self, enabled: bool) -> bool:
-        """
-        Enable or disable the Bpod's status LED.
-
-        Parameters
-        ----------
-        enabled : bool
-            True to enable the status LED, False to disable.
-
-        Returns
-        -------
-        bool
-            True if the operation was successful, False otherwise.
-        """
-
-
-class Bpod(USBSerialDevice, AbstractBpod):
+class Bpod(SerialDevice, AbstractBpod):
     """Class for interfacing with a Bpod Finite State Machine."""
 
-    _device_type = 'Bpod Finite State Machine'
     _settings: SettingsDict
     _fsm_thread: FSMThread | None = None
-    _zmq_service: DualChannelHost
+    _zmq_service: ServiceHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
@@ -379,9 +246,11 @@ class Bpod(USBSerialDevice, AbstractBpod):
 
     @validate_call
     def __init__(
-        self, port: str | None = None, serial_number: str | None = None
+        self,
+        port: str | None = None,
+        serial_number: str | None = None,
+        remote: bool = False,
     ) -> None:
-        self._finalizer = weakref.finalize(self, self._finalize)
         logger.info('bpod_core %s', bpod_core_version)
         self._settings = SettingsDict(CONFIG_PATH / 'settings.json')
 
@@ -394,7 +263,7 @@ class Bpod(USBSerialDevice, AbstractBpod):
 
         # identify Bpod by port or serial number, open connection
         bpod_port, _ = self._identify_bpod(port, serial_number)
-        super().__init__(bpod_port)
+        super().__init__(port=bpod_port, open_connection=True)
         self._serial_number = self._port_info.serial_number or 'unknown'
 
         # get firmware version and machine type; enforce version requirements
@@ -413,7 +282,15 @@ class Bpod(USBSerialDevice, AbstractBpod):
         self.update_modules()
 
         # start ZeroMQ service
-        self._start_zmq()
+        self._start_zmq(use_zeroconf=remote)
+
+        # register destructor
+        self._finalizer = weakref.finalize(
+            self,
+            Bpod._finalize,
+            self._serial,
+            self._zmq_service,
+        )
 
         # log hardware information
         logger.info(
@@ -428,10 +305,12 @@ class Bpod(USBSerialDevice, AbstractBpod):
             self.version.pcb,
         )
 
-    @property
-    def serial0(self) -> ExtendedSerial:
-        """Primary serial device for communication with the Bpod."""
-        return self._serial
+    @staticmethod
+    def _finalize(serial: ExtendedSerial, zmq_service: ServiceHost) -> None:
+        with contextlib.suppress(SerialException):
+            Bpod._request_disconnect(serial)
+        serial.close()
+        zmq_service.close()
 
     def __exit__(
         self,
@@ -440,7 +319,8 @@ class Bpod(USBSerialDevice, AbstractBpod):
         exc_tb: TracebackType | None,
     ) -> None:
         """Exit context and close connection."""
-        super().__exit__(exc_type, exc_val, exc_tb)
+        self._finalizer.detach()
+        self.close()
         self._stop_zmq()
 
     def open(self) -> None:
@@ -458,15 +338,32 @@ class Bpod(USBSerialDevice, AbstractBpod):
         self._handshake()
 
     def close(self) -> None:
-        """Close the connection to the Bpod."""
+        """
+        Close the connection to the Bpod.
+
+        Raises
+        ------
+        SerialException
+            If the port could not be closed.
+        """
         self.stop_state_machine()
+        if hasattr(self, 'serial0'):
+            self._request_disconnect(self.serial0)
         super().close()
 
-    def _finalize(self) -> None:
-        self.close()
-        self._stop_zmq()
+    @staticmethod
+    def _request_disconnect(serial: ExtendedSerial) -> None:
+        """Send a close request to the Bpod."""
+        if getattr(serial, 'is_open', False):
+            logger.debug('Sending close request to Bpod')
+            serial.write(b'Z')
 
-    def _zmq_handler(self, message: dict[str, Any]) -> dict[str, Any]:
+    @property
+    def serial0(self) -> ExtendedSerial:
+        """Primary serial device for communication with the Bpod."""
+        return self._serial
+
+    def _request_handler(self, message: dict[str, Any]) -> dict[str, Any]:
         msg_type = message.get('type', 'unknown')
         if msg_type == 'call':
             method_name = message.get('method', '')
@@ -500,21 +397,22 @@ class Bpod(USBSerialDevice, AbstractBpod):
             }
         return response
 
-    def _start_zmq(self) -> None:
+    def _start_zmq(self, use_zeroconf: bool) -> None:
         port_pub = self._get_setting(['devices', self._serial_number, 'port_pub'])
         port_rep = self._get_setting(['devices', self._serial_number, 'port_rep'])
-        self._zmq_service = DualChannelHost(
+        self._zmq_service = ServiceHost(
             service_name=self.name if self.name else f'bpod_{self._serial_number}',
-            service_type='_bpod',
-            txt_record={
+            service_type='bpod',
+            properties={
                 'description': f'Bpod Finite State Machine {self.version.machine_str}',
-                'serial': self._serial_number or '',
+                'serial': self._serial_number,
                 'name': self.name or '',
                 'location': self.location or '',
                 'firmware': '.'.join([str(x) for x in self.version.firmware]),
                 'core': bpod_core_version,
             },
-            event_handler=self._zmq_handler,
+            event_handler=self._request_handler,
+            remote=use_zeroconf,
             port_pub=cast('int | None', port_pub),
             port_rep=cast('int | None', port_rep),
         )
@@ -668,7 +566,7 @@ class Bpod(USBSerialDevice, AbstractBpod):
         # First, assemble a list of candidate ports
         candidate_ports = find_ports(
             vid=VIDS_BPOD,
-            pid=[PIDsTeensy.DUAL_SERIAL, PIDsTeensy.TRIPLE_SERIAL],
+            pid=[TeensyPID.DUAL_SERIAL, TeensyPID.TRIPLE_SERIAL],
             serial_number=self._serial_number,
             device=re.compile(rf'^(?!{re.escape(str(self.port))}$).*$'),
         )
@@ -744,6 +642,7 @@ class Bpod(USBSerialDevice, AbstractBpod):
         return self.serial0.read(1) == b'\x01'
 
     def reset_session_clock(self) -> bool:
+        # TODO: Get timestamp / time.monotonic() / time.perf_counter()
         logger.debug('Resetting session clock')
         return self.serial0.verify(b'*')
 
@@ -1615,12 +1514,13 @@ class RemoteBpod(AbstractBpod):
         properties = {k: v for k, v in properties.items() if v is not None}
 
         try:
-            self._zmq = DualChannelClient(
-                '_bpod._tcp.local.',
+            self._zmq = ServiceClient(
+                service_type='bpod',
                 address=address,
                 discovery_timeout=timeout,
                 txt_properties=properties,
                 event_handler=self._event_handler,
+                default_data_type=dict,
             )
         except TimeoutError as e:
             raise TimeoutError('Failed to discover remote Bpod.') from e
@@ -1634,7 +1534,7 @@ class RemoteBpod(AbstractBpod):
         )
 
     def _request(self, request_type: str, **kwargs: Any) -> dict:
-        return cast('dict', self._zmq.request(type=request_type, **kwargs))
+        return cast('dict', self._zmq.request({'type': request_type, **kwargs}))
 
     def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any | None:
         """

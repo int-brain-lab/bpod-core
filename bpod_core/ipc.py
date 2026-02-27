@@ -1,21 +1,28 @@
 """Inter-process Communication, service discovery and related."""
 
 import contextlib
+import json
+import logging
 import os
-import re
 import socket
 import sys
 import threading
-import uuid
+import traceback
 import weakref
-from abc import ABC, abstractmethod
-from collections.abc import Callable
-from types import TracebackType
-from typing import Any, Literal, cast
+from abc import abstractmethod
+from collections.abc import Callable, Iterator
+from enum import IntEnum
+from pathlib import Path
+from types import ModuleType, TracebackType
+from typing import Any, Generic, Literal, TypeVar, cast, overload
+from uuid import UUID, uuid4
 
 import msgspec
+import platformdirs
 import zmq
-from typing_extensions import Self
+from platformdirs import user_runtime_path
+from psutil import pid_exists
+from pydantic import UUID4, validate_call
 from zeroconf import (
     InterfaceChoice,
     IPVersion,
@@ -25,88 +32,377 @@ from zeroconf import (
     Zeroconf,
 )
 
-from bpod_core.com import logger
 from bpod_core.constants import IP_ANY, IP_LOOPBACK
-from bpod_core.misc import convert_to_snake_case, get_local_ipv4
+from bpod_core.misc import (
+    RE_NON_ALPHANUMERIC,
+    get_local_ipv4,
+    prune_empty_parent_directories,
+    to_snake_case,
+)
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar('T')
+U = TypeVar('U')
 
 
-class DualChannelMessage(msgspec.Struct, omit_defaults=True, array_like=True):
-    type: str = msgspec.field(name='T')  # message type
-    data: Any | None = msgspec.field(default=None, name='D')  # message data
+class ServiceError(Exception):
+    pass
 
 
-class DualChannelBase(ABC):
-    _serialization: Literal['json', 'msgpack'] = 'msgpack'
-    _encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
-    _decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder
-    _event_thread: threading.Thread
-    _socket_req_rep: zmq.Socket
-    _socket_pub_sub: zmq.Socket
+class RemoteError(ServiceError):
+    def __init__(self, error_data: 'ErrorData') -> None:
+        self.original_error = error_data
+        super().__init__(f'Remote {error_data.name}: {error_data.message}')
 
-    def __init__(self) -> None:
-        self._closed = False
-        self._lock_close = threading.Lock()
-        self._finalizer = weakref.finalize(self, self.close)
-        self._zmq_context = zmq.Context()
-        self._stop_event_loop = threading.Event()
 
-    def __enter__(self) -> Self:
-        """Enter context manager."""
-        return self
+class ClientError(ServiceError):
+    pass
+
+
+class MessageKind(IntEnum):
+    """The types of messages exchanged between host and clients."""
+
+    HELLO = 0
+    WELCOME = 1
+    REQUEST = 2
+    REPLY = 3
+    ERROR = 4
+    GOODBYE = 5
+
+    _as_bytes: bytes
+
+    def __new__(cls, value: int) -> 'MessageKind':
+        if not 0 <= value <= 0xFF:
+            raise ValueError('Values must fit in one byte')
+        obj: MessageKind = int.__new__(cls, value)  # type: ignore[assignment]
+        obj._value_ = value
+        obj._as_bytes = value.to_bytes(1, 'little')
+        return obj
+
+    @property
+    def as_bytes(self) -> bytes:
+        return self._as_bytes
+
+
+class ErrorData(msgspec.Struct):
+    name: str
+    message: str
+    args: tuple
+    traceback: str | None = None
+
+    @staticmethod
+    def from_exception(exception: BaseException | None = None) -> 'ErrorData':
+        """
+        Serialize an exception to :class:`ErrorData`.
+
+        Parameters
+        ----------
+        exception : BaseException, optional
+            The exception to serialize.
+
+        Returns
+        -------
+        ErrorData
+            An ErrorData struct containing the serialized exception data.
+
+        Raises
+        ------
+        ValueError
+            If no exception is provided and no active exception is available.
+        """
+        if exception is None:
+            exception = sys.exc_info()[1]
+            if exception is None:
+                raise ValueError('No exception provided and no active exception')
+        return ErrorData(
+            name=type(exception).__name__,
+            message=str(exception),
+            args=exception.args,
+            traceback=''.join(
+                traceback.format_exception(
+                    type(exception), exception, exception.__traceback__
+                )
+            ),
+        )
+
+
+class WelcomeData(msgspec.Struct, kw_only=True):
+    ipc_pub_sub: str | None = None
+    ipc_req_rep: str | None = None
+    tcp_pub_sub: str
+    tcp_req_rep: str
+
+
+class ClientInfo(msgspec.Struct):
+    name: str
+    type: Literal['IPC', 'RPC']
+    address: str
+    pid: int
+    uuid: UUID
+
+
+class LocalServiceInfo(msgspec.Struct):
+    """Information about a locally advertised service."""
+
+    service_name: str
+    service_type: str
+    address: str
+    pid: int
+    uuid: UUID
+    properties: dict[str, str | None]
+
+
+class LocalServiceAdvertisement(contextlib.AbstractContextManager):
+    """
+    File-based local service advertisement for IPC discovery.
+
+    Advertises a service by writing a JSON file to the user's runtime directory.
+    This provides a lightweight alternative to Zeroconf for discovering services
+    on the same machine. Stale advertisements (from dead processes) are automatically
+    cleaned up during discovery.
+
+    The advertisement is automatically removed when the instance is garbage collected
+    or when `stop()` is called explicitly.
+    """
+
+    runtime_directory = user_runtime_path('LocalServiceAdvertisements')
+    """Directory where service advertisement files are stored."""
+
+    service_file: Path
+    """Path to the advertisement file."""
+
+    _closed = False
+    """Flag to prevent double-finalization."""
+
+    @validate_call
+    def __init__(
+        self,
+        service_name: str,
+        service_type: str,
+        address: str,
+        properties: dict[str, str | None] | None = None,
+        *,
+        pid: int | None = None,
+        uuid: UUID4 | None = None,
+    ) -> None:
+        """
+        Create a local service advertisement.
+
+        Parameters
+        ----------
+        service_name
+            The name of the service being advertised (e.g., 'Bpod 3').
+        service_type : str
+            The type of service being advertised (e.g., 'bpod').
+        address : str
+            The address where the service can be reached (e.g., 'ipc:///tmp/foo.ipc').
+        properties : dict, optional
+            Additional key-value properties to advertise with the service.
+        pid : int, optional
+            Process ID of the service. Used to detect stale advertisements.
+        uuid : UUID4, optional
+            Unique identifier for this service instance. Generated if not provided.
+        """
+        uuid = uuid or uuid4()
+        info = LocalServiceInfo(
+            service_name=service_name,
+            service_type=service_type,
+            address=address,
+            uuid=uuid,
+            pid=pid if pid is not None else os.getpid(),
+            properties=properties or {},
+        )
+
+        self.service_file = self._get_service_file(service_type, uuid)
+        self.service_file.parent.mkdir(parents=True, exist_ok=True)
+        self._finalizer = weakref.finalize(self, self._close, self.service_file)
+
+        # write advertisement to JSON file (atomic)
+        json_data = msgspec.json.encode(info)
+        temp_file = self.service_file.with_suffix('.tmp')
+        temp_file.write_bytes(json_data)
+        temp_file.replace(self.service_file)
+        logger.debug("Advertising local service at '%s'", self.service_file)
 
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
-    ) -> bool | None:
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Remove the service advertisement and clean up empty directories."""
+        if self._closed:
+            return
+        self._closed = True
+        self._finalizer.detach()
+        self._close(self.service_file)
+
+    @staticmethod
+    def _close(service_file: Path) -> None:
+        with contextlib.suppress(Exception):
+            service_file.unlink(missing_ok=True)
+            logger.debug("Removed local service advertisement '%s'", service_file)
+        with contextlib.suppress(Exception):
+            prune_empty_parent_directories(
+                service_file.parent,
+                LocalServiceAdvertisement.runtime_directory,
+                remove_root=True,
+            )
+
+    @staticmethod
+    def _get_service_directory(service_type: str) -> Path:
+        """Get the directory for a service type."""
+        runtime_directory = LocalServiceAdvertisement.runtime_directory
+        sanitized = RE_NON_ALPHANUMERIC.sub('_', service_type)
+        return runtime_directory / sanitized
+
+    @staticmethod
+    def _get_service_file(service_type: str, uuid: UUID) -> Path:
+        """Get the path to a local service file."""
+        service_dir = LocalServiceAdvertisement._get_service_directory(service_type)
+        return service_dir / f'{uuid.hex}.json'
+
+    @staticmethod
+    def discover(
+        service_type: str,
+        properties: dict[str, str | None] | None = None,
+    ) -> Iterator[LocalServiceInfo]:
+        """Discover locally advertised services.
+
+        Parameters
+        ----------
+        service_type : str
+            The service type to discover.
+        properties : dict, optional
+            Properties to match against the service's properties.
+
+        Yields
+        ------
+        LocalServiceInfo
+            Information structure describing the discovered services.
+        """
+        service_dir = LocalServiceAdvertisement._get_service_directory(service_type)
+        properties = properties or {}
+
+        if service_dir.exists():
+            for service_file in service_dir.glob('*.json'):
+                # Load service info
+                try:
+                    data = json.loads(service_file.read_text())
+                    info = msgspec.convert(data, LocalServiceInfo)
+                except (
+                    json.JSONDecodeError,
+                    msgspec.ValidationError,
+                    OSError,
+                ):
+                    continue
+
+                # Remove service file if process no longer exists
+                if not pid_exists(info.pid):
+                    service_file.unlink(missing_ok=True)
+                    continue
+
+                # Check if properties match
+                if all(info.properties.get(k) == v for k, v in properties.items()):
+                    yield info
+
+        # Clean up empty directories
+        with contextlib.suppress(OSError, ValueError):
+            prune_empty_parent_directories(
+                service_dir,
+                LocalServiceAdvertisement.runtime_directory,
+                remove_root=True,
+            )
+
+
+class ServiceBase(contextlib.AbstractContextManager):
+    _serialization: Literal['json', 'msgpack'] = 'msgpack'
+    _encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
+    _decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder
+    _event_thread: threading.Thread | None = None
+    _socket_req_rep: zmq.Socket
+    _socket_pub_sub: zmq.Socket
+    _closed = False
+
+    def __init__(self) -> None:
+        self._lock_close = threading.Lock()
+        self._zmq_context = zmq.Context()
+        self._stop_event_loop = threading.Event()
+        self._uuid = uuid4()
+
+    @staticmethod
+    def _finalize_base(
+        event_thread: threading.Thread | None,
+        stop_event: threading.Event,
+        socket_req_rep: zmq.Socket,
+        socket_pub_sub: zmq.Socket,
+        zmq_context: zmq.Context,
+    ) -> None:
+        # event thread
+        if event_thread is not None and event_thread.is_alive():
+            with contextlib.suppress(Exception):
+                stop_event.set()
+                event_thread.join(timeout=1)
+            if event_thread.is_alive():
+                with contextlib.suppress(Exception):
+                    logger.warning('Event thread did not terminate cleanly')
+
+        # ZMQ sockets
+        with contextlib.suppress(Exception):
+            socket_req_rep.close(linger=0)
+        with contextlib.suppress(Exception):
+            socket_pub_sub.close(linger=0)
+
+        # ZMQ context
+        with contextlib.suppress(Exception):
+            zmq_context.term()
+        with contextlib.suppress(Exception):
+            zmq_context.destroy(linger=0)
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Exit context manager."""
         self.close()
-        return None
 
     @abstractmethod
-    def _event_loop(self) -> None: ...
-
-    def close(self) -> bool:
-        """
-        Close the instance.
-
-        Releases resources, stops the event loop, and terminates ZeroMQ sockets and
-        context.
-
-        Returns
-        -------
-        bool
-            Returns True if the instance was successfully closed, False if it was
-            already closed.
-        """
-        with self._lock_close:
-            if self._closed:
-                return False
-            self._closed = True
-
-            if self._event_thread and self._event_thread.is_alive():
-                self._stop_event_loop.set()
-                self._event_thread.join()
-
-            # close sockets and terminate context
-            self._socket_req_rep.close(linger=0)
-            self._socket_pub_sub.close(linger=0)
-            self._zmq_context.term()
-            return True
+    def close(self) -> None: ...
 
 
-class DualChannelHost(DualChannelBase):
-    """A ZeroMQ host providing REQ/REP and PUB/SUB sockets with Zeroconf discovery."""
+class ServiceHost(ServiceBase):
+    """
+    A ZeroMQ host providing REQ/REP and PUB/SUB sockets with service discovery.
 
-    _rep_ipc_addr: str | None = None
-    _pub_ipc_addr: str | None = None
+    Provides two communication channels: a REQ/REP channel for synchronous
+    request-reply messaging and a PUB/SUB channel for broadcasting events to
+    subscribers. Incoming requests are dispatched to a user-provided
+    ``event_handler`` callback.
+
+    The service is automatically advertised for discovery by
+    :class:`ServiceClient`. It is advertised locally via a file in the user's runtime
+    directory for inter-process communication. When ``remote=True``, the service is
+    additionally advertised via Zeroconf (mDNS) for network-wide discovery and
+    remote-process communication.
+    """
+
+    _zeroconf: Zeroconf | None = None
+    _zeroconf_service_info: ServiceInfo | None = None
+    _named_pipe_rep: Path | None = None
+    _named_pipe_pub: Path | None = None
+    _clients: dict[int, ClientInfo]
 
     def __init__(
         self,
         service_name: str,
         service_type: str,
-        txt_record: dict[str | bytes, str | bytes | None] | None = None,
+        properties: dict[str, str | None] | None = None,
         event_handler: Callable[[Any], Any] | None = None,
         remote: bool = True,
         port_pub: int | None = None,
@@ -114,16 +410,16 @@ class DualChannelHost(DualChannelBase):
         serialization: Literal['json', 'msgpack'] = 'msgpack',
     ) -> None:
         """
-        Initialize the DualChannelHost.
+        Initialize the ServiceHost.
 
         Parameters
         ----------
         service_name : str
             Service name to advertise.
         service_type : str
-            Zeroconf service type (e.g., 'my_service').
-        txt_record : dict, optional
-            Additional TXT records for Zeroconf service advertisement.
+            Service type.
+        properties : dict, optional
+            Additional properties for service advertisement.
         event_handler : callable, optional
             Function to handle incoming requests.
         remote : bool, default=True
@@ -138,8 +434,6 @@ class DualChannelHost(DualChannelBase):
         # initialize base class
         super().__init__()
 
-        self.name = convert_to_snake_case(service_name).strip('_')
-        self.uuid = uuid.uuid4()
         self._bind_ip = IP_ANY if remote else IP_LOOPBACK
         self._local_ip = get_local_ipv4() if remote else IP_LOOPBACK
 
@@ -151,34 +445,49 @@ class DualChannelHost(DualChannelBase):
         self._socket_req_rep.setsockopt(zmq.SNDHWM, 1000)
         self._socket_req_rep.setsockopt(zmq.RCVHWM, 1000)
         self._socket_pub_sub.setsockopt(zmq.SNDHWM, 1000)
+        self._socket_pub_sub.setsockopt(zmq.IMMEDIATE, 1)
 
-        # bind sockets to IPC addresses (POSIX only)
-        # clients on localhost can upgrade to IPC (named pipes) for improved performance
-        if 'win' not in sys.platform:
-            self._rep_ipc_addr = f'ipc:///tmp/REQ_REP_{self.uuid.hex}.ipc'
-            self._pub_ipc_addr = f'ipc:///tmp/PUB_SUB_{self.uuid.hex}.ipc'
+        # Bind sockets to IPC addresses for improved performance (POSIX only)
+        rep_ipc_addr: str | None = None
+        pub_ipc_addr: str | None = None
+        if os.name == 'posix':
+            if sys.platform.startswith('linux'):
+                # On linux we use abstract sockets for IPC, avoiding issues with
+                # filesystem, cleanup, permissions and stale files
+                rep_ipc_addr = f'ipc://@REQ_REP_{self._uuid.hex}'
+                pub_ipc_addr = f'ipc://@PUB_SUB_{self._uuid.hex}'
+            else:
+                # On other POSIX platforms we use filesystem Unix domain sockets
+                runtime_path = platformdirs.user_runtime_path(ensure_exists=True)
+                self._named_pipe_rep = runtime_path / f'REQ_REP_{self._uuid.hex}.ipc'
+                self._named_pipe_pub = runtime_path / f'PUB_SUB_{self._uuid.hex}.ipc'
+                self._named_pipe_rep.unlink(missing_ok=True)  # pre-unlink before bind
+                self._named_pipe_pub.unlink(missing_ok=True)  # to avoid collisions
+                rep_ipc_addr = 'ipc://' + self._named_pipe_rep.as_posix()
+                pub_ipc_addr = 'ipc://' + self._named_pipe_pub.as_posix()
             try:
-                self._socket_req_rep.bind(self._rep_ipc_addr)
-                self._socket_pub_sub.bind(self._pub_ipc_addr)
-                logger.debug("Binding REP socket to '%s'", self._rep_ipc_addr)
-                logger.debug("Binding PUB socket to '%s'", self._pub_ipc_addr)
+                self._socket_req_rep.bind(rep_ipc_addr)
+                logger.debug("Binding REP socket to '%s'", rep_ipc_addr)
+                self._socket_pub_sub.bind(pub_ipc_addr)
+                logger.debug("Binding PUB socket to '%s'", pub_ipc_addr)
             except zmq.ZMQError:
                 logger.warning('Failed to bind IPC sockets; continuing without IPC')
-                self._rep_ipc_addr = None
-                self._pub_ipc_addr = None
+                if rep_ipc_addr:
+                    with contextlib.suppress(zmq.ZMQError):
+                        self._socket_req_rep.unbind(rep_ipc_addr)
+                rep_ipc_addr = None
+                pub_ipc_addr = None
 
         def bind_tcp(zmq_socket: zmq.Socket, tcp_port: int | None) -> tuple[str, int]:
-            """Bind socket to TCP address with preferred port."""
-            bind_address = f'tcp://{self._bind_ip}'
-            service_address = f'tcp://{self._local_ip}'
+            """Helper function binding socket to TCP address with preferred port."""
             if tcp_port is not None:
                 try:
-                    zmq_socket.bind(f'{bind_address}:{tcp_port}')
+                    zmq_socket.bind(f'tcp://{self._bind_ip}:{tcp_port}')
                 except zmq.ZMQError:
                     tcp_port = None
             if tcp_port is None:
-                tcp_port = zmq_socket.bind_to_random_port(bind_address)
-            return f'{service_address}:{tcp_port}', tcp_port
+                tcp_port = zmq_socket.bind_to_random_port(f'tcp://{self._bind_ip}')
+            return f'tcp://{self._local_ip}:{tcp_port}', tcp_port
 
         # bind sockets to TCP addresses
         self.rep_tcp_addr, self.rep_tcp_port = bind_tcp(self._socket_req_rep, port_rep)
@@ -187,189 +496,264 @@ class DualChannelHost(DualChannelBase):
         logger.debug("Binding PUB socket to '%s'", self.pub_tcp_addr)
 
         # select serialization protocol / initialize encoders + decoders
-        self._serialization_protocol = serialization
+        self._serialization = serialization
         if serialization == 'msgpack':
             self._encoder = msgspec.msgpack.Encoder()
-            self._decoder = msgspec.msgpack.Decoder(type=DualChannelMessage)
+            self._decoder = msgspec.msgpack.Decoder()
         elif serialization == 'json':
             self._encoder = msgspec.json.Encoder()
-            self._decoder = msgspec.json.Decoder(type=DualChannelMessage)
+            self._decoder = msgspec.json.Decoder()
         else:
             raise ValueError(f'Unsupported serialization protocol: {serialization}')
 
         # start event loop for request handling
-        self._user_event_handler = event_handler or self._empty_event_handler
-        self._event_handler_lock = threading.RLock()
-        self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
+        self._event_handler_lock = threading.Lock()
+        handshake_data = WelcomeData(
+            ipc_pub_sub=pub_ipc_addr,
+            ipc_req_rep=rep_ipc_addr,
+            tcp_pub_sub=self.pub_tcp_addr,
+            tcp_req_rep=self.rep_tcp_addr,
+        )
+        self._event_thread = threading.Thread(
+            target=ServiceHost._event_loop,
+            args=(
+                self._stop_event_loop,
+                self._socket_req_rep,
+                self._decoder,
+                self._encoder,
+                self._serialization,
+                event_handler or self._empty_event_handler,
+                self._event_handler_lock,
+                handshake_data,
+            ),
+            daemon=True,
+        )
         self._event_thread.start()
 
-        # advertise service via Zeroconf
-        self._service_type = f'_{service_type.strip("_")}._tcp.local.'
-        self._service_name = f'{self.name}.{self._service_type}'
-        self._service_info = ServiceInfo(
-            type_=self._service_type,
-            name=self._service_name,
-            port=self.rep_tcp_port,
-            addresses=[socket.inet_aton(self._local_ip)],
-            properties=txt_record or {},
-            server=f'{socket.gethostname()}.local.',
+        # advertise service locally
+        self._local_advertisement = LocalServiceAdvertisement(
+            service_name=service_name,
+            service_type=service_type,
+            address=rep_ipc_addr or self.rep_tcp_addr,
+            pid=os.getpid(),
+            uuid=self._uuid,
+            properties=properties,
         )
-        self._zeroconf = Zeroconf(
-            interfaces=InterfaceChoice.Default if remote else IP_LOOPBACK,
-            ip_version=IPVersion.V4Only,
+
+        # advertise service via Zeroconf for remote discovery
+        if remote:
+            zeroconf_type = f'_{to_snake_case(service_type)}._tcp.local.'
+            zeroconf_name = f'{service_name}.{zeroconf_type}'
+            self._zeroconf_service_info = ServiceInfo(
+                type_=zeroconf_type,
+                name=zeroconf_name,
+                port=self.rep_tcp_port,
+                addresses=[socket.inet_aton(self._local_ip)],
+                properties=properties or {},
+                server=f'{socket.gethostname()}.local.',
+            )
+            self._zeroconf = Zeroconf(
+                interfaces=InterfaceChoice.Default,
+                ip_version=IPVersion.V4Only,
+            )
+            self._zeroconf.register_service(
+                self._zeroconf_service_info, allow_name_change=True
+            )
+            self._zeroconf_service_name = self._zeroconf_service_info.name
+            logger.debug(
+                "Registering Zeroconf service '%s'", self._zeroconf_service_name
+            )
+
+        # register finalizer to clean up resources on exit
+        self._finalizer = weakref.finalize(
+            self,
+            ServiceHost._finalize,
+            self._event_thread,
+            self._stop_event_loop,
+            self._socket_req_rep,
+            self._socket_pub_sub,
+            self._zmq_context,
+            self._local_advertisement,
+            self._zeroconf,
+            self._zeroconf_service_info,
+            self._named_pipe_rep,
+            self._named_pipe_pub,
         )
-        self._zeroconf.register_service(self._service_info, allow_name_change=True)
-        self._service_name = self._service_info.name
-        logger.debug("Registering Zeroconf service '%s'", self._service_name)
+
+    @staticmethod
+    def _finalize(
+        event_thread: threading.Thread | None,
+        stop_event: threading.Event,
+        socket_req_rep: zmq.Socket,
+        socket_pub_sub: zmq.Socket,
+        zmq_context: zmq.Context,
+        local_advertisement: LocalServiceAdvertisement,
+        zeroconf: Zeroconf | None,
+        service: ServiceInfo | None,
+        named_pipe_rep: Path | None,
+        named_pipe_pub: Path | None,
+    ) -> None:
+        """Finalize the host by unregistering the service."""
+        # local advertisement
+        with contextlib.suppress(Exception):
+            local_advertisement.close()
+
+        # zeroconf
+        if zeroconf is not None:
+            if service is not None:
+                with contextlib.suppress(Exception):
+                    logger.debug("Unregistering Zeroconf service '%s'", service.name)
+                    zeroconf.unregister_service(service)
+            with contextlib.suppress(Exception):
+                zeroconf.close()
+
+        # call base class finalizer
+        ServiceBase._finalize_base(
+            event_thread,
+            stop_event,
+            socket_req_rep,
+            socket_pub_sub,
+            zmq_context,
+        )
+
+        # named pipes
+        for pipe in (named_pipe_rep, named_pipe_pub):
+            if pipe is not None:
+                with contextlib.suppress(Exception):
+                    pipe.unlink(missing_ok=True)
 
     @staticmethod
     def _empty_event_handler(_: Any) -> dict:
         """Default event handler that returns an empty dict."""
         return {}
 
-    def _event_loop(self) -> None:
-        """
-        Handle incoming REQ messages.
+    @staticmethod
+    def _event_loop(  # noqa: PLR0913
+        stop_event: threading.Event,
+        req_rep_socket: zmq.Socket,
+        decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder,
+        encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder,
+        serialization_protocol: Literal['json', 'msgpack'],
+        event_handler: Callable[[Any], dict],
+        event_handler_lock: threading.Lock,
+        handshake_data: WelcomeData,
+    ) -> None:
+        # avoid overhead of attribute lookups
+        send_multipart = req_rep_socket.send_multipart
+        recv_multipart = req_rep_socket.recv_multipart
+        decode = decoder.decode
+        encode = encoder.encode
+        reply_kind: MessageKind
+        reply_data: Any
+        serialize_exception = ErrorData.from_exception
 
-        Notes
-        -----
-        - Decodes incoming messages using the configured serialization.
-        - Calls the registered event handler for type 'R'.
-        - Responds with handshake data for type 'H'.
-        - Sends an error for unknown types.
-        """
-        while not self._stop_event_loop.is_set():
+        def encode_and_send(kind: MessageKind, data: Any) -> None:
+            try:
+                reply_frames = [kind.as_bytes, encode(data)]
+            except Exception as e:
+                logger.exception('Error encoding reply to client')
+                reply_frames = [
+                    MessageKind.ERROR.as_bytes,
+                    encode(serialize_exception(e)),
+                ]
+            finally:
+                try:
+                    send_multipart(reply_frames, copy=False)
+                except zmq.ZMQError:
+                    logger.exception('Error sending reply to client')
+
+        while not stop_event.is_set():
             # wait for incoming requests (short poll so we can check stop_event)
-            if not self._socket_req_rep.poll(100):
+            if not req_rep_socket.poll(100):
                 continue
 
-            # guard the actual recv with try/except so shutdown can't hang us
+            # receive request
             try:
-                request_frame = self._socket_req_rep.recv(copy=False)
+                request_frames = recv_multipart(copy=False)
+                request_data_buffer = request_frames[1].buffer
             except zmq.ZMQError as e:
                 logger.exception('Error receiving request from client', exc_info=e)
                 continue
 
-            # try to decode the request
+            # determine the kind of request
             try:
-                request: DualChannelMessage = self._decoder.decode(request_frame.bytes)
-            except msgspec.DecodeError as e1:
+                request_kind = MessageKind(request_frames[0].buffer[0])
+            except ValueError as e:
+                logger.exception(
+                    'Received unknown request type: %s', request_frames[0].bytes
+                )
+                encode_and_send(MessageKind.ERROR, serialize_exception(e))
+                continue
+
+            # decode request
+            try:
+                request_data = decode(request_data_buffer)
+            except msgspec.DecodeError as e:
                 # try the other serialization as a fallback
                 try:
-                    if self._serialization_protocol == 'msgpack':
-                        request = msgspec.json.decode(
-                            request_frame.bytes, type=DualChannelMessage
-                        )
+                    if serialization_protocol == 'msgpack':
+                        request_data = msgspec.json.decode(request_data_buffer)
                     else:
-                        request = msgspec.msgpack.decode(
-                            request_frame.bytes, type=DualChannelMessage
-                        )
+                        request_data = msgspec.msgpack.decode(request_data_buffer)
                 except msgspec.DecodeError:
-                    logger.exception(
-                        'Error decoding request from client: %s',
-                        request_frame.bytes,
-                        exc_info=e1,
-                    )
-                    reply = self._format_error(type(e1).__name__, e1.args[0])
-                    try:
-                        reply_bytes = self._encoder.encode(reply)
-                        self._socket_req_rep.send(reply_bytes, copy=False)
-                    except (msgspec.EncodeError, zmq.ZMQError) as e2:
-                        logger.exception('Error sending reply to client', exc_info=e2)
+                    logger.exception('Error decoding request from client', exc_info=e)
+                    encode_and_send(MessageKind.ERROR, serialize_exception(e))
                     continue
 
-            # handle request depending on request type
-            match request.type:
-                case 'R':  # general request
+            # handle request depending on the request type
+            match request_kind:
+                case MessageKind.REQUEST:  # general request
+                    reply_kind = MessageKind.REPLY
                     try:
-                        with self._event_handler_lock:
-                            reply_data = self._user_event_handler(request.data)
+                        with event_handler_lock:
+                            reply_data = event_handler(request_data)
                     except Exception as e:
-                        logger.exception(
-                            'Event handler raised an exception', exc_info=e
-                        )
-                        reply = self._format_error(type(e).__name__, e.args[0])
-                    else:
-                        reply = DualChannelMessage('R', reply_data)
+                        logger.exception('Error during event handler call')
+                        reply_kind = MessageKind.ERROR
+                        reply_data = serialize_exception(e)
 
-                case 'H':  # handshake for communicating TCP and IPC addresses
-                    reply = DualChannelMessage(
-                        type='H',
-                        data={
-                            'ipc_pub_sub': self._pub_ipc_addr,
-                            'ipc_req_rep': self._rep_ipc_addr,
-                            'tcp_pub_sub': self.pub_tcp_addr,
-                            'tcp_req_rep': self.rep_tcp_addr,
-                        },
+                case MessageKind.HELLO:
+                    reply_kind = MessageKind.WELCOME
+                    reply_data = handshake_data
+
+                case _:  # unexpected request type
+                    logger.error('Unexpected request type: %s', request_kind)
+                    reply_kind = MessageKind.ERROR
+                    reply_data = serialize_exception(
+                        ValueError(f'Unexpected request type: {request_kind}')
                     )
 
-                case _:  # unknown request type
-                    message = f'Unknown request type: {request.type}'
-                    logger.error(message)
-                    reply = self._format_error('RequestError', message)
+            # encode and send reply
+            encode_and_send(reply_kind, reply_data)
 
-            # encode reply
-            try:
-                reply_bytes = self._encoder.encode(reply)
-            except msgspec.EncodeError as e:
-                logger.exception('Error encoding reply to client', exc_info=e)
-                reply = self._format_error(type(e).__name__, e.args[0])
-                reply_bytes = self._encoder.encode(reply)
-
-            # send reply
-            try:
-                self._socket_req_rep.send(reply_bytes, copy=False)
-            except zmq.ZMQError as e:
-                logger.exception('Error sending reply to client', exc_info=e)
-
-    @staticmethod
-    def _format_error(name: str, message: str) -> DualChannelMessage:
-        """
-        Format an error response message.
-
-        Parameters
-        ----------
-        name : str
-            The error type name.
-        message : str
-            Human-readable error message.
-
-        Returns
-        -------
-        DualChannelMessage
-            A message with type 'E' containing error details.
-        """
-        return DualChannelMessage(type='E', data={'name': name, 'message': message})
-
-    def close(self) -> bool:
-        """
-        Close the host and clean up resources.
-
-        Returns
-        -------
-        bool
-            True if the host closed successfully, False otherwise.
-        """
-        if not super().close():
-            return False
-
-        # Unregister Zeroconf service
-        logger.debug("Unregistering Zeroconf service '%s'", self._service_name)
-        self._zeroconf.unregister_service(self._service_info)
-        self._zeroconf.close()
-
-        # remove IPC files
-        with contextlib.suppress(FileNotFoundError):
-            if self._rep_ipc_addr is not None:
-                os.remove(self._rep_ipc_addr[6:])
-            if self._pub_ipc_addr is not None:
-                os.remove(self._pub_ipc_addr[6:])
-
-        return True
+    def close(self) -> None:
+        """Close the host and clean up resources."""
+        with self._lock_close:
+            if self._closed:
+                return
+            self._closed = True
+            self._finalizer.detach()
+            self._finalize(
+                self._event_thread,
+                self._stop_event_loop,
+                self._socket_req_rep,
+                self._socket_pub_sub,
+                self._zmq_context,
+                self._local_advertisement,
+                self._zeroconf,
+                self._zeroconf_service_info,
+                self._named_pipe_rep,
+                self._named_pipe_pub,
+            )
 
 
-class DualChannelClient(DualChannelBase):
-    """A client for communicating with a DualChannelHost."""
+class ServiceClient(ServiceBase, Generic[U]):
+    """A client for communicating with :class:`ServiceHost`."""
+
+    is_local: bool
+    """Whether the client is connected to a service on localhost."""
+
+    _serialization_module: ModuleType
 
     def __init__(
         self,
@@ -378,14 +762,16 @@ class DualChannelClient(DualChannelBase):
         event_handler: Callable[[dict], Any] | None = None,
         discovery_timeout: float = 10.0,
         txt_properties: dict | None = None,
+        remote: bool = True,
+        default_data_type: type[U] | None = None,
     ) -> None:
         """
-        Initialize a DualChannelClient instance.
+        Initialize a ServiceClient instance.
 
         Parameters
         ----------
         service_type : str
-            The mDNS service type to discover or connect to.
+            The service type to discover or connect to.
         address : str, optional
             The direct connection address for the REQ channel, by default None.
         event_handler : callable, optional
@@ -394,6 +780,10 @@ class DualChannelClient(DualChannelBase):
             Timeout in seconds for service discovery, by default 10.0.
         txt_properties : dict, optional
             Properties for service filtering during discovery, by default None.
+        remote : bool, optional
+            Whether to use Zeroconf for discovering remote services, by default True.
+        default_data_type : type, optional
+            The default data type for incoming messages.
         """
         # initialize base class
         super().__init__()
@@ -403,21 +793,24 @@ class DualChannelClient(DualChannelBase):
         self._socket_pub_sub = self._zmq_context.socket(zmq.SUB)
 
         # define msgspec encoder/decoder
-        serialization_module = getattr(msgspec, self._serialization)
-        self._encoder = serialization_module.Encoder()
-        self._decoder = serialization_module.Decoder(type=DualChannelMessage)
+        self._serialization_module = getattr(msgspec, self._serialization)
+        self._encoder = self._serialization_module.Encoder()
+        self._default_data_type = default_data_type or Any
+        self._decoder = self._serialization_module.Decoder(type=self._default_data_type)
 
         # connect REQ channel
         if address is not None:
             self._address_req = address
         else:
             self._address_req, _ = discover(
-                service_type, txt_properties, discovery_timeout
+                service_type, txt_properties, remote, discovery_timeout
             )
         self._socket_req_rep.connect(self._address_req)
         self._lock_req = threading.Lock()
-        logger.debug("Binding REQ socket to '%s'", self._address_req)
-        self.is_local = '127.0.0.1' in self._address_req
+        logger.debug("Connecting REQ socket to '%s'", self._address_req)
+        self.is_local = any(
+            x in self._address_req for x in ('127.0.0.1', 'ipc://', 'localhost', '::1')
+        )
 
         # perform handshake
         self._handshake()
@@ -426,131 +819,230 @@ class DualChannelClient(DualChannelBase):
         if event_handler is not None:
             self._socket_pub_sub.connect(self._address_sub)
             self._socket_pub_sub.setsockopt_string(zmq.SUBSCRIBE, '')
-            logger.debug("Binding SUB socket to '%s'", self._address_sub)
+            logger.debug("Connecting SUB socket to '%s'", self._address_sub)
         else:
-            logger.debug('Not binding SUB socket for lack of event handler')
+            logger.debug('Not connecting SUB socket for lack of event handler')
 
         # start event loop for subscription handling
-        self._event_handler = event_handler
-        self._event_thread = threading.Thread(target=self._event_loop, daemon=True)
+        self._event_thread = threading.Thread(
+            target=ServiceClient._event_loop,
+            args=(
+                self._stop_event_loop,
+                self._socket_pub_sub,
+                self._decoder,
+                event_handler,
+            ),
+            daemon=True,
+        )
         if event_handler is not None:
             self._event_thread.start()
 
-    def _event_loop(self) -> None:
+        # register finalizer to clean up resources on exit
+        self._finalizer = weakref.finalize(
+            self,
+            ServiceBase._finalize_base,
+            self._event_thread,
+            self._stop_event_loop,
+            self._socket_req_rep,
+            self._socket_pub_sub,
+            self._zmq_context,
+        )
+
+    @staticmethod
+    def _event_loop(
+        stop_event: threading.Event,
+        socket_sub: zmq.Socket,
+        decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder,
+        event_handler: Callable,
+    ) -> None:
         """Process incoming PUB messages."""
-        while not self._stop_event_loop.is_set():
-            if not self._socket_pub_sub.poll(100):
+        while not stop_event.is_set():
+            if not socket_sub.poll(100):
                 continue
-            msg = self._socket_pub_sub.recv()
-            msg = self._decoder.decode(msg)
+            frame = socket_sub.recv(copy=False)
+            message = decoder.decode(frame.buffer)
             try:
-                cast('Callable', self._event_handler)(msg)
+                event_handler(message)
             except Exception as e:
                 logger.exception('Subscription handler raised an exception', exc_info=e)
 
     def _handshake(self) -> None:
         """Perform handshake with the host."""
-        reply_type, reply_data = self._req('H')
+        _, reply_data = self._req(MessageKind.HELLO, reply_type=WelcomeData)
         if (
             self.is_local
-            and sys.platform in ('darwin', 'linux')
-            and reply_data.get('ipc_req_rep') is not None
-            and reply_data.get('ipc_pub_sub') is not None
+            and os.name == 'posix'
+            and reply_data.ipc_req_rep is not None
+            and reply_data.ipc_pub_sub is not None
         ):
-            self._socket_req_rep.disconnect(self._address_req)
-            self._address_req = reply_data.get('ipc_req_rep')
-            logger.debug("Rebinding REQ socket to '%s'", self._address_req)
-            self._socket_req_rep.connect(self._address_req)
-            self._address_sub = reply_data.get('ipc_pub_sub')
+            if self._address_req.startswith(('tcp://', 'tcp4://', 'tcp6://')):
+                self._socket_req_rep.disconnect(self._address_req)
+                self._address_req = reply_data.ipc_req_rep
+                logger.debug("Reconnecting REQ socket to '%s'", self._address_req)
+                self._socket_req_rep.connect(self._address_req)
+            self._address_sub = reply_data.ipc_pub_sub
         else:
-            self._address_sub = reply_data.get('tcp_pub_sub')
+            self._address_sub = reply_data.tcp_pub_sub
 
-    def _req(self, request_type: str, data: Any | None = None) -> tuple[str, Any]:
+    @overload
+    def _req(
+        self,
+        request_kind: MessageKind,
+        request_data: Any | None = None,
+        *,
+        reply_type: type[T],
+    ) -> tuple[MessageKind, T]: ...
+
+    @overload
+    def _req(
+        self,
+        request_kind: MessageKind,
+        request_data: Any | None = None,
+        *,
+        reply_type: None = None,
+    ) -> tuple[MessageKind, U]: ...
+
+    def _req(
+        self,
+        request_kind: MessageKind,
+        request_data: Any | None = None,
+        *,
+        reply_type: type[T] | None = None,
+    ) -> tuple[MessageKind, Any]:
         with self._lock_req:  # acquire lock
             # encode request
-            request = DualChannelMessage(type=request_type, data=data)
             try:
-                request_bytes = self._encoder.encode(request)
-            except msgspec.EncodeError as e:
+                request_kind_bytes = request_kind.as_bytes
+                request_data_bytes = self._encoder.encode(request_data)
+            except Exception as e:
                 raise ValueError('Error encoding request to host') from e
 
-            # send request
+            # send request / receive reply
             try:
-                self._socket_req_rep.send(request_bytes)
+                self._socket_req_rep.send_multipart(
+                    [request_kind_bytes, request_data_bytes], copy=False
+                )
+                reply_frames = self._socket_req_rep.recv_multipart(copy=False)
             except zmq.ZMQError as e:
-                raise RuntimeError('Error sending request to host') from e
+                raise RuntimeError('Error communicating with host') from e
 
-            # receive reply
+            # decode reply
             try:
-                reply_frame = self._socket_req_rep.recv(copy=False)
-            except zmq.ZMQError as e:
-                raise RuntimeError('Error receiving reply from host') from e
-
-            # receive and decode reply
-            try:
-                reply: DualChannelMessage = self._decoder.decode(reply_frame.bytes)
-
-            # switch serialization format
-            except msgspec.DecodeError as e:
+                reply_kind = MessageKind(reply_frames[0].buffer[0])
+                reply_data_buffer = reply_frames[1].buffer
+                if reply_kind == MessageKind.ERROR:
+                    reply_data = self._serialization_module.decode(
+                        reply_data_buffer, type=ErrorData
+                    )
+                elif reply_type is None:
+                    reply_data = self._decoder.decode(reply_data_buffer)
+                else:
+                    reply_data = self._serialization_module.decode(
+                        reply_data_buffer, type=reply_type
+                    )
+            except Exception as e:
+                # if decoding fails, try the other serialization protocol as a fallback
                 new_format = 'msgpack' if self._serialization == 'json' else 'json'
                 new_serialization_module = getattr(msgspec, new_format)
-                new_decoder = new_serialization_module.Decoder(type=DualChannelMessage)
                 try:
-                    reply = new_decoder.decode(reply_frame.bytes)
+                    if reply_kind == MessageKind.ERROR:
+                        reply_data = new_serialization_module.decode(
+                            reply_data_buffer, type=ErrorData
+                        )
+                    elif reply_type is None:
+                        reply_data = new_serialization_module.decode(reply_data_buffer)
+                    else:
+                        reply_data = new_serialization_module.decode(
+                            reply_data_buffer, type=reply_type
+                        )
                 except msgspec.DecodeError:
                     raise ValueError('Error decoding reply from host') from e
-                logger.debug('Switching to %s serialization', new_format)
+                logger.debug('Switching to %s serialization', new_format.upper())
+                self._serialization_module = new_serialization_module
                 self._encoder = new_serialization_module.Encoder()
-                self._decoder = new_decoder
+                self._decoder = new_serialization_module.Decoder(
+                    type=self._default_data_type
+                )
                 self._serialization = cast('Literal["json", "msgpack"]', new_format)
 
-            # return reply type and data
-            return reply.type, reply.data
+            # return reply kind and data
+            return reply_kind, reply_data
 
-    def request(self, **kwargs: Any) -> Any:
+    @overload
+    def request(self, request_data: Any, reply_type: type[T]) -> T: ...
+
+    @overload
+    def request(self, request_data: Any) -> U: ...
+
+    def request(self, request_data: Any, reply_type: type[T] | None = None) -> Any:
         """
         Send a generic request to the server.
 
         Parameters
         ----------
-        **kwargs : Any
-            Key-value pairs to be sent as the request payload.
+        request_data : Any
+            The request payload.
+        reply_type : type, optional
+            Override the expected reply type.
 
         Returns
         -------
-        Any
-            The reply data from the server. Returns an empty dictionary if an error
-            occurs.
+        U or T
+            The reply data from the server.
+
+        Raises
+        ------
+        RemoteError
+            If an error occurred on the host side.
+        ServiceError
+            If the host sent an unexpected reply kind.
         """
-        reply_type, reply_data = self._req('R', kwargs)
-        match reply_type:
-            case 'R':  # general request
-                return reply_data
-            case 'E':  # error
-                logger.error(
-                    'Remote %s: %s',
-                    reply_data.get('name', 'Error'),
-                    reply_data.get('message', ''),
-                )
-            case _:
-                logger.error("Received unknown reply type: '%s'", reply_type)
-        return {}
+        reply_kind, reply_data = self._req(
+            request_kind=MessageKind.REQUEST,
+            request_data=request_data,
+            reply_type=reply_type,
+        )
+        if reply_kind == MessageKind.REPLY:
+            return reply_data
+        elif reply_kind == MessageKind.ERROR:
+            error_data = cast('ErrorData', reply_data)
+            raise RemoteError(error_data)
+        else:
+            raise ServiceError(f"Received unexpected reply type: '{reply_kind}'")
+
+    def close(self) -> None:
+        """Close the client and clean up resources."""
+        with self._lock_close:
+            if self._closed:
+                return
+            self._closed = True
+            self._finalizer.detach()
+            self._finalize_base(
+                self._event_thread,
+                self._stop_event_loop,
+                self._socket_req_rep,
+                self._socket_pub_sub,
+                self._zmq_context,
+            )
 
 
 def discover(
     service_type: str,
     properties: dict[str, str | None] | None = None,
+    remote: bool = True,
     timeout: float = 10,
-) -> tuple[str, dict[bytes, bytes | None]]:
+) -> tuple[str, dict[str, str | None]]:
     """
-    Discover a Zeroconf device/service on the local network matching given properties.
+    Discover a device/service on the local network matching given properties.
 
     Parameters
     ----------
     service_type : str
-        The Zeroconf service type to discover, e.g., '_zmq._tcp.local.'
+        The service type to discover, e.g., 'bpod'
     properties : dict, optional
         Dictionary of expected service properties to match.
+    remote : bool, optional
+        Whether to search for a matching service on the network, by default True.
     timeout : float, optional
         How many seconds to wait for a matching service before timing out.
         Default is 10.
@@ -560,7 +1052,7 @@ def discover(
     str
         The Zeroconf service address, e.g., 'tcp://192.168.1.10:1234'.
     dict
-        The TXT record of the service
+        A dictionary of service properties.
 
     Raises
     ------
@@ -568,37 +1060,46 @@ def discover(
         If no matching device/service is found within the timeout period.
     """
     properties = properties or {}
-    address = ''
-    protocol = (m := re.search(r'_(tcp|udp)\.', service_type)) and m.group(1)
+    for local_info in LocalServiceAdvertisement.discover(service_type, properties):
+        return local_info.address, local_info.properties
+    if not remote:
+        raise RuntimeError('No matching service found locally')
+
     event = threading.Event()
-    txt_record = {}
+    zc_service_type = f'_{to_snake_case(service_type)}._tcp.local.'
+    address: str | None = None
+    txt_record: dict[str, str | None] = {}
 
     def on_state_change(
         *, name: str, state_change: ServiceStateChange, **_: Any
     ) -> None:
-        nonlocal address, protocol, txt_record, event
+        nonlocal address, txt_record
+        if event.is_set():
+            return
         if state_change is ServiceStateChange.Added:
-            info = zeroconf.get_service_info(service_type, name)
-            if not info or not info.addresses:
+            remote_info = zc.get_service_info(zc_service_type, name)
+            if not remote_info or not remote_info.addresses:
                 return
             for k, v in properties.items():
-                key = k.encode('utf-8') if isinstance(k, str) else k
-                value = v.encode('utf-8') if isinstance(v, str) else v
-                if info.properties.get(key) != value:
+                if remote_info.decoded_properties.get(k) != v:
                     return
-            port = info.port
-            ip = socket.inet_ntoa(info.addresses[0])
+            port = remote_info.port
+            ip = socket.inet_ntoa(remote_info.addresses[0])
             ip = '127.0.0.1' if ip == get_local_ipv4() else ip
-            address = f'{protocol}://{ip}:{port}'
-            txt_record = info.properties
+            address = f'tcp://{ip}:{port}'
+            txt_record = remote_info.decoded_properties
             event.set()
 
-    zeroconf = Zeroconf()
-    try:
-        ServiceBrowser(zeroconf, service_type, handlers=[on_state_change])
-        found = event.wait(timeout)
-    finally:
-        zeroconf.close()
-    if not found:
-        raise TimeoutError('No matching device found via Zeroconf')
+    with Zeroconf() as zc:
+        found = False
+        browser = None
+        try:
+            browser = ServiceBrowser(zc, zc_service_type, handlers=[on_state_change])
+            found = event.wait(timeout)
+        finally:
+            if browser is not None:
+                with contextlib.suppress(Exception):
+                    browser.cancel()
+    if not found or address is None:
+        raise TimeoutError('No matching service found')
     return address, txt_record
