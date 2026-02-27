@@ -1172,6 +1172,9 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
         poll_interval : float
             How often to poll for local service changes, in seconds.
         """
+        if not local and not remote:
+            raise ValueError('at least one of local or remote must be True')
+
         self._q: queue.Queue[ServiceEvent] = queue.Queue()
         self._stop = threading.Event()
         self._deadline = None if timeout is None else time.monotonic() + timeout
