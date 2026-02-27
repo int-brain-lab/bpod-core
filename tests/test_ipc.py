@@ -113,8 +113,8 @@ class TestLocalServiceAdvertisement:
             mocker.patch('bpod_core.ipc.pid_exists', return_value=False)
             results = list(ipc.LocalServiceAdvertisement.discover('service_type'))
             assert len(results) == 0
-            assert not ad.service_file.exists()
-            assert not mock_local_discovery_dir.exists()
+        assert not ad.service_file.exists()
+        assert not mock_local_discovery_dir.exists()
 
     def test_discover_nonexistent_service(self, mock_local_discovery_dir):
         """discover() returns empty iterator for unknown service types."""
@@ -269,12 +269,11 @@ class TestLocalDiscovery:
             ipc.discover('nonexistent', remote=False, timeout=0)
 
     def test_discover_falls_back_to_zeroconf(
-        self, mocker, mock_advertisement, mock_service_browser
+        self, mock_advertisement, mock_service_browser
     ):
         """discover() falls back to zeroconf when no local service exists."""
-        mocker.patch('threading.Event.wait', return_value=False)
         with pytest.raises(TimeoutError):
-            ipc.discover('test_service', remote=True, timeout=0)
+            ipc.discover('test_service', remote=True, timeout=0, poll_interval=0.01)
         mock_advertisement['zeroconf'].assert_called_once()
 
     def test_client_remote_false_uses_only_local(self, mock_advertisement):
@@ -292,11 +291,10 @@ class TestLocalDiscovery:
                 service_type='nonexistent', discovery_timeout=0, remote=False
             )
 
-    def test_discover_timeout(self, mocker, mock_advertisement, mock_service_browser):
+    def test_discover_timeout(self, mock_advertisement, mock_service_browser):
         """Timeout when no matching service is discovered within deadline."""
-        mocker.patch('threading.Event.wait', return_value=False)
         with pytest.raises(TimeoutError):
-            ipc.discover('_svc._tcp.local.', properties=None, timeout=0)
+            ipc.discover('_svc._tcp.local.', properties=None, timeout=0, poll_interval=0.01)
 
 
 class TestIterServices:
@@ -322,7 +320,7 @@ class TestIterServices:
 
     def test_yields_removed_event(self, mock_local_advertisement):
         """`removed` event is yielded as a local service disappears."""
-        iterator = ipc.iter_services('service_type', remote=False)
+        iterator = ipc.iter_services('service_type', remote=False, poll_interval=0.01)
         next(iterator)
         mock_local_advertisement.close()
         event = next(iterator)

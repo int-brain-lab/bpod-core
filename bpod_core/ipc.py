@@ -1,7 +1,6 @@
 """Inter-process Communication, service discovery and related."""
 
 import contextlib
-import json
 import logging
 import os
 import queue
@@ -301,18 +300,13 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
 
         if service_dir.exists():
             for service_file in service_dir.glob('*.json'):
-                # Load service info
                 try:
-                    data = json.loads(service_file.read_text())
-                    info = msgspec.convert(data, LocalServiceInfo)
-                except (
-                    json.JSONDecodeError,
-                    msgspec.ValidationError,
-                    OSError,
-                ):
+                    data = service_file.read_bytes()
+                    info = msgspec.json.decode(data, type=LocalServiceInfo)
+                except (msgspec.DecodeError, OSError):
                     continue
 
-                # Remove service file if process no longer exists
+                # Remove stale service file if process no longer exists
                 if not pid_exists(info.pid):
                     service_file.unlink(missing_ok=True)
                     continue
@@ -320,14 +314,6 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
                 # Check if properties match
                 if all(info.properties.get(k) == v for k, v in properties.items()):
                     yield info
-
-        # Clean up empty directories
-        with contextlib.suppress(OSError, ValueError):
-            prune_empty_parent_directories(
-                service_dir,
-                LocalServiceAdvertisement.runtime_directory,
-                remove_root=True,
-            )
 
 
 class ServiceBase(contextlib.AbstractContextManager):
@@ -1108,15 +1094,15 @@ class _ServiceIterator(Iterator[ServiceEvent]):
         self._pending: deque[ServiceEvent] = deque()
         self._pending_adds: dict[str, int] = {}  # address → # of valid pending 'added'
 
-        def rescan(seen_in: dict[str, ServiceEvent]) -> dict[str, ServiceEvent]:
-            seen_out: dict[str, ServiceEvent] = {}
+        def rescan(previous: dict[str, ServiceEvent]) -> dict[str, ServiceEvent]:
+            current: dict[str, ServiceEvent] = {}
             for i in LocalServiceAdvertisement.discover(service_type, properties):
-                seen_out[i.uuid.hex] = ServiceEvent('added', i.address, i.properties)
-            for event in (v for k, v in seen_in.items() if k not in seen_out):
+                current[i.uuid.hex] = ServiceEvent('added', i.address, i.properties)
+            for event in (v for k, v in previous.items() if k not in current):
                 self._q.put(ServiceEvent('removed', event.address, event.properties))
-            for event in (v for k, v in seen_out.items() if k not in seen_in):
+            for event in (v for k, v in current.items() if k not in previous):
                 self._q.put(event)
-            return seen_out
+            return current
 
         def watch_local(seen: dict[str, ServiceEvent]) -> None:
             while not self._stop.wait(poll_interval):
