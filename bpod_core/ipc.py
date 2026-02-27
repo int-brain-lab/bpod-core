@@ -1069,18 +1069,21 @@ def discover(
     TimeoutError
         If no matching device/service is found within the timeout period.
     """
-    for event in _ServiceIterator(
+    with ServiceIterator(
         service_type=service_type,
         properties=properties or {},
         remote=remote,
         timeout=timeout,
         poll_interval=poll_interval,
-    ):
-        return event.address, event.properties
+    ) as iterator:
+        for event in iterator:
+            return event.address, event.properties
     raise TimeoutError('No matching service found')
 
 
-class _ServiceIteratorListener(ServiceListener):
+class _ServiceListenerIterator(ServiceListener):
+    """A Zeroconf :class:`ServiceListener` used with :class:`_ServiceIterator`."""
+
     def __init__(
         self, q: queue.Queue[ServiceEvent], properties: dict[str, str | None]
     ) -> None:
@@ -1105,26 +1108,23 @@ class _ServiceIteratorListener(ServiceListener):
         if not all(txt.get(k) == v for k, v in self._properties.items()):
             return
 
-        # add event to queue
+        # add event to the queue
         event = ServiceEvent('added', f'tcp://{ip}:{info.port}', txt)
         self._seen_remote[name] = event
         self._queue.put(event)
 
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         if name in self._seen_remote:
-            _, address, props = self._seen_remote.pop(name)
-            event = ServiceEvent('removed', address, props)
+            _, address, properties = self._seen_remote.pop(name)
+            event = ServiceEvent('removed', address, properties)
             self._queue.put(event)
 
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        return
+        logger.debug('Ignoring update for service: %s', name)
 
 
-class _ServiceIterator(Iterator[ServiceEvent]):
+class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager):
     """Iterator returned by :func:`iter_services`."""
-
-    _zc: Zeroconf | None = None
-    _browser: ServiceBrowser | None = None
 
     def __init__(
         self,
@@ -1137,6 +1137,8 @@ class _ServiceIterator(Iterator[ServiceEvent]):
         self._q: queue.Queue[ServiceEvent] = queue.Queue()
         self._stop = threading.Event()
         self._deadline = None if timeout is None else time.monotonic() + timeout
+        self._zc: Zeroconf | None = None
+        self._browser: ServiceBrowser | None = None
 
         # Consumer-side event buffer. Background threads write only to _q (thread-safe).
         # __next__ drains _q into _pending, collapsing add/remove pairs for the same
@@ -1165,46 +1167,44 @@ class _ServiceIterator(Iterator[ServiceEvent]):
 
         # watch for remote service changes
         if remote:
-            self._zc = Zeroconf()
+            handler = _ServiceListenerIterator(self._q, properties)
             zc_service_type = _format_zeroconf_service_type(service_type)
-            handler = _ServiceIteratorListener(self._q, properties)
+            self._zc = Zeroconf()
             self._browser = ServiceBrowser(self._zc, zc_service_type, handler)
 
         # register finalizer to clean up resources on exit
         self._finalizer = weakref.finalize(
             self,
-            _ServiceIterator._cleanup,
+            ServiceIterator._cleanup,
             self._stop,
             self._watcher,
             self._zc,
             self._browser,
         )
 
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        """Exit context manager."""
+        self.close()
+
     def __iter__(self) -> Iterator[ServiceEvent]:
         return self
-
-    def _process(self, event: ServiceEvent) -> None:
-        """Add *event* to the pending buffer, collapsing add/remove pairs."""
-        if event.kind == 'removed' and self._pending_adds.get(event.address, 0) > 0:
-            # Paired with an unseen 'added' — suppress both
-            self._pending_adds[event.address] -= 1
-        else:
-            if event.kind == 'added':
-                self._pending_adds[event.address] = (
-                    self._pending_adds.get(event.address, 0) + 1
-                )
-            self._pending.append(event)
 
     def __next__(self) -> ServiceEvent:
         while True:
             # Drain all immediately available events from the queue
             try:
                 while True:
-                    self._process(self._q.get_nowait())
+                    event = self._q.get_nowait()
+                    self._process(event)
             except queue.Empty:
                 pass
 
-            # Yield the next non-cancelled event from the buffer
+            # Yield the next noncancelled event from the buffer
             while self._pending:
                 event = self._pending.popleft()
                 if event.kind == 'added':
@@ -1227,10 +1227,6 @@ class _ServiceIterator(Iterator[ServiceEvent]):
                 self.close()
                 raise StopIteration from e
 
-    def close(self) -> None:
-        """Stop monitoring and release all resources."""
-        self._finalizer()
-
     @staticmethod
     def _cleanup(
         stop: threading.Event,
@@ -1248,6 +1244,22 @@ class _ServiceIterator(Iterator[ServiceEvent]):
             with contextlib.suppress(Exception):
                 zc.close()
 
+    def _process(self, event: ServiceEvent) -> None:
+        """Add *event* to the pending buffer, collapsing add/remove pairs."""
+        if event.kind == 'removed' and self._pending_adds.get(event.address, 0) > 0:
+            # Paired with an unseen 'added' — suppress both
+            self._pending_adds[event.address] -= 1
+        else:
+            if event.kind == 'added':
+                self._pending_adds[event.address] = (
+                    self._pending_adds.get(event.address, 0) + 1
+                )
+            self._pending.append(event)
+
+    def close(self) -> None:
+        """Stop monitoring and release all resources."""
+        self._finalizer()
+
 
 def iter_services(
     service_type: str,
@@ -1255,7 +1267,7 @@ def iter_services(
     remote: bool = True,
     timeout: float | None = 10,
     poll_interval: float = 1,
-) -> '_ServiceIterator':
+) -> ServiceIterator:
     """
     Discover all services matching the given type and properties.
 
@@ -1284,6 +1296,6 @@ def iter_services(
         A named tuple of ``(kind, address, properties)`` where ``kind`` is
         ``'added'`` or ``'removed'``.
     """
-    return _ServiceIterator(
+    return ServiceIterator(
         service_type, properties or {}, remote, timeout, poll_interval
     )
