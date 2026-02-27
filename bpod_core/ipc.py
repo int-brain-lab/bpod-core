@@ -22,7 +22,6 @@ from uuid import UUID, uuid4
 
 import msgspec
 import platformdirs
-import watchfiles
 import zmq
 from platformdirs import user_runtime_path
 from psutil import pid_exists
@@ -1115,20 +1114,10 @@ class _ServiceIterator(Iterator[ServiceEvent]):
             return seen_out
 
         def watch_local(seen: dict[str, ServiceEvent]) -> None:
-            while not self._stop.is_set():
-                try:
-                    for _ in watchfiles.watch(
-                        service_dir,
-                        stop_event=self._stop,
-                        recursive=False,
-                    ):
-                        seen = rescan(seen)
-                except (ValueError, OSError):
-                    self._stop.wait(0.1)
-                    seen = rescan(seen)
+            while not self._stop.wait(0.2):
+                seen = rescan(seen)
 
         # watch for local service changes
-        service_dir = LocalServiceAdvertisement.get_service_directory(service_type)
         seen_local = rescan({})
         self._watcher = threading.Thread(
             target=watch_local, args=(seen_local,), daemon=True
