@@ -1042,6 +1042,7 @@ def discover(
     properties: dict[str, str | None] | None = None,
     remote: bool = True,
     timeout: float = 10,
+    poll_interval: float = 1,
 ) -> tuple[str, dict[str, str | None]]:
     """
     Discover a device/service on the local network matching given properties.
@@ -1057,6 +1058,8 @@ def discover(
     timeout : float, optional
         How many seconds to wait for a matching service before timing out.
         Default is 10.
+    poll_interval : float, optional
+        How often to poll for local service changes, in seconds. Default is 1.
 
     Returns
     -------
@@ -1075,6 +1078,7 @@ def discover(
         properties=properties or {},
         remote=remote,
         timeout=timeout,
+        poll_interval=poll_interval,
     ):
         return event.address, event.properties
     raise TimeoutError('No matching service found')
@@ -1092,6 +1096,7 @@ class _ServiceIterator(Iterator[ServiceEvent]):
         properties: dict[str, str | None],
         remote: bool,
         timeout: float | None,
+        poll_interval: float,
     ) -> None:
         self._q: queue.Queue[ServiceEvent] = queue.Queue()
         self._stop = threading.Event()
@@ -1114,7 +1119,7 @@ class _ServiceIterator(Iterator[ServiceEvent]):
             return seen_out
 
         def watch_local(seen: dict[str, ServiceEvent]) -> None:
-            while not self._stop.wait(0.2):
+            while not self._stop.wait(poll_interval):
                 seen = rescan(seen)
 
         # watch for local service changes
@@ -1243,6 +1248,7 @@ def iter_services(
     properties: dict[str, str | None] | None = None,
     remote: bool = True,
     timeout: float | None = 10,
+    poll_interval: float = 1,
 ) -> '_ServiceIterator':
     """
     Discover all services matching the given type and properties.
@@ -1263,6 +1269,8 @@ def iter_services(
     timeout : float or None, optional
         How many seconds to monitor, by default 10.
         Pass ``None`` to monitor indefinitely until the iterator is closed.
+    poll_interval : float, optional
+        How often to poll for local service changes, in seconds. Default is 1.
 
     Yields
     ------
@@ -1270,4 +1278,6 @@ def iter_services(
         A named tuple of ``(kind, address, properties)`` where ``kind`` is
         ``'added'`` or ``'removed'``.
     """
-    return _ServiceIterator(service_type, properties or {}, remote, timeout)
+    return _ServiceIterator(
+        service_type, properties or {}, remote, timeout, poll_interval
+    )
