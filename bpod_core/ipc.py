@@ -1105,7 +1105,7 @@ class _ServiceListenerIterator(ServiceListener):
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         # get service info
         info = zc.get_service_info(type_, name)
-        if info is None or not info.addresses:
+        if info is None or not info.parsed_addresses():
             return
 
         # check if the service runs on localhost

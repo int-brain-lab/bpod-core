@@ -1,8 +1,11 @@
 import json
 import os
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 import pytest
+import zeroconf
+from zeroconf import ServiceBrowser
 
 from bpod_core import ipc
 
@@ -325,27 +328,84 @@ class TestIterServices:
         ) as advertisement:
             yield advertisement
 
-    def test_yields_added_event(self, mock_local_advertisement):
+    @pytest.fixture
+    def mock_remote_advertisement(
+        self, mocker, mock_local_discovery_dir, mock_service_browser, mock_zeroconf
+    ):
+        """Simulate a remote service advertised via Zeroconf."""
+        mocker.patch('bpod_core.ipc.get_local_ipv4', return_value='192.168.1.50')
+
+        mock_info = mocker.MagicMock(spec=zeroconf.ServiceInfo)
+        mock_info.parsed_addresses.return_value = ['192.168.1.100']
+        mock_info.port = 5555
+        mock_info.decoded_properties = {'a': 'b'}
+
+        mock_zeroconf.get_service_info.return_value = mock_info
+        mocker.patch('bpod_core.ipc.Zeroconf', return_value=mock_zeroconf)
+
+        class RemoteAdvertisement:
+            def __init__(self):
+                self._zc = None
+                self._type = None
+                self._name = None
+                self._listener = None
+
+            def close(self):
+                self._listener.remove_service(self._zc, self._type, self._name)
+
+        ad = RemoteAdvertisement()
+
+        def make_browser(zc, type_, listener, *_, **__):
+            ad._zc = zc
+            ad._type = type_
+            ad._name = f'service.{type_}'
+            ad._listener = listener
+            listener.add_service(zc, type_, ad._name)
+            return mocker.MagicMock(spec=ServiceBrowser)
+
+        mock_service_browser.side_effect = make_browser
+        yield ad
+
+    class MockAdvertisement(NamedTuple):
+        fixture: Any
+        is_local: bool
+        address: str
+
+    @pytest.fixture(
+        params=[
+            pytest.param(('mock_local_advertisement', True), id='local'),
+            pytest.param(('mock_remote_advertisement', False), id='remote'),
+        ],
+    )
+    def mock_advertisement(self, request):
+        fixture_name, is_local = request.param
+        address = 'tcp://127.0.0.1:5555' if is_local else 'tcp://192.168.1.100:5555'
+        fixture = request.getfixturevalue(fixture_name)
+        return self.MockAdvertisement(fixture, is_local, address)
+
+    def test_yields_added_event(self, mock_advertisement):
         """`added` event is yielded as a local service appears."""
-        iterator = ipc.iter_services('service_type', remote=False)
+        iterator = ipc.iter_services('service_type')
         event = next(iterator)
         assert event.kind == 'added'
-        assert event.address == 'tcp://127.0.0.1:5555'
+        assert event.address == mock_advertisement.address
         assert event.properties == {'a': 'b'}
 
-    def test_yields_removed_event(self, mock_local_advertisement):
+    def test_yields_removed_event(self, mock_advertisement):
         """`removed` event is yielded as a local service disappears."""
-        iterator = ipc.iter_services('service_type', remote=False, poll_interval=0.01)
+        iterator = ipc.iter_services('service_type', poll_interval=0.01)
         next(iterator)
-        mock_local_advertisement.close()
+        mock_advertisement.fixture.close()
         event = next(iterator)
         assert event.kind == 'removed'
-        assert event.address == 'tcp://127.0.0.1:5555'
+        assert event.address == mock_advertisement.address
         assert event.properties == {'a': 'b'}
 
-    def test_exhausted_when_no_services(self, mock_local_advertisement):
+    def test_exhausted_when_no_services(
+        self, mock_local_advertisement, mock_service_browser, mock_zeroconf
+    ):
         """timeout=0 with no services yields nothing."""
-        iterator = ipc.iter_services('nonexistent', remote=False, timeout=0)
+        iterator = ipc.iter_services('nonexistent', remote=True, timeout=0)
         assert list(iterator) == []
 
     def test_filters_by_properties(self, mock_local_advertisement):
@@ -356,7 +416,7 @@ class TestIterServices:
             address='tcp://127.0.0.1:6666',
             properties={'a': 'b', 'x': 'y'},
         ):
-            kwargs = {'local': True, 'remote': False, 'timeout': 0}
+            kwargs = {'local': True, 'remote': True, 'timeout': 0}
             iterator_1 = ipc.iter_services('service_type', {'x': 'y'}, **kwargs)
             iterator_2 = ipc.iter_services('service_type', {'a': 'b'}, **kwargs)
             events_1 = list(iterator_1)
@@ -365,7 +425,7 @@ class TestIterServices:
         assert len(events_2) == 2
         assert events_1[0].address == 'tcp://127.0.0.1:6666'
 
-    def test_remote_false_no_zeroconf(self, mock_advertisement):
+    def test_remote_false_no_zeroconf(self, mock_zeroconf, mock_local_discovery_dir):
         """remote=False never instantiates Zeroconf."""
         list(ipc.iter_services('nonexistent', remote=False, timeout=0))
-        mock_advertisement['zeroconf'].assert_not_called()
+        mock_zeroconf.assert_not_called()
