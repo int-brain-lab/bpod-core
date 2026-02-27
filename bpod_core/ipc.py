@@ -133,8 +133,11 @@ class ServiceEvent(NamedTuple):
     """A service discovery event yielded by :func:`iter_services`."""
 
     kind: Literal['added', 'removed']
+    """The type of event: 'added' for new services, 'removed' for removed services."""
     address: str
+    """The address of the service."""
     properties: dict[str, str | None]
+    """The properties of the service."""
 
 
 class WelcomeData(msgspec.Struct, kw_only=True):
