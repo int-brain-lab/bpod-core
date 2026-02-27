@@ -265,7 +265,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
             )
 
     @staticmethod
-    def get_service_directory(service_type: str) -> Path:
+    def _get_service_directory(service_type: str) -> Path:
         """Get the directory for a service type."""
         runtime_directory = LocalServiceAdvertisement.runtime_directory
         sanitized = RE_NON_ALPHANUMERIC.sub('_', service_type)
@@ -274,7 +274,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
     @staticmethod
     def _get_service_file(service_type: str, uuid: UUID) -> Path:
         """Get the path to a local service file."""
-        service_dir = LocalServiceAdvertisement.get_service_directory(service_type)
+        service_dir = LocalServiceAdvertisement._get_service_directory(service_type)
         return service_dir / f'{uuid.hex}.json'
 
     @staticmethod
@@ -296,7 +296,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
         LocalServiceInfo
             Information structure describing the discovered services.
         """
-        service_dir = LocalServiceAdvertisement.get_service_directory(service_type)
+        service_dir = LocalServiceAdvertisement._get_service_directory(service_type)
         properties = properties or {}
 
         if service_dir.exists():
