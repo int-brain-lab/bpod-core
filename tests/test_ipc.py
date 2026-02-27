@@ -314,7 +314,7 @@ class TestIterServices:
 
     def test_yields_added_event(self, mock_local_advertisement):
         """`added` event is yielded as a local service appears."""
-        iterator = ipc.iter_services('service_type', remote=False, timeout=1)
+        iterator = ipc.iter_services('service_type', remote=False)
         event = next(iterator)
         assert event.kind == 'added'
         assert event.address == 'tcp://127.0.0.1:5555'
@@ -322,7 +322,7 @@ class TestIterServices:
 
     def test_yields_removed_event(self, mock_local_advertisement):
         """`removed` event is yielded as a local service disappears."""
-        iterator = ipc.iter_services('service_type', remote=False, timeout=1)
+        iterator = ipc.iter_services('service_type', remote=False)
         next(iterator)
         mock_local_advertisement.close()
         event = next(iterator)
