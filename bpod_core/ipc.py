@@ -1069,7 +1069,7 @@ def discover(
     Returns
     -------
     str
-        The Zeroconf service address, e.g., 'tcp://192.168.1.10:1234'.
+        The service address, e.g., 'tcp://192.168.1.10:1234'.
     dict
         A dictionary of service properties.
 
@@ -1109,8 +1109,8 @@ class _ServiceListenerIterator(ServiceListener):
             return
 
         # check if the service runs on localhost
-        ip = info.parsed_addresses(IPVersion.V4Only)[0]
-        if ip == self._local_ipv4:
+        ipv4 = next(iter(info.parsed_addresses(IPVersion.V4Only)), None)
+        if ipv4 is None or ipv4 == self._local_ipv4:
             return
 
         # check if the service matches the requested properties
@@ -1119,7 +1119,7 @@ class _ServiceListenerIterator(ServiceListener):
             return
 
         # add event to the queue
-        event = ServiceEvent('added', f'tcp://{ip}:{info.port}', txt)
+        event = ServiceEvent('added', f'tcp://{ipv4}:{info.port}', txt)
         self._seen_remote[name] = event
         self._queue.put(event)
 
@@ -1144,6 +1144,8 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
 
     Prefer :func:`iter_services` over instantiating this class directly.
     """
+
+    _YIELDED = object()
 
     def __init__(
         self,
@@ -1180,12 +1182,8 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
         self._deadline = None if timeout is None else time.monotonic() + timeout
         self._zc: Zeroconf | None = None
         self._browser: ServiceBrowser | None = None
-
-        # Consumer-side event buffer. Background threads write only to _q (thread-safe).
-        # __next__ drains _q into _pending, collapsing add/remove pairs for the same
-        # address, so a service that disappears before being yielded is never seen.
-        self._pending: deque[ServiceEvent] = deque()
-        self._pending_adds: dict[str, int] = {}  # address → # of valid pending 'added'
+        self._state: dict[str, ServiceEvent | object] = {}  # per-address state
+        self._pending: deque[str] = deque()  # waiting to be emitted
 
         # watch for local service changes
         self._watcher: threading.Thread | None = None
@@ -1202,8 +1200,9 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
                 return current
 
             def watch_local(state: dict[str, ServiceEvent]) -> None:
-                while not self._stop.wait(poll_interval):
+                while not self._stop.is_set():
                     state = rescan(state)
+                    self._stop.wait(poll_interval)
 
             seen = rescan({})
             self._watcher = threading.Thread(
@@ -1241,31 +1240,30 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
 
     def __next__(self) -> ServiceEvent:
         while True:
-            # Drain all immediately available events from the queue
+            # Drain all immediately available events
             try:
                 while True:
-                    event = self._q.get_nowait()
-                    self._process(event)
+                    self._process(self._q.get_nowait())
             except queue.Empty:
                 pass
 
-            # Yield the next noncancelled event from the buffer
+            # Yield next pending event
             while self._pending:
-                event = self._pending.popleft()
-                if event.kind == 'added':
-                    count = self._pending_adds.get(event.address, 0)
-                    if count == 0:
-                        continue  # cancelled by a subsequent 'removed'
-                    self._pending_adds[event.address] = count - 1
+                address = self._pending.popleft()
+                event = self._state.pop(address, None)
+                if event is None or event is self._YIELDED:
+                    continue
+                self._state[address] = self._YIELDED
                 return event
 
-            # Buffer empty — block until the next event or timeout
+            # Handle timeout / blocking
             remaining = (
                 None if self._deadline is None else self._deadline - time.monotonic()
             )
             if remaining is not None and remaining <= 0:
                 self.close()
                 raise StopIteration
+
             try:
                 self._process(self._q.get(timeout=remaining))
             except queue.Empty as e:
@@ -1291,16 +1289,23 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
                 zc.close()
 
     def _process(self, event: ServiceEvent) -> None:
-        """Add *event* to the pending buffer, collapsing add/remove pairs."""
-        if event.kind == 'removed' and self._pending_adds.get(event.address, 0) > 0:
-            # Paired with an unseen 'added' — suppress both
-            self._pending_adds[event.address] -= 1
-        else:
-            if event.kind == 'added':
-                self._pending_adds[event.address] = (
-                    self._pending_adds.get(event.address, 0) + 1
-                )
-            self._pending.append(event)
+        address = event.address
+        state = self._state.get(address)
+
+        if event.kind == 'removed':
+            if state is None:  # no pending event / not known alive -> ignore
+                return
+            elif state is self._YIELDED:  # was yielded, alive -> enqueue, go pending
+                self._pending.append(address)
+                self._state[address] = event
+                return
+            else:  # pending add not yet yielded -> cancel
+                self._state.pop(address, None)
+                return
+
+        if state is None:  # first time seen -> enqueue
+            self._pending.append(address)
+        self._state[address] = event  # go/stay pending
 
     def close(self) -> None:
         """Stop monitoring and release all resources."""
@@ -1314,14 +1319,12 @@ def iter_services(
     remote: bool = True,
     timeout: float | None = 10,
     poll_interval: float = 1,
-) -> ServiceIterator:
+) -> Iterator[ServiceEvent]:
     """
     Discover all services matching the given type and properties.
 
-    Continuously monitors both local (IPC) and remote (Zeroconf/TCP) services,
-    yielding ``'added'`` and ``'removed'`` events as services appear and
-    disappear. Local services are always preferred — if a service is reachable
-    both via IPC and TCP, only the IPC address is yielded.
+    Continuously monitors both local (IPC) and remote (Zeroconf/TCP) services, yielding
+    ``'added'`` and ``'removed'`` events as services appear and disappear.
 
     Parameters
     ----------
@@ -1342,8 +1345,11 @@ def iter_services(
     Yields
     ------
     ServiceEvent
-        A named tuple of ``(kind, address, properties)`` where ``kind`` is
-        ``'added'`` or ``'removed'``.
+        A named tuple with the following fields:
+
+        - kind: str, either 'added' or 'removed'
+        - address: str, the service address, e.g., 'tcp://192.168.1.10:1234'
+        - properties: dict, the service properties, e.g., {'name': 'MyDevice'}
     """
     return ServiceIterator(
         service_type=service_type,

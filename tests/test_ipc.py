@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 from uuid import uuid4
 
 import pytest
@@ -330,7 +330,7 @@ class TestIterServices:
 
     @pytest.fixture
     def mock_remote_advertisement(
-        self, mocker, mock_local_discovery_dir, mock_service_browser, mock_zeroconf
+        self, mocker, mock_local_discovery_dir, mock_service_browser
     ):
         """Simulate a remote service advertised via Zeroconf."""
         mocker.patch('bpod_core.ipc.get_local_ipv4', return_value='192.168.1.50')
@@ -340,8 +340,9 @@ class TestIterServices:
         mock_info.port = 5555
         mock_info.decoded_properties = {'a': 'b'}
 
-        mock_zeroconf.get_service_info.return_value = mock_info
-        mocker.patch('bpod_core.ipc.Zeroconf', return_value=mock_zeroconf)
+        mock_zc = mocker.MagicMock(spec=zeroconf.Zeroconf)
+        mock_zc.get_service_info.return_value = mock_info
+        mocker.patch('bpod_core.ipc.Zeroconf', return_value=mock_zc)
 
         class RemoteAdvertisement:
             def __init__(self):
@@ -353,18 +354,18 @@ class TestIterServices:
             def close(self):
                 self._listener.remove_service(self._zc, self._type, self._name)
 
-        ad = RemoteAdvertisement()
+        advertisement = RemoteAdvertisement()
 
         def make_browser(zc, type_, listener, *_, **__):
-            ad._zc = zc
-            ad._type = type_
-            ad._name = f'service.{type_}'
-            ad._listener = listener
-            listener.add_service(zc, type_, ad._name)
+            advertisement._zc = zc
+            advertisement._type = type_
+            advertisement._name = f'service.{type_}'
+            advertisement._listener = listener
+            listener.add_service(zc, type_, advertisement._name)
             return mocker.MagicMock(spec=ServiceBrowser)
 
         mock_service_browser.side_effect = make_browser
-        yield ad
+        yield advertisement
 
     class MockAdvertisement(NamedTuple):
         fixture: Any
@@ -429,3 +430,42 @@ class TestIterServices:
         """remote=False never instantiates Zeroconf."""
         list(ipc.iter_services('nonexistent', remote=False, timeout=0))
         mock_zeroconf.assert_not_called()
+
+    @pytest.mark.parametrize(
+        'kinds, expected_len, expected_event',
+        [
+            pytest.param('+', 1, ('added', 0), id='add'),
+            pytest.param('-', 0, None, id='remove'),
+            pytest.param('+-', 0, None, id='add, remove'),
+            pytest.param('+-+', 1, ('added', 2), id='add, remove, add'),
+            pytest.param('+-+-', 0, None, id='add, remove, add, remove'),
+            pytest.param('+Y-', 1, ('removed', 1), id='add, yield, remove'),
+        ],
+    )
+    def test_collapse(
+        self, kinds, expected_len, expected_event, mock_local_discovery_dir
+    ):
+        """test collapsing various combinations of added/removed events."""
+        iterator = ipc.ServiceIterator(
+            service_type='nonexistent',
+            properties={},
+            local=True,
+            remote=False,
+            timeout=0,
+            poll_interval=0.01,
+        )
+        i = 0
+        for k in kinds:
+            if k == 'Y':
+                next(iterator)
+                continue
+            kind: Literal['added', 'removed'] = 'added' if k == '+' else 'removed'
+            iterator._q.put(ipc.ServiceEvent(kind, 'tcp://127.0.0.1:0', {'v': str(i)}))
+            i += 1
+        events = list(iterator)
+        assert len(events) == expected_len, 'incorrect number of events'
+        if events:
+            assert events[0].kind == expected_event[0], '1st event has wrong kind'
+            assert events[0].properties == {'v': str(expected_event[1])}
+        else:
+            assert expected_event is None
