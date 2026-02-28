@@ -42,7 +42,7 @@ from bpod_core.com import (
 )
 from bpod_core.constants import STRUCT_UINT32, TeensyPID
 from bpod_core.fsm import StateMachine
-from bpod_core.ipc import ServiceClient, ServiceHost
+from bpod_core.ipc import ServiceClient, ServiceEvent, ServiceHost, iter_services
 from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
 
 logger = logging.getLogger(__name__)
@@ -1628,3 +1628,58 @@ def discover_bpod(
             port=p.device, expected_message=b'\xde', timeout=DISCOVERY_TIMEOUT
         ):
             yield BpodInfo(port=p.device, serial_number=str(p.serial_number))
+
+
+def discover_remote_bpod(
+    name: str | None = None,
+    serial_number: str | None = None,
+    location: str | None = None,
+    local: bool = True,
+    remote: bool = True,
+    timeout: float | None = 10.0,
+    poll_interval: float = 1,
+) -> Iterator[ServiceEvent]:
+    """
+    Identify available Bpod devices connected via ZeroMQ.
+
+    Parameters
+    ----------
+    name : str, optional
+        Name of the Bpod device.
+    serial_number : str, optional
+        Serial number of the Bpod device.
+    location : str, optional
+        Location of the Bpod device.
+    local : bool, optional
+        Whether to search for services on the local machine, by default True.
+    remote : bool, optional
+        Whether to also search for services on the network, by default True.
+    timeout : float or None, optional
+        How many seconds to monitor, by default 10.
+        Pass ``None`` to monitor indefinitely until the iterator is closed.
+    poll_interval : float, optional
+        How often to poll for local service changes, in seconds. Default is 1.
+
+    Yields
+    ------
+    ServiceEvent
+        A named tuple with the following fields:
+
+        - kind: str, either 'added' or 'removed'
+        - address: str, the service address, e.g., 'tcp://192.168.1.10:1234'
+        - properties: dict, the service properties, e.g., {'name': 'MyDevice'}
+    """
+    properties = {
+        'name': name,
+        'serial': serial_number,
+        'location': location,
+    }
+    properties = {k: v for k, v in properties.items() if v is not None}
+    yield from iter_services(
+        service_type='bpod',
+        properties=properties,
+        local=local,
+        remote=remote,
+        timeout=timeout,
+        poll_interval=poll_interval,
+    )
