@@ -653,7 +653,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         Returns
         -------
         str
-            A dictionary representation of the state machine.
+            A JSON string representation of the state machine.
         """
         return self.model_dump_json(indent=indent, exclude_defaults=exclude_defaults)
 
@@ -669,7 +669,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         Returns
         -------
         str
-            A dictionary representation of the state machine.
+            A YAML string representation of the state machine.
         """
         return msgspec.yaml.encode(self.to_dict(exclude_defaults)).decode()
 
@@ -838,7 +838,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         Returns
         -------
         StateMachine
-            A StateMachine instance created from the contens of the file.
+            A StateMachine instance created from the contents of the file.
 
         Raises
         ------

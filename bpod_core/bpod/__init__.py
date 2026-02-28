@@ -89,9 +89,11 @@ class FSMThread(threading.Thread):
         softcode_handler : Callable
             A handler function for processing softcodes.
         state_transitions : np.ndarray
-            The state transition matrix
+            The state transition matrix.
         use_back_op : bool
-            Whether the state machine makes use of the `>back` operator
+            Whether the state machine makes use of the ``>back`` operator.
+        event_names : list of str
+            Names of all events the FSM can receive, used for logging.
         """
         super().__init__(daemon=True)
         self.serial = serial
@@ -105,6 +107,7 @@ class FSMThread(threading.Thread):
         self._event_names = event_names
 
     def stop(self) -> None:
+        """Signal the FSM thread to stop after the current state cycle."""
         self._stop_event.set()
 
     def run(self) -> None:
@@ -331,7 +334,7 @@ class Bpod(SerialDevice, AbstractBpod):
         ------
         SerialException
             If the port could not be opened.
-        BpodException
+        BpodError
             If the handshake fails.
         """
         super().open()
@@ -610,7 +613,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Raises
         ------
-        BpodException
+        BpodError
             If the handshake fails.
         """
         try:
@@ -642,6 +645,13 @@ class Bpod(SerialDevice, AbstractBpod):
         return self.serial0.read(1) == b'\x01'
 
     def reset_session_clock(self) -> bool:
+        """Reset the Bpod session clock to zero.
+
+        Returns
+        -------
+        bool
+            True if the Bpod acknowledged the command.
+        """
         # TODO: Get timestamp / time.monotonic() / time.perf_counter()
         logger.debug('Resetting session clock')
         return self.serial0.verify(b'*')
@@ -716,6 +726,18 @@ class Bpod(SerialDevice, AbstractBpod):
 
     @validate_call
     def set_status_led(self, enabled: bool) -> bool:
+        """Enable or disable the Bpod status LED.
+
+        Parameters
+        ----------
+        enabled : bool
+            True to turn the LED on, False to turn it off.
+
+        Returns
+        -------
+        bool
+            True if the Bpod acknowledged the command.
+        """
         self.serial0.write_struct('<c?', b':', enabled)
         return self.serial0.verify(b'')
 
@@ -1160,15 +1182,27 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         Wait for the currently running state machine to finish.
 
-        This method blocks until the state machine has finished executing.
-        If no state machine is currently running, it raises a RuntimeError.
+        Blocks until the state machine thread completes. If no state machine is
+        currently running, this method returns immediately.
         """
         if self.is_running:
             self._fsm_thread.join()  # type: ignore[union-attr]
 
     @validate_call
     def run_state_machine(self, *, blocking: bool = True) -> None:
-        """Temporary run method for debugging purposes."""
+        """Run the previously sent state machine.
+
+        Parameters
+        ----------
+        blocking : bool, optional
+            If True (default), block until the state machine finishes.
+            If False, return immediately after starting.
+
+        Raises
+        ------
+        RuntimeError
+            If a state machine is already running.
+        """
         if self.is_running:
             raise RuntimeError('A state machine is already running')
         self.serial0.write(b'R')
@@ -1241,7 +1275,7 @@ class Channel:
 
     def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
         """
-        Abstract base class representing a channel on the Bpod device.
+        Initialize a channel on the Bpod device.
 
         Parameters
         ----------
@@ -1267,20 +1301,6 @@ class Input(Channel):
     """Input channel class representing a digital input channel."""
 
     def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
-        """
-        Input channel class representing a digital input channel.
-
-        Parameters
-        ----------
-        bpod : Bpod
-            The Bpod instance associated with the channel.
-        name : str
-            The name of the channel.
-        io_key : bytes
-            The I/O type of the channel (e.g., b'B', b'V', b'P').
-        index : int
-            The index of the channel.
-        """
         super().__init__(bpod, name, io_key, index)
         self._set_enable_inputs = bpod._set_enable_inputs
         self._enabled = io_key in (b'PBWF')  # Enable Port, BNC, Wire and FlexIO inputs
@@ -1319,7 +1339,7 @@ class Input(Channel):
         Returns
         -------
         bool
-            True if the operation was success, False otherwise.
+            True if the operation was successful, False otherwise.
         """
         if self.io_type not in b'FDBWVP':
             logger.warning(
@@ -1438,7 +1458,7 @@ class Module:
 
     @relay.setter
     def relay(self, state: bool) -> None:
-        """The current state of the serial relay."""
+        """The current state of the module's serial relay."""
         self.set_relay(state)
 
     @validate_call
@@ -1472,7 +1492,7 @@ class Module:
             If the provided parameters cannot be validated or coerced to the expected
             type.
         ValueError
-            If ```message_id``, or ``message_bytes`` length is out of range.
+            If ``message_id``, or ``message_bytes`` length is out of range.
         """
         if not (0 <= message_id <= 254):
             raise ValueError('Message ID must be between 0 and 254')
@@ -1608,12 +1628,12 @@ def discover_bpod(
     --------
     Iterate over available Bpods::
 
-        for device in discover_bpods():
+        for device in discover_bpod():
             print(f"Found Bpod at {device}")
 
     Get as a list::
 
-        devices = list(discover_bpods())
+        devices = list(discover_bpod())
     """
     # create filter dict
     filters: dict[str, str] = {}

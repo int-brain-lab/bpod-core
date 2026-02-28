@@ -42,11 +42,11 @@ class ExtendedSerial(Serial):
         return self.write(STRUCT_INT16.pack(value))
 
     def write_int32(self, value: int) -> int | None:
-        """Write a 16-bit signed integer to the serial port (little-endian)."""
+        """Write a 32-bit signed integer to the serial port (little-endian)."""
         return self.write(STRUCT_INT32.pack(value))
 
     def write_int64(self, value: int) -> int | None:
-        """Write a 16-bit signed integer to the serial port (little-endian)."""
+        """Write a 64-bit signed integer to the serial port (little-endian)."""
         return self.write(STRUCT_INT64.pack(value))
 
     def write_uint8(self, value: int) -> int | None:
@@ -453,6 +453,9 @@ class SerialDevice(AbstractContextManager):
             The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3').
         open_connection : bool, optional
             Whether to open the connection immediately, by default True.
+        serial_device_name : str, optional
+            Name used to identify this device in log messages, by default
+            ``'serial_device'``.
         **kwargs
             Additional arguments for compatibility with subclasses.
 

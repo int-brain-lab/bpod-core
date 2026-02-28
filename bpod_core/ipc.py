@@ -49,17 +49,13 @@ U = TypeVar('U')
 
 
 class ServiceError(Exception):
-    pass
+    """Base exception for IPC service errors."""
 
 
 class RemoteError(ServiceError):
     def __init__(self, error_data: 'ErrorData') -> None:
         self.original_error = error_data
         super().__init__(f'Remote {error_data.name}: {error_data.message}')
-
-
-class ClientError(ServiceError):
-    pass
 
 
 class MessageKind(IntEnum):
@@ -141,6 +137,8 @@ class ServiceEvent(NamedTuple):
 
 
 class WelcomeData(msgspec.Struct, kw_only=True):
+    """Socket addresses returned by the host during the handshake."""
+
     ipc_pub_sub: str | None = None
     ipc_req_rep: str | None = None
     tcp_pub_sub: str
@@ -148,6 +146,8 @@ class WelcomeData(msgspec.Struct, kw_only=True):
 
 
 class ClientInfo(msgspec.Struct):
+    """Identifying information about a connected client."""
+
     name: str
     type: Literal['IPC', 'RPC']
     address: str
@@ -373,7 +373,9 @@ class ServiceBase(contextlib.AbstractContextManager):
         self.close()
 
     @abstractmethod
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Close the service and release all resources."""
+        ...
 
 
 def _format_zeroconf_service_type(service_type: str) -> str:
@@ -1080,7 +1082,7 @@ def discover(
     """
     with ServiceIterator(
         service_type=service_type,
-        properties=properties or {},
+        properties=properties,
         local=local,
         remote=remote,
         timeout=timeout,
@@ -1092,7 +1094,7 @@ def discover(
 
 
 class _ServiceListenerIterator(ServiceListener):
-    """A Zeroconf :class:`ServiceListener` used with :class:`_ServiceIterator`."""
+    """A Zeroconf :class:`ServiceListener` used with :class:`ServiceIterator`."""
 
     def __init__(
         self, q: queue.Queue[ServiceEvent], properties: dict[str, str | None]
