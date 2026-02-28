@@ -1150,11 +1150,11 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
     def __init__(
         self,
         service_type: str,
-        properties: dict[str, str | None],
-        local: bool,
-        remote: bool,
-        timeout: float | None,
-        poll_interval: float,
+        properties: dict[str, str | None] | None = None,
+        local: bool = True,
+        remote: bool = True,
+        timeout: float | None = 10,
+        poll_interval: float = 1,
     ) -> None:
         """Initialize the ServiceIterator.
 
@@ -1162,17 +1162,17 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
         ----------
         service_type : str
             The service type to discover, e.g., ``'bpod'``.
-        properties : dict
+        properties : dict, optional
             Dictionary of expected service properties to match.
-        local : bool
-            Whether to search for services on the local machine via IPC.
-        remote : bool
-            Whether to also search for services on the network via Zeroconf.
-        timeout : float or None
-            How many seconds to monitor before stopping. Pass ``None`` to
-            monitor indefinitely until the iterator is explicitly closed.
-        poll_interval : float
-            How often to poll for local service changes, in seconds.
+        local : bool, optional
+            Whether to search for services on the local machine, by default True.
+        remote : bool, optional
+            Whether to also search for services on the network, by default True.
+        timeout : float or None, optional
+            How many seconds to monitor, by default 10.
+            Pass ``None`` to monitor indefinitely until the iterator is closed.
+        poll_interval : float, optional
+            How often to poll for local service changes, in seconds. Default is 1.
         """
         if not local and not remote:
             raise ValueError('at least one of local or remote must be True')
@@ -1182,8 +1182,9 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
         self._deadline = None if timeout is None else time.monotonic() + timeout
         self._zc: Zeroconf | None = None
         self._browser: ServiceBrowser | None = None
-        self._state: dict[str, ServiceEvent | object] = {}  # per-address state
+        self._state: dict[str, ServiceEvent | object | None] = {}  # per-address state
         self._pending: deque[str] = deque()  # waiting to be emitted
+        properties = properties or {}
 
         # watch for local service changes
         self._watcher: threading.Thread | None = None
@@ -1254,7 +1255,7 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
                 if event is None or event is self._YIELDED:
                     continue
                 self._state[address] = self._YIELDED
-                return event
+                return cast('ServiceEvent', event)
 
             # Handle timeout / blocking
             remaining = (
@@ -1353,7 +1354,7 @@ def iter_services(
     """
     return ServiceIterator(
         service_type=service_type,
-        properties=properties or {},
+        properties=properties,
         local=local,
         remote=remote,
         timeout=timeout,

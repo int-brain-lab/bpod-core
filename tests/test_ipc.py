@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, Literal, NamedTuple
+from typing import Any, NamedTuple
 from uuid import uuid4
 
 import pytest
@@ -448,7 +448,6 @@ class TestIterServices:
         """test collapsing various combinations of added/removed events."""
         iterator = ipc.ServiceIterator(
             service_type='nonexistent',
-            properties={},
             local=True,
             remote=False,
             timeout=0,
@@ -459,7 +458,7 @@ class TestIterServices:
             if k == 'Y':
                 next(iterator)
                 continue
-            kind: Literal['added', 'removed'] = 'added' if k == '+' else 'removed'
+            kind = 'added' if k == '+' else 'removed'
             iterator._q.put(ipc.ServiceEvent(kind, 'tcp://127.0.0.1:0', {'v': str(i)}))
             i += 1
         events = list(iterator)
