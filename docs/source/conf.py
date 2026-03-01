@@ -19,12 +19,10 @@ def generate_fsm_examples(app):
         return
 
     # Create docs/source/state_machines/examples/ with one page per example
-    examples_source_path = project_root / 'examples'
+    examples_source_path = project_root / 'examples' / 'state_machines'
     examples_target_path = docs_source_path / 'state_machines' / 'examples'
     examples_target_path.mkdir(parents=True, exist_ok=True)
-    example_files = sorted(
-        [f for f in examples_source_path.glob('*.py')], key=lambda f: f.name
-    )
+    example_files = sorted(examples_source_path.glob('*.py'), key=lambda f: f.name)
 
     for fn in example_files:
         # Import the example file as a module
@@ -48,7 +46,7 @@ def generate_fsm_examples(app):
         json = [' ' * 7 + line for line in json]
 
         # Generate YAML
-        yaml = state_machine.to_yaml(indent=2).splitlines()
+        yaml = state_machine.to_yaml().splitlines()
         yaml = [' ' * 7 + line for line in yaml]
 
         page_path = examples_target_path.joinpath(f'{fn.stem}.rst')
@@ -65,7 +63,7 @@ def generate_fsm_examples(app):
             '',
             '   .. tab-item:: Python',
             '',
-            f'    .. literalinclude:: ../../../../examples/{fn.name}',
+            f'    .. literalinclude:: ../../../../examples/state_machines/{fn.name}',
             '       :language: python',
             '       :start-at: from bpod_core.',
             '',
@@ -94,7 +92,7 @@ def setup(app):
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'bpod-core'
-copyright = f'{date.today().year}, International Brain Laboratory'  # noqa: A001
+copyright = f'{date.year}, International Brain Laboratory'  # noqa: A001
 author = 'International Brain Laboratory'
 release = '.'.join(__version__.split('.')[:3])
 version = '.'.join(__version__.split('.')[:3])

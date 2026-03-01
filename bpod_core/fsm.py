@@ -17,17 +17,17 @@ from bpod_core.misc import ValidatedDict
 
 
 def enc_hook(obj: Any) -> Any:
+    """Encode a :class:`~pydantic.BaseModel` instance into a dictionary."""
     if isinstance(obj, BaseModel):
         return obj.model_dump(exclude_defaults=True)
-    else:
-        raise NotImplementedError(f'Objects of type {type(obj)} are not supported')
+    raise NotImplementedError(f'Objects of type {type(obj)} are not supported')
 
 
 def dec_hook(obj_type: type, obj: dict) -> Any:
+    """Decode a dictionary into a :class:`~pydantic.BaseModel` instance."""
     if issubclass(obj_type, BaseModel):
         return obj_type.model_validate(obj)
-    else:
-        raise NotImplementedError(f'Objects of type {type} are not supported')
+    raise NotImplementedError(f'Objects of type {type} are not supported')
 
 
 StateTimer = Annotated[
@@ -298,6 +298,7 @@ class States(ValidatedDict[StateName, State], title='States'):
 
     @property
     def transition_targets(self) -> set[StateName | Operator]:
+        """A set of all transition targets."""
         return {t for s in self.values() for t in s.transitions.values()}
 
 
@@ -353,8 +354,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         string = ', '.join(f'{fields[i]}: {n}' for i, n in enumerate(counts))
         if self.name != StateMachine.model_fields['name'].default:
             return f"{self.__class__.__name__}(name='{self.name}', {string})"
-        else:
-            return f'{self.__class__.__name__}({string})'
+        return f'{self.__class__.__name__}({string})'
 
     @validate_call
     def add_state(
@@ -366,7 +366,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         comment: StateComment | None = None,
     ) -> None:
         """
-        Adds a new state to the state machine.
+        Add a new state to the state machine.
 
         Parameters
         ----------
@@ -399,10 +399,11 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         )
 
     @validate_call
-    def set_global_timer(  # noqa: PLR0913
+    def set_global_timer(
         self,
         index: Index,
         duration: GlobalTimerDuration,
+        *,
         onset_delay: GlobalTimerOnsetDelay = 0.0,
         channel: GlobalTimerChannel | None = None,
         value_on: GlobalTimerChannelValue = 0,
@@ -418,7 +419,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         Parameters
         ----------
         index : int
-            The index of the global timer to configure.
+            The index of the global timer to configure. Zero-based.
         duration : float
             The duration of the global timer in seconds.
         onset_delay : float, optional
@@ -462,12 +463,12 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         threshold: GlobalCounterThreshold,
     ) -> None:
         """
-        Configure a global timer with the specified parameters.
+        Configure a global counter with the specified parameters.
 
         Parameters
         ----------
         index : int
-            The index of the global counter.
+            The index of the global counter. Zero-based.
         event : str
             The name of the event to count.
         threshold : int
@@ -494,7 +495,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         Parameters
         ----------
         index : int
-            The index of the condition.
+            The index of the condition. Zero-based.
         channel : str
             The channel or global timer attached to the condition.
         value: bool
@@ -511,7 +512,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
     def to_digraph(self) -> Digraph:
         """
-        Returns a graphviz Digraph instance representing the state machine.
+        Return a graphviz Digraph instance representing the state machine.
 
         The Digraph includes:
 
@@ -621,8 +622,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         return dot
 
-    def to_dict(self, exclude_defaults: bool = True) -> dict:
-        """Returns the state machine as a dictionary.
+    def to_dict(self, *, exclude_defaults: bool = True) -> dict:
+        """Return the state machine as a dictionary.
 
         Parameters
         ----------
@@ -637,8 +638,10 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         """
         return self.model_dump(exclude_defaults=exclude_defaults)
 
-    def to_json(self, indent: None | int = None, exclude_defaults: bool = True) -> str:
-        """Returns the state machine as a JSON string.
+    def to_json(
+        self, indent: None | int = None, *, exclude_defaults: bool = True
+    ) -> str:
+        """Return the state machine as a JSON string.
 
         Parameters
         ----------
@@ -653,12 +656,12 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         Returns
         -------
         str
-            A dictionary representation of the state machine.
+            A JSON string representation of the state machine.
         """
         return self.model_dump_json(indent=indent, exclude_defaults=exclude_defaults)
 
-    def to_yaml(self, exclude_defaults: bool = True) -> str:
-        """Returns the state machine as a YAML string.
+    def to_yaml(self, *, exclude_defaults: bool = True) -> str:
+        """Return the state machine as a YAML string.
 
         Parameters
         ----------
@@ -669,14 +672,17 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         Returns
         -------
         str
-            A dictionary representation of the state machine.
+            A YAML string representation of the state machine.
         """
-        return msgspec.yaml.encode(self.to_dict(exclude_defaults)).decode()
+        return msgspec.yaml.encode(
+            self.to_dict(exclude_defaults=exclude_defaults)
+        ).decode()
 
     @validate_call
     def to_file(
         self,
         filename: PathLike | str,
+        *,
         overwrite: bool = False,
         create_directory: bool = False,
     ) -> None:
@@ -721,8 +727,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         if not filename.parent.exists():
             if not create_directory:
                 raise FileNotFoundError(f"Directory '{filename.parent}' does not exist")
-            else:
-                filename.parent.mkdir(parents=True, exist_ok=True)
+            filename.parent.mkdir(parents=True, exist_ok=True)
         suffix = filename.suffix.lower()
 
         # JSON output
@@ -754,7 +759,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
     @classmethod
     def from_dict(cls, data: dict) -> 'StateMachine':
-        """Creates a StateMachine instance from a dictionary.
+        """Create a StateMachine instance from a dictionary.
 
         Parameters
         ----------
@@ -774,7 +779,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
     @classmethod
     def from_json(cls, json_str: str | bytes) -> 'StateMachine':
-        """Creates a StateMachine instance from a JSON string.
+        """Create a StateMachine instance from a JSON string.
 
         Parameters
         ----------
@@ -803,7 +808,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
     @classmethod
     def from_yaml(cls, yaml_str: str | bytes) -> 'StateMachine':
-        """Creates a StateMachine instance from a YAML string.
+        """Create a StateMachine instance from a YAML string.
 
         Parameters
         ----------
@@ -828,7 +833,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
     @classmethod
     def from_file(cls, filename: PathLike | str) -> 'StateMachine':
-        """Creates a StateMachine instance from a JSON or YAML file.
+        """Create a StateMachine instance from a JSON or YAML file.
 
         Parameters
         ----------
@@ -838,7 +843,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         Returns
         -------
         StateMachine
-            A StateMachine instance created from the contens of the file.
+            A StateMachine instance created from the contents of the file.
 
         Raises
         ------
@@ -862,23 +867,23 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         data = filename.read_bytes()
         if filename.suffix.lower() == '.json':
             return cls.from_json(data)
-        else:
-            return cls.from_yaml(data)
+        return cls.from_yaml(data)
 
     @property
     def md5_hash(self) -> str:
         """MD5 hash of the state machine."""
         json = self.to_json().encode()
-        return hashlib.md5(json).hexdigest()
+        return hashlib.md5(json).hexdigest()  # noqa: S324
 
     @property
     def valid(self) -> bool:
         """Returns True if the state machine is valid, False otherwise."""
         try:
             self.check()
-            return True
         except ValueError:
             return False
+        else:
+            return True
 
     def check(self) -> None:
         """
@@ -904,19 +909,22 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
                 self._validation_md5_hash = md5_hash
 
     def _check(self) -> None:
+        # Check for empty state machine
         if len(self.states) == 0:
             raise ValueError('No states defined')
 
+        # Check for unreachable states
         initial_state = next(iter(self.states.keys()))
         reachable_states = self.states.transition_targets | {initial_state}
-
-        # Check for unreachable states
         unreachable_states = [s for s in self.states if s not in reachable_states]
         if len(unreachable_states) == 1:
             raise ValueError(f'State "{unreachable_states.pop()}" is unreachable')
-        elif len(unreachable_states) > 1:
+        if len(unreachable_states) > 1:
             missed_states_string = (
                 ', '.join([f'"{s}"' for s in unreachable_states[:-1]])
                 + f' and "{unreachable_states[-1]}"'
             )
             raise ValueError(f'States {missed_states_string} are unreachable')
+
+        # TODO: Check for manipulation of unused timers?
+        # TODO: Check for manipulation of unused conditions?

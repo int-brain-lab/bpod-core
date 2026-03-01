@@ -22,8 +22,7 @@ class FSMCodeBlock(CodeBlock):
         # produce a hidden testcode block
         group = self.options.get('group', self.options.get('filename', ''))
         doctest_lines = [f'.. testcode:: {group}'.rstrip(), '   :hide:', '']
-        for line in self.content:
-            doctest_lines.append(f'   {line}')
+        doctest_lines.extend(f'   {line}' for line in self.content)
         doctest_lines.append('')
 
         # access Sphinx environment and create a per-build namespace store

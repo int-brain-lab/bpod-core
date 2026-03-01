@@ -1,10 +1,12 @@
 import re
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import PropertyMock
 
 import pytest
 
+from bpod_core import ipc
 from bpod_core.bpod import Bpod
 from bpod_core.com import ExtendedSerial
+from bpod_core.constants import VID_TEENSY, TeensyPID
 
 fixture_bpod_all = {
     b'6': b'5',
@@ -45,13 +47,19 @@ fixture_bpod_2p = {
 
 
 @pytest.fixture
-def mock_comports(mocker):
+def mock_serial_discovery(mocker):
+    return mocker.patch('bpod_core.bpod.verify_serial_discovery', return_value=True)
+
+
+@pytest.fixture
+def mock_comports(mocker, mock_serial_discovery):
     """Fixture to mock available COM ports."""
-    mock_port_info = MagicMock()
+    mock_port_info = mocker.MagicMock()
     mock_port_info.device = 'COM3'
     mock_port_info.serial_number = '12345'
-    mock_port_info.vid = 0x16C0  # supported VID
-    mock_comports = mocker.patch('bpod_core.bpod.comports')
+    mock_port_info.vid = VID_TEENSY
+    mock_port_info.pid = TeensyPID.SERIAL
+    mock_comports = mocker.patch('bpod_core.com.comports')
     mock_comports.return_value = [mock_port_info]
     return mock_comports
 
@@ -93,48 +101,70 @@ def mock_ext_serial(mocker):
 
 
 @pytest.fixture
-def mock_bpod(mock_ext_serial, mock_settings):
-    mock_bpod = MagicMock(spec=Bpod)
+def mock_zeroconf(mocker):
+    """Mock Zeroconf class."""
+    return mocker.patch('bpod_core.ipc.Zeroconf', spec=ipc.Zeroconf)
+
+
+@pytest.fixture
+def mock_local_discovery_dir(tmp_path, mocker):
+    """Mock runtime directory for local advertisements."""
+    mocker.patch.object(ipc.LocalServiceAdvertisement, 'runtime_directory', tmp_path)
+    return tmp_path
+
+
+@pytest.fixture
+def mock_advertisement(mock_zeroconf, mock_local_discovery_dir):
+    """Mock, both, zeroconf and local advertisement."""
+    return {'zeroconf': mock_zeroconf, 'runtime_dir': mock_local_discovery_dir}
+
+
+@pytest.fixture
+def mock_bpod(mocker, mock_ext_serial, mock_settings):
+    mock_bpod = mocker.MagicMock(spec=Bpod)
     mock_bpod.serial0 = mock_ext_serial
     mock_bpod._identify_bpod.side_effect = lambda *args, **kwargs: Bpod._identify_bpod(
         mock_bpod,
         *args,
         **kwargs,
     )
-    mock_bpod._sends_discovery_byte.side_effect = (
-        lambda *args, **kwargs: Bpod._sends_discovery_byte(mock_bpod, *args, **kwargs)
-    )
     return mock_bpod
 
 
 @pytest.fixture
 def mock_settings(mocker):
-    mock_settings = MagicMock()
+    mock_settings = mocker.MagicMock()
     mocker.patch('bpod_core.bpod.SettingsDict', return_value=mock_settings)
 
 
 @pytest.fixture
-def mock_bpod_20(mock_comports, mock_ext_serial, mock_settings, mocker):  # noqa: ARG001
+def mock_bpod_20(
+    mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
+):
     mock_ext_serial.mock_responses.update(fixture_bpod_20)
-    mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
+    mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
-    mocker.patch('bpod_core.bpod.DualChannelHost')
+    mocker.patch('bpod_core.bpod.ServiceHost')
     return Bpod('COM3')
 
 
 @pytest.fixture
-def mock_bpod_25(mock_comports, mock_ext_serial, mock_settings, mocker):  # noqa: ARG001
+def mock_bpod_25(
+    mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
+):
     mock_ext_serial.mock_responses.update(fixture_bpod_25)
-    mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
+    mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
-    mocker.patch('bpod_core.bpod.DualChannelHost')
+    mocker.patch('bpod_core.bpod.ServiceHost')
     return Bpod('COM3')
 
 
 @pytest.fixture
-def mock_bpod_2p(mock_comports, mock_ext_serial, mock_settings, mocker):  # noqa: ARG001
+def mock_bpod_2p(
+    mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
+):
     mock_ext_serial.mock_responses.update(fixture_bpod_2p)
-    mocker.patch('bpod_core.bpod.ExtendedSerial', return_value=mock_ext_serial)
+    mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
-    mocker.patch('bpod_core.bpod.DualChannelHost')
+    mocker.patch('bpod_core.bpod.ServiceHost')
     return Bpod('COM3')

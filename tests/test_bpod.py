@@ -19,85 +19,67 @@ class TestBpodIdentifyBpod:
     @pytest.mark.usefixtures('mock_comports')
     def test_automatic_success(self, mock_bpod):
         """Test successful identification of Bpod without specifying port or serial."""
-        assert Bpod._identify_bpod(mock_bpod) == ('COM3', '12345')
-        mock_bpod.serial0.__init__.assert_called_once_with('COM3', timeout=0.11)
+        assert Bpod._identify_bpod() == ('COM3', '12345')
 
     def test_automatic_unsupported_vid(self, mock_bpod, mock_comports):
         """Test failure to auto identify Bpod when only device has unsupported VID."""
         mock_port_info = mock_comports.return_value
         mock_port_info[0].vid = 0x0000  # unsupported VID
         with pytest.raises(BpodError, match=r'No .* Bpod found'):
-            Bpod._identify_bpod(mock_bpod)
-        mock_bpod.serial0.__init__.assert_not_called()
+            Bpod._identify_bpod()
 
     def test_automatic_no_devices(self, mock_bpod, mock_comports):
         """Test failure to auto identify Bpod when no COM ports are available."""
         mock_comports.return_value = []
         with pytest.raises(BpodError, match=r'No .* Bpod found'):
-            Bpod._identify_bpod(mock_bpod)
-        mock_bpod.serial0.__init__.assert_not_called()
+            Bpod._identify_bpod()
 
     @pytest.mark.usefixtures('mock_comports')
-    def test_automatic_no_discovery_byte(self, mock_bpod):
+    def test_automatic_no_discovery_byte(self, mock_bpod, mock_serial_discovery):
         """Test failure to auto identify Bpod when no discovery byte is received."""
-        mock_bpod.serial0.response_buffer = bytearray()
-        with pytest.raises(BpodError, match='No .* Bpod found'):
-            Bpod._identify_bpod(mock_bpod)
-        mock_bpod.serial0.__init__.assert_called_once_with('COM3', timeout=0.11)
-
-    @pytest.mark.usefixtures('mock_comports')
-    def test_automatic_serial_exception(self, mock_bpod):
-        """Test failure to auto identify Bpod when serial read raises exception."""
-        mock_bpod.serial0.read.side_effect = SerialException
-        with pytest.raises(BpodError, match='No .* Bpod found'):
-            Bpod._identify_bpod(mock_bpod)
-        mock_bpod.serial0.__init__.assert_called_once_with('COM3', timeout=0.11)
+        mock_serial_discovery.return_value = False
+        with pytest.raises(BpodError, match=r'No .* Bpod found'):
+            Bpod._identify_bpod()
 
     @pytest.mark.usefixtures('mock_comports')
     def test_serial_success(self, mock_bpod):
         """Test successful identification of Bpod when specifying serial."""
-        port, serial_number = Bpod._identify_bpod(mock_bpod, serial_number='12345')
+        port, serial_number = Bpod._identify_bpod(serial_number='12345')
         assert port == 'COM3'
         assert serial_number == '12345'  # existing serial
-        mock_bpod.serial0.__init__.assert_called_once_with('COM3', timeout=0.11)
 
     @pytest.mark.usefixtures('mock_comports')
     def test_serial_incorrect_serial(self, mock_bpod):
         """Test failure to identify Bpod when specifying incorrect serial."""
-        with pytest.raises(BpodError, match='No .* serial number'):
-            Bpod._identify_bpod(mock_bpod, serial_number='00000')
-        mock_bpod.serial0.__init__.assert_not_called()
+        with pytest.raises(BpodError, match=r'No .* serial number'):
+            Bpod._identify_bpod(serial_number='00000')
 
     def test_serial_unsupported_vid(self, mock_bpod, mock_comports):
         """Test failure to identify Bpod by serial if device has incompatible VID."""
         mock_port_info = mock_comports.return_value
         mock_port_info[0].vid = 0x0000  # unsupported VID
-        with pytest.raises(BpodError, match='.* not a supported Bpod'):
-            Bpod._identify_bpod(mock_bpod, serial_number='12345')
-        mock_bpod.serial0.__init__.assert_called_once_with('COM3', timeout=0.11)
+        with pytest.raises(BpodError, match=r'No .* Bpod found matching serial number'):
+            Bpod._identify_bpod(serial_number='12345')
 
     @pytest.mark.usefixtures('mock_comports')
     def test_port_success(self, mock_bpod):
         """Test successful identification of Bpod when specifying port."""
-        port, serial_number = Bpod._identify_bpod(mock_bpod, port='COM3')
+        port, serial_number = Bpod._identify_bpod(port='COM3')
         assert port == 'COM3'
         assert serial_number == '12345'  # existing serial
-        mock_bpod.serial0.__init__.assert_not_called()
 
     @pytest.mark.usefixtures('mock_comports')
     def test_port_incorrect_port(self, mock_bpod):
         """Test failure to identify Bpod when specifying incorrect port."""
         with pytest.raises(BpodError, match='Port not found'):
-            Bpod._identify_bpod(mock_bpod, port='incorrect_port')
-        mock_bpod.serial0.__init__.assert_not_called()
+            Bpod._identify_bpod(port='incorrect_port')
 
     def test_port_unsupported_vid(self, mock_bpod, mock_comports):
         """Test failure to identify Bpod when specifying incorrect port."""
         mock_port_info = mock_comports.return_value
         mock_port_info[0].vid = 0x0000  # unsupported VID
-        with pytest.raises(BpodError, match='.* not .* supported Bpod'):
-            Bpod._identify_bpod(mock_bpod, port='COM3')
-        mock_bpod.serial0.__init__.assert_not_called()
+        with pytest.raises(BpodError, match=r'not an .* Bpod'):
+            Bpod._identify_bpod(port='COM3')
 
 
 class TestGetVersionInfo:
@@ -119,7 +101,7 @@ class TestGetVersionInfo:
             b'F': struct.pack('<2H', 20, 3),  # Firmware version 20, Bpod type 3
             b'f': struct.pack('<H', 1),  # Minor firmware version 1
         }
-        with pytest.raises(BpodError, match='firmware .* is not supported'):
+        with pytest.raises(BpodError, match=r'firmware .* is not supported'):
             Bpod._get_version_info(mock_bpod)
 
     def test_get_version_info_unsupported_hardware(self, mock_bpod):
@@ -128,7 +110,7 @@ class TestGetVersionInfo:
             b'F': struct.pack('<2H', 23, 2),  # Firmware version 23, Bpod type 2
             b'f': struct.pack('<H', 1),  # Minor firmware version 1
         }
-        with pytest.raises(BpodError, match='hardware .* is not supported'):
+        with pytest.raises(BpodError, match=r'hardware .* is not supported'):
             Bpod._get_version_info(mock_bpod)
 
 
@@ -216,7 +198,7 @@ class TestBpodHandshake:
     def test_handshake_failure_1(self, mock_bpod):
         """Test failure to complete handshake with Bpod due to incorrect response."""
         mock_bpod.serial0.mock_responses = {b'6': b'6'}
-        with pytest.raises(BpodError, match='Handshake .* failed'):
+        with pytest.raises(BpodError, match=r'Handshake .* failed'):
             Bpod._handshake(mock_bpod)
         mock_bpod.serial0.reset_input_buffer.assert_called_once()
 
@@ -224,7 +206,7 @@ class TestBpodHandshake:
         """Test failure to complete handshake with Bpod due to exception."""
         mock_bpod.serial0 = MagicMock(spec=ExtendedSerial)
         mock_bpod.serial0.verify.side_effect = SerialException
-        with pytest.raises(BpodError, match='Handshake .* failed'):
+        with pytest.raises(BpodError, match=r'Handshake .* failed'):
             Bpod._handshake(mock_bpod)
         mock_bpod.serial0.reset_input_buffer.assert_called_once()
 
@@ -251,9 +233,20 @@ class TestSendStateMachine:
     @pytest.fixture
     def fsm_global_timers(self):
         fsm = StateMachine()
-        fsm.set_global_timer(2, 3, 1.5, 'PWM1', 128, 64, 1, 1, 3, 0)
-        fsm.add_state('a', 1, {'GlobalTimer3_Start': 'b'}, {'GlobalTimerTrig': 4})
-        fsm.add_state('b', 1, {'GlobalTimer3_End': '>exit'})
+        fsm.set_global_timer(
+            index=2,
+            duration=3,
+            onset_delay=1.5,
+            channel='PWM1',
+            value_on=128,
+            value_off=64,
+            send_events=True,
+            loop=1,
+            loop_interval=3,
+            onset_trigger=0,
+        )
+        fsm.add_state('a', 1, {'GlobalTimer2_Start': 'b'}, {'GlobalTimerTrig': 3})
+        fsm.add_state('b', 1, {'GlobalTimer2_End': '>exit'})
         return fsm
 
     @pytest.fixture
@@ -261,8 +254,8 @@ class TestSendStateMachine:
         fsm = StateMachine()
         fsm.set_global_counter(2, 'Port1_High', 5)
         fsm.add_state('a', 2, {'Tup': 'b'}, {'PWM2': 255})
-        fsm.add_state('b', 0, {'Tup': 'c'}, {'GlobalCounterReset': 3})
-        fsm.add_state('c', 0, {'GlobalCounter3_End': '>exit'}, {'PWM1': 255})
+        fsm.add_state('b', 0, {'Tup': 'c'}, {'GlobalCounterReset': 2})
+        fsm.add_state('c', 0, {'GlobalCounter2_End': '>exit'}, {'PWM1': 255})
         return fsm
 
     @pytest.fixture
@@ -270,7 +263,7 @@ class TestSendStateMachine:
         fsm = StateMachine()
         fsm.set_condition(1, 'Port2', 1)
         fsm.add_state('a', 1, {'Tup': 'b'}, {'PWM1': 255})
-        fsm.add_state('b', 1, {'Tup': '>exit', 'Condition2': '>exit'}, {'PWM2': 255})
+        fsm.add_state('b', 1, {'Tup': '>exit', 'Condition1': '>exit'}, {'PWM2': 255})
         return fsm
 
     def test_send_state_machine_basic_25(self, fsm_basic, mock_bpod_25):

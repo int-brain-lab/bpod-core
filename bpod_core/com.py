@@ -1,13 +1,30 @@
 """Module providing extended serial communication functionality."""
 
 import logging
+import re
 import struct
-from collections.abc import Callable
+import weakref
+from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
+from types import TracebackType
 from typing import Any
 
-from serial import Serial
+from serial import Serial, SerialException
 from serial.threaded import Protocol, ReaderThread
+from serial.tools.list_ports import comports
+from serial.tools.list_ports_common import ListPortInfo
 from typing_extensions import Buffer, Self
+
+from bpod_core.constants import (
+    STRUCT_INT8,
+    STRUCT_INT16_LE,
+    STRUCT_INT32_LE,
+    STRUCT_INT64_LE,
+    STRUCT_UINT8,
+    STRUCT_UINT16_LE,
+    STRUCT_UINT32_LE,
+    STRUCT_UINT64_LE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +32,79 @@ logger = logging.getLogger(__name__)
 class ExtendedSerial(Serial):
     """Enhances :class:`serial.Serial` with additional functionality."""
 
-    def write_struct(self, format_string: str, *data: Any) -> int | None:  # noqa:ANN401
+    def write_int8(self, value: int) -> int | None:
+        """Write an 8-bit signed integer to the serial port."""
+        return self.write(STRUCT_INT8.pack(value))
+
+    def write_int16(self, value: int) -> int | None:
+        """Write a 16-bit signed integer to the serial port (little-endian)."""
+        return self.write(STRUCT_INT16_LE.pack(value))
+
+    def write_int32(self, value: int) -> int | None:
+        """Write a 32-bit signed integer to the serial port (little-endian)."""
+        return self.write(STRUCT_INT32_LE.pack(value))
+
+    def write_int64(self, value: int) -> int | None:
+        """Write a 64-bit signed integer to the serial port (little-endian)."""
+        return self.write(STRUCT_INT64_LE.pack(value))
+
+    def write_uint8(self, value: int) -> int | None:
+        """Write an 8-bit unsigned integer to the serial port."""
+        return self.write(STRUCT_UINT8.pack(value))
+
+    def write_uint16(self, value: int) -> int | None:
+        """Write a 16-bit unsigned integer to the serial port (little-endian)."""
+        return self.write(STRUCT_UINT16_LE.pack(value))
+
+    def write_uint32(self, value: int) -> int | None:
+        """Write a 32-bit unsigned integer to the serial port (little-endian)."""
+        return self.write(STRUCT_UINT32_LE.pack(value))
+
+    def write_uint64(self, value: int) -> int | None:
+        """Write a 64-bit unsigned integer to the serial port (little-endian)."""
+        return self.write(STRUCT_UINT64_LE.pack(value))
+
+    def write_bool(self, value: bool) -> int | None:  # noqa: FBT001
+        """Write a boolean value to the serial port."""
+        return self.write(b'\x01' if value else b'\x00')
+
+    def read_int8(self) -> int:
+        """Read an 8-bit signed integer from the serial port."""
+        return STRUCT_INT8.unpack(self.read(1))[0]  # type: ignore[no-any-return]
+
+    def read_int16(self) -> int:
+        """Read a 16-bit signed integer from the serial port (little-endian)."""
+        return STRUCT_INT16_LE.unpack(self.read(2))[0]  # type: ignore[no-any-return]
+
+    def read_int32(self) -> int:
+        """Read a 32-bit signed integer from the serial port (little-endian)."""
+        return STRUCT_INT32_LE.unpack(self.read(4))[0]  # type: ignore[no-any-return]
+
+    def read_int64(self) -> int:
+        """Read a 64-bit signed integer from the serial port (little-endian)."""
+        return STRUCT_INT64_LE.unpack(self.read(8))[0]  # type: ignore[no-any-return]
+
+    def read_uint8(self) -> int:
+        """Read an 8-bit unsigned integer from the serial port."""
+        return self.read(1)[0]  # type: ignore[no-any-return]
+
+    def read_uint16(self) -> int:
+        """Read a 16-bit unsigned integer from the serial port (little-endian)."""
+        return STRUCT_UINT16_LE.unpack(self.read(2))[0]  # type: ignore[no-any-return]
+
+    def read_uint32(self) -> int:
+        """Read a 32-bit unsigned integer from the serial port (little-endian)."""
+        return STRUCT_UINT32_LE.unpack(self.read(4))[0]  # type: ignore[no-any-return]
+
+    def read_uint64(self) -> int:
+        """Read a 64-bit unsigned integer from the serial port (little-endian)."""
+        return STRUCT_UINT64_LE.unpack(self.read(8))[0]  # type: ignore[no-any-return]
+
+    def read_bool(self) -> bool:
+        """Read a boolean value from the serial port."""
+        return self.read(1) != b'\x00'
+
+    def write_struct(self, format_string: str, *data: Any) -> int | None:
         """
         Write structured data to the serial port.
 
@@ -223,3 +312,232 @@ class ChunkedSerialReader(Protocol):
         while len(self._buffer) >= self._chunk_size:
             self._callback(self._buffer[: self._chunk_size])
             del self._buffer[: self._chunk_size]
+
+
+FilterValue = str | int | re.Pattern[str] | None | Sequence['FilterValue']
+"""Type for filter values used in :func:`find_ports`."""
+
+
+def find_ports(**filters: FilterValue) -> list[ListPortInfo]:
+    r"""
+    Find serial ports matching specified criteria.
+
+    Multiple filters use AND logic. Iterables within a single filter use OR logic.
+
+    Parameters
+    ----------
+    **filters : FilterValue
+        Port attributes to filter by. Values can be:
+
+        - Scalar: exact match
+        - Sequence: match any item (OR logic)
+        - re.Pattern: regex match (use re.compile())
+
+    Returns
+    -------
+    list[ListPortInfo]
+        Ports matching all criteria.
+
+    Examples
+    --------
+    Find by vendor ID::
+
+        find_ports(vid=0x16C0)
+
+    Find using regex pattern::
+
+        find_ports(device=re.compile(r'/dev/ttyACM\d+'))
+
+    Find multiple values::
+
+        find_ports(pid=[0x0483, 0x048B])
+
+    Combine filters::
+
+        find_ports(vid=0x16C0, device=re.compile(r'/dev/ttyACM\d+'))
+
+    Notes
+    -----
+    Strings use exact matching. Use re.compile() for regex patterns.
+    """
+
+    def matches(key: object, value: FilterValue) -> bool:
+        if isinstance(value, Sequence) and not isinstance(value, str):
+            return any(matches(key, v) for v in value)
+        if isinstance(value, re.Pattern):
+            return isinstance(key, str) and value.search(key) is not None
+        return key == value
+
+    return [
+        port
+        for port in comports()
+        if all(matches(getattr(port, k, None), v) for k, v in filters.items())
+    ]
+
+
+def verify_serial_discovery(
+    port: str,
+    expected_message: bytes,
+    timeout: float = 1,
+    trigger: Callable[[], Any] | None = None,
+) -> bool:
+    r"""Check if a device sends an expected discovery message on a serial port.
+
+    Opens the specified serial port and waits to receive bytes matching the expected
+    discovery message. Optionally executes a function first, which can be used trigger
+    the device's discovery routine, e.g., by sending a command.
+
+    Parameters
+    ----------
+    port : str
+        The serial port to read from (e.g., '/dev/ttyUSB0' or 'COM3').
+    expected_message : bytes
+        The exact byte sequence expected from the device.
+    timeout : float, default: 1
+        Maximum time (in seconds) to wait for the discovery message. Defaults to 1 s.
+    trigger : Callable, optional
+        A function to call before reading. Use this to trigger the device's discovery
+        routine.
+
+    Returns
+    -------
+    bool
+        True if the device sent the expected message within the timeout period,
+        False otherwise (including if the port cannot be opened).
+    """
+    try:
+        with Serial(port, timeout=timeout) as ser:
+            if trigger is not None:
+                trigger()
+            return ser.read(len(expected_message)) == expected_message
+    except SerialException:
+        return False
+
+
+def _close_serial_connection(serial: Serial, *, raise_errors: bool = False) -> None:
+    """Close a serial connection if open."""
+    if not getattr(serial, 'is_open', False):
+        return
+    logger.debug('Closing connection to serial device on %s', serial.port)
+    try:
+        serial.close()
+    except Exception as e:
+        if not raise_errors:
+            return
+        raise SerialException(
+            f'Failed to close connection to serial device on {serial.port}'
+        ) from e
+
+
+class SerialDevice(AbstractContextManager):
+    """Class that interfaces with a USB serial device."""
+
+    _serial: ExtendedSerial
+    """The serial connection to the device."""
+
+    _port_info: ListPortInfo
+    """Information about the serial port associated with the device."""
+
+    def __init__(
+        self,
+        port: str,
+        serial_device_name: str = 'serial_device',
+        *,
+        open_connection: bool = True,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> None:
+        """Initialize the serial device.
+
+        Parameters
+        ----------
+        port : str
+            The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3').
+        serial_device_name : str, optional
+            Name used to identify this device in log messages, by default
+            ``'serial_device'``.
+        open_connection : bool, optional
+            Whether to open the connection immediately, by default True.
+        **kwargs
+            Additional arguments for compatibility with subclasses.
+
+        Raises
+        ------
+        serial.SerialException
+            If the specified port does not exist.
+        """
+        try:
+            self._port_info = next(p for p in comports() if p.device == port)
+        except StopIteration as e:
+            raise SerialException(f'Serial port not found: {port}') from e
+        self._serial_device_name = serial_device_name
+        self._serial = ExtendedSerial()
+        weakref.finalize(self, _close_serial_connection, self._serial)
+        self._serial.port = port
+        if open_connection:
+            self.open()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        """Exit the context manager.
+
+        Closes the serial connection.
+
+        Parameters
+        ----------
+        exc_type : type[BaseException] | None
+            The type of exception raised, if any.
+        exc_val : BaseException | None
+            The exception instance raised, if any.
+        exc_tb : TracebackType | None
+            The traceback object, if any.
+        """
+        if hasattr(self, '_serial'):
+            _close_serial_connection(self._serial)
+
+    def open(self) -> None:
+        """Open the serial connection.
+
+        If the connection is already open, this method does nothing.
+
+        Raises
+        ------
+        serial.SerialException
+            If the connection cannot be opened.
+        """
+        if self._serial.is_open:
+            return
+        logger.debug('Opening connection to serial device on %s', self.port)
+        try:
+            self._serial.open()
+        except Exception as e:
+            raise SerialException(
+                f'Failed to open connection to serial device on {self.port}'
+            ) from e
+
+    def close(self) -> None:
+        """Close the serial connection.
+
+        If the connection is already closed, this method does nothing.
+
+        Raises
+        ------
+        serial.SerialException
+            If the connection cannot be closed.
+        """
+        if hasattr(self, '_serial'):
+            _close_serial_connection(self._serial, raise_errors=True)
+
+    @property
+    def port(self) -> str:
+        """The name of the serial port.
+
+        Returns
+        -------
+        str
+            The device path of the serial port (e.g., '/dev/ttyACM0').
+        """
+        return self._port_info.device

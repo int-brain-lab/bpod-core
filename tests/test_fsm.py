@@ -91,7 +91,7 @@ class TestStateMachineBasic:
         """Adding a duplicate state name should raise ValueError."""
         sm = StateMachine(name='Test State Machine')
         sm.add_state(name='state1')
-        with pytest.raises(ValueError, match='.*state1.* already registered'):
+        with pytest.raises(ValueError, match=r'.*state1.* already registered'):
             sm.add_state(name='state1')
 
     def test_invalid_state_name(self):

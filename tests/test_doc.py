@@ -26,7 +26,7 @@ class TestExampleFSM:
                 module.fsm.name = module_name
                 yield module.fsm
 
-        yield example_generator()
+        return example_generator()
 
     def test_validate_state_machines(self, mock_bpod_25, fsm_examples):
         for fsm in fsm_examples:

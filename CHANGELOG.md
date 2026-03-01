@@ -6,6 +6,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0a7] - 2026-03-01
+
+### Added
+- `com.find_ports` for finding serial ports that match given filter criteria.
+- `com.verify_serial_discovery` for checking if a serial device sends an expected
+  discovery message.
+- convenience functions for reading and writing integers in `com.ExtendedSerial`.
+- `misc.extend_packed` for extending a bytearray by multiple values of the same format.
+- `misc.DocstringInheritanceMixin` for inheriting docstrings from base classes.
+- `ipc.LocalServiceAdvertisement`: local service advertisement and discovery
+- `ipc.iter_services` and `ipc.ServiceIterator` for discovering services.
+- `bpod.discover_remote_bpod` for discovering remote Bpod instances.
+- more examples.
+
+### Changed
+- more verbose debug logging during state machine runs.
+- replace unmaintained `appdirs` dependency with `platformdirs`.
+- switch to zero-based indexing for global counters, timers, conditions and soft-codes.
+- added file locking to `misc.SettingsDict`.
+- switch to using ZMQ multipart messages for communication.
+- renamed `ipc.DualChannelHost` / `ipc.DualChannelClient` to `ipc.ServiceHost` /
+  `ipc.ServiceClient`.
+- restructured `bpod` module into several submodules.
+- zero-copy behavior on send path of `ipc.ServiceClient` and receive path of
+  `ipc.ServiceHost`.
+
+### Fixed
+- decoupled finalizers and event loops from instance references.
+
 ## [0.1.0a6] - 2025-10-29
 
 ### Added
@@ -18,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - `com.to_bytes`
 - dependency on Pandas
+
 
 ## [0.1.0a5] - 2025-09-03
 
@@ -87,6 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 First alpha release. Nothing works.
 
+[0.1.0a7]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a7
+[0.1.0a6]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a6
 [0.1.0a5]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a5
 [0.1.0a4]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a4
 [0.1.0a3]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha.3

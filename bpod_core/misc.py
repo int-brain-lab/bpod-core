@@ -3,65 +3,55 @@
 import difflib
 import errno
 import json
+import logging
 import re
 import socket
-from collections.abc import (
-    Iterator,
-    Mapping,
-    MutableMapping,
-    Sequence,
-)
+import struct
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+from os import PathLike
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Generic,
-    TypeVar,
-    cast,
-)
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 import msgspec
-from appdirs import user_config_dir
+from filelock import FileLock
 from pydantic import Field, RootModel
+
+logger = logging.getLogger(__name__)
 
 K = TypeVar('K')
 V = TypeVar('V')
 
+RE_NON_ALPHANUMERIC = re.compile(r'[^a-zA-Z0-9_]')
+"""Match non-alphanumeric characters except underscores."""
+RE_ACRONYM = re.compile(r'([A-Z]+)([A-Z][a-z])')
+"""Match acronym boundaries."""
+RE_CASE_TRANSITION = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
+"""Match case and digit transitions."""
+RE_MULTIPLE_UNDERSCORES = re.compile(r'_{2,}')
+"""Match multiple consecutive underscores."""
 
-RE_SANITIZE = re.compile(r'[^a-zA-Z0-9_]')
-RE_SNAKE_CASE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
-RE_UNDERSCORES = re.compile(r'_{2,}')
 
+class DocstringInheritanceMixin:
+    """Mixin that automatically inherits docstrings from parent classes.
 
-def sanitize_string(string: str, substitute='_'):
+    When a subclass overrides a method or property without providing its own docstring,
+    this mixin copies the docstring from the nearest parent class that defines one. This
+    avoids having to duplicate docstrings across abstract methods and their concrete
+    implementations.
     """
-    Replace non-alphanumeric characters in a string with a given substitute.
 
-    Parameters
-    ----------
-    string : str
-        The input string to be sanitized.
-    substitute : str, optional
-        The character(s) to replace non-alphanumeric characters with.
-        Defaults to '_'.
-
-    Returns
-    -------
-    str
-        A sanitized string where all non-alphanumeric characters have been replaced with
-        the specified substitute.
-
-    Raises
-    ------
-    TypeError
-        If either `string` or `substitute` is not an instance of ``str``.
-    """
-    if not (isinstance(string, str) and isinstance(substitute, str)):
-        raise TypeError('Both `string` and `substitute` must be strings.')
-    return re.sub(RE_SANITIZE, substitute, string)
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        for name, attr in vars(cls).items():
+            if (callable(attr) or isinstance(attr, property)) and not attr.__doc__:
+                for base in cls.__mro__[1:]:
+                    base_attr = vars(base).get(name)
+                    if base_attr is not None and base_attr.__doc__:
+                        attr.__doc__ = base_attr.__doc__
+                        break
 
 
-def convert_to_snake_case(string: str) -> str:
+def to_snake_case(string: str) -> str:
     """
     Convert a given string to snake_case.
 
@@ -75,32 +65,33 @@ def convert_to_snake_case(string: str) -> str:
     str
         The converted snake_case string.
     """
-    string = sanitize_string(string)
-    string = RE_SNAKE_CASE.sub('_', string)
-    string = RE_UNDERSCORES.sub('_', string)
+    string = RE_NON_ALPHANUMERIC.sub('_', string)
+    string = RE_ACRONYM.sub(r'\1_\2', string)
+    string = RE_CASE_TRANSITION.sub('_', string)
+    string = RE_MULTIPLE_UNDERSCORES.sub('_', string)
     string = string.strip('_')
     return string.lower()
 
 
 def suggest_similar(
     invalid_string: str,
-    valid_strings: list[str],
+    valid_strings: Iterable[str],
     format_string: str = " - did you mean '{}'?",
     cutoff: float = 0.6,
 ) -> str:
     """
     Suggest a similar valid string based on the given invalid string.
 
-    This function uses a similarity matching algorithm to find the closest match from a
-    list of valid strings. If a match is found above the specified cutoff, it returns a
-    formatted suggestion string.
+    This function uses a similarity matching algorithm to find the closest match from an
+    iterable of valid strings. If a match is found above the specified cutoff, it
+    returns a formatted suggestion string.
 
     Parameters
     ----------
     invalid_string : str
         The string that is invalid or misspelled.
-    valid_strings : list[str]
-        A list of valid strings to compare against.
+    valid_strings : Iterable[str]
+        An iterable of valid strings to compare against.
     format_string : str, optional
         The format string for the suggestion. Defaults to " - did you mean '{}'?".
     cutoff : float, optional
@@ -196,46 +187,33 @@ def get_local_ipv4() -> str:
 
 class SettingsDict(MutableMapping):
     """
-    Represents a dictionary-like persistent settings storage.
+    A dictionary-like persistent settings storage backed by a JSON file.
 
-    This class is a mutable mapping implementation that stores and retrieves key-value
-    pairs, persisting them to a JSON configuration file. The settings are associated
-    with a specific application name and, optionally, an application author to organize
-    the file path appropriately. You can use this class to manage configuration data
-    that needs to be saved and reused across sessions. Changes to the dictionary are
-    automatically saved to the file.
+    This class implements the MutableMapping interface, storing key-value pairs that are
+    automatically persisted to a JSON file on every write. It supports standard
+    dictionary operations (get, set, delete, iterate) as well as nested key access.
 
-    This class supports standard dictionary operations such as getting, setting,
-    deleting items, checking for the existence of keys, and iterating over keys.
-    Additionally, it provides functionality for accessing nested values using a sequence
-    of keys.
+    File access is protected by a file lock for safe concurrent access from multiple
+    processes.
     """
 
-    def __init__(
-        self,
-        app_name: str,
-        app_author: str | None = None,
-        filename: str = 'settings.json',
-    ) -> None:
+    def __init__(self, json_path: PathLike | str) -> None:
         """Initialize the SettingsDict instance.
 
         Parameters
         ----------
-        app_name : str
-            Name of the application.
-        app_author : str, optional
-            Name of the application author.
-        filename : str, optional
-            Name of the settings file. Defaults to 'settings.json'.
+        json_path : PathLike or str
+            Path to the JSON configuration file.
         """
-        config_path = Path(user_config_dir(app_name, app_author))
-        self._path = config_path / filename
+        self._json_path = Path(json_path).resolve()
+        self._lock_path = self._json_path.with_suffix('.lock')
+        self._file_lock = FileLock(self._lock_path)
         self._state = self._load_from_file()
 
     def _load_from_file(self) -> dict:
-        if not self._path.exists():
+        if not self._json_path.exists():
             return {}
-        with self._path.open('r') as f:
+        with self._file_lock, self._json_path.open('r') as f:
             data = f.read()
         try:
             return cast('dict', msgspec.json.decode(data))
@@ -244,19 +222,16 @@ class SettingsDict(MutableMapping):
 
     def _save_to_file(self) -> None:
         dictionary = msgspec.to_builtins(self._state)
-        if not self._path.exists():
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.touch(exist_ok=True)
-        with self._path.open('w') as f:
+        self._json_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._file_lock, self._json_path.open('w') as f:
             json.dump(dictionary, f, indent=2)
 
     def __getitem__(self, key: Any) -> Any:
-        if key in self._state:
-            return self._state.get(key)
-        else:
-            raise KeyError(key)
+        return self._state[key]
 
     def __setitem__(self, key: Any, value: Any) -> None:
+        if self._state.get(key) == value:
+            return
         self._state[key] = value
         self._save_to_file()
 
@@ -264,14 +239,11 @@ class SettingsDict(MutableMapping):
         return key in self._state
 
     def __delitem__(self, key: Any) -> None:
-        if key in self._state:
-            del self._state[key]
-            self._save_to_file()
-        else:
-            raise KeyError(key)
+        del self._state[key]
+        self._save_to_file()
 
     def __iter__(self) -> Iterator[Any]:
-        return iter(self._state)
+        return iter(list(self._state))
 
     def __len__(self) -> int:
         return len(self._state)
@@ -285,7 +257,7 @@ class SettingsDict(MutableMapping):
         Parameters
         ----------
         keys : Sequence
-            An sequence of keys representing the nested path.
+            A sequence of keys representing the nested path.
         default : Any, optional
             The value to return if the path does not exist. Defaults to None.
 
@@ -302,10 +274,12 @@ class SettingsDict(MutableMapping):
         Parameters
         ----------
         keys : Sequence
-            An sequence of keys representing the nested path.
+            A sequence of keys representing the nested path.
         value : Any
             The value to set at the nested path.
         """
+        if get_nested(d=self._state, keys=keys) == value:
+            return
         set_nested(d=self._state, keys=keys, value=value)
         self._save_to_file()
 
@@ -373,3 +347,111 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
         def __hash__(self) -> int: ...
     else:
         __hash__ = None
+
+
+def extend_packed(
+    byte_array: bytearray,
+    values: Sequence[int],
+    fmt: str,
+) -> None:
+    """Extend a bytearray with packed binary values.
+
+    This function takes a sequence of integers, converts each one to bytes using the
+    specified struct format character, and appends the result to the given bytearray.
+    All values use the same format character and are packed in little-endian byte order.
+
+    Parameters
+    ----------
+    byte_array : bytearray
+        The bytearray that will be modified in-place by appending the packed binary
+        data.
+    values : Sequence[int]
+        Integer values to convert to binary. The number of values determines how many
+        times the format character is repeated.
+    fmt : str
+        A single struct format character that defines how each value is encoded.
+        Common options: 'b' (int8), 'h' (int16), 'i' (int32), 'q' (int64), 'B' (uint8),
+        'H' (uint16), 'I' (uint32), 'Q' (uint64).
+
+    Examples
+    --------
+    >>> from bpod_core.misc import extend_packed
+    >>> buffer = bytearray()
+    >>> extend_packed(buffer, [1, 2, 3], 'i')
+    >>> len(buffer)
+    12
+    >>> buffer.hex()
+    '010000000200000003000000'
+
+    References
+    ----------
+    https://docs.python.org/3/library/struct.html#format-characters
+    """
+    if values:
+        byte_array.extend(struct.pack(f'<{len(values)}{fmt}', *values))
+
+
+def prune_empty_parent_directories(
+    target_directory: PathLike | str,
+    root_directory: PathLike | str,
+    *,
+    remove_root: bool = False,
+) -> None:
+    """Remove empty parent directories recursively up to root directory.
+
+    Recursively removes the given directory if empty, then checks and removes parent
+    directories up to (and optionally including) the root directory. Stops at the first
+    non-empty directory encountered.
+
+    Parameters
+    ----------
+    target_directory : PathLike or str
+        Directory to check and remove if empty.
+    root_directory : PathLike or str
+        Root directory to stop at. Must be a parent directory of target_directory.
+    remove_root : bool, optional
+        If True, also remove root_directory if it becomes empty.
+
+    Raises
+    ------
+    ValueError
+        If target_directory is not a subpath of root_directory.
+    FileNotFoundError
+        If target_directory or root_directory does not exist.
+    NotADirectoryError
+        If target_directory or root_directory is not a directory.
+    """
+    target_directory = Path(target_directory).absolute()
+    root_directory = Path(root_directory).absolute()
+
+    for path in (target_directory, root_directory):
+        if not path.exists():
+            raise FileNotFoundError(f"'{path}' does not exist")
+        if not path.is_dir():
+            raise NotADirectoryError(f"'{path}' is not a directory")
+
+    if not target_directory.is_relative_to(root_directory):
+        raise ValueError(
+            f"'{target_directory}' is not a sub-directory of '{root_directory}'"
+        )
+
+    if target_directory == root_directory:
+        if remove_root:
+            try:
+                root_directory.rmdir()
+            except OSError:
+                return
+        return
+
+    try:
+        target_directory.rmdir()
+    except OSError:
+        return
+
+    parent = target_directory.parent
+    if parent.is_dir():  # Guard against race condition
+        prune_empty_parent_directories(
+            target_directory=parent,
+            root_directory=root_directory,
+            remove_root=remove_root,
+        )

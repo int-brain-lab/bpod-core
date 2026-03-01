@@ -20,7 +20,7 @@ def test_version_found(monkeypatch):
 
 
 def test_version_not_found(monkeypatch):
-    def raise_not_found(name):
+    def raise_not_found(_):
         raise importlib.metadata.PackageNotFoundError
 
     monkeypatch.setattr(importlib.metadata, 'version', raise_not_found)
