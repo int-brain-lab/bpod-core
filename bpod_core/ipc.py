@@ -53,6 +53,8 @@ class ServiceError(Exception):
 
 
 class RemoteError(ServiceError):
+    """Exception representing an error on the remote side."""
+
     def __init__(self, error_data: 'ErrorData') -> None:
         self.original_error = error_data
         super().__init__(f'Remote {error_data.name}: {error_data.message}')
@@ -62,11 +64,15 @@ class MessageKind(IntEnum):
     """The types of messages exchanged between host and clients."""
 
     HELLO = 0
+    """A message sent by the client to initiate the handshake."""
     WELCOME = 1
+    """A message sent by the host to acknowledge the client's handshake."""
     REQUEST = 2
+    """A request sent by the client."""
     REPLY = 3
+    """A reply sent by the host."""
     ERROR = 4
-    GOODBYE = 5
+    """An error message."""
 
     _as_bytes: bytes
 
@@ -80,14 +86,21 @@ class MessageKind(IntEnum):
 
     @property
     def as_bytes(self) -> bytes:
+        """The message kind as a byte string."""
         return self._as_bytes
 
 
 class ErrorData(msgspec.Struct):
+    """A struct representing error data."""
+
     name: str
+    """The name of the exception class."""
     message: str
+    """The error message."""
     args: tuple
+    """The arguments passed to the exception."""
     traceback: str | None = None
+    """The formatted traceback of the exception."""
 
     @staticmethod
     def from_exception(exception: BaseException | None = None) -> 'ErrorData':
@@ -319,6 +332,8 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
 
 
 class ServiceBase(contextlib.AbstractContextManager):
+    """Base class to :class:`ServiceHost` and :class:`ServiceClient`."""
+
     _serialization: Literal['json', 'msgpack'] = 'msgpack'
     _encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
     _decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder
