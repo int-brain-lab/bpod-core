@@ -7,7 +7,7 @@ import weakref
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from types import TracebackType
-from typing import Any, cast
+from typing import Any
 
 from serial import Serial, SerialException
 from serial.threaded import Protocol, ReaderThread
@@ -16,7 +16,6 @@ from serial.tools.list_ports_common import ListPortInfo
 from typing_extensions import Buffer, Self
 
 from bpod_core.constants import (
-    STRUCT_BOOL,
     STRUCT_INT8,
     STRUCT_INT16,
     STRUCT_INT32,
@@ -67,43 +66,43 @@ class ExtendedSerial(Serial):
 
     def write_bool(self, value: bool) -> int | None:
         """Write a boolean value to the serial port."""
-        return self.write(STRUCT_BOOL.pack(value))
+        return self.write(b'\x01' if value else b'\x00')
 
     def read_int8(self) -> int:
         """Read an 8-bit signed integer from the serial port."""
-        return cast('int', STRUCT_INT8.unpack(self.read(1))[0])
+        return STRUCT_INT8.unpack(self.read(1))[0]  # type: ignore[no-any-return]
 
     def read_int16(self) -> int:
         """Read a 16-bit signed integer from the serial port (little-endian)."""
-        return cast('int', STRUCT_INT16.unpack(self.read(2))[0])
+        return STRUCT_INT16.unpack(self.read(2))[0]  # type: ignore[no-any-return]
 
     def read_int32(self) -> int:
         """Read a 32-bit signed integer from the serial port (little-endian)."""
-        return cast('int', STRUCT_INT32.unpack(self.read(4))[0])
+        return STRUCT_INT32.unpack(self.read(4))[0]  # type: ignore[no-any-return]
 
     def read_int64(self) -> int:
         """Read a 64-bit signed integer from the serial port (little-endian)."""
-        return cast('int', STRUCT_INT64.unpack(self.read(8))[0])
+        return STRUCT_INT64.unpack(self.read(8))[0]  # type: ignore[no-any-return]
 
     def read_uint8(self) -> int:
         """Read an 8-bit unsigned integer from the serial port."""
-        return cast('int', self.read(1)[0])
+        return self.read(1)[0]  # type: ignore[no-any-return]
 
     def read_uint16(self) -> int:
         """Read a 16-bit unsigned integer from the serial port (little-endian)."""
-        return cast('int', STRUCT_UINT16.unpack(self.read(2))[0])
+        return STRUCT_UINT16.unpack(self.read(2))[0]  # type: ignore[no-any-return]
 
     def read_uint32(self) -> int:
         """Read a 32-bit unsigned integer from the serial port (little-endian)."""
-        return cast('int', STRUCT_UINT32.unpack(self.read(4))[0])
+        return STRUCT_UINT32.unpack(self.read(4))[0]  # type: ignore[no-any-return]
 
     def read_uint64(self) -> int:
         """Read a 64-bit unsigned integer from the serial port (little-endian)."""
-        return cast('int', STRUCT_UINT64.unpack(self.read(8))[0])
+        return STRUCT_UINT64.unpack(self.read(8))[0]  # type: ignore[no-any-return]
 
     def read_bool(self) -> bool:
         """Read a boolean value from the serial port."""
-        return cast('bool', STRUCT_BOOL.unpack(self.read(1))[0])
+        return self.read(1) != b'\x00'
 
     def write_struct(self, format_string: str, *data: Any) -> int | None:  # noqa:ANN401
         """

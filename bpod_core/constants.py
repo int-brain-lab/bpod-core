@@ -6,8 +6,6 @@ from struct import Struct
 import platformdirs
 
 # pre-compiled structs for common data types
-STRUCT_BOOL = Struct('?')
-"""Compiled struct representing a boolean value."""
 STRUCT_UINT8 = Struct('B')
 """Compiled struct representing an unsigned 8-bit integer."""
 STRUCT_UINT16 = Struct('<H')
