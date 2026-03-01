@@ -403,8 +403,6 @@ class ServiceHost(ServiceBase):
     Zeroconf (mDNS) for network-wide discovery and remote-process communication.
     """
 
-    _zeroconf: Zeroconf | None = None
-    _zeroconf_service_info: ServiceInfo | None = None
     _named_pipe_rep: Path | None = None
     _named_pipe_pub: Path | None = None
     _clients: dict[int, ClientInfo]
@@ -552,12 +550,12 @@ class ServiceHost(ServiceBase):
         )
 
         # advertise service via Zeroconf for remote discovery
+        self._zeroconf: Zeroconf | None = None
+        self._zeroconf_service_info: ServiceInfo | None = None
         if remote:
-            zeroconf_type = _format_zeroconf_service_type(service_type)
-            zeroconf_name = _format_zeroconf_service_name(service_name, zeroconf_type)
             self._zeroconf_service_info = ServiceInfo(
-                type_=zeroconf_type,
-                name=zeroconf_name,
+                type_=_format_zeroconf_service_type(service_type),
+                name=_format_zeroconf_service_name(service_name, service_type),
                 port=self.rep_tcp_port,
                 addresses=[socket.inet_aton(self._local_ip)],
                 properties=properties or {},
@@ -568,13 +566,17 @@ class ServiceHost(ServiceBase):
                 interfaces=InterfaceChoice.Default,
                 ip_version=IPVersion.V4Only,
             )
-            self._zeroconf.register_service(
-                self._zeroconf_service_info, allow_name_change=True
-            )
-            self._zeroconf_service_name = self._zeroconf_service_info.name
-            logger.debug(
-                "Registering Zeroconf service '%s'", self._zeroconf_service_name
-            )
+
+            def _register(zc: Zeroconf, service: ServiceInfo) -> None:
+                with contextlib.suppress(Exception):
+                    zc.register_service(service, allow_name_change=True)
+                    logger.debug("Advertising remote service at '%s'", service.name)
+
+            threading.Thread(
+                target=_register,
+                args=(self._zeroconf, self._zeroconf_service_info),
+                daemon=True,
+            ).start()
 
         # register finalizer to clean up resources on exit
         self._finalizer = weakref.finalize(
@@ -614,7 +616,6 @@ class ServiceHost(ServiceBase):
         if zeroconf is not None:
             if service is not None:
                 with contextlib.suppress(Exception):
-                    logger.debug("Unregistering Zeroconf service '%s'", service.name)
                     zeroconf.unregister_service(service)
             with contextlib.suppress(Exception):
                 zeroconf.close()

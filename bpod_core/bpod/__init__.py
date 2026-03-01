@@ -1,4 +1,5 @@
 """Module for interfacing with the Bpod Finite State Machine."""
+
 import atexit
 import contextlib
 import logging
