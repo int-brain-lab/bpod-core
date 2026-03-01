@@ -210,10 +210,9 @@ class TestGetLocalIPv4:
 
 class TestSettingsDict:
     @pytest.fixture
-    def temp_settings(self, tmp_path, mocker):
+    def temp_settings(self, tmp_path):
         """Fixture to create a SettingsDict pointing to a temporary directory."""
-        settings = misc.SettingsDict(tmp_path / 'settings.json')
-        yield settings
+        return misc.SettingsDict(tmp_path / 'settings.json')
 
     def test_set_and_get(self, temp_settings):
         """Test setting and retrieving a key-value pair."""
@@ -263,7 +262,7 @@ class TestSettingsDict:
             del temp_settings[k]
         assert len(temp_settings) == 0
 
-    def test_corrupted_file(self, tmp_path, mocker):
+    def test_corrupted_file(self, tmp_path):
         """Test behavior with a corrupted JSON file."""
         corrupted_file = tmp_path / 'test_settings.json'
         corrupted_file.write_text('corrupted json')
@@ -276,7 +275,7 @@ class TestSettingsDict:
         temp_settings['key2'] = 'value2'
         assert repr(temp_settings) == (repr(temp_settings._state))
 
-    def test_persistence_across_instances(self, tmp_path, mocker):
+    def test_persistence_across_instances(self, tmp_path):
         """Values should persist to disk and be readable by a new instance."""
         s1 = misc.SettingsDict(tmp_path / 'persist.json')
         s1['a'] = 1
@@ -294,7 +293,7 @@ class TestSettingsDict:
         temp_settings.set_nested(['level1', 'level2'], 'new')
         assert temp_settings.get_nested(['level1', 'level2']) == 'new'
 
-    def test_missing_file_initialization_and_creation_on_write(self, tmp_path, mocker):
+    def test_missing_file_initialization_and_creation_on_write(self, tmp_path):
         """Dict starts empty and file is created upon first write."""
         path = tmp_path / 'new_settings.json'
         s = misc.SettingsDict(path)
@@ -584,7 +583,7 @@ class TestPruneEmptyParentDirectories:
         assert not target.exists()
         assert root.exists()
 
-    @pytest.mark.parametrize('error_class', (PermissionError, FileNotFoundError))
+    @pytest.mark.parametrize('error_class', ([PermissionError, FileNotFoundError]))
     def test_handles_errors_gracefully(self, tmp_path, mocker, error_class):
         """Returns silently when rmdir raises OSError."""
         root = tmp_path / 'root'
@@ -621,7 +620,7 @@ class TestPruneEmptyParentDirectories:
         assert root.exists()
         assert sibling.exists()
 
-    @pytest.mark.parametrize('error_class', (PermissionError, FileNotFoundError))
+    @pytest.mark.parametrize('error_class', ([PermissionError, FileNotFoundError]))
     def test_remove_root_handles_errors_gracefully(self, tmp_path, mocker, error_class):
         """With remove_root=True, OSError on root removal is handled gracefully."""
         root = tmp_path / 'root'

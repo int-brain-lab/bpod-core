@@ -23,8 +23,7 @@ class BaseCodeBlockDirective(Directive):
             value = '' if v is None else ' '.join(v) if isinstance(v, list) else v
             output.append(f'   :{k}: {value}')
         output.append('')
-        for line in self.content:
-            output.append(f'   {line}')
+        output.extend(f'   {line}' for line in self.content)
         output.append('')
         return output
 

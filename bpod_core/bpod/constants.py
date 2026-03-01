@@ -1,6 +1,8 @@
 """Constants used by the bpod module."""
 
-from bpod_core.constants import PLATFORMDIRS, VID_TEENSY, TeensyPID
+import platformdirs
+
+from bpod_core.constants import VID_TEENSY, TeensyPID
 
 VIDS_BPOD = [VID_TEENSY]
 """Vendor IDs of supported Bpod devices"""
@@ -32,5 +34,5 @@ CHANNEL_TYPES_OUTPUT.update({b'V': 'Valve', b'P': 'PWM'})
 N_SERIAL_EVENTS_DEFAULT = 15
 VALID_OPERATORS = {'exit', '>exit', '>back'}
 MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
-CONFIG_PATH = PLATFORMDIRS.user_config_path
+CONFIG_PATH = platformdirs.user_config_path(appname='bpod-core', appauthor=False)
 DISCOVERY_TIMEOUT = 0.11

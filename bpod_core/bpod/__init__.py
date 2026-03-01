@@ -41,7 +41,7 @@ from bpod_core.com import (
     find_ports,
     verify_serial_discovery,
 )
-from bpod_core.constants import STRUCT_UINT32, TeensyPID
+from bpod_core.constants import STRUCT_UINT32_LE, TeensyPID
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ServiceClient, ServiceEvent, ServiceHost, iter_services
 from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
@@ -63,8 +63,9 @@ class FSMThread(threading.Thread):
 
     _struct_exit = struct.Struct('<IQ')
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
+        *,
         serial: ExtendedSerial,
         fsm_index: int,
         confirm_fsm: bool,
@@ -169,7 +170,7 @@ class FSMThread(threading.Thread):
                 serial.readinto(event_data_view[: param + 4])
 
                 # unpack the number of cycles, calculate the event's timestamp
-                (n_cycles,) = STRUCT_UINT32.unpack_from(event_data_view, param)
+                (n_cycles,) = STRUCT_UINT32_LE.unpack_from(event_data_view, param)
                 micros = t0 + n_cycles * cycle_period
 
                 # handle each event
@@ -253,6 +254,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self,
         port: str | None = None,
         serial_number: str | None = None,
+        *,
         remote: bool = False,
     ) -> None:
         logger.info('bpod_core %s', bpod_core_version)
@@ -385,7 +387,6 @@ class Bpod(SerialDevice, AbstractBpod):
                 result = method(*args, **kwargs)
                 response = {'success': True, 'result': result}
             except Exception as e:
-                print(message)
                 response = {
                     'success': False,
                     'error': {
@@ -408,11 +409,11 @@ class Bpod(SerialDevice, AbstractBpod):
             }
         return response
 
-    def _start_zmq(self, use_zeroconf: bool) -> None:
+    def _start_zmq(self, *, use_zeroconf: bool) -> None:
         port_pub = self._get_setting(['devices', self._serial_number, 'port_pub'])
         port_rep = self._get_setting(['devices', self._serial_number, 'port_rep'])
         self._zmq_service = ServiceHost(
-            service_name=self.name if self.name else f'bpod_{self._serial_number}',
+            service_name=self.name or f'bpod_{self._serial_number}',
             service_type='bpod',
             properties={
                 'description': f'Bpod Finite State Machine {self.version.machine_str}',
@@ -423,9 +424,9 @@ class Bpod(SerialDevice, AbstractBpod):
                 'core': bpod_core_version,
             },
             event_handler=self._request_handler,
-            remote=use_zeroconf,
             port_pub=cast('int | None', port_pub),
             port_rep=cast('int | None', port_rep),
+            remote=use_zeroconf,
         )
         self._set_setting(
             ['devices', self._serial_number, 'port_pub'], self._zmq_service.pub_tcp_port
@@ -480,8 +481,7 @@ class Bpod(SerialDevice, AbstractBpod):
             if port is not None:
                 if len(find_ports(device=port)) == 0:
                     raise BpodError(f'Port not found: {port}') from None
-                else:
-                    raise BpodError(f'Device on {port} is not an idle Bpod') from None
+                raise BpodError(f'Device on {port} is not an idle Bpod') from None
             msg = 'No idle Bpod found'
             if serial_number is not None:
                 msg += f' matching serial number {serial_number}'
@@ -733,12 +733,12 @@ class Bpod(SerialDevice, AbstractBpod):
             self.actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
 
     @validate_call
-    def set_status_led(self, enabled: bool) -> bool:
+    def set_status_led(self, enable: bool) -> bool:  # noqa: FBT001
         """Enable or disable the Bpod status LED.
 
         Parameters
         ----------
-        enabled : bool
+        enable : bool
             True to turn the LED on, False to turn it off.
 
         Returns
@@ -746,7 +746,7 @@ class Bpod(SerialDevice, AbstractBpod):
         bool
             True if the Bpod acknowledged the command.
         """
-        self.serial0.write_struct('<c?', b':', enabled)
+        self.serial0.write_struct('<c?', b':', enable)
         return self.serial0.verify(b'')
 
     def update_modules(self) -> None:
@@ -1222,14 +1222,14 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # Start a new FSM thread
         self._fsm_thread = FSMThread(
-            self.serial0,
-            self._next_fsm_index,
-            self._waiting_for_confirmation,
-            self._hardware.cycle_period,
-            self._softcode_handler,
-            self._state_transitions,
-            self._use_back_op,
-            self.event_names,
+            serial=self.serial0,
+            fsm_index=self._next_fsm_index,
+            confirm_fsm=self._waiting_for_confirmation,
+            cycle_period=self._hardware.cycle_period,
+            softcode_handler=self._softcode_handler,
+            state_transitions=self._state_transitions,
+            use_back_op=self._use_back_op,
+            event_names=self.event_names,
         )
         self._fsm_thread.start()
         self._waiting_for_confirmation = False
@@ -1310,7 +1310,7 @@ class Input(Channel):
 
     def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
         super().__init__(bpod, name, io_key, index)
-        self._set_enable_inputs = bpod._set_enable_inputs
+        self._set_enable_inputs = bpod._set_enable_inputs  # noqa: SLF001
         self._enabled = io_key in (b'PBWF')  # Enable Port, BNC, Wire and FlexIO inputs
 
     def read(self) -> bool:
@@ -1324,7 +1324,7 @@ class Input(Channel):
         """
         return self._serial0.verify(struct.pack('<cB', b'I', self.index))
 
-    def override(self, state: bool) -> None:
+    def override(self, state: bool) -> None:  # noqa: FBT001
         """
         Override the state of the input channel.
 
@@ -1335,13 +1335,13 @@ class Input(Channel):
         """
         self._serial0.write_struct('<cB', b'V', state)
 
-    def enable(self, enabled: bool) -> bool:
+    def enable(self, enable: bool) -> bool:  # noqa: FBT001
         """
         Enable or disable the input channel.
 
         Parameters
         ----------
-        enabled : bool
+        enable : bool
             True to enable the input channel, False to disable.
 
         Returns
@@ -1352,10 +1352,10 @@ class Input(Channel):
         if self.io_type not in b'FDBWVP':
             logger.warning(
                 '%sabling input `%s` has no effect',
-                'En' if enabled else 'Dis',
+                'En' if enable else 'Dis',
                 self.name,
             )
-        self._enabled = enabled
+        self._enabled = enable
         return self._set_enable_inputs()
 
     @property
@@ -1386,7 +1386,7 @@ class Input(Channel):
 class Output(Channel):
     """Output channel class representing a digital output channel."""
 
-    def override(self, state: bool | int) -> None:
+    def override(self, state: bool | int) -> None:  # noqa: FBT001
         """
         Override the state of the output channel.
 
@@ -1440,7 +1440,7 @@ class Module:
                 self.event_names.append(f'{self.name}_{idx}')
 
     @validate_call
-    def set_relay(self, enable: bool) -> None:
+    def set_relay(self, enable: bool) -> None:  # noqa: FBT001
         """
         Enable or disable the serial relay for the module.
 
@@ -1452,7 +1452,7 @@ class Module:
         if enable == self._relay_enabled:
             return
         if enable is True:
-            self._bpod._disable_all_module_relays()
+            self._bpod._disable_all_module_relays()  # noqa: SLF001
         logger.info(
             '%sabling relay for module %s', {'En' if enable else 'Dis'}, self.name
         )
@@ -1545,9 +1545,9 @@ class RemoteBpod(AbstractBpod):
             self._zmq = ServiceClient(
                 service_type='bpod',
                 address=address,
+                event_handler=self._event_handler,
                 discovery_timeout=timeout,
                 txt_properties=properties,
-                event_handler=self._event_handler,
                 default_data_type=dict,
             )
         except TimeoutError as e:
@@ -1558,7 +1558,7 @@ class RemoteBpod(AbstractBpod):
         logger.info(
             'Connected to Bpod Finite State Machine %s on %s',
             self._version.machine_str,
-            self._zmq._address_req,
+            self._zmq.address_req,
         )
 
     def _request(self, request_type: str, **kwargs: Any) -> dict:
@@ -1601,15 +1601,15 @@ class RemoteBpod(AbstractBpod):
         pass
 
     @property
-    def name(self) -> str | None:
+    def name(self) -> str | None:  # noqa: D102
         return self._name
 
     @property
-    def location(self) -> str | None:
+    def location(self) -> str | None:  # noqa: D102
         return self._location
 
-    def set_status_led(self, enabled: bool) -> bool:
-        return self._remote_call('set_status_led', enabled) or False
+    def set_status_led(self, enable: bool) -> bool:  # noqa: D102, FBT001
+        return self._remote_call('set_status_led', enable) or False
 
 
 def discover_bpod(
@@ -1662,10 +1662,11 @@ def discover_remote_bpod(
     name: str | None = None,
     serial_number: str | None = None,
     location: str | None = None,
-    local: bool = True,
-    remote: bool = True,
     timeout: float | None = 10.0,
     poll_interval: float = 1,
+    *,
+    local: bool = True,
+    remote: bool = True,
 ) -> Iterator[ServiceEvent]:
     """
     Identify available Bpod devices connected via ZeroMQ.
@@ -1706,8 +1707,8 @@ def discover_remote_bpod(
     yield from iter_services(
         service_type='bpod',
         properties=properties,
-        local=local,
-        remote=remote,
         timeout=timeout,
         poll_interval=poll_interval,
+        local=local,
+        remote=remote,
     )

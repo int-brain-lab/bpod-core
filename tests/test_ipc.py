@@ -164,8 +164,8 @@ class TestClient:
             service_name='TestService',
             service_type='dualtest',
             event_handler=lambda data: {'echo': data},
-            remote=False,
             serialization='json',
+            remote=False,
         ) as host:
             yield host
 
@@ -276,20 +276,20 @@ class TestLocalDiscovery:
             address='tcp://127.0.0.1:9999',
             pid=os.getpid(),
         ):
-            address, properties = ipc.discover('service_type', remote=True, timeout=0)
+            address, _ = ipc.discover('service_type', timeout=0, remote=True)
             assert address == 'tcp://127.0.0.1:9999'
 
     def test_discover_remote_false_raises_if_no_local(self, mock_advertisement):
         """discover() with remote=False raises if no local service found."""
         with pytest.raises(TimeoutError):
-            ipc.discover('nonexistent', remote=False, timeout=0)
+            ipc.discover('nonexistent', timeout=0, remote=False)
 
     def test_discover_falls_back_to_zeroconf(
         self, mock_advertisement, mock_service_browser
     ):
         """discover() falls back to zeroconf when no local service exists."""
         with pytest.raises(TimeoutError):
-            ipc.discover('test_service', remote=True, timeout=0, poll_interval=0.01)
+            ipc.discover('test_service', timeout=0, poll_interval=0.01, remote=True)
         mock_advertisement['zeroconf'].assert_called_once()
 
     def test_client_remote_false_uses_only_local(self, mock_advertisement):
@@ -365,7 +365,7 @@ class TestIterServices:
             return mocker.MagicMock(spec=ServiceBrowser)
 
         mock_service_browser.side_effect = make_browser
-        yield advertisement
+        return advertisement
 
     class MockAdvertisement(NamedTuple):
         fixture: Any
@@ -406,7 +406,7 @@ class TestIterServices:
         self, mock_local_advertisement, mock_service_browser, mock_zeroconf
     ):
         """timeout=0 with no services yields nothing."""
-        iterator = ipc.iter_services('nonexistent', remote=True, timeout=0)
+        iterator = ipc.iter_services('nonexistent', timeout=0, remote=True)
         assert list(iterator) == []
 
     def test_filters_by_properties(self, mock_local_advertisement):
@@ -417,7 +417,7 @@ class TestIterServices:
             address='tcp://127.0.0.1:6666',
             properties={'a': 'b', 'x': 'y'},
         ):
-            kwargs = {'local': True, 'remote': True, 'timeout': 0}
+            kwargs = {'timeout': 0, 'local': True, 'remote': True}
             iterator_1 = ipc.iter_services('service_type', {'x': 'y'}, **kwargs)
             iterator_2 = ipc.iter_services('service_type', {'a': 'b'}, **kwargs)
             events_1 = list(iterator_1)
@@ -428,11 +428,11 @@ class TestIterServices:
 
     def test_remote_false_no_zeroconf(self, mock_zeroconf, mock_local_discovery_dir):
         """remote=False never instantiates Zeroconf."""
-        list(ipc.iter_services('nonexistent', remote=False, timeout=0))
+        list(ipc.iter_services('nonexistent', timeout=0, remote=False))
         mock_zeroconf.assert_not_called()
 
     @pytest.mark.parametrize(
-        'kinds, expected_len, expected_event',
+        ('kinds', 'expected_len', 'expected_event'),
         [
             pytest.param('+', 1, ('added', 0), id='add'),
             pytest.param('-', 0, None, id='remove'),
@@ -448,10 +448,10 @@ class TestIterServices:
         """test collapsing various combinations of added/removed events."""
         iterator = ipc.ServiceIterator(
             service_type='nonexistent',
-            local=True,
-            remote=False,
             timeout=0,
             poll_interval=0.01,
+            local=True,
+            remote=False,
         )
         i = 0
         for k in kinds:

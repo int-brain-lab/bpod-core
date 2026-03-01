@@ -34,13 +34,13 @@ class AbstractBpod(DocstringInheritanceMixin, ABC):
         return self._serial_number
 
     @abstractmethod
-    def set_status_led(self, enabled: bool) -> bool:
+    def set_status_led(self, enable: bool) -> bool:  # noqa: FBT001
         """
         Enable or disable the Bpod's status LED.
 
         Parameters
         ----------
-        enabled : bool
+        enable : bool
             True to enable the status LED, False to disable.
 
         Returns

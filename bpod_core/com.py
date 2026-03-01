@@ -17,13 +17,13 @@ from typing_extensions import Buffer, Self
 
 from bpod_core.constants import (
     STRUCT_INT8,
-    STRUCT_INT16,
-    STRUCT_INT32,
-    STRUCT_INT64,
+    STRUCT_INT16_LE,
+    STRUCT_INT32_LE,
+    STRUCT_INT64_LE,
     STRUCT_UINT8,
-    STRUCT_UINT16,
-    STRUCT_UINT32,
-    STRUCT_UINT64,
+    STRUCT_UINT16_LE,
+    STRUCT_UINT32_LE,
+    STRUCT_UINT64_LE,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,15 +38,15 @@ class ExtendedSerial(Serial):
 
     def write_int16(self, value: int) -> int | None:
         """Write a 16-bit signed integer to the serial port (little-endian)."""
-        return self.write(STRUCT_INT16.pack(value))
+        return self.write(STRUCT_INT16_LE.pack(value))
 
     def write_int32(self, value: int) -> int | None:
         """Write a 32-bit signed integer to the serial port (little-endian)."""
-        return self.write(STRUCT_INT32.pack(value))
+        return self.write(STRUCT_INT32_LE.pack(value))
 
     def write_int64(self, value: int) -> int | None:
         """Write a 64-bit signed integer to the serial port (little-endian)."""
-        return self.write(STRUCT_INT64.pack(value))
+        return self.write(STRUCT_INT64_LE.pack(value))
 
     def write_uint8(self, value: int) -> int | None:
         """Write an 8-bit unsigned integer to the serial port."""
@@ -54,17 +54,17 @@ class ExtendedSerial(Serial):
 
     def write_uint16(self, value: int) -> int | None:
         """Write a 16-bit unsigned integer to the serial port (little-endian)."""
-        return self.write(STRUCT_UINT16.pack(value))
+        return self.write(STRUCT_UINT16_LE.pack(value))
 
     def write_uint32(self, value: int) -> int | None:
         """Write a 32-bit unsigned integer to the serial port (little-endian)."""
-        return self.write(STRUCT_UINT32.pack(value))
+        return self.write(STRUCT_UINT32_LE.pack(value))
 
     def write_uint64(self, value: int) -> int | None:
         """Write a 64-bit unsigned integer to the serial port (little-endian)."""
-        return self.write(STRUCT_UINT64.pack(value))
+        return self.write(STRUCT_UINT64_LE.pack(value))
 
-    def write_bool(self, value: bool) -> int | None:
+    def write_bool(self, value: bool) -> int | None:  # noqa: FBT001
         """Write a boolean value to the serial port."""
         return self.write(b'\x01' if value else b'\x00')
 
@@ -74,15 +74,15 @@ class ExtendedSerial(Serial):
 
     def read_int16(self) -> int:
         """Read a 16-bit signed integer from the serial port (little-endian)."""
-        return STRUCT_INT16.unpack(self.read(2))[0]  # type: ignore[no-any-return]
+        return STRUCT_INT16_LE.unpack(self.read(2))[0]  # type: ignore[no-any-return]
 
     def read_int32(self) -> int:
         """Read a 32-bit signed integer from the serial port (little-endian)."""
-        return STRUCT_INT32.unpack(self.read(4))[0]  # type: ignore[no-any-return]
+        return STRUCT_INT32_LE.unpack(self.read(4))[0]  # type: ignore[no-any-return]
 
     def read_int64(self) -> int:
         """Read a 64-bit signed integer from the serial port (little-endian)."""
-        return STRUCT_INT64.unpack(self.read(8))[0]  # type: ignore[no-any-return]
+        return STRUCT_INT64_LE.unpack(self.read(8))[0]  # type: ignore[no-any-return]
 
     def read_uint8(self) -> int:
         """Read an 8-bit unsigned integer from the serial port."""
@@ -90,15 +90,15 @@ class ExtendedSerial(Serial):
 
     def read_uint16(self) -> int:
         """Read a 16-bit unsigned integer from the serial port (little-endian)."""
-        return STRUCT_UINT16.unpack(self.read(2))[0]  # type: ignore[no-any-return]
+        return STRUCT_UINT16_LE.unpack(self.read(2))[0]  # type: ignore[no-any-return]
 
     def read_uint32(self) -> int:
         """Read a 32-bit unsigned integer from the serial port (little-endian)."""
-        return STRUCT_UINT32.unpack(self.read(4))[0]  # type: ignore[no-any-return]
+        return STRUCT_UINT32_LE.unpack(self.read(4))[0]  # type: ignore[no-any-return]
 
     def read_uint64(self) -> int:
         """Read a 64-bit unsigned integer from the serial port (little-endian)."""
-        return STRUCT_UINT64.unpack(self.read(8))[0]  # type: ignore[no-any-return]
+        return STRUCT_UINT64_LE.unpack(self.read(8))[0]  # type: ignore[no-any-return]
 
     def read_bool(self) -> bool:
         """Read a boolean value from the serial port."""
@@ -414,7 +414,7 @@ def verify_serial_discovery(
         return False
 
 
-def _close_serial_connection(serial: Serial, raise_errors: bool = False) -> None:
+def _close_serial_connection(serial: Serial, *, raise_errors: bool = False) -> None:
     """Close a serial connection if open."""
     if not getattr(serial, 'is_open', False):
         return
@@ -441,9 +441,10 @@ class SerialDevice(AbstractContextManager):
     def __init__(
         self,
         port: str,
-        open_connection: bool = True,
         serial_device_name: str = 'serial_device',
-        **kwargs: Any,
+        *,
+        open_connection: bool = True,
+        **kwargs: Any,  # noqa: ARG002
     ) -> None:
         """Initialize the serial device.
 
@@ -451,11 +452,11 @@ class SerialDevice(AbstractContextManager):
         ----------
         port : str
             The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3').
-        open_connection : bool, optional
-            Whether to open the connection immediately, by default True.
         serial_device_name : str, optional
             Name used to identify this device in log messages, by default
             ``'serial_device'``.
+        open_connection : bool, optional
+            Whether to open the connection immediately, by default True.
         **kwargs
             Additional arguments for compatibility with subclasses.
 

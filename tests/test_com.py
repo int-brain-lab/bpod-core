@@ -302,7 +302,7 @@ class TestFindPorts:
 
 
 class TestVerifySerialDiscovery:
-    @pytest.fixture()
+    @pytest.fixture
     def mock_serial(self, mocker):
         mock_serial = mocker.MagicMock()
         mock_serial.read.return_value = b'A'

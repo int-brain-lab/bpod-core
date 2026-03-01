@@ -25,6 +25,7 @@ import zmq
 from platformdirs import user_runtime_path
 from psutil import pid_exists
 from pydantic import UUID4, validate_call
+from typing_extensions import Self
 from zeroconf import (
     InterfaceChoice,
     IPVersion,
@@ -34,7 +35,7 @@ from zeroconf import (
     Zeroconf,
 )
 
-from bpod_core.constants import IP_ANY, IP_LOOPBACK
+from bpod_core.constants import IPV4_LOOPBACK, IPV4_WILDCARD
 from bpod_core.misc import (
     RE_NON_ALPHANUMERIC,
     get_local_ipv4,
@@ -76,7 +77,8 @@ class MessageKind(IntEnum):
 
     _as_bytes: bytes
 
-    def __new__(cls, value: int) -> 'MessageKind':
+    def __new__(cls, value: int) -> Self:
+        """Create a new MessageKind instance."""
         if not 0 <= value <= 0xFF:
             raise ValueError('Values must fit in one byte')
         obj: MessageKind = int.__new__(cls, value)  # type: ignore[assignment]
@@ -427,10 +429,11 @@ class ServiceHost(ServiceBase):
         service_type: str,
         properties: dict[str, str | None] | None = None,
         event_handler: Callable[[Any], Any] | None = None,
-        remote: bool = True,
         port_pub: int | None = None,
         port_rep: int | None = None,
         serialization: Literal['json', 'msgpack'] = 'msgpack',
+        *,
+        remote: bool = True,
     ) -> None:
         """
         Initialize the ServiceHost.
@@ -445,20 +448,20 @@ class ServiceHost(ServiceBase):
             Additional properties for service advertisement.
         event_handler : callable, optional
             Function to handle incoming requests.
-        remote : bool, default=True
-            If True, binds TCP sockets to '0.0.0.0'. Otherwise, binds to '127.0.0.1'.
         port_pub : int, optional
             TCP port to bind the PUB socket. If None, a random available port is chosen.
         port_rep : int, optional
             TCP port to bind the REP socket. If None, a random available port is chosen.
         serialization : str, default='msgpack'
             Serialization format for message encoding.
+        remote : bool, default=True
+            If True, binds TCP sockets to '0.0.0.0'. Otherwise, binds to '127.0.0.1'.
         """
         # initialize base class
         super().__init__()
 
-        self._bind_ip = IP_ANY if remote else IP_LOOPBACK
-        self._local_ip = get_local_ipv4() if remote else IP_LOOPBACK
+        self._bind_ip = IPV4_WILDCARD if remote else IPV4_LOOPBACK
+        self._local_ip = get_local_ipv4() if remote else IPV4_LOOPBACK
 
         # ZeroMQ sockets
         self._socket_req_rep = self._zmq_context.socket(zmq.REP)
@@ -502,7 +505,7 @@ class ServiceHost(ServiceBase):
                 pub_ipc_addr = None
 
         def bind_tcp(zmq_socket: zmq.Socket, tcp_port: int | None) -> tuple[str, int]:
-            """Helper function binding socket to TCP address with preferred port."""
+            """Bind socket to TCP address with preferred port."""
             if tcp_port is not None:
                 try:
                     zmq_socket.bind(f'tcp://{self._bind_ip}:{tcp_port}')
@@ -635,7 +638,7 @@ class ServiceHost(ServiceBase):
                 zeroconf.close()
 
         # call base class finalizer
-        ServiceBase._finalize_base(
+        ServiceBase._finalize_base(  # noqa: SLF001
             event_thread,
             stop_event,
             socket_req_rep,
@@ -655,7 +658,7 @@ class ServiceHost(ServiceBase):
         return {}
 
     @staticmethod
-    def _event_loop(  # noqa: PLR0913
+    def _event_loop(
         stop_event: threading.Event,
         req_rep_socket: zmq.Socket,
         decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder,
@@ -789,8 +792,9 @@ class ServiceClient(ServiceBase, Generic[U]):
         event_handler: Callable[[dict], Any] | None = None,
         discovery_timeout: float = 10.0,
         txt_properties: dict | None = None,
-        remote: bool = True,
         default_data_type: type[U] | None = None,
+        *,
+        remote: bool = True,
     ) -> None:
         """
         Initialize a ServiceClient instance.
@@ -807,10 +811,10 @@ class ServiceClient(ServiceBase, Generic[U]):
             Timeout in seconds for service discovery, by default 10.0.
         txt_properties : dict, optional
             Properties for service filtering during discovery, by default None.
-        remote : bool, optional
-            Whether to use Zeroconf for discovering remote services, by default True.
         default_data_type : type, optional
             The default data type for incoming messages.
+        remote : bool, optional
+            Whether to use Zeroconf for discovering remote services, by default True.
         """
         # initialize base class
         super().__init__()
@@ -832,8 +836,8 @@ class ServiceClient(ServiceBase, Generic[U]):
             self._address_req, _ = discover(
                 service_type=service_type,
                 properties=txt_properties,
-                remote=remote,
                 timeout=discovery_timeout,
+                remote=remote,
             )
         self._socket_req_rep.connect(self._address_req)
         self._lock_req = threading.Lock()
@@ -870,7 +874,7 @@ class ServiceClient(ServiceBase, Generic[U]):
         # register finalizer to clean up resources on exit
         self._finalizer = weakref.finalize(
             self,
-            ServiceBase._finalize_base,
+            ServiceBase._finalize_base,  # noqa: SLF001
             self._event_thread,
             self._stop_event_loop,
             self._socket_req_rep,
@@ -1034,11 +1038,10 @@ class ServiceClient(ServiceBase, Generic[U]):
         )
         if reply_kind == MessageKind.REPLY:
             return reply_data
-        elif reply_kind == MessageKind.ERROR:
+        if reply_kind == MessageKind.ERROR:
             error_data = cast('ErrorData', reply_data)
             raise RemoteError(error_data)
-        else:
-            raise ServiceError(f"Received unexpected reply type: '{reply_kind}'")
+        raise ServiceError(f"Received unexpected reply type: '{reply_kind}'")
 
     def close(self) -> None:
         """Close the client and clean up resources."""
@@ -1055,14 +1058,25 @@ class ServiceClient(ServiceBase, Generic[U]):
                 self._zmq_context,
             )
 
+    @property
+    def address_req(self) -> str:
+        """The address for the REQ channel."""
+        return self._address_req
+
+    @property
+    def address_sub(self) -> str:
+        """The address for the SUB channel."""
+        return self._address_sub
+
 
 def discover(
     service_type: str,
     properties: dict[str, str | None] | None = None,
-    local: bool = True,
-    remote: bool = True,
     timeout: float = 10,
     poll_interval: float = 1,
+    *,
+    local: bool = True,
+    remote: bool = True,
 ) -> tuple[str, dict[str, str | None]]:
     """
     Discover a device/service on the local network matching given properties.
@@ -1073,15 +1087,15 @@ def discover(
         The service type to discover, e.g., 'bpod'
     properties : dict, optional
         Dictionary of expected service properties to match.
-    local : bool, optional
-        Whether to search for a matching service on the local machine, by default True.
-    remote : bool, optional
-        Whether to search for a matching service on the network, by default True.
     timeout : float, optional
         How many seconds to wait for a matching service before timing out.
         Default is 10.
     poll_interval : float, optional
         How often to poll for local service changes, in seconds. Default is 1.
+    local : bool, optional
+        Whether to search for a matching service on the local machine, by default True.
+    remote : bool, optional
+        Whether to search for a matching service on the network, by default True.
 
     Returns
     -------
@@ -1098,10 +1112,10 @@ def discover(
     with ServiceIterator(
         service_type=service_type,
         properties=properties,
-        local=local,
-        remote=remote,
         timeout=timeout,
         poll_interval=poll_interval,
+        local=local,
+        remote=remote,
     ) as iterator:
         for event in iterator:
             return event.address, event.properties
@@ -1140,13 +1154,13 @@ class _ServiceListenerIterator(ServiceListener):
         self._seen_remote[name] = event
         self._queue.put(event)
 
-    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+    def remove_service(self, _: Zeroconf, __: str, name: str) -> None:
         if name in self._seen_remote:
-            _, address, properties = self._seen_remote.pop(name)
+            ___, address, properties = self._seen_remote.pop(name)
             event = ServiceEvent('removed', address, properties)
             self._queue.put(event)
 
-    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
+    def update_service(self, _: Zeroconf, __: str, name: str) -> None:
         logger.debug('Ignoring update for service: %s', name)
 
 
@@ -1168,10 +1182,11 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
         self,
         service_type: str,
         properties: dict[str, str | None] | None = None,
-        local: bool = True,
-        remote: bool = True,
         timeout: float | None = 10,
         poll_interval: float = 1,
+        *,
+        local: bool = True,
+        remote: bool = True,
     ) -> None:
         """Initialize the ServiceIterator.
 
@@ -1181,15 +1196,15 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
             The service type to discover, e.g., ``'bpod'``.
         properties : dict, optional
             Dictionary of expected service properties to match.
-        local : bool, optional
-            Whether to search for services on the local machine, by default True.
-        remote : bool, optional
-            Whether to also search for services on the network, by default True.
         timeout : float or None, optional
             How many seconds to monitor, by default 10.
             Pass ``None`` to monitor indefinitely until the iterator is closed.
         poll_interval : float, optional
             How often to poll for local service changes, in seconds. Default is 1.
+        local : bool, optional
+            Whether to search for services on the local machine, by default True.
+        remote : bool, optional
+            Whether to also search for services on the network, by default True.
         """
         if not local and not remote:
             raise ValueError('at least one of local or remote must be True')
@@ -1253,7 +1268,7 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
     ) -> None:
         self.close()
 
-    def __iter__(self) -> Iterator[ServiceEvent]:
+    def __iter__(self) -> Self:
         return self
 
     def __next__(self) -> ServiceEvent:
@@ -1313,13 +1328,13 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
         if event.kind == 'removed':
             if state is None:  # no pending event / not known alive -> ignore
                 return
-            elif state is self._YIELDED:  # was yielded, alive -> enqueue, go pending
+            if state is self._YIELDED:  # was yielded, alive -> enqueue, go pending
                 self._pending.append(address)
                 self._state[address] = event
                 return
-            else:  # pending add not yet yielded -> cancel
-                self._state.pop(address, None)
-                return
+            # pending add not yet yielded -> cancel
+            self._state.pop(address, None)
+            return
 
         if state is None:  # first time seen -> enqueue
             self._pending.append(address)
@@ -1333,10 +1348,11 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
 def iter_services(
     service_type: str,
     properties: dict[str, str | None] | None = None,
-    local: bool = True,
-    remote: bool = True,
     timeout: float | None = 10,
     poll_interval: float = 1,
+    *,
+    local: bool = True,
+    remote: bool = True,
 ) -> Iterator[ServiceEvent]:
     """
     Discover all services matching the given type and properties.
@@ -1350,15 +1366,15 @@ def iter_services(
         The service type to discover, e.g., 'bpod'.
     properties : dict, optional
         Dictionary of expected service properties to match.
-    local : bool, optional
-        Whether to search for services on the local machine, by default True.
-    remote : bool, optional
-        Whether to also search for services on the network, by default True.
     timeout : float or None, optional
         How many seconds to monitor, by default 10.
         Pass ``None`` to monitor indefinitely until the iterator is closed.
     poll_interval : float, optional
         How often to poll for local service changes, in seconds. Default is 1.
+    local : bool, optional
+        Whether to search for services on the local machine, by default True.
+    remote : bool, optional
+        Whether to also search for services on the network, by default True.
 
     Yields
     ------
@@ -1372,8 +1388,8 @@ def iter_services(
     return ServiceIterator(
         service_type=service_type,
         properties=properties,
-        local=local,
-        remote=remote,
         timeout=timeout,
         poll_interval=poll_interval,
+        local=local,
+        remote=remote,
     )

@@ -3,35 +3,31 @@
 from enum import IntEnum
 from struct import Struct
 
-import platformdirs
-
 # pre-compiled structs for common data types
 STRUCT_UINT8 = Struct('B')
 """Compiled struct representing an unsigned 8-bit integer."""
-STRUCT_UINT16 = Struct('<H')
-"""Compiled struct representing an unsigned 16-bit integer."""
-STRUCT_UINT32 = Struct('<I')
-"""Compiled struct representing an unsigned 32-bit integer."""
-STRUCT_UINT64 = Struct('<Q')
-"""Compiled struct representing an unsigned 64-bit integer."""
+STRUCT_UINT16_LE = Struct('<H')
+"""Compiled struct representing an unsigned 16-bit integer (little-endian)."""
+STRUCT_UINT32_LE = Struct('<I')
+"""Compiled struct representing an unsigned 32-bit integer (little-endian)."""
+STRUCT_UINT64_LE = Struct('<Q')
+"""Compiled struct representing an unsigned 64-bit integer (little-endian)."""
 STRUCT_INT8 = Struct('b')
 """Compiled struct representing a signed 8-bit integer."""
-STRUCT_INT16 = Struct('<h')
-"""Compiled struct representing a signed 16-bit integer."""
-STRUCT_INT32 = Struct('<i')
-"""Compiled struct representing a signed 32-bit integer."""
-STRUCT_INT64 = Struct('<q')
-"""Compiled struct representing a signed 64-bit integer."""
+STRUCT_INT16_LE = Struct('<h')
+"""Compiled struct representing a signed 16-bit integer (little-endian)."""
+STRUCT_INT32_LE = Struct('<i')
+"""Compiled struct representing a signed 32-bit integer (little-endian)."""
+STRUCT_INT64_LE = Struct('<q')
+"""Compiled struct representing a signed 64-bit integer (little-endian)."""
 
-IP_LOOPBACK = '127.0.0.1'
+IPV4_LOOPBACK = '127.0.0.1'
 """IPv4 loopback address."""
-IP_ANY = '0.0.0.0'
+IPV4_WILDCARD = '0.0.0.0'  # noqa: S104
 """IPv4 wildcard address for binding to all interfaces."""
 
 VID_TEENSY: int = 0x16C0
 """Vendor ID of Teensy microcontrollers."""
-
-PLATFORMDIRS = platformdirs.PlatformDirs(appname='bpod-core', appauthor=False)
 
 
 class TeensyPID(IntEnum):

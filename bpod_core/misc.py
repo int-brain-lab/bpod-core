@@ -394,6 +394,7 @@ def extend_packed(
 def prune_empty_parent_directories(
     target_directory: PathLike | str,
     root_directory: PathLike | str,
+    *,
     remove_root: bool = False,
 ) -> None:
     """Remove empty parent directories recursively up to root directory.

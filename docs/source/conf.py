@@ -92,7 +92,7 @@ def setup(app):
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'bpod-core'
-copyright = f'{date.today().year}, International Brain Laboratory'  # noqa: A001
+copyright = f'{date.year}, International Brain Laboratory'  # noqa: A001
 author = 'International Brain Laboratory'
 release = '.'.join(__version__.split('.')[:3])
 version = '.'.join(__version__.split('.')[:3])

@@ -116,7 +116,7 @@ def mock_local_discovery_dir(tmp_path, mocker):
 @pytest.fixture
 def mock_advertisement(mock_zeroconf, mock_local_discovery_dir):
     """Mock, both, zeroconf and local advertisement."""
-    yield {'zeroconf': mock_zeroconf, 'runtime_dir': mock_local_discovery_dir}
+    return {'zeroconf': mock_zeroconf, 'runtime_dir': mock_local_discovery_dir}
 
 
 @pytest.fixture
