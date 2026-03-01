@@ -104,7 +104,7 @@ class ExtendedSerial(Serial):
         """Read a boolean value from the serial port."""
         return self.read(1) != b'\x00'
 
-    def write_struct(self, format_string: str, *data: Any) -> int | None:  # noqa:ANN401
+    def write_struct(self, format_string: str, *data: Any) -> int | None:
         """
         Write structured data to the serial port.
 
