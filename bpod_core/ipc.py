@@ -394,14 +394,13 @@ class ServiceHost(ServiceBase):
 
     Provides two communication channels: a REQ/REP channel for synchronous
     request-reply messaging and a PUB/SUB channel for broadcasting events to
-    subscribers. Incoming requests are dispatched to a user-provided
-    ``event_handler`` callback.
+    subscribers. Incoming requests are dispatched to a user-provided ``event_handler``
+    callback.
 
-    The service is automatically advertised for discovery by
-    :class:`ServiceClient`. It is advertised locally via a file in the user's runtime
-    directory for inter-process communication. When ``remote=True``, the service is
-    additionally advertised via Zeroconf (mDNS) for network-wide discovery and
-    remote-process communication.
+    The service is automatically advertised for discovery by :class:`ServiceClient`. It
+    is advertised locally via a file in the user's runtime directory for inter-process
+    communication. When ``remote=True``, the service is additionally advertised via
+    Zeroconf (mDNS) for network-wide discovery and remote-process communication.
     """
 
     _zeroconf: Zeroconf | None = None
@@ -440,7 +439,7 @@ class ServiceHost(ServiceBase):
             TCP port to bind the PUB socket. If None, a random available port is chosen.
         port_rep : int, optional
             TCP port to bind the REP socket. If None, a random available port is chosen.
-        serialization : {'json', 'msgpack'}, default='msgpack'
+        serialization : str, default='msgpack'
             Serialization format for message encoding.
         """
         # initialize base class
@@ -563,6 +562,7 @@ class ServiceHost(ServiceBase):
                 addresses=[socket.inet_aton(self._local_ip)],
                 properties=properties or {},
                 server=f'{socket.gethostname()}.local.',
+                other_ttl=60,
             )
             self._zeroconf = Zeroconf(
                 interfaces=InterfaceChoice.Default,

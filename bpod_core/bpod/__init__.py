@@ -1,5 +1,5 @@
 """Module for interfacing with the Bpod Finite State Machine."""
-
+import atexit
 import contextlib
 import logging
 import re
@@ -287,10 +287,11 @@ class Bpod(SerialDevice, AbstractBpod):
         # start ZeroMQ service
         self._start_zmq(use_zeroconf=remote)
 
-        # register destructor
+        # register destructors
+        atexit.register(self._atexit_handler)
         self._finalizer = weakref.finalize(
             self,
-            Bpod._finalize,
+            Bpod._cleanup,
             self._serial,
             self._zmq_service,
         )
@@ -309,11 +310,17 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
     @staticmethod
-    def _finalize(serial: ExtendedSerial, zmq_service: ServiceHost) -> None:
-        with contextlib.suppress(SerialException):
+    def _cleanup(serial: ExtendedSerial, zmq_service: ServiceHost) -> None:
+        with contextlib.suppress(Exception):
             Bpod._request_disconnect(serial)
-        serial.close()
-        zmq_service.close()
+        with contextlib.suppress(Exception):
+            serial.close()
+        with contextlib.suppress(Exception):
+            zmq_service.close()
+
+    def _atexit_handler(self) -> None:
+        self._finalizer.detach()
+        self._cleanup(self._serial, self._zmq_service)
 
     def __exit__(
         self,
@@ -322,9 +329,9 @@ class Bpod(SerialDevice, AbstractBpod):
         exc_tb: TracebackType | None,
     ) -> None:
         """Exit context and close connection."""
+        atexit.unregister(self._atexit_handler)
         self._finalizer.detach()
-        self.close()
-        self._stop_zmq()
+        self._cleanup(self._serial, self._zmq_service)
 
     def open(self) -> None:
         """
