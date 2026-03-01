@@ -315,6 +315,7 @@ class ChunkedSerialReader(Protocol):
 
 
 FilterValue = str | int | re.Pattern[str] | None | Sequence['FilterValue']
+"""Type for filter values used in :func:`find_ports`."""
 
 
 def find_ports(**filters: FilterValue) -> list[ListPortInfo]:
