@@ -39,7 +39,7 @@ class FSMCodeBlock(CodeBlock):
             fsm = name_space.get('fsm')
             if fsm and 'filename' in self.options:
                 source_path = Path(self.state.document['source']).parent
-                fsm.to_file(source_path / self.options['filename'], True)
+                fsm.to_file(source_path / self.options['filename'], overwrite=True)
 
         container = nodes.Element()
         self.state.nested_parse(

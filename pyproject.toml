@@ -157,6 +157,7 @@ extend-select = [
 ignore = [
   "TRY003",  # Avoid specifying long messages outside the exception class
   "Q000",    # Single quotes found but double quotes preferred
+  "Q003",    # Change outer quotes to avoid escaping inner quotes
   "D105",    # Missing docstring in magic method
   "D401",    # First line of docstring should be in imperative mood
   "PLR0912", # Too many branches
