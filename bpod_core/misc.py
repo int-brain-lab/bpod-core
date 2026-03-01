@@ -438,14 +438,12 @@ def prune_empty_parent_directories(
         if remove_root:
             try:
                 root_directory.rmdir()
-                logger.debug('Removed empty root directory: %s', root_directory)
             except OSError:
                 return
         return
 
     try:
         target_directory.rmdir()
-        logger.debug('Removed empty directory: %s', target_directory)
     except OSError:
         return
 

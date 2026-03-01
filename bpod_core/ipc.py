@@ -258,7 +258,6 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
     def _close(service_file: Path) -> None:
         with contextlib.suppress(Exception):
             service_file.unlink(missing_ok=True)
-            logger.debug("Removed local service advertisement '%s'", service_file)
         with contextlib.suppress(Exception):
             prune_empty_parent_directories(
                 service_file.parent,
