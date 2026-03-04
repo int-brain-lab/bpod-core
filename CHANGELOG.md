@@ -15,12 +15,7 @@ Just a quick bugfix release ...
 - `ipc.ServiceHost`: set Zeroconf to listen on all interfaces, reorder `WelcomeData`
   fields, and improve type hints.
 - event handler callback type hint to return `None` instead of `Any`.
-- CI workflows: modularize publish pipeline to reuse main workflow configuration.
-
-### Fixed
-
-- CI workflows: add tag and package version verification in publish workflow.
-- CI workflows: update version tagging regex to support PEP440 format.
+- refactor CI workflows.
 
 ## [0.1.0a7] - 2026-03-01
 
