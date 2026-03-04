@@ -1,7 +1,4 @@
 name: unit tests
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 on:
   workflow_call:
   workflow_dispatch:
@@ -16,7 +13,7 @@ on:
 jobs:
   version:
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && !github.event.pull_request.draft && github.base_ref == 'main'
+    if: (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.base_ref == 'main') || github.event_name == 'workflow_call'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
