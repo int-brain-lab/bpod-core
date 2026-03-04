@@ -154,10 +154,10 @@ class ServiceEvent(NamedTuple):
 class WelcomeData(msgspec.Struct, kw_only=True):
     """Socket addresses returned by the host during the handshake."""
 
-    ipc_pub_sub: str | None = None
-    ipc_req_rep: str | None = None
     tcp_pub_sub: str
     tcp_req_rep: str
+    ipc_pub_sub: str | None = None
+    ipc_req_rep: str | None = None
 
 
 class ClientInfo(msgspec.Struct):
@@ -580,7 +580,7 @@ class ServiceHost(ServiceBase):
                 other_ttl=60,
             )
             self._zeroconf = Zeroconf(
-                interfaces=InterfaceChoice.Default,
+                interfaces=InterfaceChoice.All,
                 ip_version=IPVersion.V4Only,
             )
 
@@ -976,7 +976,9 @@ class ServiceClient(ServiceBase, Generic[U]):
                     )
             except Exception as e:
                 # if decoding fails, try the other serialization protocol as a fallback
-                new_format = 'msgpack' if self._serialization == 'json' else 'json'
+                new_format: Literal['msgpack', 'json'] = (
+                    'msgpack' if self._serialization == 'json' else 'json'
+                )
                 new_serialization_module = getattr(msgspec, new_format)
                 try:
                     if reply_kind == MessageKind.ERROR:
@@ -997,7 +999,7 @@ class ServiceClient(ServiceBase, Generic[U]):
                 self._decoder = new_serialization_module.Decoder(
                     type=self._default_data_type
                 )
-                self._serialization = cast('Literal["json", "msgpack"]', new_format)
+                self._serialization = new_format
 
             # return reply kind and data
             return reply_kind, reply_data
@@ -1154,13 +1156,13 @@ class _ServiceListenerIterator(ServiceListener):
         self._seen_remote[name] = event
         self._queue.put(event)
 
-    def remove_service(self, _: Zeroconf, __: str, name: str) -> None:
+    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:  # noqa: ARG002
         if name in self._seen_remote:
-            ___, address, properties = self._seen_remote.pop(name)
+            _, address, properties = self._seen_remote.pop(name)
             event = ServiceEvent('removed', address, properties)
             self._queue.put(event)
 
-    def update_service(self, _: Zeroconf, __: str, name: str) -> None:
+    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:  # noqa: ARG002
         logger.debug('Ignoring update for service: %s', name)
 
 
