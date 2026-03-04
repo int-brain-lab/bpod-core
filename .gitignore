@@ -270,5 +270,12 @@ cython_debug/
 *.gv.*
 *.gv
 
-# Junie
+# AI tools
 .junie/
+.claude/
+.cursor/
+.gemini/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+opencode.json
