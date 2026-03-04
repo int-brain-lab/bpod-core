@@ -15,6 +15,20 @@ on:
       - '**/*.md'
 
 jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && !github.event.pull_request.draft && github.base_ref == 'main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Verify CHANGELOG.md
+        run: |
+          PKG_VERSION=$(uv version --short)
+          TODAY=$(date +%Y-%m-%d)
+          if ! grep -q "^## \[$PKG_VERSION\] - $TODAY" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::CHANGELOG must have version $PKG_VERSION with today's date ($TODAY)"
+            exit 1
+          fi
   tox:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -23,15 +37,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - name: Verify CHANGELOG.md
-        if: github.event_name == 'pull_request' && !github.event.pull_request.draft && github.base_ref == 'main'
-        run: |
-          PKG_VERSION=$(uv version --short)
-          TODAY=$(date +%Y-%m-%d)
-          if ! grep -q "^## \[$PKG_VERSION\] - $TODAY" CHANGELOG.md; then
-            echo "::error file=CHANGELOG.md::CHANGELOG must have version $PKG_VERSION with today's date ($TODAY)"
-            exit 1
-          fi
       - name: sync dependencies
         run: uv sync --no-default-groups --group test --group ci
       - name: run tox
