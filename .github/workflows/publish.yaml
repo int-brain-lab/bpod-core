@@ -6,8 +6,13 @@ on:
       - '+([0-9]).+([0-9]).+([0-9])?(@(a|b|rc)*([0-9]))'  # Matches PEP440 version tags
 
 jobs:
+  test:
+    name: Run CI
+    uses: ./.github/workflows/main.yaml
+
   build:
     name: Build and upload release to PyPi
+    needs: test
     runs-on: ubuntu-latest
     environment:
       name: pypi
