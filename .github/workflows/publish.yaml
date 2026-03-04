@@ -3,11 +3,16 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - '[0-9]+\\.[0-9]+\\.[0-9](?:(?:a|b|rc)[0-9]+)?'  # Matches semantic version tags
+      - '+([0-9]).+([0-9]).+([0-9])?(@(a|b|rc)*([0-9]))'  # Matches PEP440 version tags
 
 jobs:
+  test:
+    name: Run CI
+    uses: ./.github/workflows/main.yaml
+
   build:
     name: Build and upload release to PyPi
+    needs: test
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -19,5 +24,29 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: 3.13
+      - name: Verify tag matches package version
+        if: github.event_name == 'push'
+        run: |
+          PKG_VERSION=$(uv version --short)
+          if [ "$PKG_VERSION" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag '${GITHUB_REF_NAME}' does not match package version '$PKG_VERSION'"
+            exit 1
+          fi
       - run: uv build
       - run: uv publish
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Define variables
+          PRERELEASE_FLAG=$([[ "${GITHUB_REF_NAME}" =~ (a|b|rc) ]] && echo "--prerelease")
+          REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          PREV_VERSION=$(gh release list --limit 2 | tail -1 | awk '{print $1}')
+
+          # Extract release notes & append link to full changelog
+          awk "/^## \[${GITHUB_REF_NAME}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md > release-notes.md
+          echo -e "\n**Full Changelog**: $REPO_URL/compare/$PREV_VERSION...${GITHUB_REF_NAME}" >> release-notes.md
+
+          # Create release
+          gh release create ${GITHUB_REF_NAME} --notes-file release-notes.md --verify-tag $PRERELEASE_FLAG

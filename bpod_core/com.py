@@ -247,7 +247,7 @@ class ChunkedSerialReader(Protocol):
     def __init__(
         self,
         chunk_size: int,
-        callback: Callable[[bytes], Any],
+        callback: Callable[[bytes], None],
         buffer: bytearray | None = None,
     ) -> None:
         """

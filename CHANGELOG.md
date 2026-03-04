@@ -6,9 +6,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0a8] - 2026-03-04
+
+Just a quick bugfix release ...
+
+### Changed
+
+- `ipc.ServiceHost`: set Zeroconf to listen on all interfaces, reorder `WelcomeData`
+  fields, and improve type hints.
+- event handler callback type hint to return `None` instead of `Any`.
+- refactor CI workflows.
+
 ## [0.1.0a7] - 2026-03-01
 
 ### Added
+
 - `com.find_ports` for finding serial ports that match given filter criteria.
 - `com.verify_serial_discovery` for checking if a serial device sends an expected
   discovery message.
@@ -21,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - more examples.
 
 ### Changed
+
 - more verbose debug logging during state machine runs.
 - replace unmaintained `appdirs` dependency with `platformdirs`.
 - switch to zero-based indexing for global counters, timers, conditions and soft-codes.
@@ -33,21 +46,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ipc.ServiceHost`.
 
 ### Fixed
+
 - decoupled finalizers and event loops from instance references.
 
 ## [0.1.0a6] - 2025-10-29
 
 ### Added
+
 - Initial work on cached state machine validation: `fsm.StateMachine.check`
 
 ### Changed
+
 - `com.ExtendedSerial` no longer supports NumPy types, integers, strings and iterables.
 - refactoring of `com.ChunkedSerialReader`
 
 ### Removed
+
 - `com.to_bytes`
 - dependency on Pandas
-
 
 ## [0.1.0a5] - 2025-09-03
 
@@ -58,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Work on documentation: Finite-State Machines
 
 ### Changed
+
 - moved state machine structure from msgspec Struct back to Pydantic Model
 - merged `fsm_types` module back into `fsm`
 - renamed parameters for `add_state` method: `state_change_conditions` -> `transitions`
@@ -76,7 +93,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - improved export of state machines to graphviz
 - improved settings management
 - moved state machine structure from Pydantic Model to msgspec Struct
-
 
 ## [0.1.0a3] - 2025-08-04
 
@@ -117,11 +133,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 First alpha release. Nothing works.
 
+[0.1.0a8]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a8
+
 [0.1.0a7]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a7
+
 [0.1.0a6]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a6
+
 [0.1.0a5]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a5
+
 [0.1.0a4]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a4
+
 [0.1.0a3]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha.3
+
 [0.1.0a2]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha.2
+
 [0.1.0a1]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha.1
+
 [0.1.0a0]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0-alpha
