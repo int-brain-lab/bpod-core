@@ -28,18 +28,16 @@ jobs:
         if: github.event_name == 'push'
         run: |
           PKG_VERSION=$(uv version --short)
-          TAG_VERSION="${GITHUB_REF_NAME}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "Tag '$TAG_VERSION' does not match package version '$PKG_VERSION'"
+          if [ "$PKG_VERSION" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag '${GITHUB_REF_NAME}' does not match package version '$PKG_VERSION'"
             exit 1
           fi
       - name: Verify CHANGELOG.md
         if: github.event_name == 'push'
         run: |
-          VERSION="${{ github.ref_name }}"
           TODAY=$(date +%Y-%m-%d)
-          if ! grep -q "^## \[$VERSION\] - $TODAY" CHANGELOG.md; then
-            echo "Error: Version $VERSION with today's date ($TODAY) not found in CHANGELOG.md"
+          if ! grep -q "^## \[${GITHUB_REF_NAME}\] - $TODAY" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::Version ${GITHUB_REF_NAME} with today's date ($TODAY) not found"
             exit 1
           fi
       - run: uv build
@@ -49,12 +47,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          awk "/^## \[${{ github.ref_name }}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md > release-notes.md
-          PRERELEASE_FLAG=""
-          if [[ "${{ github.ref_name }}" =~ (a|b|rc) ]]; then
-            PRERELEASE_FLAG="--prerelease"
-          fi
-          gh release create ${{ github.ref_name }} \
-            --notes-file release-notes.md \
-            --verify-tag \
-            $PRERELEASE_FLAG
+          # Define variables
+          PRERELEASE_FLAG=$([[ "${GITHUB_REF_NAME}" =~ (a|b|rc) ]] && echo "--prerelease")
+          REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          PREV_VERSION=$(gh release list --limit 2 | tail -1 | awk '{print $1}')
+
+          # Extract release notes & append link to full changelog
+          awk "/^## \[${GITHUB_REF_NAME}\]/{flag=1; next} /^## \[/{flag=0} flag" CHANGELOG.md > release-notes.md
+          echo -e "\n**Full Changelog**: $REPO_URL/compare/$PREV_VERSION...${GITHUB_REF_NAME}" >> release-notes.md
+
+          # Create release
+          gh release create ${GITHUB_REF_NAME} --notes-file release-notes.md --verify-tag $PRERELEASE_FLAG
