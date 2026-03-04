@@ -19,5 +19,14 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: 3.13
+      - name: Verify tag matches package version
+        if: github.event_name == 'push'
+        run: |
+          PKG_VERSION=$(uv version --short)
+          TAG_VERSION="${GITHUB_REF_NAME}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag '$TAG_VERSION' does not match package version '$PKG_VERSION'"
+            exit 1
+          fi
       - run: uv build
       - run: uv publish
