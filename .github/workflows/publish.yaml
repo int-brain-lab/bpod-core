@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - '+([0-9]).+([0-9]).+([0-9])?(@(a|b|rc)*([0-9]))'  # Matches PEP440 version tags
+      - '[0-9]+.[0-9]+.[0-9]+*'
 
 jobs:
   test:
