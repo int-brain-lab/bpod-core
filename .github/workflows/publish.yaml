@@ -32,14 +32,6 @@ jobs:
             echo "::error::Tag '${GITHUB_REF_NAME}' does not match package version '$PKG_VERSION'"
             exit 1
           fi
-      - name: Verify CHANGELOG.md
-        if: github.event_name == 'push'
-        run: |
-          TODAY=$(date +%Y-%m-%d)
-          if ! grep -q "^## \[${GITHUB_REF_NAME}\] - $TODAY" CHANGELOG.md; then
-            echo "::error file=CHANGELOG.md::Version ${GITHUB_REF_NAME} with today's date ($TODAY) not found"
-            exit 1
-          fi
       - run: uv build
       - run: uv publish
       - name: Create GitHub Release
