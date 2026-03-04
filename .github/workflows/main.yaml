@@ -15,12 +15,22 @@ on:
       - '**/*.md'
 
 jobs:
-  changelog:
+  version:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && !github.event.pull_request.draft && github.base_ref == 'main'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - name: Verify package version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PKG_VERSION=$(uv version --short)
+          PREV_VERSION=$(gh release list --limit 1 | awk '{print $1}')
+          if [ "$PKG_VERSION" = "$PREV_VERSION" ]; then
+            echo "::error file=CHANGELOG.md::Package version $PKG_VERSION must be different from previous version $PREV_VERSION"
+            exit 1
+          fi
       - name: Verify CHANGELOG.md
         run: |
           PKG_VERSION=$(uv version --short)
