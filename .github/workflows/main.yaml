@@ -40,7 +40,7 @@ jobs:
         run: uv run tox --parallel-no-spinner -- -ci
   finish:
     needs: tox
-    if: ${{ !cancelled() }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - uses: coverallsapp/github-action@v2
