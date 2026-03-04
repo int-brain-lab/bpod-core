@@ -12,7 +12,6 @@ on:
     types: [ ready_for_review, opened, synchronize ]
     paths-ignore:
       - 'docs/**'
-      - '**/*.md'
 
 jobs:
   version:
