@@ -1,6 +1,19 @@
 """Data structures used by the bpod module."""
 
+from typing import NamedTuple
+
 import msgspec
+
+
+class TimeReferences(NamedTuple):
+    """Reference values for performance counters."""
+
+    init_system_time_ns: int
+    """System time at class initialization (nanoseconds relative to epoch)."""
+    init_perf_counter_ns: int
+    """Performance counter at class initialization (nanoseconds)."""
+    reset_system_time_ns: int
+    """System time when Bpod's session clock was last reset (nanoseconds)."""
 
 
 class BpodSettings(msgspec.Struct):

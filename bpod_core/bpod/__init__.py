@@ -5,16 +5,16 @@ import contextlib
 import logging
 import re
 import struct
-import threading
+import time
 import traceback
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, NamedTuple, cast
 
 import numpy as np
-from numpy.typing import NDArray
+import numpy.typing as npt
 from pydantic import validate_call
 from serial import SerialException
 
@@ -34,14 +34,20 @@ from bpod_core.bpod.constants import (
     VALID_OPERATORS,
     VIDS_BPOD,
 )
-from bpod_core.bpod.structs import BpodInfo, HardwareConfiguration, VersionInfo
+from bpod_core.bpod.structs import (
+    BpodInfo,
+    HardwareConfiguration,
+    TimeReferences,
+    VersionInfo,
+)
+from bpod_core.bpod.threads import FSMThread
 from bpod_core.com import (
     ExtendedSerial,
     SerialDevice,
     find_ports,
     verify_serial_discovery,
 )
-from bpod_core.constants import STRUCT_UINT32_LE, TeensyPID
+from bpod_core.constants import TeensyPID
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ServiceClient, ServiceEvent, ServiceHost, iter_services
 from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
@@ -56,167 +62,6 @@ class BpodError(Exception):
     This exception is raised when an error specific to the Bpod device or its
     operations occurs.
     """
-
-
-class FSMThread(threading.Thread):
-    """A thread for managing the execution of a finite state machine on the Bpod."""
-
-    _struct_exit = struct.Struct('<IQ')
-
-    def __init__(
-        self,
-        *,
-        serial: ExtendedSerial,
-        fsm_index: int,
-        confirm_fsm: bool,
-        cycle_period: int,
-        softcode_handler: Callable,
-        state_transitions: NDArray[np.uint8],
-        use_back_op: bool,
-        event_names: list[str],
-    ) -> None:
-        """
-        Initialize the FSMThread.
-
-        Parameters
-        ----------
-        serial : ExtendedSerial
-            The serial connection to the Bpod device.
-        fsm_index : int
-            The index of the FSM being managed.
-        confirm_fsm : bool
-            Whether to confirm the FSM with the Bpod device.
-        cycle_period : int
-            The cycle period of the Bpod device in microseconds.
-        softcode_handler : Callable
-            A handler function for processing softcodes.
-        state_transitions : np.ndarray
-            The state transition matrix.
-        use_back_op : bool
-            Whether the state machine makes use of the ``>back`` operator.
-        event_names : list of str
-            Names of all events the FSM can receive, used for logging.
-        """
-        super().__init__(daemon=True)
-        self.serial = serial
-        self._stop_event = threading.Event()
-        self._index = fsm_index
-        self._confirm_fsm = confirm_fsm
-        self._cycle_period = cycle_period
-        self._softcode_handler = softcode_handler
-        self._state_transitions = state_transitions
-        self._use_back_op = use_back_op
-        self._event_names = event_names
-
-    def stop(self) -> None:
-        """Signal the FSM thread to stop after the current state cycle."""
-        self._stop_event.set()
-
-    def run(self) -> None:
-        """Execute the FSMThread."""
-        # assign members to local variables to avoid repeated attribute lookups
-        serial = self.serial
-        index = self._index
-        cycle_period = self._cycle_period
-        softcode_handler = self._softcode_handler
-        state_transitions = self._state_transitions
-        previous_state = np.uint8(0)
-        current_state = np.uint8(0)
-        target_exit = np.uint8(state_transitions.shape[0])
-        target_back = np.uint8(255)
-        use_back_op = self._use_back_op
-        event_names = self._event_names
-
-        # create buffers / memoryview for repeated serial reads
-        opcode_buf = bytearray(2)  # buffer for opcodes
-        event_data_buf = bytearray(259)  # max 255 events + 4 bytes for n_cycles
-        event_data_view = memoryview(event_data_buf)
-
-        # confirm the state machine
-        if self._confirm_fsm:
-            if serial.read(1) != b'\x01':
-                raise RuntimeError(f'State machine #{index} was not confirmed by Bpod')
-            logger.debug('State machine #%d confirmed by Bpod', index)
-
-        # read the start time of the state machine
-        t0 = serial.read_uint64()
-        # TODO: get time.perf_counter()
-        logger.debug('%d µs: Starting state machine #%d', t0, index)
-        logger.debug('%d µs: State %d', t0, current_state)
-        # TODO: handle start of state machine
-        # TODO: handle start of state
-
-        # enter the reading loop
-        while not self._stop_event.is_set():
-            # TODO: thread is blocked by readinto()
-            #
-            # Options:
-            # a) use serial timeout,
-            # b) while serial.in_waiting() < 2:
-            #        if self._stop_event.wait(timeout=0.01):
-            #            break
-            # c) thread entirely controlled by bpod (no _stop_event required)
-            #
-            # readinto returns number of bytes read, so we can use it to check for
-            # timeout
-
-            # read the next two opcodes
-            serial.readinto(opcode_buf)
-            # TODO: get time.perf_counter()
-            opcode, param = opcode_buf
-
-            if opcode == 1:  # handle events
-                # read `param` event bytes + 4 bytes for n_cycles (uInt32)
-                serial.readinto(event_data_view[: param + 4])
-
-                # unpack the number of cycles, calculate the event's timestamp
-                (n_cycles,) = STRUCT_UINT32_LE.unpack_from(event_data_view, param)
-                micros = t0 + n_cycles * cycle_period
-
-                # handle each event
-                events = event_data_view[:param]
-                for event in events:
-                    if event != 255:
-                        logger.debug(
-                            '%d µs: Event %d - %s)', micros, event, event_names[event]
-                        )
-                    # TODO: handle event
-
-                # handle state transitions / exit event
-                for event in events:
-                    if event == 255:  # exit event
-                        self.stop()
-                        break
-                    target_state = state_transitions[current_state][event]
-                    if target_state == current_state:  # no transition
-                        continue
-                    if target_state == target_exit:  # virtual exit state
-                        # TODO: handle end of state
-                        break
-                    if target_state == target_back and use_back_op:  # back
-                        target_state = previous_state
-                    # TODO: handle end of state
-                    previous_state = current_state
-                    current_state = target_state
-                    # TODO: handle start of state
-                    logger.debug('%d µs: State %d', micros, current_state)
-                    break  # only handle the first state transition
-
-            elif opcode == 2:  # handle softcodes
-                param -= 1
-                logger.debug('Softcode %d', param)
-                softcode_handler(param)
-
-            else:
-                raise RuntimeError(f'Unknown opcode: {opcode}')
-
-        # exit state machine
-        # read 12 bytes: cycles (uInt32) and micros (uInt64)
-        cycles, micros = self._struct_exit.unpack(serial.read(12))
-        logger.debug(
-            '%d µs: Ending state machine #%d (%d cycles)', micros, index, cycles
-        )
-        # TODO: handle end of state machine
 
 
 class Bpod(SerialDevice, AbstractBpod):
@@ -264,13 +109,23 @@ class Bpod(SerialDevice, AbstractBpod):
         self.event_names = []
         self.actions = []
         self._waiting_for_confirmation = False
-        self._state_transitions: NDArray[np.uint8] = np.empty((0, 255), dtype=np.uint8)
+        self._state_transitions: npt.NDArray[np.uint8] = np.empty(
+            (0, 255), dtype=np.uint8
+        )
         self._use_back_op = False
 
         # identify Bpod by port or serial number, open connection
         bpod_port, _ = self._identify_bpod(port, serial_number)
         super().__init__(port=bpod_port, open_connection=True)
         self._serial_number = self._port_info.serial_number or 'unknown'
+
+        # record reference system time
+        self._time_reference = TimeReferences(
+            init_system_time_ns=time.time_ns(),
+            init_perf_counter_ns=time.perf_counter_ns(),
+            reset_system_time_ns=0,
+        )
+        self.reset_session_clock()
 
         # get firmware version and machine type; enforce version requirements
         self._get_version_info()
@@ -653,16 +508,42 @@ class Bpod(SerialDevice, AbstractBpod):
         return self.serial0.read(1) == b'\x01'
 
     def reset_session_clock(self) -> bool:
-        """Reset the Bpod session clock to zero.
+        """Reset the Bpod session clock.
 
         Returns
         -------
         bool
             True if the Bpod acknowledged the command.
+
+        Raises
+        ------
+        BpodError
+            When the method is called while a state machine is running.
         """
-        # TODO: Get timestamp / time.monotonic() / time.perf_counter()
+        if self.is_running:
+            raise BpodError(
+                'Cannot reset session clock while a state machine is running.'
+            )
         logger.debug('Resetting session clock')
-        return self.serial0.verify(b'*')
+        self.serial0.write(b'*')
+
+        # Record time of session clock reset
+        perf_count_ns = time.perf_counter_ns()
+
+        # Verify operation
+        if not self.serial0.read_bool():
+            return False
+
+        # Store time reference
+        start_system_time_ns = self._time_reference.init_system_time_ns
+        start_perf_counter_ns = self._time_reference.init_perf_counter_ns
+        reset_time_ns = start_system_time_ns + (perf_count_ns - start_perf_counter_ns)
+        self._time_reference = TimeReferences(
+            init_system_time_ns=start_system_time_ns,
+            init_perf_counter_ns=start_perf_counter_ns,
+            reset_system_time_ns=reset_time_ns,
+        )
+        return True
 
     def _disable_all_module_relays(self) -> None:
         for module in self.modules:
@@ -1230,6 +1111,7 @@ class Bpod(SerialDevice, AbstractBpod):
             state_transitions=self._state_transitions,
             use_back_op=self._use_back_op,
             event_names=self.event_names,
+            time_reference=self._time_reference,
         )
         self._fsm_thread.start()
         self._waiting_for_confirmation = False

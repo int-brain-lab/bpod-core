@@ -4,7 +4,7 @@ from unittest.mock import PropertyMock
 import pytest
 
 from bpod_core import ipc
-from bpod_core.bpod import Bpod
+from bpod_core.bpod import Bpod, TimeReferences
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import VID_TEENSY, TeensyPID
 
@@ -13,6 +13,7 @@ fixture_bpod_all = {
     b'f': b'\x00\x00',
     b'v': b'\x01',
     b'C[\\x00\\x01]{2}.*': b'',
+    rb'\*': b'\x01',
 }
 
 # Bpod 2.0 with firmware version 22
@@ -122,6 +123,8 @@ def mock_advertisement(mock_zeroconf, mock_local_discovery_dir):
 @pytest.fixture
 def mock_bpod(mocker, mock_ext_serial, mock_settings):
     mock_bpod = mocker.MagicMock(spec=Bpod)
+    mock_bpod.is_running = False
+    mock_bpod._time_reference = mocker.MagicMock(spec=TimeReferences)
     mock_bpod.serial0 = mock_ext_serial
     mock_bpod._identify_bpod.side_effect = lambda *args, **kwargs: Bpod._identify_bpod(
         mock_bpod,

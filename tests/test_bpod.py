@@ -220,6 +220,9 @@ class TestResetSessionClock:
         assert len(caplog.records) == 1
         assert caplog.records[0].levelname == 'DEBUG'
         assert 'Resetting' in caplog.records[0].message
+        mock_bpod.is_running = True
+        with pytest.raises(BpodError, match=r'Cannot reset session clock'):
+            Bpod.reset_session_clock(mock_bpod)
 
 
 class TestSendStateMachine:
