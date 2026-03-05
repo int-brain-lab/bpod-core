@@ -1,7 +1,6 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/int-brain-lab/bpod-core/refs/heads/main/docs/source/_static/bpod-core.svg" style="filter: invert(1);">
-  <img src="https://raw.githubusercontent.com/int-brain-lab/bpod-core/refs/heads/main/docs/source/_static/bpod-core.svg" alt="bpod-core" />
-</picture>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/int-brain-lab/bpod-core/refs/heads/main/docs/source/_static/bpod-core.svg" />
+</p>
 
 # bpod-core
 
