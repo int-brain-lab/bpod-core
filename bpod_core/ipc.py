@@ -272,6 +272,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
     @staticmethod
     def _close(service_file: Path) -> None:
         with contextlib.suppress(Exception):
+            logger.debug("Removing local service advertisement at '%s'", service_file)
             service_file.unlink(missing_ok=True)
         with contextlib.suppress(Exception):
             prune_empty_parent_directories(
@@ -364,20 +365,23 @@ class ServiceBase(contextlib.AbstractContextManager):
                 stop_event.set()
                 event_thread.join(timeout=1)
             if event_thread.is_alive():
-                with contextlib.suppress(Exception):
-                    logger.warning('Event thread did not terminate cleanly')
+                logger.warning('Event thread did not terminate cleanly')
 
         # ZMQ sockets
+        logger.debug('Closing ZMQ sockets')
         with contextlib.suppress(Exception):
             socket_req_rep.close(linger=0)
         with contextlib.suppress(Exception):
             socket_pub_sub.close(linger=0)
 
         # ZMQ context
-        with contextlib.suppress(Exception):
+        try:
+            logger.debug('Terminating ZMQ context')
             zmq_context.term()
-        with contextlib.suppress(Exception):
-            zmq_context.destroy(linger=0)
+        except zmq.ZMQError:
+            logger.debug('Destroying ZMQ context')
+            with contextlib.suppress(Exception):
+                zmq_context.destroy(linger=0)
 
     def __exit__(
         self,
@@ -633,8 +637,10 @@ class ServiceHost(ServiceBase):
         if zeroconf is not None:
             if service is not None:
                 with contextlib.suppress(Exception):
+                    logger.debug("Unregistering remote service at '%s'", service.name)
                     zeroconf.unregister_service(service)
             with contextlib.suppress(Exception):
+                logger.debug('Closing Zeroconf')
                 zeroconf.close()
 
         # call base class finalizer

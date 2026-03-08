@@ -369,6 +369,8 @@ class TestSerialDevice:
         """Fixture to mock ExtendedSerial."""
         mock = mocker.MagicMock(spec=com.ExtendedSerial)
         mock.is_open = False
+        mock.open.side_effect = lambda: setattr(mock, 'is_open', True)
+        mock.close.side_effect = lambda: setattr(mock, 'is_open', False)
         mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock)
         return mock
 
@@ -465,17 +467,9 @@ class TestSerialDevice:
         device = com.SerialDevice('/dev/ttyACM0', open_connection=False)
         assert device.port == '/dev/ttyACM0'
 
-    def test_accepts_kwargs(self, mock_comports, mock_extended_serial):
-        """Extra kwargs are accepted for subclass compatibility."""
-        device = com.SerialDevice(
-            '/dev/ttyACM0', open_connection=False, custom_arg='value'
-        )
-        assert device.port == '/dev/ttyACM0'
-
     def test_finalizer_closes_on_gc(self, mock_comports, mock_extended_serial):
         """Finalizer closes the serial connection during garbage collection."""
-        mock_extended_serial.is_open = True
-        device = com.SerialDevice('/dev/ttyACM0', open_connection=False)
+        device = com.SerialDevice('/dev/ttyACM0', open_connection=True)
         del device
         gc.collect()
         mock_extended_serial.close.assert_called_once()

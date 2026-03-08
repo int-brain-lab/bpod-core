@@ -1,6 +1,5 @@
 """Module for interfacing with the Bpod Finite State Machine."""
 
-import atexit
 import contextlib
 import logging
 import re
@@ -291,10 +290,9 @@ class Bpod(SerialDevice, AbstractBpod):
         self._start_zmq(use_zeroconf=remote)
 
         # register destructors
-        atexit.register(self._atexit_handler)
-        self._finalizer = weakref.finalize(
+        self._bpod_finalizer = weakref.finalize(
             self,
-            Bpod._cleanup,
+            Bpod._bpod_cleanup,
             self._serial,
             self._zmq_service,
         )
@@ -313,17 +311,13 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
     @staticmethod
-    def _cleanup(serial: ExtendedSerial, zmq_service: ServiceHost) -> None:
+    def _bpod_cleanup(serial: ExtendedSerial, zmq_service: ServiceHost) -> None:
         with contextlib.suppress(Exception):
             Bpod._request_disconnect(serial)
         with contextlib.suppress(Exception):
-            serial.close()
+            Bpod._close_serial_connection(serial)
         with contextlib.suppress(Exception):
             zmq_service.close()
-
-    def _atexit_handler(self) -> None:
-        self._finalizer.detach()
-        self._cleanup(self._serial, self._zmq_service)
 
     def __exit__(
         self,
@@ -332,9 +326,9 @@ class Bpod(SerialDevice, AbstractBpod):
         exc_tb: TracebackType | None,
     ) -> None:
         """Exit context and close connection."""
-        atexit.unregister(self._atexit_handler)
-        self._finalizer.detach()
-        self._cleanup(self._serial, self._zmq_service)
+        self._bpod_finalizer.detach()
+        self._bpod_cleanup(self._serial, self._zmq_service)
+        super().close()
 
     def open(self) -> None:
         """
@@ -368,7 +362,7 @@ class Bpod(SerialDevice, AbstractBpod):
     def _request_disconnect(serial: ExtendedSerial) -> None:
         """Send a close request to the Bpod."""
         if getattr(serial, 'is_open', False):
-            logger.debug('Sending close request to Bpod')
+            logger.debug('Sending close request to Bpod Finite State Machine')
             serial.write(b'Z')
 
     @property
@@ -627,13 +621,20 @@ class Bpod(SerialDevice, AbstractBpod):
         try:
             self.serial0.timeout = 0.2
             if not self.serial0.verify(b'6', b'5'):
-                raise BpodError(f'Handshake with device on {self.port} failed')
+                raise BpodError(
+                    f'Handshake with {self._serial_device_name} on {self.port} failed'
+                )
             self.serial0.timeout = None
         except SerialException as e:
-            raise BpodError(f'Handshake with device on {self.port} failed') from e
+            raise BpodError(
+                f'Handshake with {self._serial_device_name} on {self.port} failed'
+            ) from e
         finally:
             self.serial0.reset_input_buffer()
-        logger.debug('Handshake with Bpod on %s successful', self.port)
+        self._rename_serial_device('Bpod Finite State Machine')
+        logger.debug(
+            'Handshake with %s on %s successful', self._serial_device_name, self.port
+        )
 
     def _test_psram(self) -> bool:
         """

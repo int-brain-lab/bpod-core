@@ -1,5 +1,6 @@
 """Module providing extended serial communication functionality."""
 
+import contextlib
 import logging
 import re
 import struct
@@ -381,11 +382,11 @@ def verify_serial_discovery(
     timeout: float = 1,
     trigger: Callable[[], Any] | None = None,
 ) -> bool:
-    r"""Check if a device sends an expected discovery message on a serial port.
+    """Check if a device sends an expected discovery message on a serial port.
 
     Opens the specified serial port and waits to receive bytes matching the expected
-    discovery message. Optionally executes a function first, which can be used trigger
-    the device's discovery routine, e.g., by sending a command.
+    discovery message. Optionally executes a function first, which can be used to
+    trigger the device's discovery routine, e.g., by sending a command.
 
     Parameters
     ----------
@@ -414,21 +415,6 @@ def verify_serial_discovery(
         return False
 
 
-def _close_serial_connection(serial: Serial, *, raise_errors: bool = False) -> None:
-    """Close a serial connection if open."""
-    if not getattr(serial, 'is_open', False):
-        return
-    logger.debug('Closing connection to serial device on %s', serial.port)
-    try:
-        serial.close()
-    except Exception as e:
-        if not raise_errors:
-            return
-        raise SerialException(
-            f'Failed to close connection to serial device on {serial.port}'
-        ) from e
-
-
 class SerialDevice(AbstractContextManager):
     """Class that interfaces with a USB serial device."""
 
@@ -438,13 +424,14 @@ class SerialDevice(AbstractContextManager):
     _port_info: ListPortInfo
     """Information about the serial port associated with the device."""
 
+    _serial_device_name: str = 'serial device'
+    """Name of the serial device."""
+
     def __init__(
         self,
         port: str,
-        serial_device_name: str = 'serial_device',
         *,
         open_connection: bool = True,
-        **kwargs: Any,  # noqa: ARG002
     ) -> None:
         """Initialize the serial device.
 
@@ -452,29 +439,63 @@ class SerialDevice(AbstractContextManager):
         ----------
         port : str
             The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3').
-        serial_device_name : str, optional
-            Name used to identify this device in log messages, by default
-            ``'serial_device'``.
         open_connection : bool, optional
             Whether to open the connection immediately, by default True.
-        **kwargs
-            Additional arguments for compatibility with subclasses.
 
         Raises
         ------
         serial.SerialException
             If the specified port does not exist.
         """
+        # obtain ListPortInfo for device on specified port
         try:
             self._port_info = next(p for p in comports() if p.device == port)
         except StopIteration as e:
             raise SerialException(f'Serial port not found: {port}') from e
-        self._serial_device_name = serial_device_name
+
+        # instantiate ExtendedSerial
         self._serial = ExtendedSerial()
-        weakref.finalize(self, _close_serial_connection, self._serial)
-        self._serial.port = port
+        self._serial.port = port  # only set port after the fact
+
+        # finalizer for cleanup on garbage collection
+        self._serial_device_finalizer: weakref.finalize | None = None
+
+        # open connection
         if open_connection:
             self.open()
+
+    def _rename_serial_device(self, new_name: str) -> None:
+        self._serial_device_name = new_name
+        if self._serial_device_finalizer is not None:
+            self._serial_device_finalizer.detach()
+        self._serial_device_finalizer = weakref.finalize(
+            self,
+            SerialDevice._close_serial_connection,
+            serial=self._serial,
+            device_name=self._serial_device_name,
+            raise_errors=False,
+        )
+
+    @staticmethod
+    def _close_serial_connection(
+        serial: Serial,
+        *,
+        device_name: str = 'serial device',
+        raise_errors: bool = False,
+    ) -> None:
+        """Close a serial connection if open."""
+        if not getattr(serial, 'is_open', False):
+            logger.debug('Serial connection is already closed for %s', device_name)
+            return
+        try:
+            logger.debug('Closing connection to %s on %s', device_name, serial.port)
+            serial.close()
+        except Exception as e:
+            if not raise_errors:
+                return
+            raise SerialException(
+                f'Failed to close connection to {device_name} on {serial.port}'
+            ) from e
 
     def __exit__(
         self,
@@ -495,8 +516,8 @@ class SerialDevice(AbstractContextManager):
         exc_tb : TracebackType | None
             The traceback object, if any.
         """
-        if hasattr(self, '_serial'):
-            _close_serial_connection(self._serial)
+        with contextlib.suppress(Exception):
+            self.close()
 
     def open(self) -> None:
         """Open the serial connection.
@@ -510,13 +531,25 @@ class SerialDevice(AbstractContextManager):
         """
         if self._serial.is_open:
             return
-        logger.debug('Opening connection to serial device on %s', self.port)
+        logger.debug(
+            'Opening connection to %s on %s', self._serial_device_name, self.port
+        )
         try:
             self._serial.open()
         except Exception as e:
             raise SerialException(
-                f'Failed to open connection to serial device on {self.port}'
+                f'Failed to open connection to {self._serial_device_name} on '
+                f'{self.port}'
             ) from e
+
+        # register destructors
+        self._serial_device_finalizer = weakref.finalize(
+            self,
+            SerialDevice._close_serial_connection,
+            serial=self._serial,
+            device_name=self._serial_device_name,
+            raise_errors=False,
+        )
 
     def close(self) -> None:
         """Close the serial connection.
@@ -529,7 +562,13 @@ class SerialDevice(AbstractContextManager):
             If the connection cannot be closed.
         """
         if hasattr(self, '_serial'):
-            _close_serial_connection(self._serial, raise_errors=True)
+            self._close_serial_connection(
+                serial=self._serial,
+                device_name=self._serial_device_name,
+                raise_errors=True,
+            )
+            if self._serial_device_finalizer is not None:
+                self._serial_device_finalizer.detach()
 
     @property
     def port(self) -> str:
