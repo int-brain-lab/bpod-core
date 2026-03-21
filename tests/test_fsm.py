@@ -474,3 +474,57 @@ class TestCheck:
         fsm.add_state('state3')
         with pytest.raises(ValueError, match='are unreachable'):
             fsm.check()
+
+
+class TestHash:
+    def test_private_api_available(self):
+        """Verify that Pydantic's private serializer API is available."""
+        fsm = StateMachine()
+        assert hasattr(fsm, '__pydantic_serializer__')
+        assert hasattr(fsm.__pydantic_serializer__, 'to_json')
+        output = fsm.__pydantic_serializer__.to_json(
+            fsm,
+            exclude_defaults=True,
+            warnings=False,
+        )
+        assert isinstance(output, bytes)
+
+    def test_hash_bytes_output(self):
+        """_hash() should return bytes."""
+        fsm = StateMachine()
+        hash_bytes = fsm._hash()
+        assert isinstance(hash_bytes, bytes), 'Expected bytes for hash'
+        assert len(hash_bytes) == 8, 'Expected 8 bytes for hash'
+
+    def test_hash_hex_output(self):
+        """Hash property should return hex string."""
+        fsm = StateMachine()
+        hash_hex = fsm.hash
+        assert isinstance(hash_hex, str), 'Expected hex string for hash'
+        assert len(hash_hex) == 16, 'Expected 16 hex characters for hash'
+        assert all(c in '0123456789abcdef' for c in hash_hex)
+
+    def test_hash_consistency(self):
+        """Identical FSMs should produce the same hash."""
+        fsm1 = StateMachine()
+        fsm1.add_state('state1', timer=1.0, transitions={'tup': 'exit'})
+        fsm2 = StateMachine()
+        fsm2.add_state('state1', timer=1.0, transitions={'tup': 'exit'})
+        assert fsm1.hash == fsm2.hash, 'Hash should be consistent'
+
+    def test_hash_differs_for_different_fsms(self):
+        """Different FSMs should produce different hashes."""
+        fsm1 = StateMachine()
+        fsm1.add_state('state1')
+        fsm2 = StateMachine()
+        fsm2.add_state('state1', timer=2.0)  # Different timer (not default)
+        assert fsm1.hash != fsm2.hash, 'Hash should differ'
+
+    def test_hash_validation_caching(self):
+        """Hash should be used for validation caching."""
+        fsm = StateMachine()
+        fsm.add_state('state_a')
+        assert fsm._validation_hash == b'', 'Hash should be empty before validation'
+        fsm.check()
+        assert fsm._validation_hash != b'', 'Hash should be populated after validation'
+        assert isinstance(fsm._validation_hash, bytes)

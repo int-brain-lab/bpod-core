@@ -30,6 +30,8 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
     raise NotImplementedError(f'Objects of type {type} are not supported')
 
 
+_msgpack_encoder = msgspec.msgpack.Encoder()
+
 StateTimer = Annotated[
     float,
     Field(
@@ -342,8 +344,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
     conditions: Conditions = Conditions()
     """A dictionary of conditions."""
 
-    _validation_md5_hash: str = ''
-    """MD5 hash for caching of validation results."""
+    _validation_hash: bytes = b''
+    """hash for caching of validation results."""
 
     _validation_error: Exception | None = None
     """The latest validation error."""
@@ -869,11 +871,27 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             return cls.from_json(data)
         return cls.from_yaml(data)
 
+    def _hash(self) -> bytes:
+        try:
+            # when serializing to JSON, we first try to use Pydantic's private API,
+            # which avoids an unnecessary string conversion
+            json_bytes = self.__pydantic_serializer__.to_json(
+                value=self,
+                exclude_defaults=True,
+                warnings=False,
+            )
+        except (AttributeError, TypeError):
+            # if that fails, we fall back to the public API
+            json_bytes = self.model_dump_json(
+                exclude_defaults=True,
+                warnings=False,
+            ).encode()
+        return hashlib.blake2b(json_bytes, digest_size=8).digest()
+
     @property
-    def md5_hash(self) -> str:
-        """MD5 hash of the state machine."""
-        json = self.to_json().encode()
-        return hashlib.md5(json).hexdigest()  # noqa: S324
+    def hash(self) -> str:
+        """Hash of the state machine."""
+        return self._hash().hex()
 
     @property
     def valid(self) -> bool:
@@ -894,8 +912,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         ValueError
             If the state machine is invalid.
         """
-        md5_hash = self.md5_hash
-        if self._validation_md5_hash == md5_hash:
+        current_hash = self._hash()
+        if self._validation_hash == current_hash:
             if self._validation_error:
                 raise self._validation_error
         else:
@@ -906,7 +924,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
                 self._validation_error = e
                 raise
             finally:
-                self._validation_md5_hash = md5_hash
+                self._validation_hash = current_hash
 
     def _check(self) -> None:
         # Check for empty state machine
