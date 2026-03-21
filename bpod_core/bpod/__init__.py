@@ -8,8 +8,9 @@ import struct
 import time
 import traceback
 import weakref
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from queue import Queue
 from types import TracebackType
 from typing import Any, NamedTuple, cast
 
@@ -37,10 +38,11 @@ from bpod_core.bpod.constants import (
 from bpod_core.bpod.structs import (
     BpodInfo,
     HardwareConfiguration,
+    RawEvent,
     TimeReferences,
     VersionInfo,
 )
-from bpod_core.bpod.threads import FSMThread
+from bpod_core.bpod.threads import EventThread, ReadThread, SoftcodeThread
 from bpod_core.com import (
     ExtendedSerial,
     SerialDevice,
@@ -68,10 +70,11 @@ class Bpod(SerialDevice, AbstractBpod):
     """Class for interfacing with a Bpod Finite State Machine."""
 
     _settings: SettingsDict
-    _fsm_thread: FSMThread | None = None
+    _read_thread: ReadThread | None = None
     _zmq_service: ServiceHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
+    _softcode_handler: Callable[[int], None] | None = None
 
     serial1: ExtendedSerial | None = None
     """Secondary serial device for communication with the Bpod."""
@@ -113,6 +116,8 @@ class Bpod(SerialDevice, AbstractBpod):
             (0, 255), dtype=np.uint8
         )
         self._use_back_op = False
+        self._queue_events: Queue[RawEvent] = Queue()
+        self._queue_softcodes: Queue[int] = Queue()
 
         # identify Bpod by port or serial number, open connection
         bpod_port, _ = self._identify_bpod(port, serial_number)
@@ -390,7 +395,7 @@ class Bpod(SerialDevice, AbstractBpod):
         hardware_conf.extend(self.serial0.read_struct(f'<{hardware_conf[-1]}s'))
 
         # compute additional fields
-        cycle_frequency = 1000000 // hardware_conf[1]  # cycle_period is at index 1
+        cycle_frequency = 1_000_000 // hardware_conf[1]  # cycle_period_us is at index 1
         n_modules = hardware_conf[-3].count(b'U')  # input_description is third to last
         hardware_conf.extend([cycle_frequency, n_modules])
 
@@ -1065,7 +1070,7 @@ class Bpod(SerialDevice, AbstractBpod):
     @property
     def is_running(self) -> bool:
         """Check if the Bpod is currently running a state machine."""
-        return self._fsm_thread is not None and self._fsm_thread.is_alive()
+        return self._read_thread is not None and self._read_thread.is_alive()
 
     def wait(self) -> None:
         """
@@ -1075,7 +1080,7 @@ class Bpod(SerialDevice, AbstractBpod):
         currently running, this method returns immediately.
         """
         if self.is_running:
-            self._fsm_thread.join()  # type: ignore[union-attr]
+            self._read_thread.join()
 
     @validate_call
     def run_state_machine(self, *, blocking: bool = True) -> None:
@@ -1101,24 +1106,36 @@ class Bpod(SerialDevice, AbstractBpod):
         # Wait for an already running state machine to finish
         self.wait()
 
-        # Start a new FSM thread
-        self._fsm_thread = FSMThread(
+        # Define threads
+        self._read_thread = ReadThread(
             serial=self.serial0,
             fsm_index=self._next_fsm_index,
             confirm_fsm=self._waiting_for_confirmation,
-            cycle_period=self._hardware.cycle_period,
-            softcode_handler=self._softcode_handler,
-            state_transitions=self._state_transitions,
-            use_back_op=self._use_back_op,
-            event_names=self.event_names,
+            cycle_period_us=self._hardware.cycle_period_us,
+            queue_events=self._queue_events,
+            queue_softcodes=self._queue_softcodes,
+        )
+        self._event_thread = EventThread(
+            event_queue=self._queue_events,
             time_reference=self._time_reference,
         )
-        self._fsm_thread.start()
+        self._softcode_thread = SoftcodeThread(
+            softcode_queue=self._queue_softcodes,
+            softcode_handler=self._softcode_handler,
+        )
+
         self._waiting_for_confirmation = False
 
-        # Wait for the FSM thread to finish
+        # Start threads
+        self._event_thread.start()
+        self._softcode_thread.start()
+        self._read_thread.start()
+
+        # Wait for threads to finish
         if blocking:
-            self._fsm_thread.join()
+            self._read_thread.join()
+            self._softcode_thread.join()
+            self._event_thread.join()
 
     def stop_state_machine(self) -> None:
         """Stop the currently running state machine."""
@@ -1126,12 +1143,8 @@ class Bpod(SerialDevice, AbstractBpod):
             return
         logger.debug('Stopping state machine')
         self.serial0.write(b'X')
-        if self._fsm_thread is not None:
-            self._fsm_thread.join()
-
-    @staticmethod
-    def _softcode_handler(softcode: int) -> None:
-        pass
+        if self._read_thread is not None:
+            self._read_thread.join()
 
     @property
     def name(self) -> str | None:
@@ -1158,6 +1171,19 @@ class Bpod(SerialDevice, AbstractBpod):
     def location(self, location: str | None) -> None:
         """Set the location of the Bpod device."""
         self._set_setting(['devices', self._serial_number, 'location'], location)
+
+    @validate_call
+    def set_softcode_handler(
+        self, softcode_handler: Callable[[int], None] | None = None
+    ) -> None:
+        """Set the handler function for softcodes sent from the Bpod.
+
+        Parameters
+        ----------
+        softcode_handler : Callable, optional
+            The function to call when a softcode is received.
+        """
+        self._softcode_handler = softcode_handler
 
 
 class Channel:

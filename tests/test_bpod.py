@@ -136,7 +136,7 @@ class TestGetHardwareConfiguration:
         mock_bpod.version.firmware = (23, 0)
         Bpod._get_hardware_configuration(mock_bpod)
         assert mock_bpod._hardware.max_states == 256
-        assert mock_bpod._hardware.cycle_period == 100
+        assert mock_bpod._hardware.cycle_period_us == 100
         assert mock_bpod._hardware.max_serial_events == 75
         assert mock_bpod._hardware.max_bytes_per_serial_message == 5
         assert mock_bpod._hardware.n_global_timers == 16
@@ -170,7 +170,7 @@ class TestGetHardwareConfiguration:
         mock_bpod.version.firmware = (22, 0)
         Bpod._get_hardware_configuration(mock_bpod)
         assert mock_bpod._hardware.max_states == 256
-        assert mock_bpod._hardware.cycle_period == 100
+        assert mock_bpod._hardware.cycle_period_us == 100
         assert mock_bpod._hardware.max_serial_events == 75
         assert mock_bpod._hardware.max_bytes_per_serial_message == 3
         assert mock_bpod._hardware.n_global_timers == 16

@@ -16,6 +16,17 @@ class TimeReferences(NamedTuple):
     """System time when Bpod's session clock was last reset (nanoseconds)."""
 
 
+class RawEvent(NamedTuple):
+    """Raw event data from the Bpod device."""
+
+    perf_count_ns: int
+    """Performance counter value at the time of receiving the event (nanoseconds)."""
+    bpod_count_us: int
+    """Time of the event relative to the Bpod's session clock (microseconds)."""
+    event_index: int
+    """Index of the event."""
+
+
 class BpodSettings(msgspec.Struct):
     """Settings for a specific Bpod device."""
 
@@ -68,7 +79,7 @@ class HardwareConfiguration(msgspec.Struct, frozen=True):
 
     max_states: int
     """Maximum number of supported states in a single state machine description."""
-    cycle_period: int
+    cycle_period_us: int
     """Period of the state machine's refresh cycle during a trial in microseconds."""
     max_serial_events: int
     """Maximum number of behavior events allocatable among connected modules."""
