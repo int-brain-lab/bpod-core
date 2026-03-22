@@ -1027,11 +1027,11 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         # Check transitions for invalid target states
         all_state_names = set(self.states.keys())
         for state_name, state in self.states.items():
-            for condition, target in state.transitions.items():
+            for condition_name, target in state.transitions.items():
                 if not target.startswith('>') and target not in all_state_names:
                     raise ValueError(
-                        f"Invalid transition target '{target}' for condition "
-                        f"'{condition}' in state '{state_name}'"
+                        f"Invalid target state '{target}' for transition condition"
+                        f"'{condition_name}' in state '{state_name}'"
                         + suggest_similar(target, all_state_names - {state_name})
                     )
 
