@@ -209,7 +209,7 @@
     "States": {
       "description": "A collection of states.",
       "patternProperties": {
-        "^(?!>)(?!exit$).+$": {
+        "^(?!>)(?!exit$)(?!back$).+$": {
           "$ref": "#/$defs/State"
         }
       },
@@ -226,14 +226,19 @@
           {
             "description": "The name of the state",
             "minLength": 1,
-            "pattern": "^(?!>)(?!exit$).+$",
+            "pattern": "^(?!>)(?!exit$)(?!back$).+$",
             "title": "State Name",
             "type": "string"
           },
           {
             "description": "A state machine operator",
-            "pattern": "^(exit)|(>.+)$",
-            "title": "Operator",
+            "examples": [
+              ">exit",
+              ">back"
+            ],
+            "minLength": 2,
+            "pattern": "^>.+$",
+            "title": "State Machine Operator",
             "type": "string"
           }
         ]

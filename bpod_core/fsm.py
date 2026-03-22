@@ -2,18 +2,25 @@
 
 import hashlib
 import re
-from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import msgspec
 import numpy as np
 import yaml
 from graphviz import Digraph  # type: ignore[import-untyped]
-from pydantic import BaseModel, Field, ValidationError, validate_call
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    WrapValidator,
+    validate_call,
+)
+from pydantic_core import PydanticCustomError
+from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 
-from bpod_core.misc import ValidatedDict
+from bpod_core.misc import ValidatedDict, suggest_similar
 
 
 def enc_hook(obj: Any) -> Any:
@@ -32,6 +39,69 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
 
 _msgpack_encoder = msgspec.msgpack.Encoder()
 
+
+def _validate_state_timer(v: Any, h: ValidatorFunctionWrapHandler) -> 'StateTimer':
+    try:
+        return cast('StateTimer', h(v))
+    except ValidationError as e:
+        for error in e.errors():
+            if error_type := 'greater_than_equal':
+                raise PydanticCustomError(
+                    error_type,
+                    'Invalid State Timer - cannot be negative',
+                    error.get('ctx', {}),
+                ) from e
+        raise
+
+
+def _validate_state_name(v: Any, h: ValidatorFunctionWrapHandler) -> 'StateName':
+    try:
+        return cast('StateName', h(v))
+    except ValidationError as e:
+        for error in e.errors():
+            match error_type := error.get('type'):
+                case 'string_pattern_mismatch':
+                    if v.startswith('>'):
+                        detail = (
+                            "prefix '>' is reserved for State Machine Operators "
+                            "like '>exit'"
+                        )
+                    elif v == 'exit':
+                        detail = (
+                            "can be confused with the State Machine Operator '>exit'"
+                        )
+                    elif v == 'back':
+                        detail = (
+                            "can be confused with the State Machine Operator '>back'"
+                        )
+                    else:
+                        continue
+                    detail = f"Invalid State Name '{v}' - {detail}"
+                case 'string_too_short':
+                    detail = 'A State Name must be at least 1 character long'
+                case _:
+                    continue
+            raise PydanticCustomError(error_type, detail, error.get('ctx', {})) from e
+        raise
+
+
+def _validate_operator(v: Any, h: ValidatorFunctionWrapHandler) -> 'Operator':
+    try:
+        return cast('Operator', h(v))
+    except ValidationError as e:
+        for error in e.errors():
+            match error_type := error.get('type'):
+                case 'string_pattern_mismatch' if not v.startswith('>'):
+                    detail = "must be a string with prefix '>'"
+                case 'string_too_short':
+                    detail = "must be at least 2 characters long (including '>' prefix)"
+                case _:
+                    continue
+            detail = f"Invalid State Machine Operator '{v}' - {detail}"
+            raise PydanticCustomError(error_type, detail, error.get('ctx', {})) from e
+        raise
+
+
 StateTimer = Annotated[
     float,
     Field(
@@ -41,7 +111,9 @@ StateTimer = Annotated[
         allow_inf_nan=False,
         ge=0.0,
     ),
+    WrapValidator(_validate_state_timer),
 ]
+
 
 StateComment = Annotated[
     str,
@@ -187,14 +259,16 @@ OutputActionValue = Annotated[
     ),
 ]
 
+
 StateName = Annotated[
     str,
     Field(
         title='State Name',
         description='The name of the state',
         min_length=1,
-        pattern=re.compile(r'^(?!>)(?!exit$).+$'),
+        pattern=re.compile(r'^(?!>)(?!exit$)(?!back$).+$'),
     ),
+    WrapValidator(_validate_state_name),
 ]
 
 Event = Annotated[
@@ -209,10 +283,13 @@ Event = Annotated[
 Operator = Annotated[
     str,
     Field(
-        title='Operator',
+        title='State Machine Operator',
         description='A state machine operator',
-        pattern=re.compile(r'^(exit)|(>.+)$'),
+        pattern=re.compile(r'^>.+$'),
+        min_length=2,
+        examples=['>exit', '>back'],
     ),
+    WrapValidator(_validate_operator),
 ]
 
 
@@ -222,7 +299,7 @@ class Actions(ValidatedDict[OutputActionName, OutputActionValue], title='Actions
     if TYPE_CHECKING:
 
         def __init__(
-            self, root: Mapping[OutputActionName, OutputActionValue] | None = ...
+            self, root: dict[OutputActionName, OutputActionValue] | None = ...
         ) -> None: ...
 
 
@@ -234,7 +311,7 @@ class Transitions(
     if TYPE_CHECKING:
 
         def __init__(
-            self, root: Mapping[Event, StateName | Operator] | None = ...
+            self, root: dict[Event, StateName | Operator] | None = ...
         ) -> None: ...
 
 
@@ -363,8 +440,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         self,
         name: StateName,
         timer: StateTimer = 0.0,
-        transitions: Mapping[Event, StateName | Operator] | None = None,
-        actions: Mapping[OutputActionName, OutputActionValue] | None = None,
+        transitions: dict[Event, StateName | Operator] | None = None,
+        actions: dict[OutputActionName, OutputActionValue] | None = None,
         comment: StateComment | None = None,
     ) -> None:
         """
@@ -376,10 +453,10 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             The name of the state to be added.
         timer : float, optional
             The duration of the state's timer in seconds. Default to 0.
-        transitions : Mapping, optional
+        transitions : dict, optional
             A dictionary mapping conditions to target states for transitions.
             Defaults to an empty dictionary.
-        actions : Mapping, optional
+        actions : dict, optional
             A dictionary of actions to be executed on entering the state.
             Defaults to an empty dictionary.
         comment : str, optional
@@ -393,7 +470,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         if name in self.states:
             raise ValueError(f"A state named '{name}' is already registered")
 
-        self.states[name] = State(
+        self.states[name] = State.model_construct(
             timer=timer,
             transitions=Transitions(transitions or {}),
             actions=Actions(actions or {}),
@@ -445,7 +522,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         -------
         None
         """
-        self.global_timers[index] = GlobalTimer(
+        self.global_timers[index] = GlobalTimer.model_construct(
             duration=duration,
             onset_delay=onset_delay,
             channel=channel,
@@ -480,7 +557,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         -------
         None
         """
-        self.global_counters[index] = GlobalCounter(
+        self.global_counters[index] = GlobalCounter.model_construct(
             event=event,
             threshold=threshold,
         )
@@ -507,7 +584,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         -------
         None
         """
-        self.conditions[index] = Condition(
+        self.conditions[index] = Condition.model_construct(
             channel=channel,
             value=value,
         )
@@ -932,17 +1009,31 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             raise ValueError('No states defined')
 
         # Check for unreachable states
-        initial_state = next(iter(self.states.keys()))
-        reachable_states = self.states.transition_targets | {initial_state}
-        unreachable_states = [s for s in self.states if s not in reachable_states]
-        if len(unreachable_states) == 1:
-            raise ValueError(f'State "{unreachable_states.pop()}" is unreachable')
-        if len(unreachable_states) > 1:
-            missed_states_string = (
-                ', '.join([f'"{s}"' for s in unreachable_states[:-1]])
-                + f' and "{unreachable_states[-1]}"'
-            )
-            raise ValueError(f'States {missed_states_string} are unreachable')
+        initial_state_name = next(iter(self.states.keys()))
+        transition_targets = self.states.transition_targets | {initial_state_name}
+        unreachable_states = [s for s in self.states if s not in transition_targets]
+        match len(unreachable_states):
+            case 0:
+                pass
+            case 1:
+                raise ValueError(f'State "{unreachable_states.pop()}" is unreachable')
+            case _:
+                missed_states_string = (
+                    ', '.join([f'"{s}"' for s in unreachable_states[:-1]])
+                    + f' and "{unreachable_states[-1]}"'
+                )
+                raise ValueError(f'States {missed_states_string} are unreachable')
+
+        # Check transitions for invalid target states
+        all_state_names = set(self.states.keys())
+        for state_name, state in self.states.items():
+            for condition, target in state.transitions.items():
+                if not target.startswith('>') and target not in all_state_names:
+                    raise ValueError(
+                        f"Invalid transition target '{target}' for condition "
+                        f"'{condition}' in state '{state_name}'"
+                        + suggest_similar(target, all_state_names - {state_name})
+                    )
 
         # TODO: Check for manipulation of unused timers?
         # TODO: Check for manipulation of unused conditions?
