@@ -1,7 +1,6 @@
 """Threads for FSM execution and data collection from the Bpod hardware."""
 
 import logging
-import select
 import struct
 import threading
 import time
@@ -9,6 +8,10 @@ from collections.abc import Callable
 from datetime import datetime
 from enum import IntEnum, auto
 from queue import Queue
+
+import numpy as np
+import numpy.typing as npt
+import polars as pl
 
 from bpod_core.bpod.structs import RawEvent, TimeReferences
 from bpod_core.com import ExtendedSerial
@@ -18,6 +21,18 @@ logger = logging.getLogger(__name__)
 
 _TIMING_VIOLATION_THRESHOLD_US = 1_000
 """Threshold for logging timing violations in microseconds."""
+
+_INITIAL_BUFFER_SIZE = 2048
+"""Initial size of the event buffer in EventThread."""
+
+_EVENT_DTYPE = np.dtype(
+    [
+        ('system_time', 'datetime64[ns]'),
+        ('bpod_time', 'datetime64[us]'),
+        ('event_id', np.int16),
+    ]
+)
+"""Structured NumPy dtype for recorded events."""
 
 
 class EventID(IntEnum):
@@ -223,10 +238,23 @@ class EventThread(threading.Thread):
         super().__init__(name='EventThread', daemon=True)
         self._event_queue = event_queue
         self._time_reference = time_reference
+        self._buffer: npt.NDArray = np.empty(_INITIAL_BUFFER_SIZE, dtype=_EVENT_DTYPE)
+        self._n_events: int = 0
 
     def stop(self) -> None:
         """Signal the FSM thread to stop."""
         self._event_queue.put(RawEvent(0, 0, EventID.STOP_SENTINEL))
+
+    def _append_event(
+        self, time_system_ns: int, time_bpod_us: int, event_index: int
+    ) -> None:
+        """Append an event to the buffer, growing it if necessary."""
+        if self._n_events == len(self._buffer):
+            new_buf = np.empty(len(self._buffer) * 2, dtype=_EVENT_DTYPE)
+            new_buf[: self._n_events] = self._buffer
+            self._buffer = new_buf
+        self._buffer[self._n_events] = (time_system_ns, time_bpod_us, event_index)
+        self._n_events += 1
 
     def run(self) -> None:
         """Execute the EventThread."""
@@ -279,14 +307,29 @@ class EventThread(threading.Thread):
             # logger.debug('%d µs: State %d', micros, current_state)
             # break  # only handle the first state transition
 
+            self._append_event(time_system_ns, time_bpod_us, event_index)
             event_queue.task_done()
 
+        self._buffer = self._buffer[: self._n_events]
         logger.debug('Stopping event thread')
 
-    def get_data(self) -> None:
-        """Get the data from the event queue."""
-        # TODO: implement
-        return
+    def get_data(self) -> pl.DataFrame:
+        """Return recorded events as a Polars DataFrame.
+
+        Returns
+        -------
+        pl.DataFrame
+            DataFrame with columns:
+
+            - ``system_time``: absolute system timestamp (``Datetime(time_unit='ns')``)
+            - ``bpod_time``: absolute Bpod timestamp (``Datetime(time_unit='us')``)
+            - ``event_id``: event identifier (``Int16``)
+
+        Notes
+        -----
+        Must be called after :meth:`join` to avoid a race condition.
+        """
+        return pl.from_numpy(self._buffer)
 
 
 class SoftcodeThread(threading.Thread):
