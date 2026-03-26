@@ -1118,6 +1118,9 @@ class Bpod(SerialDevice, AbstractBpod):
         )
         self._event_thread = EventThread(
             event_queue=self._queue_events,
+            event_names=self.event_names,
+            state_transitions=self._state_transitions,
+            use_back_op=self._use_back_op,
             time_reference=self._time_reference,
         )
         self._softcode_thread = SoftcodeThread(
