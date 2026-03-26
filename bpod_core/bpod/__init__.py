@@ -115,6 +115,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._state_transitions: npt.NDArray[np.uint8] = np.empty(
             (0, 255), dtype=np.uint8
         )
+        self._state_actions: list[dict[str, int]] = []
         self._use_back_op = False
         self._queue_events: Queue[RawEvent] = Queue()
         self._queue_softcodes: Queue[int] = Queue()
@@ -901,6 +902,9 @@ class Bpod(SerialDevice, AbstractBpod):
                     )
         extend_packed(byte_array, tmp_list, 'H' if self.version.machine == 4 else 'B')
 
+        # per-state output actions for event timeline annotation
+        self._state_actions = [dict(s.actions) for s in state_machine.states.values()]
+
         # state transition matrix
         # TODO: this can be moved elsewhere?
         self._state_transitions = np.arange(n_states, dtype=np.uint8)[
@@ -1119,7 +1123,9 @@ class Bpod(SerialDevice, AbstractBpod):
         self._event_thread = EventThread(
             event_queue=self._queue_events,
             event_names=self.event_names,
+            action_names=self.actions,
             state_transitions=self._state_transitions,
+            state_actions=self._state_actions,
             use_back_op=self._use_back_op,
             time_reference=self._time_reference,
         )

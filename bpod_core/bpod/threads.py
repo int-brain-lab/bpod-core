@@ -24,11 +24,18 @@ _TIMING_VIOLATION_THRESHOLD_US = 1_000
 _INITIAL_BUFFER_SIZE = 2048
 """Initial size of the event buffer in EventThread."""
 
+_OUTPUT_EVENT_OFFSET = 1000
+"""Event ID offset for output action events.
+
+Avoids collision with hardware events (0-254) and synthetic events (256-260).
+"""
+
 _EVENT_DTYPE = np.dtype(
     [
         ('system_time', 'datetime64[ns]'),
         ('bpod_time', 'datetime64[us]'),
         ('event_id', np.int16),
+        ('value', np.int16),
     ]
 )
 """Structured NumPy dtype for recorded events."""
@@ -216,7 +223,9 @@ class EventThread(threading.Thread):
         *,
         event_queue: Queue[RawEvent],
         event_names: list[str],
+        action_names: list[str],
         state_transitions: npt.NDArray[np.uint8],
+        state_actions: list[dict[str, int]],
         use_back_op: bool,
         time_reference: TimeReferences,
     ) -> None:
@@ -229,8 +238,12 @@ class EventThread(threading.Thread):
             Queue for storing events.
         event_names : list of str
             Names of all hardware events, indexed by event ID.
+        action_names : list of str
+            Names of all output channels, indexed by action ID.
         state_transitions : np.ndarray
             The state transition matrix of shape ``(n_states, 255)``.
+        state_actions : list of dict
+            Per-state mapping of action name to value (0-255).
         use_back_op : bool
             Whether the state machine makes use of the ``>back`` operator.
         time_reference : TimeReferences
@@ -239,31 +252,44 @@ class EventThread(threading.Thread):
         super().__init__(name='EventThread', daemon=True)
         self._event_queue = event_queue
         self._event_names = event_names
+        self._action_names = action_names
         self._state_transitions = state_transitions
         self._use_back_op = use_back_op
         self._time_reference = time_reference
         self._buffer: npt.NDArray = np.empty(_INITIAL_BUFFER_SIZE, dtype=_EVENT_DTYPE)
         self._n_events: int = 0
 
+        # pre-compute action index map for fast lookup in the hot loop
+        action_index_map = {name: i for i, name in enumerate(action_names)}
+        self._state_action_indices: list[dict[int, int]] = [
+            {action_index_map[k]: v for k, v in d.items()} for d in state_actions
+        ]
+
     def stop(self) -> None:
         """Signal the FSM thread to stop."""
         self._event_queue.put(RawEvent(0, 0, EventID.STOP_SENTINEL))
 
     def _append_event(
-        self, time_system_ns: int, time_bpod_us: int, event_index: int
+        self, time_system_ns: int, time_bpod_us: int, event_index: int, value: int = -1
     ) -> None:
         """Append an event to the buffer, growing it if necessary."""
         if self._n_events == len(self._buffer):
             new_buf = np.empty(len(self._buffer) * 2, dtype=_EVENT_DTYPE)
             new_buf[: self._n_events] = self._buffer
             self._buffer = new_buf
-        self._buffer[self._n_events] = (time_system_ns, time_bpod_us, event_index)
+        self._buffer[self._n_events] = (
+            time_system_ns,
+            time_bpod_us,
+            event_index,
+            value,
+        )
         self._n_events += 1
 
     def run(self) -> None:
         """Execute the EventThread."""
         event_queue = self._event_queue
         state_transitions = self._state_transitions
+        state_action_indices = self._state_action_indices
         use_back_op = self._use_back_op
         target_exit = len(state_transitions)
         target_back = 255
@@ -292,8 +318,17 @@ class EventThread(threading.Thread):
             # append the event to the buffer
             self._append_event(time_system_ns, time_bpod_us, event_index)
 
-            # stop early for synthetic events - they do not drive state transitions
+            # synthetic events (>= 255) do not drive state transitions; emit output
+            # action rows after StartState so the timeline shows active outputs
             if event_index >= 255:
+                if event_index == EventID.START_STATE:
+                    for idx, value in state_action_indices[current_state].items():
+                        self._append_event(
+                            time_system_ns,
+                            time_bpod_us,
+                            _OUTPUT_EVENT_OFFSET + idx,
+                            value,
+                        )
                 event_queue.task_done()
                 continue
 
@@ -318,6 +353,15 @@ class EventThread(threading.Thread):
             current_state = target_state
             self._append_event(time_system_ns, time_bpod_us, EventID.START_STATE)
 
+            # emit output action rows for the new state
+            for idx, value in state_action_indices[current_state].items():
+                self._append_event(
+                    time_system_ns,
+                    time_bpod_us,
+                    _OUTPUT_EVENT_OFFSET + idx,
+                    value,
+                )
+
             event_queue.task_done()
 
         self._buffer = self._buffer[: self._n_events]
@@ -340,20 +384,26 @@ class EventThread(threading.Thread):
         Must be called after :meth:`join` to avoid a race condition.
         """
         names = self._event_names
+        output_ids = [_OUTPUT_EVENT_OFFSET + i for i in range(len(self._action_names))]
+        output_names = [f'Output_{name}' for name in self._action_names]
         lookup = pl.DataFrame(
             {
                 'event_id': pl.Series(
-                    list(range(len(names))) + list(_SYNTHETIC_EVENT_NAMES),
+                    list(range(len(names))) + list(_SYNTHETIC_EVENT_NAMES) + output_ids,
                     dtype=pl.Int16,
                 ),
-                'event': names + list(_SYNTHETIC_EVENT_NAMES.values()),
+                'event': names + list(_SYNTHETIC_EVENT_NAMES.values()) + output_names,
             }
         )
         return (
             pl.from_numpy(self._buffer)
             .join(lookup, on='event_id', how='left')
             .drop('event_id')
-            .with_columns(pl.col('event').cast(pl.Categorical))
+            .with_columns(
+                pl.col('event').cast(pl.Categorical),
+                pl.col('value').replace(-1, None).cast(pl.UInt8),
+            )
+            .select(pl.all().exclude('value'), pl.col('value'))
         )
 
 
