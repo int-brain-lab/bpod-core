@@ -119,6 +119,11 @@ class Bpod(SerialDevice, AbstractBpod):
         self._use_back_op = False
         self._queue_events: Queue[RawEvent] = Queue()
         self._queue_softcodes: Queue[int] = Queue()
+        self._softcode_thread = SoftcodeThread(
+            softcode_queue=self._queue_softcodes,
+            softcode_handler=self._softcode_handler,
+        )
+        self._softcode_thread.start()
 
         # identify Bpod by port or serial number, open connection
         bpod_port, _ = self._identify_bpod(port, serial_number)
@@ -221,6 +226,8 @@ class Bpod(SerialDevice, AbstractBpod):
             If the port could not be closed.
         """
         self.stop_state_machine()
+        self._softcode_thread.stop()
+        self._softcode_thread.join()
         if hasattr(self, 'serial0'):
             self._request_disconnect(self.serial0)
         super().close()
@@ -1129,22 +1136,15 @@ class Bpod(SerialDevice, AbstractBpod):
             use_back_op=self._use_back_op,
             time_reference=self._time_reference,
         )
-        self._softcode_thread = SoftcodeThread(
-            softcode_queue=self._queue_softcodes,
-            softcode_handler=self._softcode_handler,
-        )
-
         self._waiting_for_confirmation = False
 
         # Start threads
         self._event_thread.start()
-        self._softcode_thread.start()
         self._read_thread.start()
 
         # Wait for threads to finish
         if blocking:
             self._read_thread.join()
-            self._softcode_thread.join()
             self._event_thread.join()
 
     def stop_state_machine(self) -> None:
@@ -1194,6 +1194,12 @@ class Bpod(SerialDevice, AbstractBpod):
             The function to call when a softcode is received.
         """
         self._softcode_handler = softcode_handler
+        self._softcode_thread.stop()
+        self._softcode_thread = SoftcodeThread(
+            softcode_queue=self._queue_softcodes,
+            softcode_handler=self._softcode_handler,
+        )
+        self._softcode_thread.start()
 
 
 class Channel:

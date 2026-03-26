@@ -209,9 +209,8 @@ class ReadThread(threading.Thread):
         q_events.put(RawEvent(perf_count_ns, derived_micros, EventID.END_FSM_CYCLES))
         q_events.put(RawEvent(perf_count_ns, end_micros_us, EventID.END_FSM_MICROS))
 
-        # stop all threads
+        # stop the event thread
         q_events.put(RawEvent(0, 0, EventID.STOP_SENTINEL))
-        q_softcodes.put(EventID.STOP_SENTINEL)
         logger.debug('Stopping read thread')
 
 
