@@ -1084,7 +1084,7 @@ class Bpod(SerialDevice, AbstractBpod):
         Blocks until the state machine thread completes. If no state machine is
         currently running, this method returns immediately.
         """
-        if self.is_running:
+        if self._read_thread is not None and self._read_thread.is_alive():
             self._read_thread.join()
 
     @validate_call
