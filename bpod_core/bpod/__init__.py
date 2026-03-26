@@ -529,16 +529,15 @@ class Bpod(SerialDevice, AbstractBpod):
             raise BpodError(
                 'Cannot reset session clock while a state machine is running.'
             )
-
-        # reset the session clock
-        # bracket the serial round-trip to estimate reset time within ±(t1-t0)/2
         logger.debug('Resetting session clock')
-        t0 = time.perf_counter_ns()
         self.serial0.write(b'*')
+
+        # Record time of session clock reset
+        perf_count_ns = time.perf_counter_ns()
+
+        # Verify operation
         if not self.serial0.read_bool():
             return False
-        t1 = time.perf_counter_ns()
-        perf_count_ns = (t0 + t1) // 2
 
         # Store time reference
         start_system_time_ns = self._time_reference.init_system_time_ns
