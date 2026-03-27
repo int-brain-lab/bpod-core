@@ -1137,14 +1137,14 @@ class Bpod(SerialDevice, AbstractBpod):
         # wait for an already running state machine to finish
         self.wait()
 
+        # start threads
+        read_thread.start()
+        event_thread.start()
+
         # set private class attributes
         self._event_thread = event_thread
         self._read_thread = read_thread
         self._waiting_for_confirmation = False
-
-        # start threads
-        self._event_thread.start()
-        self._read_thread.start()
 
         # wait for threads to finish
         if blocking:
