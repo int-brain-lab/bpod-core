@@ -217,10 +217,13 @@ class ReadThread(threading.Thread):
 class EventThread(threading.Thread):
     """A thread for handling incoming events during a state-machine run."""
 
+    queue: Queue[RawEvent]
+    """Per-trial event queue shared with :class:`ReadThread`."""
+
     def __init__(
         self,
         *,
-        event_queue: Queue[RawEvent],
+        data_queue: 'Queue[pl.DataFrame]',
         event_names: list[str],
         action_names: list[str],
         state_transitions: npt.NDArray[np.uint8],
@@ -233,8 +236,8 @@ class EventThread(threading.Thread):
 
         Parameters
         ----------
-        event_queue : Queue[RawEvent]
-            Queue for storing events.
+        data_queue : Queue[pl.DataFrame]
+            Queue to push the completed trial DataFrame into.
         event_names : list of str
             Names of all hardware events, indexed by event ID.
         action_names : list of str
@@ -249,7 +252,8 @@ class EventThread(threading.Thread):
             Reference values for performance counters.
         """
         super().__init__(name='EventThread', daemon=True)
-        self._event_queue = event_queue
+        self.queue: Queue[RawEvent] = Queue()
+        self._data_queue = data_queue
         self._event_names = event_names
         self._action_names = action_names
         self._state_transitions = state_transitions
@@ -270,7 +274,7 @@ class EventThread(threading.Thread):
 
     def stop(self) -> None:
         """Signal the FSM thread to stop."""
-        self._event_queue.put(RawEvent(0, 0, EventID.STOP_SENTINEL))
+        self.queue.put(RawEvent(0, 0, EventID.STOP_SENTINEL))
 
     def _append(
         self, time_system_ns: int, time_bpod_us: int, event_index: int, value: int = -1
@@ -290,7 +294,7 @@ class EventThread(threading.Thread):
 
     def run(self) -> None:
         """Execute the EventThread."""
-        event_queue = self._event_queue
+        event_queue = self.queue
         state_transitions = self._state_transitions
         state_action_indices = self._state_action_indices
         resettable_indices = self._resettable_indices
@@ -366,6 +370,7 @@ class EventThread(threading.Thread):
             event_queue.task_done()
 
         self._buffer = self._buffer[: self._n_events]
+        self._data_queue.put(self.get_data())
         logger.debug('Stopping event thread')
 
     def get_data(self) -> pl.DataFrame:
@@ -411,24 +416,26 @@ class EventThread(threading.Thread):
 class SoftcodeThread(threading.Thread):
     """A thread for managing the execution of softcodes."""
 
+    queue: Queue[int]
+    """Softcode queue shared with :class:`ReadThread`."""
+
     def __init__(
         self,
         *,
-        softcode_queue: Queue[int],
         softcode_handler: Callable[[int], None] | None,
     ) -> None:
         super().__init__(name='SoftcodeThread', daemon=True)
-        self._softcode_queue = softcode_queue
+        self.queue: Queue[int] = Queue()
         self._softcode_handler = softcode_handler
 
     def stop(self) -> None:
         """Signal the FSM thread to stop."""
-        self._softcode_queue.put(EventID.STOP_SENTINEL)
+        self.queue.put(EventID.STOP_SENTINEL)
 
     def run(self) -> None:
         """Execute the SoftcodeThread."""
         # assign members to local variables to avoid repeated attribute lookups
-        queue = self._softcode_queue
+        queue = self.queue
         softcode_handler = self._softcode_handler
         handler_name = getattr(softcode_handler, '__name__', 'unknown')
 

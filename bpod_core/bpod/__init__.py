@@ -38,7 +38,6 @@ from bpod_core.bpod.constants import (
 from bpod_core.bpod.structs import (
     BpodInfo,
     HardwareConfiguration,
-    RawEvent,
     TimeReferences,
     VersionInfo,
 )
@@ -117,10 +116,9 @@ class Bpod(SerialDevice, AbstractBpod):
         )
         self._state_actions: list[dict[str, int]] = []
         self._use_back_op = False
-        self._queue_events: Queue[RawEvent] = Queue()
-        self._queue_softcodes: Queue[int] = Queue()
+        self.data: Queue = Queue()
+        """Queue of completed trial DataFrames (``pl.DataFrame``), one per run."""
         self._softcode_thread = SoftcodeThread(
-            softcode_queue=self._queue_softcodes,
             softcode_handler=self._softcode_handler,
         )
         self._softcode_thread.start()
@@ -198,6 +196,7 @@ class Bpod(SerialDevice, AbstractBpod):
         exc_tb: TracebackType | None,
     ) -> None:
         """Exit context and close connection."""
+        self.wait()  # let any running trial finish before closing serial
         atexit.unregister(self._atexit_handler)
         self._finalizer.detach()
         self._cleanup(self._serial, self._zmq_service)
@@ -1115,20 +1114,10 @@ class Bpod(SerialDevice, AbstractBpod):
         self._run_state_machine(blocking=blocking)
 
     def _run_state_machine(self, *, blocking: bool) -> None:
-        # Wait for an already running state machine to finish
-        self.wait()
 
-        # Define threads
-        self._read_thread = ReadThread(
-            serial=self.serial0,
-            fsm_index=self._next_fsm_index,
-            confirm_fsm=self._waiting_for_confirmation,
-            cycle_period_us=self._hardware.cycle_period_us,
-            queue_events=self._queue_events,
-            queue_softcodes=self._queue_softcodes,
-        )
-        self._event_thread = EventThread(
-            event_queue=self._queue_events,
+        # initialize new threads
+        event_thread = EventThread(
+            data_queue=self.data,
             event_names=self.event_names,
             action_names=self.actions,
             state_transitions=self._state_transitions,
@@ -1136,13 +1125,28 @@ class Bpod(SerialDevice, AbstractBpod):
             use_back_op=self._use_back_op,
             time_reference=self._time_reference,
         )
+        read_thread = ReadThread(
+            serial=self.serial0,
+            fsm_index=self._next_fsm_index,
+            confirm_fsm=self._waiting_for_confirmation,
+            cycle_period_us=self._hardware.cycle_period_us,
+            queue_events=event_thread.queue,
+            queue_softcodes=self._softcode_thread.queue,
+        )
+
+        # wait for an already running state machine to finish
+        self.wait()
+
+        # set private class attributes
+        self._event_thread = event_thread
+        self._read_thread = read_thread
         self._waiting_for_confirmation = False
 
-        # Start threads
+        # start threads
         self._event_thread.start()
         self._read_thread.start()
 
-        # Wait for threads to finish
+        # wait for threads to finish
         if blocking:
             self._read_thread.join()
             self._event_thread.join()
@@ -1196,7 +1200,6 @@ class Bpod(SerialDevice, AbstractBpod):
         self._softcode_handler = softcode_handler
         self._softcode_thread.stop()
         self._softcode_thread = SoftcodeThread(
-            softcode_queue=self._queue_softcodes,
             softcode_handler=self._softcode_handler,
         )
         self._softcode_thread.start()
