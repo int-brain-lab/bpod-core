@@ -12,7 +12,7 @@ import numpy as np
 import numpy.typing as npt
 import polars as pl
 
-from bpod_core.bpod.structs import RawEvent, TimeReferences
+from bpod_core.bpod.structs import CompiledStateMachine, RawEvent, TimeReferences
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import STRUCT_UINT32_LE
 
@@ -75,7 +75,7 @@ class ReadThread(threading.Thread):
         self,
         *,
         serial: ExtendedSerial,
-        fsm_index: int,
+        trial: int,
         confirm_fsm: bool,
         cycle_period_us: int,
         queue_events: Queue[RawEvent],
@@ -88,8 +88,8 @@ class ReadThread(threading.Thread):
         ----------
         serial : ExtendedSerial
             The serial connection to the Bpod device.
-        fsm_index : int
-            The index of the FSM being managed.
+        trial : int
+            Zero-based trial index.
         confirm_fsm : bool
             Whether to confirm the FSM with the Bpod device.
         cycle_period_us : int
@@ -102,7 +102,7 @@ class ReadThread(threading.Thread):
         super().__init__(name='CommunicationThread', daemon=True)
         self.serial = serial
         self._stop_event = threading.Event()
-        self._index = fsm_index
+        self._trial = trial
         self._confirm_fsm = confirm_fsm
         self._cycle_period_us = cycle_period_us
         self._queue_events = queue_events
@@ -116,7 +116,7 @@ class ReadThread(threading.Thread):
         """Execute the CommunicationThread."""
         # confirm the state machine
         if self._confirm_fsm and not self.serial.read_bool():
-            raise RuntimeError(f'State machine #{self._index} not confirmed by Bpod')
+            raise RuntimeError(f'State machine #{self._trial} not confirmed by Bpod')
 
         # read the starting timestamps of the state machine
         # we do this early to get an accurate timestamp for the system clock
@@ -225,13 +225,10 @@ class EventThread(threading.Thread):
         self,
         *,
         trial: int,
-        data_queue: 'Queue[pl.DataFrame]',
+        fsm: CompiledStateMachine,
+        data_queue: Queue[pl.DataFrame],
         event_names: list[str],
         action_names: list[str],
-        state_names: list[str],
-        state_transitions: npt.NDArray[np.uint8],
-        state_actions: list[dict[str, int]],
-        use_back_op: bool,
         time_reference: TimeReferences,
     ) -> None:
         """
@@ -241,20 +238,14 @@ class EventThread(threading.Thread):
         ----------
         trial : int
             Zero-based trial index, used to populate the ``trial`` column.
+        fsm : CompiledStateMachine
+            Compiled state machine data for this trial.
         data_queue : Queue[pl.DataFrame]
             Queue to push the completed trial DataFrame into.
         event_names : list of str
             Names of all hardware events, indexed by event ID.
         action_names : list of str
             Names of all output channels, indexed by action ID.
-        state_names : list of str
-            Names of all states, indexed by state index.
-        state_transitions : np.ndarray
-            The state transition matrix of shape ``(n_states, 255)``.
-        state_actions : list of dict
-            Per-state mapping of action name to value (0-255).
-        use_back_op : bool
-            Whether the state machine makes use of the ``>back`` operator.
         time_reference : TimeReferences
             Reference values for performance counters.
         """
@@ -264,9 +255,9 @@ class EventThread(threading.Thread):
         self._data_queue = data_queue
         self._event_names = event_names
         self._action_names = action_names
-        self._state_names = state_names
-        self._state_transitions = state_transitions
-        self._use_back_op = use_back_op
+        self._state_names = fsm.state_names
+        self._state_transitions = fsm.state_transitions
+        self._use_back_op = fsm.use_back_op
         self._time_reference = time_reference
         self._buffer: npt.NDArray = np.empty(_INITIAL_BUFFER_SIZE, dtype=_EVENT_DTYPE)
         self._n_events: int = 0
@@ -274,7 +265,7 @@ class EventThread(threading.Thread):
         # pre-compute action index map for fast lookup in the hot loop
         action_index_map = {name: i for i, name in enumerate(action_names)}
         self._state_action_indices: list[dict[int, int]] = [
-            {action_index_map[k]: v for k, v in d.items()} for d in state_actions
+            {action_index_map[k]: v for k, v in d.items()} for d in fsm.state_actions
         ]
         # BNC and PWM outputs are implicitly reset to 0 at each state transition
         self._resettable_indices: frozenset[int] = frozenset(

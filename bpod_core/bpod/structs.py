@@ -3,6 +3,21 @@
 from typing import NamedTuple
 
 import msgspec
+import numpy as np
+import numpy.typing as npt
+
+
+class CompiledStateMachine(NamedTuple):
+    """Per-trial data derived from a compiled :class:`~bpod_core.fsm.StateMachine`."""
+
+    state_names: list[str]
+    """Names of all states, indexed by state index."""
+    state_transitions: npt.NDArray[np.uint8]
+    """Transition matrix of shape ``(n_states, 255)``."""
+    state_actions: list[dict[str, int]]
+    """Per-state mapping of action name to value."""
+    use_back_op: bool
+    """Whether the ``>back`` operator is used."""
 
 
 class TimeReferences(NamedTuple):
