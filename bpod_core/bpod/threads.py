@@ -36,7 +36,7 @@ _EVENT_DTYPE = np.dtype(
         ('bpod_time', 'datetime64[us]'),
         ('event_id', np.int16),
         ('value', np.int16),
-        ('state', np.uint8),
+        ('state', np.int16),
     ]
 )
 """Structured NumPy dtype for recorded events."""
@@ -316,6 +316,11 @@ class EventThread(threading.Thread):
         use_back_op = self._use_back_op
         target_exit = len(state_transitions)
         target_back = 255
+        stateless_events = (
+            EventID.START_FSM,
+            EventID.END_FSM_CYCLES,
+            EventID.END_FSM_MICROS,
+        )
         current_state = 0
         previous_state = 0
         active_outputs: dict[int, int] = {}  # resettable outputs currently non-zero
@@ -339,8 +344,9 @@ class EventThread(threading.Thread):
             t_system_ns = base_time_system_ns + perf_count_ns
             t_bpod_us = base_time_bpod_us + bpod_count_us
 
-            # append the event to the buffer
-            self._append(t_system_ns, t_bpod_us, event_index, state=current_state)
+            # append the event to the buffer (-1 = no state for trial-level events)
+            state = -1 if event_index in stateless_events else current_state
+            self._append(t_system_ns, t_bpod_us, event_index, state=state)
 
             # handle state transitions
             if event_index < 255:
@@ -372,7 +378,7 @@ class EventThread(threading.Thread):
             elif event_index == EventID.END_FSM_CYCLES:
                 for idx in sorted(active_outputs):
                     output_id = _OUTPUT_ID_OFFSET + idx
-                    self._append(t_system_ns, t_bpod_us, output_id, 0, current_state)
+                    self._append(t_system_ns, t_bpod_us, output_id, 0, -1)
                 active_outputs = {}
 
             # record output actions (for initial state and after state transitions):
@@ -441,7 +447,7 @@ class EventThread(threading.Thread):
         )
         state_lookup = pl.DataFrame(
             {
-                'state': pl.Series(range(len(self._state_names)), dtype=pl.UInt8),
+                'state': pl.Series(range(len(self._state_names)), dtype=pl.Int16),
                 'state_name': self._state_names,
             }
         )
