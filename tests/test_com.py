@@ -467,6 +467,42 @@ class TestSerialDevice:
         device = com.SerialDevice('/dev/ttyACM0', open_connection=False)
         assert device.port == '/dev/ttyACM0'
 
+    def test_rename_updates_name(self, mock_comports, mock_extended_serial):
+        """_rename_serial_device updates _serial_device_name."""
+        device = com.SerialDevice('/dev/ttyACM0', open_connection=False)
+        device._rename_serial_device('my device')
+        assert device._serial_device_name == 'my device'
+
+    def test_rename_before_open_registers_finalizer(
+        self, mock_comports, mock_extended_serial
+    ):
+        """_rename_serial_device before open() registers a finalizer."""
+        device = com.SerialDevice('/dev/ttyACM0', open_connection=False)
+        assert device._serial_device_finalizer is None
+        device._rename_serial_device('my device')
+        assert device._serial_device_finalizer is not None
+
+    def test_rename_after_open_replaces_finalizer(
+        self, mock_comports, mock_extended_serial
+    ):
+        """after open(), rename detaches old finalizer and registers a new one."""
+        device = com.SerialDevice('/dev/ttyACM0', open_connection=True)
+        old_finalizer = device._serial_device_finalizer
+        device._rename_serial_device('renamed device')
+        assert not old_finalizer.alive
+        assert device._serial_device_finalizer is not None
+        assert device._serial_device_finalizer.alive
+
+    def test_rename_gc_uses_new_name(self, mock_comports, mock_extended_serial, caplog):
+        """after rename, GC-triggered cleanup logs the updated device name."""
+        device = com.SerialDevice('/dev/ttyACM0', open_connection=True)
+        device._rename_serial_device('fancy device')
+        with caplog.at_level(logging.DEBUG):
+            del device
+            gc.collect()
+        assert 'fancy device' in caplog.text
+        mock_extended_serial.close.assert_called_once()
+
     def test_finalizer_closes_on_gc(self, mock_comports, mock_extended_serial):
         """Finalizer closes the serial connection during garbage collection."""
         device = com.SerialDevice('/dev/ttyACM0', open_connection=True)
