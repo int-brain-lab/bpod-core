@@ -13,7 +13,7 @@ from bpod_core import __version__ as bpod_core_version
 
 def test_version_found(monkeypatch):
     monkeypatch.setattr(importlib.metadata, 'version', lambda _: '1.2.3')
-    sys.modules.pop('bpod_core', None)
+    monkeypatch.delitem(sys.modules, 'bpod_core', raising=False)
     import bpod_core  # noqa: PLC0415
 
     assert bpod_core.__version__ == '1.2.3'
@@ -24,7 +24,7 @@ def test_version_not_found(monkeypatch):
         raise importlib.metadata.PackageNotFoundError
 
     monkeypatch.setattr(importlib.metadata, 'version', raise_not_found)
-    sys.modules.pop('bpod_core', None)
+    monkeypatch.delitem(sys.modules, 'bpod_core', raising=False)
     import bpod_core  # noqa: PLC0415
 
     assert Version(bpod_core.__version__) > Version('0.0.0')

@@ -96,8 +96,17 @@ def mock_ext_serial(mocker):
     mocker.patch(f'{tmp}.close')
     mocker.patch(f'{tmp}.write', side_effect=write)
     mocker.patch(f'{tmp}.read', side_effect=read)
+
+    def readinto(buf) -> int:
+        n = len(buf)
+        chunk = bytes(extended_serial.response_buffer[:n])
+        del extended_serial.response_buffer[:n]
+        buf[: len(chunk)] = chunk
+        return len(chunk)
+
     mocker.patch(f'{tmp}.reset_input_buffer')
     mocker.patch(f'{tmp}.in_waiting', new_callable=PropertyMock, side_effect=in_waiting)
+    mocker.patch(f'{tmp}.readinto', side_effect=readinto)
     return extended_serial
 
 

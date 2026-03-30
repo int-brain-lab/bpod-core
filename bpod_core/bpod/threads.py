@@ -157,7 +157,8 @@ class ReadThread(threading.Thread):
             perf_count_ns = time.perf_counter_ns()
             opcode, param = opcode_buf
 
-            if opcode == 1:  # handle events
+            # HANDLE EVENTS
+            if opcode == 1:
                 # read `param` event bytes + 4 bytes for n_cycles (uInt32)
                 serial.readinto(event_data_view[: param + 4])
 
@@ -172,7 +173,8 @@ class ReadThread(threading.Thread):
                         break
                     q_events.put(RawEvent(perf_count_ns, derived_micros_us, event))
 
-            elif opcode == 2:  # handle softcodes
+            # HANDLE SOFTCODES
+            elif opcode == 2:
                 softcode = param - 1  # subtract 1 for zero-based indexing
                 q_softcodes.put(softcode)
                 # q_events.put(RawEvent(perf_count_ns, None, 10000 + softcode))
