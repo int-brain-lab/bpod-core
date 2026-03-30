@@ -82,7 +82,7 @@ class ReadThread(threading.Thread):
         queue_softcodes: Queue[int],
     ) -> None:
         """
-        Initialize the EventThread.
+        Initialize the ReadThread.
 
         Parameters
         ----------
@@ -99,8 +99,8 @@ class ReadThread(threading.Thread):
         queue_softcodes : Queue[int]
             Queue for storing softcodes.
         """
-        super().__init__(name='CommunicationThread', daemon=True)
-        self.serial = serial
+        super().__init__(name='ReadThread', daemon=True)
+        self._serial = serial
         self._stop_event = threading.Event()
         self._trial = trial
         self._confirm_fsm = confirm_fsm
@@ -113,108 +113,112 @@ class ReadThread(threading.Thread):
         self._stop_event.set()
 
     def run(self) -> None:
-        """Execute the CommunicationThread."""
-        # confirm the state machine
-        if self._confirm_fsm and not self.serial.read_bool():
-            raise RuntimeError(f'State machine #{self._trial} not confirmed by Bpod')
+        """Execute the ReadThread."""
+        try:
+            # confirm the state machine
+            if self._confirm_fsm and not self._serial.read_bool():
+                raise RuntimeError(
+                    f'State machine #{self._trial} not confirmed by Bpod'
+                )
 
-        # read the starting timestamps of the state machine
-        # we do this early to get an accurate timestamp for the system clock
-        start_micros_us = self.serial.read_uint64()
-        perf_count_ns = time.perf_counter_ns()
-
-        # assign members to local variables to avoid repeated attribute lookups
-        serial = self.serial
-        cycle_period_us = self._cycle_period_us
-        q_events = self._queue_events
-        q_softcodes = self._queue_softcodes
-
-        # create buffers / memoryview for repeated serial reads
-        opcode_buf = bytearray(2)  # buffer for opcodes
-        event_data_buf = bytearray(259)  # max 255 events + 4 bytes for n_cycles
-        event_data_view = memoryview(event_data_buf)
-
-        # handle events: start of state machine, start of state
-        q_events.put(RawEvent(perf_count_ns, start_micros_us, EventID.START_FSM))
-        q_events.put(RawEvent(perf_count_ns, start_micros_us, EventID.START_STATE))
-
-        # enter the reading loop
-        while not self._stop_event.is_set():
-            # TODO: thread is blocked by readinto()
-            #
-            # Options:
-            # a) use serial timeout,
-            # b) while serial.in_waiting() < 2:
-            #        if self._stop_event.wait(timeout=0.01):
-            #            break
-            # c) thread entirely controlled by bpod (no _stop_event required)
-            #
-            # readinto returns number of bytes read, so we can use it to check for
-            # timeout
-
-            # read the next two opcodes
-            serial.readinto(opcode_buf)
+            # read the starting timestamps of the state machine
+            # we do this early to get an accurate timestamp for the system clock
+            start_micros_us = self._serial.read_uint64()
             perf_count_ns = time.perf_counter_ns()
-            opcode, param = opcode_buf
 
-            # HANDLE EVENTS
-            if opcode == 1:
-                # read `param` event bytes + 4 bytes for n_cycles (uInt32)
-                serial.readinto(event_data_view[: param + 4])
+            # assign members to local variables to avoid repeated attribute lookups
+            serial = self._serial
+            cycle_period_us = self._cycle_period_us
+            q_events = self._queue_events
+            q_softcodes = self._queue_softcodes
 
-                # unpack the cycle count and derive the event's microsecond timestamp
-                (n_cycles,) = STRUCT_UINT32_LE.unpack_from(event_data_view, param)
-                derived_micros_us = start_micros_us + n_cycles * cycle_period_us
+            # create buffers / memoryview for repeated serial reads
+            opcode_buf = bytearray(2)  # buffer for opcodes
+            event_data_buf = bytearray(259)  # max 255 events + 4 bytes for n_cycles
+            event_data_view = memoryview(event_data_buf)
 
-                # hand events over to the EventThread
-                for event in event_data_view[:param]:
-                    if event == EventID.EXIT:
-                        self.stop()
-                        break
-                    q_events.put(RawEvent(perf_count_ns, derived_micros_us, event))
+            # handle events: start of state machine, start of state
+            q_events.put(RawEvent(perf_count_ns, start_micros_us, EventID.START_FSM))
+            q_events.put(RawEvent(perf_count_ns, start_micros_us, EventID.START_STATE))
 
-            # HANDLE SOFTCODES
-            elif opcode == 2:
-                softcode = param - 1  # subtract 1 for zero-based indexing
-                q_softcodes.put(softcode)
-                # q_events.put(RawEvent(perf_count_ns, None, 10000 + softcode))
+            # enter the reading loop
+            while not self._stop_event.is_set():
+                # TODO: thread is blocked by readinto()
+                #
+                # Options:
+                # a) use serial timeout,
+                # b) while serial.in_waiting() < 2:
+                #        if self._stop_event.wait(timeout=0.01):
+                #            break
+                # c) thread entirely controlled by bpod (no _stop_event required)
+                #
+                # readinto returns number of bytes read, so we can use it to check for
+                # timeout
 
-            else:
-                raise RuntimeError(f'Received unknown opcode from Bpod: {opcode}')
+                # read the next two opcodes
+                serial.readinto(opcode_buf)
+                perf_count_ns = time.perf_counter_ns()
+                opcode, param = opcode_buf
 
-        # the Bpod sends two values after exiting the state machine trial:
-        # 1) n_cycles - the number of hardware timer callbacks executed (uInt32)
-        # 2) bpod_micros - the microsecond count at the end of the trial (uInt64)
-        serial.readinto(event_data_view[:12])
-        perf_count_ns = time.perf_counter_ns()
-        n_cycles, end_micros_us = self._struct_exit.unpack_from(event_data_view)
+                # HANDLE EVENTS
+                if opcode == 1:
+                    # read `param` event bytes + 4 bytes for n_cycles (uInt32)
+                    serial.readinto(event_data_view[: param + 4])
 
-        # we can use these values to verify the Bpod's hardware timer reliability. If
-        # timer callbacks take longer than the cycle period, the actual trial duration
-        # diverges from expected. A warning is logged if the absolute discrepancy of the
-        # trial duration exceeds a threshold.
-        duration_micros_us = end_micros_us - start_micros_us
-        duration_cycles_us = n_cycles * cycle_period_us
-        duration_discrepancy_us = abs(duration_cycles_us - duration_micros_us)
-        if duration_discrepancy_us > _TIMING_VIOLATION_THRESHOLD_US:
-            average_cycle_period_us = duration_micros_us / n_cycles
-            logger.warning(
-                'Violation of hardware timing guarantees. Trial was %d µs %s than '
-                'expected. Average cycle period: %0.3f µs (expected: %0.3f µs).',
-                duration_discrepancy_us,
-                'longer' if duration_micros_us > duration_cycles_us else 'shorter',
-                average_cycle_period_us,
-                cycle_period_us,
+                    # unpack the cycle count and derive the event timestamp
+                    (n_cycles,) = STRUCT_UINT32_LE.unpack_from(event_data_view, param)
+                    derived_micros_us = start_micros_us + n_cycles * cycle_period_us
+
+                    # hand events over to the EventThread
+                    for event in event_data_view[:param]:
+                        if event == EventID.EXIT:
+                            self.stop()
+                            break
+                        q_events.put(RawEvent(perf_count_ns, derived_micros_us, event))
+
+                # HANDLE SOFTCODES
+                elif opcode == 2:
+                    softcode = param - 1  # subtract 1 for zero-based indexing
+                    q_softcodes.put(softcode)
+
+                else:
+                    raise RuntimeError(f'Received unknown opcode from Bpod: {opcode}')
+
+            # the Bpod sends two values after exiting the state machine trial:
+            # 1) n_cycles - the number of hardware timer callbacks executed (uInt32)
+            # 2) bpod_micros - the microsecond count at the end of the trial (uInt64)
+            serial.readinto(event_data_view[:12])
+            perf_count_ns = time.perf_counter_ns()
+            n_cycles, end_micros_us = self._struct_exit.unpack_from(event_data_view)
+
+            # verify hardware timer reliability: warn if cycle-based and micros-based
+            # trial durations diverge beyond the threshold.
+            duration_micros_us = end_micros_us - start_micros_us
+            duration_cycles_us = n_cycles * cycle_period_us
+            duration_discrepancy_us = duration_cycles_us - duration_micros_us
+            if abs(duration_discrepancy_us) > _TIMING_VIOLATION_THRESHOLD_US:
+                average_cycle_period_us = (
+                    (duration_micros_us / n_cycles) if n_cycles else float('nan')
+                )
+                logger.warning(
+                    'Violation of hardware timing guarantees. Trial was %d µs %s than '
+                    'expected. Average cycle period: %0.3f µs (expected: %0.3f µs).',
+                    abs(duration_discrepancy_us),
+                    'longer' if duration_discrepancy_us < 0 else 'shorter',
+                    average_cycle_period_us,
+                    cycle_period_us,
+                )
+
+            # enqueue end-of-trial event
+            derived_micros = start_micros_us + duration_cycles_us
+            q_events.put(
+                RawEvent(perf_count_ns, derived_micros, EventID.END_FSM_CYCLES)
             )
+            q_events.put(RawEvent(perf_count_ns, end_micros_us, EventID.END_FSM_MICROS))
 
-        # enqueue end-of-trial event
-        derived_micros = start_micros_us + duration_cycles_us
-        q_events.put(RawEvent(perf_count_ns, derived_micros, EventID.END_FSM_CYCLES))
-        q_events.put(RawEvent(perf_count_ns, end_micros_us, EventID.END_FSM_MICROS))
-
-        # stop the event thread
-        q_events.put(RawEvent(0, 0, EventID.STOP_SENTINEL))
-        logger.debug('Stopping read thread')
+        finally:
+            self._queue_events.put(RawEvent(0, 0, EventID.STOP_SENTINEL))
+            logger.debug('Stopping read thread')
 
 
 class EventThread(threading.Thread):

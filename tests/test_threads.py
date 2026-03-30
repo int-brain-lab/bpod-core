@@ -134,14 +134,14 @@ class TestReadThread:
 
     @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
     def test_fsm_confirmation_failure(self, make_thread):
-        """confirm_fsm=True exits without STOP_SENTINEL when Bpod sends zero."""
+        """confirm_fsm=True sends STOP_SENTINEL and exits when Bpod sends zero."""
         data = b'\x00'  # False — no further data needed
         thread, q_events, _ = make_thread(data, confirm_fsm=True)
         thread.start()
         thread.join(timeout=2)
         assert not thread.is_alive()
         event_indices = [e.event_index for e in _drain(q_events)]
-        assert EventID.STOP_SENTINEL not in event_indices
+        assert event_indices == [EventID.STOP_SENTINEL]
 
     def test_timing_violation_warning(self, make_thread, caplog):
         """Logs a WARNING when cycle/micros discrepancy exceeds 1 ms."""
