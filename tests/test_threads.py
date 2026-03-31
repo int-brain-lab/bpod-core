@@ -72,8 +72,8 @@ class TestReadThread:
         thread.start()
         thread.join(timeout=2)
         events = _drain(q_events)
-        assert events[0].event_index == _EventID.START_FSM
-        assert events[1].event_index == _EventID.START_STATE
+        assert events[0].event_id == _EventID.START_FSM
+        assert events[1].event_id == _EventID.START_STATE
 
     def test_hardware_event_enqueued(self, make_thread):
         """A hardware event in an opcode-1 packet is placed on the event queue."""
@@ -86,7 +86,7 @@ class TestReadThread:
         thread, q_events, _ = make_thread(data)
         thread.start()
         thread.join(timeout=2)
-        event_indices = [e.event_index for e in _drain(q_events)]
+        event_indices = [e.event_id for e in _drain(q_events)]
         assert 42 in event_indices
 
     def test_event_timestamp(self, make_thread):
@@ -100,8 +100,8 @@ class TestReadThread:
         thread, q_events, _ = make_thread(data, cycle_period_us=2)
         thread.start()
         thread.join(timeout=2)
-        event = next(e for e in _drain(q_events) if e.event_index == 10)
-        assert event.bpod_count_us == 110  # 100 + 5 * 2
+        event = next(e for e in _drain(q_events) if e.event_id == 10)
+        assert event.micros_us == 110  # 100 + 5 * 2
 
     def test_softcode_enqueued(self, make_thread):
         """Opcode-2 packet places zero-based softcode on the softcode queue."""
@@ -117,7 +117,7 @@ class TestReadThread:
         thread, q_events, _ = make_thread(data)
         thread.start()
         thread.join(timeout=2)
-        event_indices = [e.event_index for e in _drain(q_events)]
+        event_indices = [e.event_id for e in _drain(q_events)]
         assert _EventID.END_FSM_CYCLES in event_indices
         assert _EventID.END_FSM_MICROS in event_indices
         assert event_indices[-1] == _EventID.STOP_SENTINEL
@@ -129,7 +129,7 @@ class TestReadThread:
         thread.start()
         thread.join(timeout=2)
         assert not thread.is_alive()
-        event_indices = [e.event_index for e in _drain(q_events)]
+        event_indices = [e.event_id for e in _drain(q_events)]
         assert _EventID.START_FSM in event_indices
 
     @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
@@ -140,7 +140,7 @@ class TestReadThread:
         thread.start()
         thread.join(timeout=2)
         assert not thread.is_alive()
-        event_indices = [e.event_index for e in _drain(q_events)]
+        event_indices = [e.event_id for e in _drain(q_events)]
         assert event_indices == [_EventID.STOP_SENTINEL]
 
     def test_timing_violation_warning(self, make_thread, caplog):

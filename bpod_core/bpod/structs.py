@@ -5,6 +5,16 @@ from typing import NamedTuple
 import msgspec
 import numpy as np
 import numpy.typing as npt
+import polars as pl
+
+
+class _InputEvents(NamedTuple):
+    """Hardware-level input event names and their source channels."""
+
+    names: list[str]
+    """Event name for each hardware input event, indexed by event ID."""
+    channels: list[str | None]
+    """Input channel name for each event, or ``None`` for timer/condition events."""
 
 
 class CompiledStateMachine(NamedTuple):
@@ -18,6 +28,11 @@ class CompiledStateMachine(NamedTuple):
     """Per-state mapping of action name to value."""
     use_back_op: bool
     """Whether the ``>back`` operator is used."""
+    state_lookup: pl.DataFrame
+    """Categorical lookup DataFrame mapping state index to state name.
+
+    Pre-built at FSM compilation time for use in :meth:`~EventThread.get_data`.
+    """
 
 
 class TimeReferences(NamedTuple):
@@ -34,11 +49,9 @@ class TimeReferences(NamedTuple):
 class RawEvent(NamedTuple):
     """Raw event data from the Bpod device."""
 
-    perf_count_ns: int
-    """Performance counter value at the time of receiving the event (nanoseconds)."""
-    bpod_count_us: int
+    micros_us: int
     """Time of the event relative to the Bpod's session clock (microseconds)."""
-    event_index: int
+    event_id: int
     """Index of the event."""
 
 

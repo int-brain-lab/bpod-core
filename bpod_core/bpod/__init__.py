@@ -15,6 +15,7 @@ from types import TracebackType
 from typing import Any, NamedTuple, cast
 
 import numpy as np
+import polars as pl
 from pydantic import validate_call
 from serial import SerialException
 
@@ -40,8 +41,14 @@ from bpod_core.bpod.structs import (
     HardwareConfiguration,
     TimeReferences,
     VersionInfo,
+    _InputEvents,
 )
-from bpod_core.bpod.threads import EventThread, ReadThread, SoftcodeThread
+from bpod_core.bpod.threads import (
+    EventThread,
+    ReadThread,
+    SoftcodeThread,
+    _build_event_lookup,
+)
 from bpod_core.com import (
     ExtendedSerial,
     SerialDevice,
@@ -90,9 +97,6 @@ class Bpod(SerialDevice, AbstractBpod):
     modules: NamedTuple
     """Available modules."""
 
-    event_names: list[str]
-    """List of event names."""
-
     actions: list[str]
     """List of output actions."""
 
@@ -108,8 +112,9 @@ class Bpod(SerialDevice, AbstractBpod):
         self._settings = SettingsDict(CONFIG_PATH / 'settings.json')
 
         # initialize members
-        self.event_names = []
+        self._input_events: _InputEvents = _InputEvents(names=[], channels=[])
         self.actions = []
+        self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._waiting_for_confirmation = False
         self._compiled_fsm: CompiledStateMachine | None = None
         self.data: Queue = Queue()
@@ -233,6 +238,11 @@ class Bpod(SerialDevice, AbstractBpod):
         if getattr(serial, 'is_open', False):
             logger.debug('Sending close request to Bpod')
             serial.write(b'Z')
+
+    @property
+    def event_names(self) -> list[str]:
+        """Names of all hardware input events, indexed by event ID."""
+        return self._input_events.names
 
     @property
     def serial0(self) -> ExtendedSerial:
@@ -558,44 +568,58 @@ class Bpod(SerialDevice, AbstractBpod):
         for module in self.modules:
             module.set_relay(False)
 
-    def _compile_event_names(self) -> None:
-        """Compile the list of event names supported by the Bpod hardware."""
+    def _compile_input_events(self) -> None:
+        """Compile input events supported by the Bpod hardware."""
         n_serial_events = sum(len(m.event_names) for m in self.modules)
         n_softcodes = self._hardware.max_serial_events - n_serial_events
         n_usb = self._hardware.input_description.count(b'X')
         n_usb_ext = self._hardware.input_description.count(b'Z')
         n_softcodes_per_usb = n_softcodes // (n_usb + n_usb_ext)
         n_app_softcodes = n_usb_ext * n_softcodes_per_usb
-        self.event_names = []
+        names: list[str] = []
+        channels: list[str | None] = []
 
         # Compile event names for input channels
         counters = dict.fromkeys(CHANNEL_TYPES_INPUT, 0)
         for io_key in [bytes([x]) for x in self._hardware.input_description]:
             name = CHANNEL_TYPES_INPUT[io_key]
             if io_key == b'U':  # Serial
-                names = self.modules[counters[io_key]].event_names
+                module = self.modules[counters[io_key]]
+                ev_names = module.event_names
+                ev_channels: list[str | None] = [module.name] * len(ev_names)
             elif io_key == b'X':  # SoftCode
-                names = (f'{name}{i}' for i in range(n_softcodes_per_usb))
+                ev_names = [f'{name}{i}' for i in range(n_softcodes_per_usb)]
+                ev_channels = [name] * n_softcodes_per_usb
             elif io_key == b'Z':  # SoftCodeApp
-                names = (f'{name}{i}' for i in range(n_app_softcodes))
+                ev_names = [f'{name}{i}' for i in range(n_app_softcodes)]
+                ev_channels = [name] * n_app_softcodes
             elif io_key == b'F':  # Flex
-                names = (f'{name}{counters[io_key] + 1}_{i}' for i in range(2))
+                channel = f'{name}{counters[io_key] + 1}'
+                ev_names = [f'{channel}_{i}' for i in range(2)]
+                ev_channels = [channel, channel]
             elif io_key in b'PBW':  # Port, BNC, Wire
-                names = (f'{name}{counters[io_key] + 1}_{s}' for s in ('High', 'Low'))
+                channel = f'{name}{counters[io_key] + 1}'
+                ev_names = [f'{channel}_{s}' for s in ('High', 'Low')]
+                ev_channels = [channel, channel]
             else:
                 continue
-            self.event_names.extend(names)
+            names.extend(ev_names)
+            channels.extend(ev_channels)
             counters[io_key] += 1
 
-        # Add global timers, global counters, conditions and 'Tup'
+        # Add global timers, global counters, conditions and 'Tup' (no input channel)
         for event_name, n in [
             ('GlobalTimer{}_Start', self._hardware.n_global_timers),
             ('GlobalTimer{}_End', self._hardware.n_global_timers),
             ('GlobalCounter{}_End', self._hardware.n_global_counters),
             ('Condition{}', self._hardware.n_conditions),
         ]:
-            self.event_names.extend(event_name.format(i) for i in range(n))
-        self.event_names.append('Tup')
+            names.extend(event_name.format(i) for i in range(n))
+            channels.extend([None] * n)
+        names.append('Tup')
+        channels.append(None)
+
+        self._input_events = _InputEvents(names=names, channels=channels)
 
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""
@@ -694,8 +718,9 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
         # update event names and output actions
-        self._compile_event_names()
+        self._compile_input_events()
         self._compile_output_actions()
+        self._event_lookup = _build_event_lookup(self._input_events, self.actions)
 
     def validate_state_machine(self, state_machine: StateMachine) -> None:
         """
@@ -913,11 +938,18 @@ class Bpod(SerialDevice, AbstractBpod):
                 state_transitions[state_idx][event_indices[event]] = target_idx
 
         # bundle per-state data for event timeline annotation
+        state_names = list(state_machine.states.keys())
         self._compiled_fsm = CompiledStateMachine(
-            state_names=list(state_machine.states.keys()),
+            state_names=state_names,
             state_transitions=state_transitions,
             state_actions=[dict(s.actions) for s in state_machine.states.values()],
             use_back_op=use_back_op,
+            state_lookup=pl.DataFrame(
+                {
+                    'state_id': pl.Series(range(len(state_names)), dtype=pl.Int16),
+                    'state': pl.Series(state_names, dtype=pl.Enum(state_names)),
+                }
+            ),
         )
 
         # Append remaining events
@@ -1120,7 +1152,7 @@ class Bpod(SerialDevice, AbstractBpod):
             trial=self._next_fsm_index,
             fsm=self._compiled_fsm,
             data_queue=self.data,
-            event_names=self.event_names,
+            event_lookup=self._event_lookup,
             action_names=self.actions,
             time_reference=self._time_reference,
         )
