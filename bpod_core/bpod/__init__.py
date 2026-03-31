@@ -774,25 +774,23 @@ class Bpod(SerialDevice, AbstractBpod):
                 )
 
         # Validate states
-        valid_targets = set(state_machine.states.keys()) | VALID_OPERATORS
         max_state_duration = np.iinfo(np.uint32).max / self._hardware.cycle_frequency
         for state_name, state in state_machine.states.items():
-            if state.timer < 0 or state.timer > max_state_duration:
+            if state.timer > max_state_duration:
                 raise ValueError(
                     f"Invalid timer value {state.timer} for state '{state_name}' - "
                     f'must be between 0 and {max_state_duration} seconds',
                 )
             for condition_name, target in state.transitions.items():
-                if target not in valid_targets:
-                    target_type = 'operator' if target[0] == '>' else 'target state'
+                if target.startswith('>') and target not in VALID_OPERATORS:
                     raise ValueError(
-                        f"Invalid {target_type} '{target}' for transition "
+                        f"Invalid operator '{target}' for transition condition "
                         f"'{condition_name}' in state '{state_name}'"
-                        + suggest_similar(target, valid_targets),
+                        + suggest_similar(target, VALID_OPERATORS),
                     )
                 if condition_name not in self.event_names:
                     raise ValueError(
-                        f"Invalid state change condition '{condition_name}' in state "
+                        f"Invalid transition condition '{condition_name}' in state "
                         f"'{state_name}'"
                         + suggest_similar(condition_name, self.event_names),
                     )

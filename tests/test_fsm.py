@@ -52,12 +52,12 @@ class TestState:
         """Create a State and verify all fields are set correctly."""
         state = State(
             timer=5.0,
-            transitions={'condition1': 'exit'},
+            transitions={'condition1': '>exit'},
             actions={'action1': 255},
             comment='This is a test state',
         )
         assert state.timer == 5.0
-        assert state.transitions == {'condition1': 'exit'}
+        assert state.transitions == {'condition1': '>exit'}
         assert state.actions == {'action1': 255}
         assert state.comment == 'This is a test state'
 
@@ -95,12 +95,14 @@ class TestStateMachineBasic:
             sm.add_state(name='state1')
 
     def test_invalid_state_name(self):
-        """Using reserved state name 'exit' should fail validation."""
+        """State names should not be confused with state machine operators."""
         sm = StateMachine(name='Test State Machine')
+        with pytest.raises(ValidationError):
+            sm.add_state(name='>operator')
         with pytest.raises(ValidationError):
             sm.add_state(name='exit')
         with pytest.raises(ValidationError):
-            sm.add_state(name='>exit')
+            sm.add_state(name='back')
 
     def test_invalid_timer(self):
         """Negative timer values should raise validation errors."""
@@ -161,7 +163,7 @@ def state_machine():
     )
     fsm.add_state(
         name='state2',
-        transitions={'tup': 'exit', 'condition': '>back'},
+        transitions={'tup': '>exit', 'condition': '>back'},
         actions={'action2': 128},
         comment='Second state',
     )
@@ -175,7 +177,7 @@ class TestToDigraphWithStates:
         assert len(digraph.body) > 0
         assert 'state1' in digraph.source
         assert 'state2' in digraph.source
-        assert 'exit' in digraph.source
+        assert '-> exit' in digraph.source
 
 
 class TestSerialization:
@@ -206,7 +208,7 @@ class TestSerialization:
         assert '"comment":"First state"' in json_str
         assert '"state2"' in json_str
         assert '"transitions":{' in json_str
-        assert '"tup":"exit"' in json_str
+        assert '"tup":">exit"' in json_str
         assert '"actions":{' in json_str
         assert '"action2":128' in json_str
         assert '"comment":"Second state"' in json_str
@@ -474,3 +476,57 @@ class TestCheck:
         fsm.add_state('state3')
         with pytest.raises(ValueError, match='are unreachable'):
             fsm.check()
+
+
+class TestHash:
+    def test_private_api_available(self):
+        """Verify that Pydantic's private serializer API is available."""
+        fsm = StateMachine()
+        assert hasattr(fsm, '__pydantic_serializer__')
+        assert hasattr(fsm.__pydantic_serializer__, 'to_json')
+        output = fsm.__pydantic_serializer__.to_json(
+            fsm,
+            exclude_defaults=True,
+            warnings=False,
+        )
+        assert isinstance(output, bytes)
+
+    def test_hash_bytes_output(self):
+        """_hash() should return bytes."""
+        fsm = StateMachine()
+        hash_bytes = fsm._hash()
+        assert isinstance(hash_bytes, bytes), 'Expected bytes for hash'
+        assert len(hash_bytes) == 8, 'Expected 8 bytes for hash'
+
+    def test_hash_hex_output(self):
+        """Hash property should return hex string."""
+        fsm = StateMachine()
+        hash_hex = fsm.hash
+        assert isinstance(hash_hex, str), 'Expected hex string for hash'
+        assert len(hash_hex) == 16, 'Expected 16 hex characters for hash'
+        assert all(c in '0123456789abcdef' for c in hash_hex)
+
+    def test_hash_consistency(self):
+        """Identical FSMs should produce the same hash."""
+        fsm1 = StateMachine()
+        fsm1.add_state('state1', timer=1.0, transitions={'tup': '>exit'})
+        fsm2 = StateMachine()
+        fsm2.add_state('state1', timer=1.0, transitions={'tup': '>exit'})
+        assert fsm1.hash == fsm2.hash, 'Hash should be consistent'
+
+    def test_hash_differs_for_different_fsms(self):
+        """Different FSMs should produce different hashes."""
+        fsm1 = StateMachine()
+        fsm1.add_state('state1')
+        fsm2 = StateMachine()
+        fsm2.add_state('state1', timer=2.0)  # Different timer (not default)
+        assert fsm1.hash != fsm2.hash, 'Hash should differ'
+
+    def test_hash_validation_caching(self):
+        """Hash should be used for validation caching."""
+        fsm = StateMachine()
+        fsm.add_state('state_a')
+        assert fsm._validation_hash == b'', 'Hash should be empty before validation'
+        fsm.check()
+        assert fsm._validation_hash != b'', 'Hash should be populated after validation'
+        assert isinstance(fsm._validation_hash, bytes)
