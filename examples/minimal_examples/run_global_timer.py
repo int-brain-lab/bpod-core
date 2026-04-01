@@ -3,6 +3,7 @@
 This example demonstrates how to define a state machine with a global timer and run it
 on a Bpod with debug logging enabled. The state machine alternates LEDs of Port 1 and
 Port 3 every 250 ms until a 5-second global timer expires, then exits the state machine.
+The trial data is finally returned to the user as a dataframe.
 """
 
 import logging
@@ -47,3 +48,5 @@ fsm.add_state(
 with Bpod() as bpod:
     bpod.send_state_machine(fsm)
     bpod.run_state_machine()
+
+trial_data = bpod.get_data()
