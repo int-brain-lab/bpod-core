@@ -385,78 +385,81 @@ class EventThread(threading.Thread):
 
         base_time_bpod_us = self._time_reference.reset_system_time_ns // 1000
 
-        while True:
-            # get the next event
-            bpod_count_us, event_index = event_queue.get()
+        try:
+            while True:
+                # get the next event
+                bpod_count_us, event_index = event_queue.get()
 
-            # check if we need to stop the thread
-            if event_index == _EventID.STOP_SENTINEL:
+                # check if we need to stop the thread
+                if event_index == _EventID.STOP_SENTINEL:
+                    event_queue.task_done()
+                    break
+
+                # convert relative timestamps to absolute timestamps
+                t_bpod_us = base_time_bpod_us + bpod_count_us
+
+                # append the event to the buffer (-1 = no state for trial-level events)
+                state = -1 if event_index in stateless_events else current_state
+                self._append(t_bpod_us, event_index, state_id=state)
+
+                # handle state transitions
+                if event_index < 255:
+                    # define the target state based on the state transition matrix
+                    target_state = state_transitions[current_state][event_index]
+                    if target_state == current_state:  # no transition
+                        event_queue.task_done()
+                        continue
+                    if target_state == target_exit:  # state exited without a successor
+                        self._append(
+                            t_bpod_us,
+                            _EventID.END_STATE,
+                            state_id=current_state,
+                        )
+                        event_queue.task_done()
+                        continue
+                    if target_state == target_back and use_back_op:  # >back operator
+                        target_state = previous_state
+
+                    # record end of current state, advance, record start of next
+                    self._append(t_bpod_us, _EventID.END_STATE, state_id=current_state)
+                    previous_state = current_state
+                    current_state = target_state
+                    self._append(
+                        t_bpod_us, _EventID.START_STATE, state_id=current_state
+                    )
+
+                # implicitly reset active outputs at the end of the state machine
+                elif event_index == _EventID.END_FSM_CYCLES:
+                    for idx in sorted(active_outputs):
+                        output_id = _OUTPUT_ID_OFFSET + idx
+                        self._append(t_bpod_us, output_id, state_id=-1, value=0)
+                    active_outputs = {}
+
+                # record output actions (for initial state and after state transitions):
+                # absent channels are reset (0); others get their new value.
+                if event_index < 255 or event_index == _EventID.START_STATE:
+                    new_actions = state_action_indices[current_state]
+                    for idx in sorted(active_outputs.keys() | new_actions.keys()):
+                        val = new_actions.get(idx, 0)
+                        output_id = _OUTPUT_ID_OFFSET + idx
+                        self._append(
+                            t_bpod_us,
+                            output_id,
+                            state_id=current_state,
+                            value=val,
+                        )
+                    active_outputs = {
+                        idx: val
+                        for idx, val in new_actions.items()
+                        if idx in resettable_indices and val > 0
+                    }
+
+                # signal that the event has been handled
                 event_queue.task_done()
-                break
-
-            # convert relative timestamps to absolute timestamps
-            t_bpod_us = base_time_bpod_us + bpod_count_us
-
-            # append the event to the buffer (-1 = no state for trial-level events)
-            state = -1 if event_index in stateless_events else current_state
-            self._append(t_bpod_us, event_index, state_id=state)
-
-            # handle state transitions
-            if event_index < 255:
-                # define the target state based on the state transition matrix
-                target_state = state_transitions[current_state][event_index]
-                if target_state == current_state:  # no transition
-                    event_queue.task_done()
-                    continue
-                if target_state == target_exit:  # state exited without a successor
-                    self._append(
-                        t_bpod_us,
-                        _EventID.END_STATE,
-                        state_id=current_state,
-                    )
-                    event_queue.task_done()
-                    continue
-                if target_state == target_back and use_back_op:  # >back operator
-                    target_state = previous_state
-
-                # record end of current state, advance to next state, record its start
-                self._append(t_bpod_us, _EventID.END_STATE, state_id=current_state)
-                previous_state = current_state
-                current_state = target_state
-                self._append(t_bpod_us, _EventID.START_STATE, state_id=current_state)
-
-            # implicitly reset active outputs at the end of the state machine
-            elif event_index == _EventID.END_FSM_CYCLES:
-                for idx in sorted(active_outputs):
-                    output_id = _OUTPUT_ID_OFFSET + idx
-                    self._append(t_bpod_us, output_id, state_id=-1, value=0)
-                active_outputs = {}
-
-            # record output actions (for initial state and after state transitions):
-            # absent channels are reset (0); others get their new value.
-            if event_index < 255 or event_index == _EventID.START_STATE:
-                new_actions = state_action_indices[current_state]
-                for idx in sorted(active_outputs.keys() | new_actions.keys()):
-                    val = new_actions.get(idx, 0)
-                    output_id = _OUTPUT_ID_OFFSET + idx
-                    self._append(
-                        t_bpod_us,
-                        output_id,
-                        state_id=current_state,
-                        value=val,
-                    )
-                active_outputs = {
-                    idx: val
-                    for idx, val in new_actions.items()
-                    if idx in resettable_indices and val > 0
-                }
-
-            # signal that the event has been handled
-            event_queue.task_done()
-
-        self._buffer = self._buffer[: self._n_events]
-        self._data_queue.put(self._get_data())
-        logger.debug('Stopping event thread')
+        finally:
+            self._buffer = self._buffer[: self._n_events]
+            self._data_queue.put(self._get_data())
+            logger.debug('Stopping event thread')
 
     def _get_data(self) -> pl.DataFrame:
         """Return recorded events as a Polars DataFrame.
