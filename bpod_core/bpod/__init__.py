@@ -112,7 +112,9 @@ class Bpod(SerialDevice, AbstractBpod):
         self._settings = SettingsDict(CONFIG_PATH / 'settings.json')
 
         # initialize members
-        self._input_events: _InputEvents = _InputEvents(names=[], channels=[])
+        self._input_events: _InputEvents = _InputEvents(
+            names=[], channels=[], values=[]
+        )
         self.actions = []
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._waiting_for_confirmation = False
@@ -578,8 +580,8 @@ class Bpod(SerialDevice, AbstractBpod):
         n_app_softcodes = n_usb_ext * n_softcodes_per_usb
         names: list[str] = []
         channels: list[str | None] = []
+        values: list[int | None] = []
 
-        # Compile event names for input channels
         counters = dict.fromkeys(CHANNEL_TYPES_INPUT, 0)
         for io_key in [bytes([x]) for x in self._hardware.input_description]:
             name = CHANNEL_TYPES_INPUT[io_key]
@@ -587,24 +589,30 @@ class Bpod(SerialDevice, AbstractBpod):
                 module = self.modules[counters[io_key]]
                 ev_names = module.event_names
                 ev_channels: list[str | None] = [module.name] * len(ev_names)
+                ev_values: list[int | None] = [None] * len(ev_names)
             elif io_key == b'X':  # SoftCode
                 ev_names = [f'{name}{i}' for i in range(n_softcodes_per_usb)]
                 ev_channels = [name] * n_softcodes_per_usb
+                ev_values = list(range(n_softcodes_per_usb))
             elif io_key == b'Z':  # SoftCodeApp
                 ev_names = [f'{name}{i}' for i in range(n_app_softcodes)]
                 ev_channels = [name] * n_app_softcodes
+                ev_values = list(range(n_app_softcodes))
             elif io_key == b'F':  # Flex
                 channel = f'{name}{counters[io_key] + 1}'
                 ev_names = [f'{channel}_{i}' for i in range(2)]
                 ev_channels = [channel, channel]
+                ev_values = [0, 1]
             elif io_key in b'PBW':  # Port, BNC, Wire
                 channel = f'{name}{counters[io_key] + 1}'
                 ev_names = [f'{channel}_{s}' for s in ('High', 'Low')]
                 ev_channels = [channel, channel]
+                ev_values = [1, 0]
             else:
                 continue
             names.extend(ev_names)
             channels.extend(ev_channels)
+            values.extend(ev_values)
             counters[io_key] += 1
 
         # Add global timers, global counters, conditions and 'Tup' (no input channel)
@@ -616,10 +624,12 @@ class Bpod(SerialDevice, AbstractBpod):
         ]:
             names.extend(event_name.format(i) for i in range(n))
             channels.extend([None] * n)
+            values.extend([None] * n)
         names.append('Tup')
         channels.append(None)
+        values.append(None)
 
-        self._input_events = _InputEvents(names=names, channels=channels)
+        self._input_events = _InputEvents(names=names, channels=channels, values=values)
 
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""

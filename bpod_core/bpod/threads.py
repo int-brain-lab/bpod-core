@@ -81,6 +81,9 @@ _SYNTHETIC_EVENT_LOOKUP = pl.DataFrame(
         ),
         'event': pl.Series([None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.Null),
         'channel': pl.Series([None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.Null),
+        'default_value': pl.Series(
+            [None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.UInt8
+        ),
     }
 )
 """Pre-built lookup rows for synthetic FSM events (stable across all sessions)."""
@@ -102,7 +105,8 @@ def _build_event_lookup(
     -------
     pl.DataFrame
         DataFrame with columns ``event_id`` (Int16), ``type``, ``event``, ``channel``
-        (all Enum), covering input events, synthetic events, and output actions.
+        (all Enum), and ``default_value`` (UInt8, null if no pre-defined value),
+        covering input events, synthetic events, and output actions.
     """
     channel_categories = list(
         dict.fromkeys(ch for ch in input_events.channels if ch is not None)
@@ -119,6 +123,7 @@ def _build_event_lookup(
             ),
             'event': pl.Series(input_events.names, dtype=event_enum),
             'channel': pl.Series(input_events.channels, dtype=channel_enum),
+            'default_value': pl.Series(input_events.values, dtype=pl.UInt8),
         }
     )
     output_lookup = pl.DataFrame(
@@ -129,6 +134,7 @@ def _build_event_lookup(
             ),
             'event': pl.Series([None] * len(action_names), dtype=event_enum),
             'channel': pl.Series(action_names, dtype=channel_enum),
+            'default_value': pl.Series([None] * len(action_names), dtype=pl.UInt8),
         }
     )
     return pl.concat([input_lookup, _SYNTHETIC_EVENT_LOOKUP, output_lookup])
@@ -484,8 +490,14 @@ class EventThread(threading.Thread):
             .drop('event_id', 'state_id')
             .with_columns(
                 pl.lit(self._trial).cast(pl.UInt16).alias('trial'),
-                pl.col('value').replace(-1, None).cast(pl.UInt8),
+                pl.coalesce(
+                    pl.col('value').replace(-1, None),
+                    pl.col('default_value'),
+                )
+                .cast(pl.UInt8)
+                .alias('value'),
             )
+            .drop('default_value')
             .select('time', 'trial', 'type', 'state', 'event', 'channel', 'value')
         )
 

@@ -15,6 +15,8 @@ class _InputEvents(NamedTuple):
     """Event name for each hardware input event, indexed by event ID."""
     channels: list[str | None]
     """Input channel name for each event, or ``None`` for timer/condition events."""
+    values: list[int | None]
+    """Pre-defined value for each event, or ``None`` if not applicable."""
 
 
 class CompiledStateMachine(NamedTuple):
