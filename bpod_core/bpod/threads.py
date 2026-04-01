@@ -92,7 +92,7 @@ _SYNTHETIC_EVENT_LOOKUP = pl.DataFrame(
 def _build_event_lookup(
     input_events: _InputEvents, action_names: list[str]
 ) -> pl.DataFrame:
-    """Build the event metadata lookup DataFrame with pre-cast Enum columns.
+    """Build the event metadata lookup DataFrame.
 
     Parameters
     ----------
@@ -104,16 +104,11 @@ def _build_event_lookup(
     Returns
     -------
     pl.DataFrame
-        DataFrame with columns ``event_id`` (Int16), ``type``, ``event``, ``channel``
-        (all Enum), and ``default_value`` (UInt8, null if no pre-defined value),
+        DataFrame with columns ``event_id`` (Int16), ``type`` (Enum),
+        ``event`` (Categorical), ``channel`` (Categorical), and
+        ``default_value`` (UInt8, null if no pre-defined value),
         covering input events, synthetic events, and output actions.
     """
-    channel_categories = list(
-        dict.fromkeys(ch for ch in input_events.channels if ch is not None)
-    )
-    channel_categories += [a for a in action_names if a not in channel_categories]
-    event_enum = pl.Enum(input_events.names)
-    channel_enum = pl.Enum(channel_categories)
     output_ids = [_OUTPUT_ID_OFFSET + i for i in range(len(action_names))]
     input_lookup = pl.DataFrame(
         {
@@ -121,8 +116,8 @@ def _build_event_lookup(
             'type': pl.Series(
                 ['InputEvent'] * len(input_events.names), dtype=_EVENT_TYPE_ENUM
             ),
-            'event': pl.Series(input_events.names, dtype=event_enum),
-            'channel': pl.Series(input_events.channels, dtype=channel_enum),
+            'event': pl.Series(input_events.names, dtype=pl.Categorical),
+            'channel': pl.Series(input_events.channels, dtype=pl.Categorical),
             'default_value': pl.Series(input_events.values, dtype=pl.UInt8),
         }
     )
@@ -132,8 +127,8 @@ def _build_event_lookup(
             'type': pl.Series(
                 ['OutputAction'] * len(action_names), dtype=_EVENT_TYPE_ENUM
             ),
-            'event': pl.Series([None] * len(action_names), dtype=event_enum),
-            'channel': pl.Series(action_names, dtype=channel_enum),
+            'event': pl.Series([None] * len(action_names), dtype=pl.Categorical),
+            'channel': pl.Series(action_names, dtype=pl.Categorical),
             'default_value': pl.Series([None] * len(action_names), dtype=pl.UInt8),
         }
     )
@@ -460,10 +455,10 @@ class EventThread(threading.Thread):
             event_queue.task_done()
 
         self._buffer = self._buffer[: self._n_events]
-        self._data_queue.put(self.get_data())
+        self._data_queue.put(self._get_data())
         logger.debug('Stopping event thread')
 
-    def get_data(self) -> pl.DataFrame:
+    def _get_data(self) -> pl.DataFrame:
         """Return recorded events as a Polars DataFrame.
 
         Returns
@@ -478,10 +473,6 @@ class EventThread(threading.Thread):
             - ``event``: input event name, null for non-input events (``Categorical``)
             - ``channel``: output channel, null for non-output events (``Categorical``)
             - ``value``: output value, null for non-output events (``UInt8``)
-
-        Notes
-        -----
-        Must be called after :meth:`join` to avoid a race condition.
         """
         return (
             pl.from_numpy(self._buffer)

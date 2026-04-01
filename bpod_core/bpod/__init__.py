@@ -119,8 +119,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._waiting_for_confirmation = False
         self._compiled_fsm: CompiledStateMachine | None = None
-        self.data: Queue = Queue()
-        """Queue of completed trial DataFrames (``pl.DataFrame``), one per run."""
+        self._trial_data: Queue[pl.DataFrame] = Queue()
         self._softcode_thread = SoftcodeThread(
             softcode_handler=self._softcode_handler,
         )
@@ -957,7 +956,7 @@ class Bpod(SerialDevice, AbstractBpod):
             state_lookup=pl.DataFrame(
                 {
                     'state_id': pl.Series(range(len(state_names)), dtype=pl.Int16),
-                    'state': pl.Series(state_names, dtype=pl.Enum(state_names)),
+                    'state': pl.Series(state_names, dtype=pl.Categorical),
                 }
             ),
         )
@@ -1133,6 +1132,40 @@ class Bpod(SerialDevice, AbstractBpod):
         if self._read_thread is not None and self._read_thread.is_alive():
             self._read_thread.join()
 
+    def get_data(self, *, concat: bool = False, rechunk: bool = False) -> pl.DataFrame:
+        """Return trial data from the data queue.
+
+        Parameters
+        ----------
+        concat : bool, optional
+            If ``False`` (default), pop and return one DataFrame, blocking until one is
+            available.
+            If ``True``, pop and concatenate all DataFrames currently in the queue into
+            a single DataFrame, blocking until at least one is available.
+        rechunk : bool, optional
+            If ``True``, make sure that the result data is in contiguous memory. Only
+            applies when ``concat=True``. Default is ``False``.
+
+        Returns
+        -------
+        pl.DataFrame
+            One trial's data, or all available trials concatenated when ``concat=True``.
+
+        Raises
+        ------
+        BpodError
+            If the queue is empty and no state machine is currently running.
+        """
+        if self._trial_data.empty() and not self.is_running:
+            raise BpodError('No trial data available')
+        frames = [self._trial_data.get()]
+        if concat:
+            frames.extend(
+                self._trial_data.get_nowait() for _ in range(self._trial_data.qsize())
+            )
+            return pl.concat(frames, rechunk=rechunk)
+        return frames[0]
+
     @validate_call
     def run_state_machine(self, *, blocking: bool = True) -> None:
         """Run the previously sent state machine.
@@ -1161,7 +1194,7 @@ class Bpod(SerialDevice, AbstractBpod):
         event_thread = EventThread(
             trial=self._next_fsm_index,
             fsm=self._compiled_fsm,
-            data_queue=self.data,
+            data_queue=self._trial_data,
             event_lookup=self._event_lookup,
             action_names=self.actions,
             time_reference=self._time_reference,
