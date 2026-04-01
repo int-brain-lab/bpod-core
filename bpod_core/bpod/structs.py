@@ -1,6 +1,60 @@
 """Data structures used by the bpod module."""
 
+from typing import NamedTuple
+
 import msgspec
+import numpy as np
+import numpy.typing as npt
+import polars as pl
+
+
+class _InputEvents(NamedTuple):
+    """Hardware-level input event names and their source channels."""
+
+    names: list[str]
+    """Event name for each hardware input event, indexed by event ID."""
+    channels: list[str | None]
+    """Input channel name for each event, or ``None`` for timer/condition events."""
+    values: list[int | None]
+    """Pre-defined value for each event, or ``None`` if not applicable."""
+
+
+class CompiledStateMachine(NamedTuple):
+    """Per-trial data derived from a compiled :class:`~bpod_core.fsm.StateMachine`."""
+
+    state_names: list[str]
+    """Names of all states, indexed by state index."""
+    state_transitions: npt.NDArray[np.uint8]
+    """Transition matrix of shape ``(n_states, 255)``."""
+    state_actions: list[dict[str, int]]
+    """Per-state mapping of action name to value."""
+    use_back_op: bool
+    """Whether the ``>back`` operator is used."""
+    state_lookup: pl.DataFrame
+    """Categorical lookup DataFrame mapping state index to state name.
+
+    Pre-built at FSM compilation time for use in :meth:`~EventThread.get_data`.
+    """
+
+
+class TimeReferences(NamedTuple):
+    """Reference values for performance counters."""
+
+    init_system_time_ns: int
+    """System time at class initialization (nanoseconds relative to epoch)."""
+    init_perf_counter_ns: int
+    """Performance counter at class initialization (nanoseconds)."""
+    reset_system_time_ns: int
+    """System time when Bpod's session clock was last reset (nanoseconds)."""
+
+
+class RawEvent(NamedTuple):
+    """Raw event data from the Bpod device."""
+
+    micros_us: int
+    """Time of the event relative to the Bpod's session clock (microseconds)."""
+    event_id: int
+    """Index of the event."""
 
 
 class BpodSettings(msgspec.Struct):
@@ -55,7 +109,7 @@ class HardwareConfiguration(msgspec.Struct, frozen=True):
 
     max_states: int
     """Maximum number of supported states in a single state machine description."""
-    cycle_period: int
+    cycle_period_us: int
     """Period of the state machine's refresh cycle during a trial in microseconds."""
     max_serial_events: int
     """Maximum number of behavior events allocatable among connected modules."""

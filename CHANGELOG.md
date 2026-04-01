@@ -6,6 +6,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `bpod.get_data` for returning trial data after a state machine run.
+
+### Changed
+
+- renamed `BNC` input events and output actions to `TTLIn` and
+  `TTLOut`.
+- replaced MD5 hashing of `fsm.StateMachine` with blake2b.
+- improved readability of `ValidationError` messages in `fsm.StateMachine`.
+- state machine runs are now handled by three separate threads:
+    - `ReadThread` for serial communication with the Bpod
+    - `EventThread` for handling and structuring the incoming data
+    - `SoftcodeThread` for executing soft-codes
+
 ## [0.1.0a8] - 2026-03-04
 
 Just a quick bugfix release ...
