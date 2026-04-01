@@ -1151,6 +1151,16 @@ class Bpod(SerialDevice, AbstractBpod):
         pl.DataFrame
             One trial's data, or all available trials concatenated when ``concat=True``.
 
+            Columns:
+
+            - ``time``: absolute Bpod timestamp (``Datetime(time_unit='us')``)
+            - ``trial``: zero-based trial index (``UInt16``)
+            - ``state``: active state name (``Categorical``)
+            - ``type``: event type (``Enum``)
+            - ``event``: input event name, null for non-input events (``Categorical``)
+            - ``channel``: output channel, null for non-output events (``Categorical``)
+            - ``value``: output value, null for non-output events (``UInt8``)
+
         Raises
         ------
         BpodError

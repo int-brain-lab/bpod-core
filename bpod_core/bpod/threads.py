@@ -468,8 +468,8 @@ class EventThread(threading.Thread):
 
             - ``time``: absolute Bpod timestamp (``Datetime(time_unit='us')``)
             - ``trial``: zero-based trial index (``UInt16``)
-            - ``type``: event type (``Categorical``)
             - ``state``: active state name (``Categorical``)
+            - ``type``: event type (``Enum``)
             - ``event``: input event name, null for non-input events (``Categorical``)
             - ``channel``: output channel, null for non-output events (``Categorical``)
             - ``value``: output value, null for non-output events (``UInt8``)
@@ -489,7 +489,7 @@ class EventThread(threading.Thread):
                 .alias('value'),
             )
             .drop('default_value')
-            .select('time', 'trial', 'type', 'state', 'event', 'channel', 'value')
+            .select('time', 'trial', 'state', 'type', 'event', 'channel', 'value')
         )
 
 
