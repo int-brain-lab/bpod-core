@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- renamed `BNC` input events and output actions to `TTLIn` and
+  `TTLOut`.
 - replaced MD5 hashing of `fsm.StateMachine` with blake2b.
 - improved readability of `ValidationError` messages in `fsm.StateMachine`.
 - state machine runs are now handled by three separate threads:
