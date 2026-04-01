@@ -25,12 +25,18 @@ CHANNEL_TYPES_INPUT = {
     b'Z': 'SoftCodeApp',
     b'F': 'Flex',
     b'D': 'Digital',
-    b'B': 'BNC',
+    b'B': 'TTLIn',
     b'W': 'Wire',
     b'P': 'Port',
 }
 CHANNEL_TYPES_OUTPUT = CHANNEL_TYPES_INPUT.copy()
-CHANNEL_TYPES_OUTPUT.update({b'V': 'Valve', b'P': 'PWM'})
+CHANNEL_TYPES_OUTPUT.update(
+    {
+        b'V': 'Valve',
+        b'P': 'PWM',
+        b'B': 'TTLOut',
+    }
+)
 N_SERIAL_EVENTS_DEFAULT = 15
 VALID_OPERATORS = {'exit', '>exit', '>back'}
 MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
