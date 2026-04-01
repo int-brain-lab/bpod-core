@@ -8,10 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `bpod.get_data` for returning trial data after a state machine run.
+
 ### Changed
 
 - replaced MD5 hashing of `fsm.StateMachine` with blake2b.
 - improved readability of `ValidationError` messages in `fsm.StateMachine`.
+- state machine runs are now handled by three separate threads:
+    - `ReadThread` for serial communication with the Bpod
+    - `EventThread` for handling and structuring the incoming data
+    - `SoftcodeThread` for executing soft-codes
 
 ## [0.1.0a8] - 2026-03-04
 
