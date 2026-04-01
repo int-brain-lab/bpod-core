@@ -602,7 +602,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 ev_names = [f'{channel}_{i}' for i in range(2)]
                 ev_channels = [channel, channel]
                 ev_values = [0, 1]
-            elif io_key in b'PBW':  # Port, BNC, Wire
+            elif io_key in b'PBW':  # Port, TTL, Wire
                 channel = f'{name}{counters[io_key] + 1}'
                 ev_names = [f'{channel}_{s}' for s in ('High', 'Low')]
                 ev_channels = [channel, channel]
@@ -641,7 +641,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 name = self.modules[counters[io_key]].name
             elif io_key in b'XZ':  # SoftCode, SoftCodeApp
                 name = CHANNEL_TYPES_OUTPUT[io_key]
-            elif io_key in b'FVPBW':  # Flex, Valve, PWM, BNC, Wire
+            elif io_key in b'FVPBW':  # Flex, Valve, PWM, TTL, Wire
                 name = f'{CHANNEL_TYPES_OUTPUT[io_key]}{counters[io_key] + 1}'
             else:
                 continue
@@ -1313,7 +1313,7 @@ class Input(Channel):
     def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
         super().__init__(bpod, name, io_key, index)
         self._set_enable_inputs = bpod._set_enable_inputs  # noqa: SLF001
-        self._enabled = io_key in (b'PBWF')  # Enable Port, BNC, Wire and FlexIO inputs
+        self._enabled = io_key in (b'PBWF')  # Enable Port, TTL, Wire and FlexIO inputs
 
     def read(self) -> bool:
         """

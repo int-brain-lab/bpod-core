@@ -336,9 +336,9 @@ class EventThread(threading.Thread):
         self._state_action_indices: list[dict[int, int]] = [
             {action_index_map[k]: v for k, v in d.items()} for d in fsm.state_actions
         ]
-        # BNC and PWM outputs are implicitly reset to 0 at each state transition
+        # TTL and PWM outputs are implicitly reset to 0 at each state transition
         self._resettable_indices: frozenset[int] = frozenset(
-            i for i, name in enumerate(action_names) if name.startswith(('BNC', 'PWM'))
+            i for i, name in enumerate(action_names) if name.startswith(('TTL', 'PWM'))
         )
 
     def stop(self) -> None:
