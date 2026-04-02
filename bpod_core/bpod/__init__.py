@@ -224,10 +224,19 @@ class Bpod(SerialDevice, AbstractBpod):
 
     @staticmethod
     def _request_disconnect(serial: ExtendedSerial) -> None:
-        """Send a close request to the Bpod."""
+        """
+        Send a close request to the Bpod.
+
+        This will:
+
+        - disable all module relays
+        - resume sending of the discovery byte
+        - change the color of the status LED
+        - disable the valve driver (if applicable)
+        """
         if getattr(serial, 'is_open', False):
             logger.debug('Sending close request to Bpod Finite State Machine')
-            serial.write(b'Z')
+            serial.verify(b'Z')
 
     @property
     def event_names(self) -> list[str]:
@@ -1126,6 +1135,10 @@ class Bpod(SerialDevice, AbstractBpod):
         currently running, this method returns immediately.
         """
         if self._read_thread is not None and self._read_thread.is_alive():
+            logger.debug(
+                'Waiting for state machine #%d to finish',
+                self._read_thread.trial_number,
+            )
             self._read_thread.join()
 
     def get_data(self, *, concat: bool = False, rechunk: bool = False) -> pl.DataFrame:
