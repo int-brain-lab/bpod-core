@@ -1125,6 +1125,16 @@ class Bpod(SerialDevice, AbstractBpod):
         """Check if the Bpod is currently running a state machine."""
         return self._read_thread is not None and self._read_thread.is_alive()
 
+    @property
+    def is_ready(self) -> bool:
+        """Check if a compiled state machine is loaded and ready to run."""
+        return self._compiled_fsm is not None
+
+    @property
+    def is_queued(self) -> bool:
+        """Check if a state machine is queued to run after the current one."""
+        return self.is_running and self.is_ready
+
     def wait(self) -> None:
         """
         Wait for the currently running state machine to finish.
@@ -1132,9 +1142,9 @@ class Bpod(SerialDevice, AbstractBpod):
         Blocks until the state machine thread completes. If no state machine is
         currently running, this method returns immediately.
         """
-        if self._read_thread is not None and self._read_thread.is_alive():
+        if self.is_running:
             logger.debug(
-                'Waiting for state machine #%d to finish',
+                'Waiting for state machine #%d to finish ...',
                 self._read_thread.trial_number,
             )
             self._read_thread.join()
@@ -1200,13 +1210,12 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         if self.is_running:
             raise RuntimeError('A state machine is already running')
+        if not self.is_ready:
+            raise RuntimeError('No state machine has been sent')
         self.serial0.write(b'R')
         self._run_state_machine(blocking=blocking)
 
     def _run_state_machine(self, *, blocking: bool) -> None:
-        if self._compiled_fsm is None:
-            raise RuntimeError('No state machine has been sent')
-
         # initialize new threads
         event_thread = EventThread(
             trial=self._next_fsm_index,
@@ -1236,10 +1245,9 @@ class Bpod(SerialDevice, AbstractBpod):
         self._read_thread = read_thread
         self._compiled_fsm = None
 
-        # wait for threads to finish
-        if blocking:
-            self._read_thread.join()
-            self._event_thread.join()
+        # wait for state machine to finish
+        if blocking and self.is_running:
+            self.wait()
 
     def stop_state_machine(self) -> None:
         """Stop the currently running state machine."""
