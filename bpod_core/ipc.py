@@ -639,7 +639,7 @@ class ServiceHost(ServiceBase):
                 with contextlib.suppress(Exception):
                     logger.debug("Unregistering remote service at '%s'", service.name)
                     zeroconf.unregister_service(service)
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(BaseException):
                 logger.debug('Closing Zeroconf')
                 zeroconf.close()
 

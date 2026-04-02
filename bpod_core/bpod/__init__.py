@@ -160,7 +160,6 @@ class Bpod(SerialDevice, AbstractBpod):
             self,
             Bpod._bpod_cleanup,
             self._serial,
-            self._zmq_service,
         )
 
         # log hardware information
@@ -177,13 +176,10 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
     @staticmethod
-    def _bpod_cleanup(serial: ExtendedSerial, zmq_service: ServiceHost) -> None:
+    def _bpod_cleanup(serial: ExtendedSerial) -> None:
         with contextlib.suppress(Exception):
-            Bpod._request_disconnect(serial)
-        with contextlib.suppress(Exception):
-            Bpod._close_serial_connection(serial)
-        with contextlib.suppress(Exception):
-            zmq_service.close()
+            if serial.is_open:
+                Bpod._request_disconnect(serial)
 
     def __exit__(
         self,
@@ -192,9 +188,9 @@ class Bpod(SerialDevice, AbstractBpod):
         exc_tb: TracebackType | None,
     ) -> None:
         """Exit context and close connection."""
-        self.wait()  # let any running trial finish before closing serial
         self._bpod_finalizer.detach()
-        self._bpod_cleanup(self._serial, self._zmq_service)
+        self.close()
+        self._stop_zmq()
 
     def open(self) -> None:
         """
@@ -214,14 +210,14 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         Close the connection to the Bpod.
 
+        Waits for any running trial to finish before closing the serial port.
+
         Raises
         ------
         SerialException
             If the port could not be closed.
         """
-        self.stop_state_machine()
-        self._softcode_thread.stop()
-        self._softcode_thread.join()
+        self.wait()
         if hasattr(self, 'serial0'):
             self._request_disconnect(self.serial0)
         super().close()
