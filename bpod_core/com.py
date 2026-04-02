@@ -485,7 +485,6 @@ class SerialDevice(AbstractContextManager):
     ) -> None:
         """Close a serial connection if open."""
         if not getattr(serial, 'is_open', False):
-            logger.debug('Serial connection is already closed for %s', device_name)
             return
         try:
             logger.debug('Closing connection to %s on %s', device_name, serial.port)
