@@ -116,7 +116,6 @@ class Bpod(SerialDevice, AbstractBpod):
         )
         self.actions = []
         self._event_lookup: pl.DataFrame = pl.DataFrame()
-        self._waiting_for_confirmation = False
         self._compiled_fsm: CompiledStateMachine | None = None
         self._trial_data: Queue[pl.DataFrame] = Queue()
         self._softcode_thread = SoftcodeThread(
@@ -1117,7 +1116,6 @@ class Bpod(SerialDevice, AbstractBpod):
         self.serial0.write_struct(
             f'<c2?H{n_bytes}s', b'C', run_asap, use_back_op, n_bytes, byte_array
         )
-        self._waiting_for_confirmation = True
 
         if run_asap:
             self._run_state_machine(blocking=False)
@@ -1221,7 +1219,6 @@ class Bpod(SerialDevice, AbstractBpod):
         read_thread = ReadThread(
             serial=self.serial0,
             trial=self._next_fsm_index,
-            confirm_fsm=self._waiting_for_confirmation,
             cycle_period_us=self._hardware.cycle_period_us,
             queue_events=event_thread.queue,
             queue_softcodes=self._softcode_thread.queue,
@@ -1237,7 +1234,6 @@ class Bpod(SerialDevice, AbstractBpod):
         # set private class attributes
         self._event_thread = event_thread
         self._read_thread = read_thread
-        self._waiting_for_confirmation = False
         self._compiled_fsm = None
 
         # wait for threads to finish

@@ -145,7 +145,6 @@ class ReadThread(threading.Thread):
         *,
         serial: ExtendedSerial,
         trial: int,
-        confirm_fsm: bool,
         cycle_period_us: int,
         queue_events: Queue[RawEvent],
         queue_softcodes: Queue[int],
@@ -159,8 +158,6 @@ class ReadThread(threading.Thread):
             The serial connection to the Bpod device.
         trial : int
             Zero-based trial index.
-        confirm_fsm : bool
-            Whether to confirm the FSM with the Bpod device.
         cycle_period_us : int
             The cycle period of the Bpod device in microseconds.
         queue_events : Queue[RawEvent]
@@ -172,7 +169,6 @@ class ReadThread(threading.Thread):
         self._serial = serial
         self._stop_event = threading.Event()
         self._trial = trial
-        self._confirm_fsm = confirm_fsm
         self._cycle_period_us = cycle_period_us
         self._queue_events = queue_events
         self._queue_softcodes = queue_softcodes
@@ -185,7 +181,7 @@ class ReadThread(threading.Thread):
         """Execute the ReadThread."""
         try:
             # confirm the state machine
-            if self._confirm_fsm and not self._serial.read_bool():
+            if not self._serial.read_bool():
                 raise RuntimeError(
                     f'State machine #{self._trial} not confirmed by Bpod'
                 )
