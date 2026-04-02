@@ -96,9 +96,6 @@ class Bpod(SerialDevice, AbstractBpod):
     modules: NamedTuple
     """Available modules."""
 
-    actions: list[str]
-    """List of output actions."""
-
     @validate_call
     def __init__(
         self,
@@ -114,7 +111,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._input_events: _InputEvents = _InputEvents(
             names=[], channels=[], values=[]
         )
-        self.actions = []
+        self._actions = []
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._compiled_fsm: CompiledStateMachine | None = None
         self._trial_data: Queue[pl.DataFrame] = Queue()
@@ -238,9 +235,14 @@ class Bpod(SerialDevice, AbstractBpod):
             serial.verify(b'Z')
 
     @property
-    def event_names(self) -> list[str]:
+    def input_events(self) -> list[str]:
         """Names of all hardware input events, indexed by event ID."""
         return self._input_events.names
+
+    @property
+    def output_actions(self) -> list[str]:
+        """Names of all output actions."""
+        return self._actions
 
     @property
     def serial0(self) -> ExtendedSerial:
@@ -633,10 +635,11 @@ class Bpod(SerialDevice, AbstractBpod):
         values.append(None)
 
         self._input_events = _InputEvents(names=names, channels=channels, values=values)
+        self._event_indices = {k: v for v, k in enumerate(names)}
 
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""
-        self.actions = []
+        self._actions = []
 
         # Compile actions for output channels
         counters = dict.fromkeys(CHANNEL_TYPES_OUTPUT, 0)
@@ -649,15 +652,16 @@ class Bpod(SerialDevice, AbstractBpod):
                 name = f'{CHANNEL_TYPES_OUTPUT[io_key]}{counters[io_key] + 1}'
             else:
                 continue
-            self.actions.append(name)
+            self._actions.append(name)
             counters[io_key] += 1
 
         # Add output actions for global timers, global counters and analog thresholds
-        self.actions.extend(
+        self._actions.extend(
             ['GlobalTimerTrig', 'GlobalTimerCancel', 'GlobalCounterReset'],
         )
         if self.version.machine == 4:
-            self.actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
+            self._actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
+        self._action_indices = {k: v for v, k in enumerate(self._actions)}
 
     @validate_call
     def set_status_led(self, enable: bool) -> bool:  # noqa: FBT001
@@ -733,7 +737,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # update event names and output actions
         self._compile_input_events()
         self._compile_output_actions()
-        self._event_lookup = _build_event_lookup(self._input_events, self.actions)
+        self._event_lookup = _build_event_lookup(self._input_events, self._actions)
 
     def validate_state_machine(self, state_machine: StateMachine) -> None:
         """
@@ -826,18 +830,18 @@ class Bpod(SerialDevice, AbstractBpod):
                         f"'{condition_name}' in state '{state_name}'"
                         + suggest_similar(target, VALID_OPERATORS),
                     )
-                if condition_name not in self.event_names:
+                if condition_name not in self.input_events:
                     raise ValueError(
                         f"Invalid transition condition '{condition_name}' in state "
                         f"'{state_name}'"
-                        + suggest_similar(condition_name, self.event_names),
+                        + suggest_similar(condition_name, self.input_events),
                     )
             actions = set(state.actions.keys())
-            if invalid_actions := actions.difference(self.actions):
+            if invalid_actions := actions.difference(self._actions):
                 invalid_action = invalid_actions.pop()
                 raise ValueError(
                     f"Invalid action '{invalid_action}' in state '{state_name}'"
-                    + suggest_similar(invalid_action, self.actions),
+                    + suggest_similar(invalid_action, self._actions),
                 )
 
         # Compile list of physical channels
@@ -872,8 +876,8 @@ class Bpod(SerialDevice, AbstractBpod):
         }
         target_indices.update({'exit': n_states, '>exit': n_states})
         target_indices.update({'>back': 255} if use_back_op else {})
-        event_indices = {k: v for v, k in enumerate(self.event_names)}
-        action_indices = {k: v for v, k in enumerate(self.actions)}
+        event_indices = self._event_indices
+        action_indices = self._action_indices
 
         def append_events(event0: str, event1: str) -> None:
             """Append state transitions for a range of events to byte_array.
@@ -923,7 +927,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # INPUT EVENTS (variable length, per state):
         #   [count] [event_idx, target_idx] ...  for events on physical input channels
-        append_events(self.event_names[0], 'GlobalTimer1_Start')
+        append_events(self.input_events[0], 'GlobalTimer1_Start')
 
         # OUTPUT ACTIONS (variable length, per state):
         #   [count] [action_idx, value] ...  (8-bit on Bpod 0.5-1, 16-bit on Bpod 2+)
@@ -1223,7 +1227,7 @@ class Bpod(SerialDevice, AbstractBpod):
             fsm=self._compiled_fsm,
             data_queue=self._trial_data,
             event_lookup=self._event_lookup,
-            action_names=self.actions,
+            action_names=self._actions,
             time_reference=self._time_reference,
         )
         read_thread = ReadThread(
