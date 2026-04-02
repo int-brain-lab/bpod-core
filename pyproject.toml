@@ -167,6 +167,7 @@ ignore = [
   "PLR2004", # Magic value used in comparison, consider replacing with a constant variable
   "ANN401"   # Dynamically typed expressions (typing.Any) are disallowed in {name}
 ]
+allowed-confusables = ["–"]
 
 [tool.ruff.lint.per-file-ignores]
 "!bpod_core/**.py" = [

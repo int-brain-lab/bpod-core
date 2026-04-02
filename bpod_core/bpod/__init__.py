@@ -1170,13 +1170,13 @@ class Bpod(SerialDevice, AbstractBpod):
 
             Columns:
 
-            - ``time``: absolute Bpod timestamp (``Datetime(time_unit='us')``)
-            - ``trial``: zero-based trial index (``UInt16``)
-            - ``state``: active state name (``Categorical``)
-            - ``type``: event type (``Enum``)
-            - ``event``: input event name, null for non-input events (``Categorical``)
-            - ``channel``: output channel, null for non-output events (``Categorical``)
-            - ``value``: output value, null for non-output events (``UInt8``)
+            - ``time`` – absolute Bpod timestamp (``Datetime(time_unit='us')``)
+            - ``trial`` – zero-based trial index (``UInt16``)
+            - ``state`` – state name (``Categorical``)
+            - ``type`` – event type (``Enum``)
+            - ``event`` – input event name (``Categorical``)
+            - ``channel`` – channel name (``Categorical``)
+            - ``value`` – channel value (``UInt8``)
 
         Raises
         ------
@@ -1206,7 +1206,8 @@ class Bpod(SerialDevice, AbstractBpod):
         Raises
         ------
         RuntimeError
-            If a state machine is already running.
+            - If no state machine has been sent.
+            - If a state machine is already running.
         """
         if self.is_running:
             raise RuntimeError('A state machine is already running')
