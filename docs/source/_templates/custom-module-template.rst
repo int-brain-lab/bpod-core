@@ -36,7 +36,9 @@
       :toctree:
       :template: custom-class-template.rst
    {% for item in classes %}
+   {%- if '[' not in item %}
       {{ item }}
+   {%- endif %}
    {%- endfor %}
    {% endif %}
    {%- endblock %}

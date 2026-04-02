@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "bpod-core"
-version = '0.1.0a8'
+version = '0.1.0a9'
 description = "Python package for interfacing with the Bpod finite state machine"
 authors = [{ name = "Florian Rau", email = "bimac@users.noreply.github.com" }]
 classifiers = [
@@ -29,6 +29,7 @@ dependencies = [
   "platformdirs>=4.4.0",
   "filelock>=3.20.0",
   "psutil>=7.0.0",
+  "polars>=1.38.1",
 ]
 license = { text = "MIT" }
 readme = "README.md"
@@ -166,6 +167,7 @@ ignore = [
   "PLR2004", # Magic value used in comparison, consider replacing with a constant variable
   "ANN401"   # Dynamically typed expressions (typing.Any) are disallowed in {name}
 ]
+allowed-confusables = ["–"]
 
 [tool.ruff.lint.per-file-ignores]
 "!bpod_core/**.py" = [

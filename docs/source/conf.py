@@ -138,6 +138,9 @@ extensions = [
 ]
 source_suffix = ['.rst', '.md']
 
+copybutton_prompt_text = r'>>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: '
+copybutton_prompt_is_regexp = True
+
 templates_path = ['_templates']
 exclude_patterns = []
 
@@ -146,6 +149,7 @@ intersphinx_mapping = {
     'python': ('https://docs.python.org/3.10', None),
     'numpy': ('https://numpy.org/doc/stable', None),
     'pandas': ('https://pandas.pydata.org/docs', None),
+    'polars': ('https://docs.pola.rs/api/python/stable', None),
     'serial': ('https://pyserial.readthedocs.io/en/stable', None),
     'graphviz': ('https://graphviz.readthedocs.io/en/stable', None),
     'pydantic': ('https://docs.pydantic.dev/latest', None),
@@ -173,6 +177,7 @@ autodoc_inherit_docstrings = False
 autodoc_typehints = 'description'  # 'description', 'signature', 'none', 'both'
 autodoc_typehints_description_target = 'all'  # 'all', 'documented', 'documented_params'
 autodoc_typehints_format = 'short'  # 'fully-qualified', 'short'
+autodoc_default_options = {'exclude-members': '__new__'}
 
 autosummary_generate = True
 autosummary_imported_members = False
