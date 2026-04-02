@@ -157,7 +157,9 @@ class TestReadThread:
     def test_timing_violation_warning(self, make_thread, caplog):
         """Logs a WARNING when cycle/micros discrepancy exceeds 1 ms."""
         # cycle-based duration: 5 * 1 = 5 µs; actual: 2000 µs; discrepancy: 1995 > 1000
-        data = _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(5, 2000)  # noqa: E501
+        data = (
+            _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(5, 2000)
+        )
         thread, _, _ = make_thread(data, cycle_period_us=1)
         with caplog.at_level(logging.WARNING):
             thread.start()
