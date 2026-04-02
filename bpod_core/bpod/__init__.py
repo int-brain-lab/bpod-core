@@ -235,8 +235,8 @@ class Bpod(SerialDevice, AbstractBpod):
             serial.verify(b'Z')
 
     @property
-    def input_events(self) -> list[str]:
-        """Names of all hardware input events, indexed by event ID."""
+    def input_event_names(self) -> list[str]:
+        """Names of all hardware input events."""
         return self._input_events.names
 
     @property
@@ -797,11 +797,11 @@ class Bpod(SerialDevice, AbstractBpod):
                         f"'{condition_name}' in state '{state_name}'"
                         + suggest_similar(target, VALID_OPERATORS),
                     )
-                if condition_name not in self.input_events:
+                if condition_name not in self.input_event_names:
                     raise ValueError(
                         f"Invalid transition condition '{condition_name}' in state "
                         f"'{state_name}'"
-                        + suggest_similar(condition_name, self.input_events),
+                        + suggest_similar(condition_name, self.input_event_names),
                     )
             actions = set(state.actions.keys())
             if invalid_actions := actions.difference(self._actions):
@@ -923,7 +923,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # INPUT EVENTS (variable length, per state):
         #   [count] [event_idx, target_idx] ...  for events on physical input channels
-        append_events(self.input_events[0], 'GlobalTimer1_Start')
+        append_events(self.input_event_names[0], 'GlobalTimer1_Start')
 
         # OUTPUT ACTIONS (variable length, per state):
         #   [count] [action_idx, value] ...  (8-bit on Bpod 0.5-1, 16-bit on Bpod 2+)
