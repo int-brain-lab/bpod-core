@@ -111,7 +111,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._input_events: _InputEvents = _InputEvents(
             names=[], channels=[], values=[]
         )
-        self._actions = []
+        self._actions: list[str] = []
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._compiled_fsm: CompiledStateMachine | None = None
         self._trial_data: Queue[pl.DataFrame] = Queue()
@@ -636,6 +636,9 @@ class Bpod(SerialDevice, AbstractBpod):
 
         self._input_events = _InputEvents(names=names, channels=channels, values=values)
         self._event_indices = {k: v for v, k in enumerate(names)}
+        self._physical_input_channels = [m.name for m in self.modules] + [
+            i.name for i in self.inputs if i.io_type != b'U'
+        ]
 
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""
@@ -662,6 +665,9 @@ class Bpod(SerialDevice, AbstractBpod):
         if self.version.machine == 4:
             self._actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
         self._action_indices = {k: v for v, k in enumerate(self._actions)}
+        self._physical_output_channels = [m.name for m in self.modules] + [
+            o.name for o in self.outputs if o.io_type != b'U'
+        ]
 
     @validate_call
     def set_status_led(self, enable: bool) -> bool:  # noqa: FBT001
@@ -753,45 +759,6 @@ class Bpod(SerialDevice, AbstractBpod):
         ValueError
             If the state machine is invalid or not compatible with the hardware.
         """
-        self.send_state_machine(state_machine, validate_only=True)
-
-    @validate_call(config={'arbitrary_types_allowed': True})
-    def send_state_machine(
-        self,
-        state_machine: StateMachine,
-        *,
-        run_asap: bool = False,
-        validate_only: bool = False,
-    ) -> None:
-        """
-        Send a state machine to the Bpod.
-
-        This method compiles the provided state machine into a byte array format
-        compatible with the Bpod and sends it to the device. It also validates the
-        state machine for compatibility with the hardware before sending.
-
-        Parameters
-        ----------
-        state_machine : StateMachine
-            The state machine to be sent to the Bpod device.
-        run_asap : bool, optional
-            If True, the state machine will run immediately after the current one has
-            finished. Default is False.
-        validate_only : bool, optional
-            If True, the state machine is only validated and not sent to the device.
-            Default is False.
-
-        Raises
-        ------
-        ValueError
-            If the state machine is invalid or exceeds hardware limitations.
-        :exc:`~validate_call.roar.validate_callCallHintViolation`
-            If function arguments don't match type hints.
-        """
-        # Disable all active module relays
-        if not validate_only:
-            self._disable_all_module_relays()
-
         # Check the general validity of the state machine (independent of hardware)
         state_machine.check()
 
@@ -844,21 +811,14 @@ class Bpod(SerialDevice, AbstractBpod):
                     + suggest_similar(invalid_action, self._actions),
                 )
 
-        # Compile list of physical channels
-        # TODO: this is ugly
-        physical_output_channels = [m.name for m in self.modules] + [
-            o.name for o in self.outputs if o.io_type != b'U'
-        ]
-        physical_input_channels = [m.name for m in self.modules] + [
-            i.name for i in self.inputs if i.io_type != b'U'
-        ]
-
         # Validate global timers
         for timer_id, timer in state_machine.global_timers.items():
-            if timer.channel not in (*physical_output_channels, None):
+            if timer.channel not in (*self._physical_output_channels, None):
                 raise ValueError(
                     f"Invalid channel '{timer.channel}' for global timer {timer_id}"
-                    + suggest_similar(timer.channel or '', physical_output_channels),
+                    + suggest_similar(
+                        timer.channel or '', self._physical_output_channels
+                    ),
                 )
 
         # TODO: validate global timer onset triggers
@@ -866,9 +826,45 @@ class Bpod(SerialDevice, AbstractBpod):
         # TODO: validate conditions
         # TODO: Check that sync channel is not used as state output
 
-        # return here if we're only validating the state machine
-        if validate_only:
-            return
+    @validate_call(config={'arbitrary_types_allowed': True})
+    def send_state_machine(
+        self,
+        state_machine: StateMachine,
+        *,
+        run_asap: bool = False,
+    ) -> None:
+        """
+        Send a state machine to the Bpod.
+
+        This method compiles the provided state machine into a byte array format
+        compatible with the Bpod and sends it to the device. It also validates the
+        state machine for compatibility with the hardware before sending.
+
+        Parameters
+        ----------
+        state_machine : StateMachine
+            The state machine to be sent to the Bpod device.
+        run_asap : bool, optional
+            If True, the state machine will run immediately after the current one has
+            finished. Default is False.
+
+        Raises
+        ------
+        ValueError
+            If the state machine is invalid or exceeds hardware limitations.
+        :exc:`~validate_call.roar.validate_callCallHintViolation`
+            If function arguments don't match type hints.
+        """
+        self._disable_all_module_relays()
+        self.validate_state_machine(state_machine)
+
+        use_back_op = '>back' in state_machine.states.transition_targets
+        n_states = len(state_machine.states)
+        n_global_timers = max(state_machine.global_timers.keys(), default=-1) + 1
+        n_global_counters = max(state_machine.global_counters.keys(), default=-1) + 1
+        n_conditions = max(state_machine.conditions.keys(), default=-1) + 1
+        physical_output_channels = self._physical_output_channels
+        physical_input_channels = self._physical_input_channels
 
         # compile dicts of indices to resolve strings to integers
         target_indices = {
@@ -1146,7 +1142,7 @@ class Bpod(SerialDevice, AbstractBpod):
         Blocks until the state machine thread completes. If no state machine is
         currently running, this method returns immediately.
         """
-        if self.is_running:
+        if self._read_thread is not None and self._read_thread.is_alive():
             logger.debug(
                 'Waiting for state machine #%d to finish ...',
                 self._read_thread.trial_number,
@@ -1224,7 +1220,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # initialize new threads
         event_thread = EventThread(
             trial=self._next_fsm_index,
-            fsm=self._compiled_fsm,
+            fsm=cast('CompiledStateMachine', self._compiled_fsm),
             data_queue=self._trial_data,
             event_lookup=self._event_lookup,
             action_names=self._actions,
