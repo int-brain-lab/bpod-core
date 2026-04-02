@@ -240,11 +240,6 @@ class Bpod(SerialDevice, AbstractBpod):
         return self._input_events.names
 
     @property
-    def output_actions(self) -> list[str]:
-        """Names of all output actions."""
-        return self._actions
-
-    @property
     def serial0(self) -> ExtendedSerial:
         """Primary serial device for communication with the Bpod."""
         return self._serial
