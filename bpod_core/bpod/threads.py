@@ -189,6 +189,7 @@ class ReadThread(threading.Thread):
                 raise RuntimeError(
                     f'State machine #{self._trial} not confirmed by Bpod'
                 )
+            logger.info('Starting state machine #%d', self._trial)
 
             # read the starting timestamps of the state machine
             # we do this early to get an accurate timestamp for the system clock
@@ -282,7 +283,12 @@ class ReadThread(threading.Thread):
 
         finally:
             self._queue_events.put(RawEvent(0, _EventID.STOP_SENTINEL))
-            logger.debug('Stopping read thread')
+            logger.info('Exiting state machine #%d', self._trial)
+
+    @property
+    def trial_number(self) -> int:
+        """The zero-based trial number."""
+        return self._trial
 
 
 class EventThread(threading.Thread):
@@ -458,7 +464,6 @@ class EventThread(threading.Thread):
                 event_queue.task_done()
         finally:
             self._enqueue_data()
-            logger.debug('Stopping event thread')
 
     def _enqueue_data(self) -> None:
         """Truncate buffer and enqueue recorded events as a Polars DataFrame."""
@@ -532,4 +537,3 @@ class SoftcodeThread(threading.Thread):
                     'Received softcode %d from Bpod but no handler is defined', softcode
                 )
             queue.task_done()
-        logger.debug('Stopping softcode thread')

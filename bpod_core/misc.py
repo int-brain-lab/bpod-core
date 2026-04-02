@@ -43,6 +43,8 @@ class DocstringInheritanceMixin:
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         for name, attr in vars(cls).items():
+            if name in {'__init__', '__new__'}:
+                continue
             if (callable(attr) or isinstance(attr, property)) and not attr.__doc__:
                 for base in cls.__mro__[1:]:
                     base_attr = vars(base).get(name)
