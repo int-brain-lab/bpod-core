@@ -9,6 +9,7 @@
    :hidden:
 
    state_machines/index
+   bpod/index
    faq
    api
    schema
