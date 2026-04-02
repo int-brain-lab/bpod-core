@@ -21,13 +21,13 @@ logger = logging.getLogger(__name__)
 K = TypeVar('K')
 V = TypeVar('V')
 
-RE_NON_ALPHANUMERIC = re.compile(r'[^a-zA-Z0-9_]')
+_RE_NON_ALPHANUMERIC = re.compile(r'[^a-zA-Z0-9_]')
 """Match non-alphanumeric characters except underscores."""
-RE_ACRONYM = re.compile(r'([A-Z]+)([A-Z][a-z])')
+_RE_ACRONYM = re.compile(r'([A-Z]+)([A-Z][a-z])')
 """Match acronym boundaries."""
-RE_CASE_TRANSITION = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
+_RE_CASE_TRANSITION = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\D)')
 """Match case and digit transitions."""
-RE_MULTIPLE_UNDERSCORES = re.compile(r'_{2,}')
+_RE_MULTIPLE_UNDERSCORES = re.compile(r'_{2,}')
 """Match multiple consecutive underscores."""
 
 
@@ -65,10 +65,10 @@ def to_snake_case(string: str) -> str:
     str
         The converted snake_case string.
     """
-    string = RE_NON_ALPHANUMERIC.sub('_', string)
-    string = RE_ACRONYM.sub(r'\1_\2', string)
-    string = RE_CASE_TRANSITION.sub('_', string)
-    string = RE_MULTIPLE_UNDERSCORES.sub('_', string)
+    string = _RE_NON_ALPHANUMERIC.sub('_', string)
+    string = _RE_ACRONYM.sub(r'\1_\2', string)
+    string = _RE_CASE_TRANSITION.sub('_', string)
+    string = _RE_MULTIPLE_UNDERSCORES.sub('_', string)
     string = string.strip('_')
     return string.lower()
 

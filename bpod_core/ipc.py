@@ -37,7 +37,7 @@ from zeroconf import (
 
 from bpod_core.constants import IPV4_LOOPBACK, IPV4_WILDCARD
 from bpod_core.misc import (
-    RE_NON_ALPHANUMERIC,
+    _RE_NON_ALPHANUMERIC,
     get_local_ipv4,
     prune_empty_parent_directories,
     to_snake_case,
@@ -285,7 +285,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
     def _get_service_directory(service_type: str) -> Path:
         """Get the directory for a service type."""
         runtime_directory = LocalServiceAdvertisement.runtime_directory
-        sanitized = RE_NON_ALPHANUMERIC.sub('_', service_type)
+        sanitized = _RE_NON_ALPHANUMERIC.sub('_', service_type)
         return runtime_directory / sanitized
 
     @staticmethod

@@ -457,27 +457,13 @@ class EventThread(threading.Thread):
                 # signal that the event has been handled
                 event_queue.task_done()
         finally:
-            self._buffer = self._buffer[: self._n_events]
-            self._data_queue.put(self._get_data())
+            self._enqueue_data()
             logger.debug('Stopping event thread')
 
-    def _get_data(self) -> pl.DataFrame:
-        """Return recorded events as a Polars DataFrame.
-
-        Returns
-        -------
-        pl.DataFrame
-            DataFrame with columns:
-
-            - ``time``: absolute Bpod timestamp (``Datetime(time_unit='us')``)
-            - ``trial``: zero-based trial index (``UInt16``)
-            - ``state``: active state name (``Categorical``)
-            - ``type``: event type (``Enum``)
-            - ``event``: input event name, null for non-input events (``Categorical``)
-            - ``channel``: output channel, null for non-output events (``Categorical``)
-            - ``value``: output value, null for non-output events (``UInt8``)
-        """
-        return (
+    def _enqueue_data(self) -> None:
+        """Truncate buffer and enqueue recorded events as a Polars DataFrame."""
+        self._buffer = self._buffer[: self._n_events]
+        self._data_queue.put(
             pl.from_numpy(self._buffer)
             .join(self._event_lookup, on='event_id', how='left')
             .join(self._state_lookup, on='state_id', how='left')
