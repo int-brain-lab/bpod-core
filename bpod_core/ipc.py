@@ -64,15 +64,15 @@ class RemoteError(ServiceError):
 class MessageKind(IntEnum):
     """The types of messages exchanged between host and clients."""
 
-    HELLO = 0
+    HELLO = ord('H')
     """A message sent by the client to initiate the handshake."""
-    WELCOME = 1
+    WELCOME = ord('W')
     """A message sent by the host to acknowledge the client's handshake."""
-    REQUEST = 2
+    REQUEST = ord('Q')
     """A request sent by the client."""
-    REPLY = 3
+    REPLY = ord('R')
     """A reply sent by the host."""
-    ERROR = 4
+    ERROR = ord('E')
     """An error message."""
 
     _as_bytes: bytes
