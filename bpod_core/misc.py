@@ -8,6 +8,7 @@ import re
 import socket
 import struct
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+from enum import IntEnum
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
@@ -29,6 +30,38 @@ _RE_CASE_TRANSITION = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\
 """Match case and digit transitions."""
 _RE_MULTIPLE_UNDERSCORES = re.compile(r'_{2,}')
 """Match multiple consecutive underscores."""
+
+
+class ByteEnum(IntEnum):
+    r"""An :class:`~enum.IntEnum` whose values are single unsigned bytes.
+
+    Subclass this to define enums with byte-sized values. Each member caches its value
+    as a :class:`bytes` object for zero-allocation wire encoding.
+
+    Examples
+    --------
+    >>> class Color(ByteEnum):
+    ...     RED = 1
+    ...     GREEN = 2
+    >>> Color.RED.as_bytes
+    b'\x01'
+    """
+
+    _as_bytes: bytes
+
+    def __new__(cls, value: int) -> 'ByteEnum':
+        """Create a new ByteEnum member."""
+        if not 0 <= value <= 0xFF:
+            raise ValueError(f'ByteEnum value must fit in one byte, got {value!r}')
+        obj: ByteEnum = int.__new__(cls, value)
+        obj._value_ = value
+        obj._as_bytes = value.to_bytes(1, 'little')
+        return obj
+
+    @property
+    def as_bytes(self) -> bytes:
+        """The enum value as a single-byte :class:`bytes` object."""
+        return self._as_bytes
 
 
 class DocstringInheritanceMixin:

@@ -13,7 +13,6 @@ import weakref
 from abc import abstractmethod
 from collections import deque
 from collections.abc import Callable, Iterator
-from enum import IntEnum
 from pathlib import Path
 from types import ModuleType, TracebackType
 from typing import Any, Generic, Literal, NamedTuple, TypeVar, cast, overload
@@ -38,6 +37,7 @@ from zeroconf import (
 from bpod_core.constants import IPV4_LOOPBACK, IPV4_WILDCARD
 from bpod_core.misc import (
     _RE_NON_ALPHANUMERIC,
+    ByteEnum,
     get_local_ipv4,
     prune_empty_parent_directories,
     to_snake_case,
@@ -61,7 +61,7 @@ class RemoteError(ServiceError):
         super().__init__(f'Remote {error_data.name}: {error_data.message}')
 
 
-class MessageKind(IntEnum):
+class MessageKind(ByteEnum):
     """The types of messages exchanged between host and clients."""
 
     HELLO = ord('H')
@@ -74,22 +74,6 @@ class MessageKind(IntEnum):
     """A reply sent by the host."""
     ERROR = ord('E')
     """An error message."""
-
-    _as_bytes: bytes
-
-    def __new__(cls, value: int) -> Self:
-        """Create a new MessageKind instance."""
-        if not 0 <= value <= 0xFF:
-            raise ValueError('Values must fit in one byte')
-        obj: MessageKind = int.__new__(cls, value)  # type: ignore[assignment]
-        obj._value_ = value
-        obj._as_bytes = value.to_bytes(1, 'little')
-        return obj
-
-    @property
-    def as_bytes(self) -> bytes:
-        """The message kind as a byte string."""
-        return self._as_bytes
 
 
 class ErrorData(msgspec.Struct):
