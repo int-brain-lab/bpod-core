@@ -1145,6 +1145,32 @@ class Bpod(SerialDevice, AbstractBpod):
             self._read_thread.join()
 
     @overload
+    def peek_data(self, *, lazy: Literal[False] = False) -> pl.DataFrame: ...
+
+    @overload
+    def peek_data(self, *, lazy: Literal[True]) -> pl.LazyFrame: ...
+
+    def peek_data(self, *, lazy=False):
+        """Return a snapshot of the current trial's data without blocking.
+
+        Parameters
+        ----------
+        lazy : bool, optional
+            If ``True``, return a :class:`polars.LazyFrame`.
+            If ``False`` (default), return a :class:`polars.DataFrame`.
+
+        Returns
+        -------
+        pl.DataFrame or pl.LazyFrame
+            Events recorded so far in the current trial. Returns an empty DataFrame if
+            no trial is running.
+        """
+        if self._event_thread is None:
+            return pl.LazyFrame() if lazy else pl.DataFrame()
+        data = self._event_thread.peek_data()
+        return data if lazy else data.collect()
+
+    @overload
     def get_data(
         self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[False] = False
     ) -> pl.DataFrame: ...
@@ -1203,12 +1229,8 @@ class Bpod(SerialDevice, AbstractBpod):
         else:
             data = frames[0]
 
-        # return data as a LazyFrame if requested
-        if lazy:
-            return data
-
-        # otherwise, return a DataFrame
-        return data.collect()
+        # return data
+        return data if lazy else data.collect()
 
     @validate_call
     def run_state_machine(self, *, blocking: bool = True) -> None:
