@@ -120,6 +120,17 @@ def set_nested(d: MutableMapping, keys: Sequence[Any], value: Any) -> None:
         A sequence of keys representing the nested path where the value should be set.
     value : Any
         The value to set at the specified path.
+
+    Examples
+    --------
+    >>> dictionary = {}
+    >>> set_nested(dictionary, ['a', 'b', 'c'], 42)
+    >>> dictionary
+    {'a': {'b': {'c': 42}}}
+
+    >>> set_nested(dictionary, ['a', 'b', 'x'], 99)
+    >>> dictionary
+    {'a': {'b': {'c': 42, 'x': 99}}}
     """
     if not keys:
         return  # Do nothing if keys is empty
@@ -148,11 +159,21 @@ def get_nested(d: MutableMapping, keys: Sequence[Any], default: Any = None) -> A
     -------
     Any
         The value at the nested path, or default if any key in the path is missing.
+
+    Examples
+    --------
+    >>> dictionary = {'a': {'b': {'c': 42}}}
+    >>> get_nested(dictionary, ['a', 'b', 'c'])
+    42
+
+    >>> get_nested(dictionary, ['a', 'x'], default='missing')
+    'missing'
     """
     for key in keys:
-        if not isinstance(d, MutableMapping) or key not in d:
+        try:
+            d = d[key]
+        except (KeyError, TypeError):  # noqa: PERF203
             return default
-        d = d[key]
     return d
 
 
