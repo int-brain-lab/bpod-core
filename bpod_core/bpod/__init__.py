@@ -43,6 +43,7 @@ from bpod_core.bpod.structs import (
     _InputEvents,
 )
 from bpod_core.bpod.threads import (
+    _TRIAL_DATA_SCHEMA,
     EventThread,
     ReadThread,
     SoftcodeThread,
@@ -1166,7 +1167,8 @@ class Bpod(SerialDevice, AbstractBpod):
             no trial is running.
         """
         if self._event_thread is None:
-            return pl.LazyFrame() if lazy else pl.DataFrame()
+            empty = pl.DataFrame(schema=_TRIAL_DATA_SCHEMA)
+            return empty.lazy() if lazy else empty
         data = self._event_thread.peek_data()
         return data if lazy else data.collect()
 

@@ -19,6 +19,7 @@ from bpod_core.bpod.structs import (
 )
 from bpod_core.bpod.threads import (
     _INITIAL_BUFFER_SIZE,
+    _TRIAL_DATA_SCHEMA,
     EventThread,
     ReadThread,
     SoftcodeThread,
@@ -249,6 +250,14 @@ class TestEventThread:
         thread.stop()
         thread.join(timeout=2)
         assert not thread.is_alive()
+
+    def test_output_schema_matches_trial_data_schema(self, make_thread):
+        """Collected DataFrame schema matches _TRIAL_DATA_SCHEMA exactly."""
+        thread, data_queue = make_thread()
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        assert dict(df.schema) == _TRIAL_DATA_SCHEMA
 
     def test_data_enqueued_on_stop(self, make_thread):
         """A LazyFrame is pushed to data_queue when the thread exits."""

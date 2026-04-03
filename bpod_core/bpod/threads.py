@@ -73,6 +73,18 @@ _EVENT_TYPE_ENUM = pl.Enum(
 )
 """Polars Enum dtype for the ``type`` column in trial DataFrames."""
 
+_TRIAL_DATA_SCHEMA = {
+    'time': pl.Datetime('us'),
+    'trial': pl.UInt16,
+    'state': pl.Categorical,
+    'type': _EVENT_TYPE_ENUM,
+    'event': pl.Categorical,
+    'channel': pl.Categorical,
+    'value': pl.UInt8,
+}
+"""Column schema for trial DataFrames returned by :meth:`~bpod_core.bpod.Bpod.get_data`
+and :meth:`~bpod_core.bpod.Bpod.peek_data`."""
+
 _SYNTHETIC_EVENT_LOOKUP = pl.DataFrame(
     {
         'event_id': pl.Series(list(_SYNTHETIC_EVENT_TYPES), dtype=pl.Int16),
@@ -527,7 +539,7 @@ class EventThread(threading.Thread):
                 .cast(pl.UInt8)
                 .alias('value'),
             )
-            .select('time', 'trial', 'state', 'type', 'event', 'channel', 'value')
+            .select(list(_TRIAL_DATA_SCHEMA))
         )
 
     def peek_data(self) -> pl.LazyFrame:
