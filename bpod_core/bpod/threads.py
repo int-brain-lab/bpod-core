@@ -288,7 +288,26 @@ class ReadThread(threading.Thread):
 
 
 class EventThread(threading.Thread):
-    """A thread for handling incoming events during a state-machine run."""
+    """Consumer thread that processes hardware events and builds the trial DataFrame.
+
+    Runs for the duration of one trial. :class:`ReadThread` feeds raw
+    :class:`~bpod_core.bpod.structs.RawEvent` items into :attr:`queue`; ``EventThread``
+    drains that queue, advances the FSM state, and records every event — inputs, state
+    transitions, and output actions — into an internal buffer.
+
+    When the trial ends (``STOP_SENTINEL`` received), the buffer is converted to a
+    :class:`polars.LazyFrame` and pushed onto *data_queue* for the caller to collect via
+    :meth:`~bpod_core.bpod.Bpod.get_data`.
+
+    **Buffer design**: events are appended to a pre-allocated NumPy structured array
+    (``_EVENT_DTYPE``) that doubles in size when full. The buffer is only written at
+    index ``_n_events`` before that counter is incremented, so indices
+    ``0.._n_events-1`` are immutable once written.
+
+    **Thread safety**: :meth:`peek_data` may be called from another thread while the
+    trial is running. It copies the buffer view before passing it to Polars, ensuring a
+    consistent snapshot.
+    """
 
     queue: Queue[RawEvent]
     """Per-trial event queue shared with :class:`ReadThread`."""
@@ -298,7 +317,7 @@ class EventThread(threading.Thread):
         *,
         trial: int,
         fsm: CompiledStateMachine,
-        data_queue: Queue[pl.DataFrame],
+        data_queue: Queue[pl.LazyFrame],
         event_lookup: pl.DataFrame,
         action_names: list[str],
         time_reference: TimeReferences,
@@ -330,8 +349,8 @@ class EventThread(threading.Thread):
         self._time_reference = time_reference
         self._buffer: npt.NDArray = np.empty(_INITIAL_BUFFER_SIZE, dtype=_EVENT_DTYPE)
         self._n_events: int = 0
-        self._event_lookup = event_lookup
-        self._state_lookup = fsm.state_lookup
+        self._event_lookup = event_lookup.lazy()
+        self._state_lookup = fsm.state_lookup.lazy()
 
         # pre-compute action index map for fast lookup in the hot loop
         action_index_map = {name: i for i, name in enumerate(action_names)}
@@ -461,14 +480,18 @@ class EventThread(threading.Thread):
         finally:
             self._enqueue_data()
 
-    def _enqueue_data(self) -> None:
-        """Truncate buffer and enqueue recorded events as a Polars DataFrame."""
-        self._buffer = self._buffer[: self._n_events]
-        self._data_queue.put(
-            pl.from_numpy(self._buffer)
+    @property
+    def _buffer_view(self) -> npt.NDArray:
+        """Return a view of the buffer."""
+        return self._buffer[: self._n_events]
+
+    def _to_lazyframe(self, data: npt.NDArray) -> pl.LazyFrame:
+        """Convert a buffer array to a trial LazyFrame."""
+        return (
+            pl.from_numpy(data)
+            .lazy()
             .join(self._event_lookup, on='event_id', how='left')
             .join(self._state_lookup, on='state_id', how='left')
-            .drop('event_id', 'state_id')
             .with_columns(
                 pl.lit(self._trial).cast(pl.UInt16).alias('trial'),
                 pl.coalesce(
@@ -478,9 +501,21 @@ class EventThread(threading.Thread):
                 .cast(pl.UInt8)
                 .alias('value'),
             )
-            .drop('default_value')
             .select('time', 'trial', 'state', 'type', 'event', 'channel', 'value')
         )
+
+    def peek_data(self) -> pl.DataFrame:
+        """Return a snapshot of events recorded so far as a DataFrame.
+
+        Safe to call from a different thread while the trial is running. The
+        returned DataFrame reflects events up to the moment ``_n_events`` was
+        read; one in-flight event may be missed.
+        """
+        return self._to_lazyframe(self._buffer_view.copy()).collect()
+
+    def _enqueue_data(self) -> None:
+        """Truncate buffer and enqueue recorded events as a LazyFrame."""
+        self._data_queue.put(self._to_lazyframe(self._buffer_view))
 
 
 class SoftcodeThread(threading.Thread):

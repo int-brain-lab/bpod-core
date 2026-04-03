@@ -114,7 +114,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._actions: list[str] = []
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._compiled_fsm: CompiledStateMachine | None = None
-        self._trial_data: Queue[pl.DataFrame] = Queue()
+        self._trial_data: Queue[pl.LazyFrame] = Queue()
         self._softcode_thread = SoftcodeThread(
             softcode_handler=self._softcode_handler,
         )
@@ -1185,8 +1185,8 @@ class Bpod(SerialDevice, AbstractBpod):
             frames.extend(
                 self._trial_data.get_nowait() for _ in range(self._trial_data.qsize())
             )
-            return pl.concat(frames, rechunk=rechunk)
-        return frames[0]
+            return pl.concat(frames, rechunk=rechunk).collect()
+        return frames[0].collect()
 
     @validate_call
     def run_state_machine(self, *, blocking: bool = True) -> None:
