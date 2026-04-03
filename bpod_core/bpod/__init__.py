@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from queue import Queue
 from types import TracebackType
-from typing import Any, NamedTuple, cast
+from typing import Any, Literal, NamedTuple, cast, overload
 
 import numpy as np
 import polars as pl
@@ -1144,7 +1144,17 @@ class Bpod(SerialDevice, AbstractBpod):
             )
             self._read_thread.join()
 
-    def get_data(self, *, concat: bool = False, rechunk: bool = False) -> pl.DataFrame:
+    @overload
+    def get_data(
+        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[False] = False
+    ) -> pl.DataFrame: ...
+
+    @overload
+    def get_data(
+        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[True]
+    ) -> pl.LazyFrame: ...
+
+    def get_data(self, *, concat=False, rechunk=False, lazy=False):
         """Return trial data from the data queue.
 
         Parameters
@@ -1157,6 +1167,9 @@ class Bpod(SerialDevice, AbstractBpod):
         rechunk : bool, optional
             If ``True``, make sure that the result data is in contiguous memory. Only
             applies when ``concat=True``. Default is ``False``.
+        lazy : bool, optional
+            If ``True``, return a :class:`polars.LazyFrame`.
+            If ``False`` (default), return a :class:`polars.DataFrame`.
 
         Returns
         -------
@@ -1180,13 +1193,22 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         if self._trial_data.empty() and not self.is_running:
             raise BpodError('No trial data available')
+
         frames = [self._trial_data.get()]
         if concat:
             frames.extend(
                 self._trial_data.get_nowait() for _ in range(self._trial_data.qsize())
             )
-            return pl.concat(frames, rechunk=rechunk).collect()
-        return frames[0].collect()
+            data = pl.concat(frames, rechunk=rechunk)
+        else:
+            data = frames[0]
+
+        # return data as a LazyFrame if requested
+        if lazy:
+            return data
+
+        # otherwise, return a DataFrame
+        return data.collect()
 
     @validate_call
     def run_state_machine(self, *, blocking: bool = True) -> None:
