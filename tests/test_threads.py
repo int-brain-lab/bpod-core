@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import struct
-from queue import Empty, Queue
+import time
+from queue import SimpleQueue
 
 import numpy as np
 import polars as pl
@@ -49,13 +50,11 @@ def _exit_data(n_cycles: int, end_micros_us: int) -> bytes:
     return struct.pack('<IQ', n_cycles, end_micros_us)
 
 
-def _drain(q: Queue) -> list:
+def _drain(q: SimpleQueue) -> list:
     items = []
-    while True:
-        try:
-            items.append(q.get_nowait())
-        except Empty:
-            return items
+    while not q.empty():
+        items.append(q.get())
+    return items
 
 
 class TestReadThread:
@@ -65,8 +64,8 @@ class TestReadThread:
 
         def _make(data: bytes, *, cycle_period_us: int = 1):
             mock_ext_serial.response_buffer.extend(data)
-            q_events: Queue[RawEvent] = Queue()
-            q_softcodes: Queue[int] = Queue()
+            q_events: SimpleQueue[RawEvent] = SimpleQueue()
+            q_softcodes: SimpleQueue[int] = SimpleQueue()
             thread = ReadThread(
                 serial=mock_ext_serial,
                 trial=0,
@@ -214,7 +213,7 @@ class TestEventThread:
             action_names: list[str] | None = None,
             event_names: list[str] | None = None,
             time_reference: TimeReferences | None = None,
-        ) -> tuple[EventThread, Queue[pl.LazyFrame]]:
+        ) -> tuple[EventThread, SimpleQueue[pl.LazyFrame]]:
             action_names = action_names or []
             event_names = event_names or ['Ev0', 'Tup']
             input_events = _InputEvents(
@@ -222,7 +221,7 @@ class TestEventThread:
                 channels=[None] * len(event_names),
                 values=[None] * len(event_names),
             )
-            data_queue: Queue[pl.LazyFrame] = Queue()
+            data_queue: SimpleQueue[pl.LazyFrame] = SimpleQueue()
             thread = EventThread(
                 trial=0,
                 fsm=fsm or _make_fsm(),
@@ -241,7 +240,7 @@ class TestEventThread:
             t.stop()
             t.join(timeout=2)
 
-    def _collect(self, data_queue: Queue[pl.LazyFrame]) -> pl.DataFrame:
+    def _collect(self, data_queue: SimpleQueue[pl.LazyFrame]) -> pl.DataFrame:
         return data_queue.get(timeout=2).collect()
 
     def test_stop_exits_thread(self, make_thread):
@@ -342,7 +341,9 @@ class TestEventThread:
         """peek_data returns a non-empty snapshot while the trial is running."""
         thread, _ = make_thread()
         thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_FSM))
-        thread.queue.join()
+        deadline = time.monotonic() + 2.0
+        while thread._n_events == 0 and time.monotonic() < deadline:
+            time.sleep(0.001)
         df = thread.peek_data().collect()
         assert len(df) > 0
 
@@ -381,7 +382,8 @@ class TestSoftcodeThread:
         received = []
         thread = make_thread(handler=received.append)
         thread.queue.put(7)
-        thread.queue.join()
+        thread.stop()
+        thread.join(timeout=2)
         assert received == [7]
 
     def test_handler_called_in_order(self, make_thread):
@@ -390,7 +392,8 @@ class TestSoftcodeThread:
         thread = make_thread(handler=received.append)
         for code in [1, 5, 3]:
             thread.queue.put(code)
-        thread.queue.join()
+        thread.stop()
+        thread.join(timeout=2)
         assert received == [1, 5, 3]
 
     def test_no_handler_logs_warning(self, make_thread, caplog):
@@ -398,7 +401,8 @@ class TestSoftcodeThread:
         thread = make_thread(handler=None)
         with caplog.at_level(logging.WARNING):
             thread.queue.put(4)
-            thread.queue.join()
+            thread.stop()
+            thread.join(timeout=2)
         assert '4' in caplog.text
 
     def test_handler_exception_logged_and_continues(self, make_thread, caplog):
@@ -414,7 +418,8 @@ class TestSoftcodeThread:
         with caplog.at_level(logging.ERROR):
             thread.queue.put(0)
             thread.queue.put(9)
-            thread.queue.join()
+            thread.stop()
+            thread.join(timeout=2)
         assert received == [9]
         assert 'bad softcode' in caplog.text
 

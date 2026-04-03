@@ -9,7 +9,7 @@ import traceback
 import weakref
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from queue import Empty, Queue
+from queue import Empty, SimpleQueue
 from types import TracebackType
 from typing import Any, Literal, NamedTuple, cast, overload
 
@@ -114,7 +114,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._actions: list[str] = []
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._compiled_fsm: CompiledStateMachine | None = None
-        self._trial_data: Queue[pl.LazyFrame] = Queue()
+        self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
         self._softcode_thread = SoftcodeThread(
             softcode_handler=self._softcode_handler,
         )
@@ -1224,7 +1224,7 @@ class Bpod(SerialDevice, AbstractBpod):
         if concat:
             while True:
                 try:
-                    frames.append(self._trial_data.get_nowait())
+                    frames.append(self._trial_data.get(block=False))
                 except Empty:  # noqa: PERF203
                     break
             data = pl.concat(frames, rechunk=rechunk)
