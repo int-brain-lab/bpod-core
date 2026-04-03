@@ -153,6 +153,9 @@ intersphinx_mapping = {
     'serial': ('https://pyserial.readthedocs.io/en/stable', None),
     'graphviz': ('https://graphviz.readthedocs.io/en/stable', None),
     'pydantic': ('https://docs.pydantic.dev/latest', None),
+    'msgspec': ('https://jcristharif.com/msgspec/', None),
+    'zmq': ('https://pyzmq.readthedocs.io/en/latest', None),
+    'zeroconf': ('https://python-zeroconf.readthedocs.io/en/latest/', None),
 }
 
 # -- Options for HTML output -------------------------------------------------
