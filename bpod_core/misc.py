@@ -123,6 +123,7 @@ def set_nested(d: MutableMapping, keys: Sequence[Any], value: Any) -> None:
 
     Examples
     --------
+    >>> from bpod_core.misc import set_nested
     >>> dictionary = {}
     >>> set_nested(dictionary, ['a', 'b', 'c'], 42)
     >>> dictionary
@@ -162,6 +163,7 @@ def get_nested(d: MutableMapping, keys: Sequence[Any], default: Any = None) -> A
 
     Examples
     --------
+    >>> from bpod_core.misc import get_nested
     >>> dictionary = {'a': {'b': {'c': 42}}}
     >>> get_nested(dictionary, ['a', 'b', 'c'])
     42
