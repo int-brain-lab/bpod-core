@@ -9,7 +9,7 @@ import traceback
 import weakref
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from queue import Queue
+from queue import Empty, Queue
 from types import TracebackType
 from typing import Any, Literal, NamedTuple, cast, overload
 
@@ -1222,9 +1222,11 @@ class Bpod(SerialDevice, AbstractBpod):
 
         frames = [self._trial_data.get()]
         if concat:
-            frames.extend(
-                self._trial_data.get_nowait() for _ in range(self._trial_data.qsize())
-            )
+            while True:
+                try:
+                    frames.append(self._trial_data.get_nowait())
+                except Empty:  # noqa: PERF203
+                    break
             data = pl.concat(frames, rechunk=rechunk)
         else:
             data = frames[0]
