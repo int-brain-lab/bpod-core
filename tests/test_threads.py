@@ -5,15 +5,25 @@ from __future__ import annotations
 import logging
 import struct
 from queue import Empty, Queue
-from typing import TYPE_CHECKING
 
+import numpy as np
+import polars as pl
 import pytest
 
-from bpod_core.bpod.threads import ReadThread, SoftcodeThread, _EventID
-
-if TYPE_CHECKING:
-    from bpod_core.bpod.structs import RawEvent
-
+from bpod_core.bpod.structs import (
+    CompiledStateMachine,
+    RawEvent,
+    TimeReferences,
+    _InputEvents,
+)
+from bpod_core.bpod.threads import (
+    _INITIAL_BUFFER_SIZE,
+    EventThread,
+    ReadThread,
+    SoftcodeThread,
+    _build_event_lookup,
+    _EventID,
+)
 
 _CONFIRM_OK = b'\x01'
 _CONFIRM_FAIL = b'\x00'
@@ -165,6 +175,185 @@ class TestReadThread:
             thread.start()
             thread.join(timeout=2)
         assert 'timing' in caplog.text.lower()
+
+
+def _make_fsm(
+    n_states: int = 2,
+    transitions: dict[tuple[int, int], int] | None = None,
+    state_actions: list[dict[str, int]] | None = None,
+) -> CompiledStateMachine:
+    """Build a minimal CompiledStateMachine for testing."""
+    mat = np.arange(n_states, dtype=np.uint8)[:, np.newaxis] * np.ones(
+        (1, 255), dtype=np.uint8
+    )
+    for (state, event), target in (transitions or {}).items():
+        mat[state][event] = target
+    state_names = [f'S{i}' for i in range(n_states)]
+    return CompiledStateMachine(
+        state_names=state_names,
+        state_transitions=mat,
+        state_actions=state_actions or [{} for _ in range(n_states)],
+        use_back_op=False,
+        state_lookup=pl.DataFrame(
+            {
+                'state_id': pl.Series(range(n_states), dtype=pl.Int16),
+                'state': pl.Series(state_names, dtype=pl.Categorical),
+            }
+        ),
+    )
+
+
+class TestEventThread:
+    @pytest.fixture
+    def make_thread(self):
+        """Factory: builds an EventThread from a minimal FSM and starts it."""
+        threads = []
+
+        def _make(
+            fsm: CompiledStateMachine | None = None,
+            action_names: list[str] | None = None,
+            event_names: list[str] | None = None,
+            time_reference: TimeReferences | None = None,
+        ) -> tuple[EventThread, Queue[pl.LazyFrame]]:
+            action_names = action_names or []
+            event_names = event_names or ['Ev0', 'Tup']
+            input_events = _InputEvents(
+                names=event_names,
+                channels=[None] * len(event_names),
+                values=[None] * len(event_names),
+            )
+            data_queue: Queue[pl.LazyFrame] = Queue()
+            thread = EventThread(
+                trial=0,
+                fsm=fsm or _make_fsm(),
+                data_queue=data_queue,
+                event_lookup=_build_event_lookup(input_events, action_names),
+                action_names=action_names,
+                time_reference=time_reference or TimeReferences(0, 0, 0),
+            )
+            thread.start()
+            threads.append(thread)
+            return thread, data_queue
+
+        yield _make
+
+        for t in threads:
+            t.stop()
+            t.join(timeout=2)
+
+    def _collect(self, data_queue: Queue) -> pl.DataFrame:
+        return data_queue.get(timeout=2).collect()
+
+    def test_stop_exits_thread(self, make_thread):
+        """stop() causes the thread to exit cleanly."""
+        thread, _ = make_thread()
+        thread.stop()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+    def test_data_enqueued_on_stop(self, make_thread):
+        """A LazyFrame is pushed to data_queue when the thread exits."""
+        thread, data_queue = make_thread()
+        thread.stop()
+        thread.join(timeout=2)
+        assert not data_queue.empty()
+
+    def test_hardware_event_recorded(self, make_thread):
+        """Hardware event appears in output with correct event name."""
+        thread, data_queue = make_thread(event_names=['Ev0', 'Tup'])
+        thread.queue.put(RawEvent(micros_us=0, event_id=0))
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        assert 'Ev0' in df.filter(pl.col('type') == 'InputEvent')['event'].to_list()
+
+    def test_event_timestamp(self, make_thread):
+        """Event timestamp equals reset_system_time_ns // 1000 + micros_us."""
+        time_ref = TimeReferences(0, 0, reset_system_time_ns=5_000_000)
+        thread, data_queue = make_thread(
+            event_names=['Ev0', 'Tup'], time_reference=time_ref
+        )
+        thread.queue.put(RawEvent(micros_us=100, event_id=0))
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        ev = df.filter(pl.col('event') == 'Ev0')
+        assert ev['time'][0] == pl.Series(
+            [5100], dtype=pl.Datetime('us')
+        )[0]  # 5000 + 100 µs
+
+    def test_state_transition_generates_state_events(self, make_thread):
+        """State transition generates StateEnd for old state and StateStart for new."""
+        # event 0 triggers S0 → S1
+        fsm = _make_fsm(transitions={(0, 0): 1})
+        thread, data_queue = make_thread(fsm=fsm)
+        thread.queue.put(RawEvent(micros_us=0, event_id=0))
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        types = df['type'].cast(pl.String).to_list()
+        assert 'StateEnd' in types
+        assert 'StateStart' in types
+
+    def test_state_names_in_output(self, make_thread):
+        """State column contains the correct state names after a transition."""
+        fsm = _make_fsm(transitions={(0, 0): 1})
+        thread, data_queue = make_thread(fsm=fsm)
+        thread.queue.put(RawEvent(micros_us=0, event_id=0))
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        states = df['state'].drop_nulls().cast(pl.String).to_list()
+        assert 'S0' in states
+        assert 'S1' in states
+
+    def test_output_action_recorded(self, make_thread):
+        """Output actions for the current state are recorded on START_STATE."""
+        fsm = _make_fsm(state_actions=[{'PWM1': 128}, {}])
+        thread, data_queue = make_thread(fsm=fsm, action_names=['PWM1'])
+        # START_STATE triggers initial output recording for S0
+        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        output = df.filter(pl.col('type') == 'OutputAction')
+        assert 'PWM1' in output['channel'].cast(pl.String).to_list()
+
+    def test_ttl_reset_on_state_transition(self, make_thread):
+        """TTL output is reset to 0 when transitioning to a state without that action."""
+        # S0 sets TTL1=1; S1 has no actions; event 0 triggers S0→S1
+        fsm = _make_fsm(
+            transitions={(0, 0): 1},
+            state_actions=[{'TTL1': 1}, {}],
+        )
+        thread, data_queue = make_thread(fsm=fsm, action_names=['TTL1'])
+        # START_STATE seeds active_outputs with TTL1=1 for S0
+        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
+        thread.queue.put(RawEvent(micros_us=0, event_id=0))  # S0 → S1
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        ttl = df.filter((pl.col('type') == 'OutputAction') & (pl.col('channel') == 'TTL1'))
+        assert 0 in ttl['value'].to_list()
+
+    def test_peek_data_mid_trial(self, make_thread):
+        """peek_data returns a non-empty snapshot while the trial is running."""
+        thread, _ = make_thread()
+        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_FSM))
+        thread.queue.join()
+        df = thread.peek_data()
+        assert len(df) > 0
+
+    def test_buffer_growth(self, make_thread):
+        """Buffer doubles correctly when more than _INITIAL_BUFFER_SIZE events arrive."""
+        n = _INITIAL_BUFFER_SIZE + 10
+        thread, data_queue = make_thread(event_names=['Ev0', 'Tup'])
+        for _ in range(n):
+            thread.queue.put(RawEvent(micros_us=0, event_id=0))
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        assert len(df.filter(pl.col('event') == 'Ev0')) == n
 
 
 class TestSoftcodeThread:
