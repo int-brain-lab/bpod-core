@@ -684,7 +684,7 @@ class ServiceHost(ServiceBase):
 
         while not stop_event.is_set():
             # wait for incoming requests (short poll so we can check stop_event)
-            if not req_rep_socket.poll(100):
+            if not req_rep_socket.poll(10):
                 continue
 
             # receive request
@@ -881,7 +881,7 @@ class ServiceClient(ServiceBase, Generic[U]):
     ) -> None:
         """Process incoming PUB messages."""
         while not stop_event.is_set():
-            if not socket_sub.poll(100):
+            if not socket_sub.poll(10):
                 continue
             frame = socket_sub.recv(copy=False)
             message = decoder.decode(frame.buffer)
