@@ -241,7 +241,7 @@ class TestEventThread:
             t.stop()
             t.join(timeout=2)
 
-    def _collect(self, data_queue: Queue) -> pl.DataFrame:
+    def _collect(self, data_queue: Queue[pl.LazyFrame]) -> pl.DataFrame:
         return data_queue.get(timeout=2).collect()
 
     def test_stop_exits_thread(self, make_thread):
@@ -278,9 +278,9 @@ class TestEventThread:
         thread.join(timeout=2)
         df = self._collect(data_queue)
         ev = df.filter(pl.col('event') == 'Ev0')
-        assert ev['time'][0] == pl.Series(
-            [5100], dtype=pl.Datetime('us')
-        )[0]  # 5000 + 100 µs
+        assert (
+            ev['time'][0] == pl.Series([5100], dtype=pl.Datetime('us'))[0]
+        )  # 5000 + 100 µs
 
     def test_state_transition_generates_state_events(self, make_thread):
         """State transition generates StateEnd for old state and StateStart for new."""
@@ -320,7 +320,7 @@ class TestEventThread:
         assert 'PWM1' in output['channel'].cast(pl.String).to_list()
 
     def test_ttl_reset_on_state_transition(self, make_thread):
-        """TTL output is reset to 0 when transitioning to a state without that action."""
+        """TTL output is reset to 0."""
         # S0 sets TTL1=1; S1 has no actions; event 0 triggers S0→S1
         fsm = _make_fsm(
             transitions={(0, 0): 1},
@@ -333,7 +333,9 @@ class TestEventThread:
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        ttl = df.filter((pl.col('type') == 'OutputAction') & (pl.col('channel') == 'TTL1'))
+        ttl = df.filter(
+            (pl.col('type') == 'OutputAction') & (pl.col('channel') == 'TTL1')
+        )
         assert 0 in ttl['value'].to_list()
 
     def test_peek_data_mid_trial(self, make_thread):
@@ -341,11 +343,11 @@ class TestEventThread:
         thread, _ = make_thread()
         thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_FSM))
         thread.queue.join()
-        df = thread.peek_data()
+        df = thread.peek_data().collect()
         assert len(df) > 0
 
     def test_buffer_growth(self, make_thread):
-        """Buffer doubles correctly when more than _INITIAL_BUFFER_SIZE events arrive."""
+        """Buffer doubles correctly."""
         n = _INITIAL_BUFFER_SIZE + 10
         thread, data_queue = make_thread(event_names=['Ev0', 'Tup'])
         for _ in range(n):

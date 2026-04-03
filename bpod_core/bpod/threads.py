@@ -331,7 +331,7 @@ class EventThread(threading.Thread):
             Zero-based trial index, used to populate the ``trial`` column.
         fsm : CompiledStateMachine
             Compiled state machine data for this trial.
-        data_queue : Queue[pl.DataFrame]
+        data_queue : Queue[pl.LazyFrame]
             Queue to push the completed trial DataFrame into.
         event_lookup : pl.DataFrame
             Pre-built event metadata lookup, see :func:`_build_event_lookup`.
@@ -411,79 +411,83 @@ class EventThread(threading.Thread):
                 # get the next event
                 bpod_count_us, event_index = event_queue.get()
 
-                # check if we need to stop the thread
-                if event_index == _EventID.STOP_SENTINEL:
+                try:
+                    # check if we need to stop the thread
+                    if event_index == _EventID.STOP_SENTINEL:
+                        break
+
+                    # convert relative timestamps to absolute timestamps
+                    t_bpod_us = base_time_bpod_us + bpod_count_us
+
+                    # append the event to the buffer
+                    state = -1 if event_index in stateless_events else current_state
+                    self._append(t_bpod_us, event_index, state_id=state)
+
+                    # handle state transitions
+                    if event_index < 255:
+                        # define the target state based on the state transition matrix
+                        target_state = state_transitions[current_state][event_index]
+                        if target_state == current_state:  # no transition
+                            continue
+                        if (
+                            target_state == target_exit
+                        ):  # state exited without a successor
+                            self._append(
+                                t_bpod_us,
+                                _EventID.END_STATE,
+                                state_id=current_state,
+                            )
+                            continue
+                        if (
+                            target_state == target_back and use_back_op
+                        ):  # >back operator
+                            target_state = previous_state
+
+                        # record end of current state, advance, record start of next
+                        self._append(
+                            t_bpod_us, _EventID.END_STATE, state_id=current_state
+                        )
+                        previous_state = current_state
+                        current_state = target_state
+                        self._append(
+                            t_bpod_us, _EventID.START_STATE, state_id=current_state
+                        )
+
+                    # implicitly reset active outputs at the end of the state machine
+                    elif event_index == _EventID.END_FSM_CYCLES:
+                        for idx in sorted(active_outputs):
+                            output_id = _OUTPUT_ID_OFFSET + idx
+                            self._append(t_bpod_us, output_id, state_id=-1, value=0)
+                        active_outputs.clear()
+
+                    # record output actions (initial state & after state transitions):
+                    # absent channels are reset (0); others get their new value.
+                    if event_index < 255 or event_index == _EventID.START_STATE:
+                        new_actions = state_action_indices[current_state]
+                        for idx in sorted(active_outputs.keys() | new_actions.keys()):
+                            val = new_actions.get(idx, 0)
+                            output_id = _OUTPUT_ID_OFFSET + idx
+                            self._append(
+                                t_bpod_us,
+                                output_id,
+                                state_id=current_state,
+                                value=val,
+                            )
+                        active_outputs.clear()
+                        for idx, val in new_actions.items():
+                            if idx in resettable_indices and val > 0:
+                                active_outputs[idx] = val  # noqa: PERF403
+                finally:
+                    # signal that the event has been handled
                     event_queue.task_done()
-                    break
-
-                # convert relative timestamps to absolute timestamps
-                t_bpod_us = base_time_bpod_us + bpod_count_us
-
-                # append the event to the buffer (-1 = no state for trial-level events)
-                state = -1 if event_index in stateless_events else current_state
-                self._append(t_bpod_us, event_index, state_id=state)
-
-                # handle state transitions
-                if event_index < 255:
-                    # define the target state based on the state transition matrix
-                    target_state = state_transitions[current_state][event_index]
-                    if target_state == current_state:  # no transition
-                        event_queue.task_done()
-                        continue
-                    if target_state == target_exit:  # state exited without a successor
-                        self._append(
-                            t_bpod_us,
-                            _EventID.END_STATE,
-                            state_id=current_state,
-                        )
-                        event_queue.task_done()
-                        continue
-                    if target_state == target_back and use_back_op:  # >back operator
-                        target_state = previous_state
-
-                    # record end of current state, advance, record start of next
-                    self._append(t_bpod_us, _EventID.END_STATE, state_id=current_state)
-                    previous_state = current_state
-                    current_state = target_state
-                    self._append(
-                        t_bpod_us, _EventID.START_STATE, state_id=current_state
-                    )
-
-                # implicitly reset active outputs at the end of the state machine
-                elif event_index == _EventID.END_FSM_CYCLES:
-                    for idx in sorted(active_outputs):
-                        output_id = _OUTPUT_ID_OFFSET + idx
-                        self._append(t_bpod_us, output_id, state_id=-1, value=0)
-                    active_outputs = {}
-
-                # record output actions (for initial state and after state transitions):
-                # absent channels are reset (0); others get their new value.
-                if event_index < 255 or event_index == _EventID.START_STATE:
-                    new_actions = state_action_indices[current_state]
-                    for idx in sorted(active_outputs.keys() | new_actions.keys()):
-                        val = new_actions.get(idx, 0)
-                        output_id = _OUTPUT_ID_OFFSET + idx
-                        self._append(
-                            t_bpod_us,
-                            output_id,
-                            state_id=current_state,
-                            value=val,
-                        )
-                    active_outputs = {
-                        idx: val
-                        for idx, val in new_actions.items()
-                        if idx in resettable_indices and val > 0
-                    }
-
-                # signal that the event has been handled
-                event_queue.task_done()
         finally:
             self._enqueue_data()
 
     @property
     def _buffer_view(self) -> npt.NDArray:
         """Return a view of the buffer."""
-        return self._buffer[: self._n_events]
+        n = self._n_events
+        return self._buffer[:n]
 
     def _to_lazyframe(self, data: npt.NDArray) -> pl.LazyFrame:
         """Convert a buffer array to a trial LazyFrame."""
@@ -504,17 +508,17 @@ class EventThread(threading.Thread):
             .select('time', 'trial', 'state', 'type', 'event', 'channel', 'value')
         )
 
-    def peek_data(self) -> pl.DataFrame:
-        """Return a snapshot of events recorded so far as a DataFrame.
+    def peek_data(self) -> pl.LazyFrame:
+        """Return a snapshot of events recorded so far as a :class:`polars.LazyFrame`.
 
         Safe to call from a different thread while the trial is running. The
         returned DataFrame reflects events up to the moment ``_n_events`` was
         read; one in-flight event may be missed.
         """
-        return self._to_lazyframe(self._buffer_view.copy()).collect()
+        return self._to_lazyframe(self._buffer_view.copy())
 
     def _enqueue_data(self) -> None:
-        """Truncate buffer and enqueue recorded events as a LazyFrame."""
+        """Enqueue recorded events as a :class:`polars.LazyFrame`."""
         self._data_queue.put(self._to_lazyframe(self._buffer_view))
 
 
