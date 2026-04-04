@@ -567,10 +567,9 @@ class EventThread(threading.Thread):
 class SoftcodeThread(threading.Thread):
     """Consumer thread that executes softcode handlers sent from the Bpod.
 
-    Runs for the lifetime of the :class:`~bpod_core.bpod.Bpod` object as a daemon
-    thread. :class:`ReadThread` feeds :class:`~bpod_core.bpod.structs.RawSoftcode` items
-    into :attr:`queue`; ``SoftcodeThread`` drains that queue and calls the registered
-    handler for each softcode.
+    :class:`ReadThread` feeds :class:`~bpod_core.bpod.structs.RawSoftcode` items into
+    :attr:`queue`; ``SoftcodeThread`` drains that queue and calls the registered handler
+    for each softcode.
 
     The handler can be swapped at any time via :meth:`set_handler` without restarting
     the thread — the new handler takes effect on the next softcode.
@@ -594,13 +593,21 @@ class SoftcodeThread(threading.Thread):
         """Set the softcode handler, taking effect on the next received softcode."""
         self._softcode_handler = handler
 
+    def stop(self) -> None:
+        """Signal the thread to drain the queue and exit."""
+        self.queue.put(RawSoftcode(_EventID.STOP_SENTINEL, 0))
+
     def run(self) -> None:
         """Execute the SoftcodeThread."""
+        logger.debug('SoftcodeThread starting')
         queue = self.queue
 
         # enter the reading loop
         while True:
             softcode, received_ns = queue.get()
+            if softcode == _EventID.STOP_SENTINEL:
+                logger.debug('SoftcodeThread exiting')
+                break
             handler = self._softcode_handler
             if handler is not None:
                 try:
@@ -609,7 +616,8 @@ class SoftcodeThread(threading.Thread):
                     if logger.isEnabledFor(logging.DEBUG):
                         done_ns = time.perf_counter_ns()
                         logger.debug(
-                            "Called '%s(%d)': latency=%.3f ms, duration=%.3f ms",
+                            "Called '%s(%d)': "
+                            'dispatch latency=%.3f ms, duration=%.3f ms',
                             getattr(handler, '__name__', 'unknown'),
                             softcode,
                             (start_ns - received_ns) / 1e6,
@@ -617,11 +625,10 @@ class SoftcodeThread(threading.Thread):
                         )
                 except Exception as e:
                     logger.exception(
-                        "Error in user-provided handler '%s' for softcode %d",
+                        "Error calling '%s(%d)'",
                         getattr(handler, '__name__', 'unknown'),
                         softcode,
                         exc_info=e,
-                        stack_info=True,
                     )
             else:
                 logger.warning(

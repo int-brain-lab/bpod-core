@@ -80,6 +80,8 @@ class Bpod(SerialDevice, AbstractBpod):
     _zmq_service: ServiceHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
+
+    _softcode_thread: SoftcodeThread | None = None
     _softcode_handler: Callable[[int], None] | None = None
 
     serial1: ExtendedSerial | None = None
@@ -116,10 +118,6 @@ class Bpod(SerialDevice, AbstractBpod):
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._compiled_fsm: CompiledStateMachine | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
-        self._softcode_thread = SoftcodeThread(
-            softcode_handler=self._softcode_handler,
-        )
-        self._softcode_thread.start()
 
         # identify Bpod by port or serial number, open connection
         bpod_port, _ = self._identify_bpod(port, serial_number)
@@ -202,6 +200,8 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         super().open()
         self._handshake()
+        self._softcode_thread = SoftcodeThread(softcode_handler=self._softcode_handler)
+        self._softcode_thread.start()
 
     def close(self) -> None:
         """
@@ -215,6 +215,9 @@ class Bpod(SerialDevice, AbstractBpod):
             If the port could not be closed.
         """
         self.wait()
+        if self._softcode_thread is not None:
+            self._softcode_thread.stop()
+            self._softcode_thread.join()
         if hasattr(self, 'serial0'):
             self._request_disconnect(self.serial0)
         super().close()
