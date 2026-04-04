@@ -1,11 +1,13 @@
 """Threads for FSM execution and data collection from the Bpod hardware."""
 
 import logging
+import os
 import struct
 import threading
+import time
 from collections.abc import Callable
 from enum import IntEnum, auto
-from queue import SimpleQueue
+from queue import Empty, SimpleQueue
 
 import numpy as np
 import numpy.typing as npt
@@ -14,6 +16,7 @@ import polars as pl
 from bpod_core.bpod.structs import (
     CompiledStateMachine,
     RawEvent,
+    RawSoftcode,
     TimeReferences,
     _InputEvents,
 )
@@ -191,7 +194,7 @@ class ReadThread(threading.Thread):
         trial: int,
         cycle_period_us: int,
         queue_events: SimpleQueue[RawEvent],
-        queue_softcodes: SimpleQueue[int],
+        queue_softcodes: SimpleQueue[RawSoftcode],
     ) -> None:
         """
         Initialize the ReadThread.
@@ -206,7 +209,7 @@ class ReadThread(threading.Thread):
             The cycle period of the Bpod device in microseconds.
         queue_events : SimpleQueue[RawEvent]
             Queue for storing events.
-        queue_softcodes : SimpleQueue[int]
+        queue_softcodes : SimpleQueue[RawSoftcode]
             Queue for storing softcodes.
         """
         super().__init__(name='ReadThread', daemon=True)
@@ -286,8 +289,9 @@ class ReadThread(threading.Thread):
 
                 # HANDLE SOFTCODES
                 elif opcode == 2:
+                    received_ns = time.perf_counter_ns()
                     softcode = param - 1  # subtract 1 for zero-based indexing
-                    q_softcodes.put(softcode)
+                    q_softcodes.put(RawSoftcode(softcode, received_ns))
 
                 else:
                     raise RuntimeError(f'Received unknown opcode from Bpod: {opcode}')
@@ -564,7 +568,7 @@ class EventThread(threading.Thread):
 class SoftcodeThread(threading.Thread):
     """A thread for managing the execution of softcodes."""
 
-    queue: SimpleQueue[int]
+    queue: SimpleQueue[RawSoftcode]
     """Softcode queue shared with :class:`ReadThread`."""
 
     def __init__(
@@ -573,12 +577,12 @@ class SoftcodeThread(threading.Thread):
         softcode_handler: Callable[[int], None] | None,
     ) -> None:
         super().__init__(name='SoftcodeThread', daemon=True)
-        self.queue: SimpleQueue[int] = SimpleQueue()
+        self.queue: SimpleQueue[RawSoftcode] = SimpleQueue()
         self._softcode_handler = softcode_handler
 
     def stop(self) -> None:
         """Signal the FSM thread to stop."""
-        self.queue.put(_EventID.STOP_SENTINEL)
+        self.queue.put(RawSoftcode(_EventID.STOP_SENTINEL, 0))
 
     def run(self) -> None:
         """Execute the SoftcodeThread."""
@@ -589,15 +593,22 @@ class SoftcodeThread(threading.Thread):
 
         # enter the reading loop
         while True:
-            softcode = queue.get()
+            softcode, received_ns = queue.get()
             if softcode == _EventID.STOP_SENTINEL:
                 break
             if softcode_handler is not None:
-                logger.debug("Calling '%s(%d)'", handler_name, softcode)
                 try:
-                    # TODO: get perf_count_ns, add to event queue?
+                    start_ns = time.perf_counter_ns()
                     softcode_handler(softcode)
-                    # TODO: get perf_count_ns, add to event queue?
+                    if logger.isEnabledFor(logging.DEBUG):
+                        done_ns = time.perf_counter_ns()
+                        logger.debug(
+                            "Called '%s(%d)': latency=%.3f ms, duration=%.3f ms",
+                            handler_name,
+                            softcode,
+                            (start_ns - received_ns) / 1e6,
+                            (done_ns - start_ns) / 1e6,
+                        )
                 except Exception as e:
                     logger.exception(
                         "Error in user-provided handler '%s' for softcode %d",
