@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import struct
+import threading
 import time
 from queue import SimpleQueue
 
@@ -14,6 +15,7 @@ import pytest
 from bpod_core.bpod.structs import (
     CompiledStateMachine,
     RawEvent,
+    RawSoftcode,
     TimeReferences,
     _InputEvents,
 )
@@ -66,7 +68,7 @@ class TestReadThread:
         def _make(data: bytes, *, cycle_period_us: int = 1):
             mock_ext_serial.response_buffer.extend(data)
             q_events: SimpleQueue[RawEvent] = SimpleQueue()
-            q_softcodes: SimpleQueue[int] = SimpleQueue()
+            q_softcodes: SimpleQueue[RawSoftcode] = SimpleQueue()
             thread = ReadThread(
                 serial=mock_ext_serial,
                 trial=0,
@@ -130,7 +132,7 @@ class TestReadThread:
         thread, _, q_softcodes = make_thread(data)
         thread.start()
         thread.join(timeout=2)
-        assert _drain(q_softcodes) == [3]
+        assert [item.softcode for item in _drain(q_softcodes)] == [3]
 
     def test_end_events_enqueued(self, make_thread):
         """END_FSM_CYCLES, END_FSM_MICROS, and STOP_SENTINEL are enqueued after exit."""
@@ -371,70 +373,84 @@ class TestEventThread:
 class TestSoftcodeThread:
     @pytest.fixture
     def make_thread(self):
-        """Factory: returns a started SoftcodeThread and stops it after the test."""
-        threads = []
+        """Factory: returns a started SoftcodeThread (daemon)."""
 
         def _make(handler=None):
             thread = SoftcodeThread(softcode_handler=handler)
             thread.start()
-            threads.append(thread)
             return thread
 
-        yield _make
-
-        for t in threads:
-            t.stop()
-            t.join(timeout=2)
+        return _make
 
     def test_handler_called(self, make_thread):
         """Handler is called with the correct softcode value."""
         received = []
-        thread = make_thread(handler=received.append)
-        thread.queue.put(7)
-        thread.stop()
-        thread.join(timeout=2)
+        done = threading.Event()
+
+        def handler(code):
+            received.append(code)
+            done.set()
+
+        thread = make_thread(handler=handler)
+        thread.queue.put(RawSoftcode(7, 0))
+        assert done.wait(timeout=2)
         assert received == [7]
 
     def test_handler_called_in_order(self, make_thread):
         """Handler is called once per softcode in the order received."""
         received = []
-        thread = make_thread(handler=received.append)
+        done = threading.Event()
+
+        def handler(code):
+            received.append(code)
+            if len(received) == 3:
+                done.set()
+
+        thread = make_thread(handler=handler)
         for code in [1, 5, 3]:
-            thread.queue.put(code)
-        thread.stop()
-        thread.join(timeout=2)
+            thread.queue.put(RawSoftcode(code, 0))
+        assert done.wait(timeout=2)
         assert received == [1, 5, 3]
 
     def test_no_handler_logs_warning(self, make_thread, caplog):
         """A warning is logged when no handler is defined."""
         thread = make_thread(handler=None)
         with caplog.at_level(logging.WARNING):
-            thread.queue.put(4)
-            thread.stop()
-            thread.join(timeout=2)
+            thread.queue.put(RawSoftcode(4, 0))
+            # give the thread time to process and log
+            time.sleep(0.1)
         assert '4' in caplog.text
 
     def test_handler_exception_logged_and_continues(self, make_thread, caplog):
         """An exception in the handler is logged and processing continues."""
         received = []
+        done = threading.Event()
 
         def handler(code):
             if code == 0:
                 raise ValueError('bad softcode')
             received.append(code)
+            done.set()
 
         thread = make_thread(handler=handler)
         with caplog.at_level(logging.ERROR):
-            thread.queue.put(0)
-            thread.queue.put(9)
-            thread.stop()
-            thread.join(timeout=2)
+            thread.queue.put(RawSoftcode(0, 0))
+            thread.queue.put(RawSoftcode(9, 0))
+            assert done.wait(timeout=2)
         assert received == [9]
         assert 'bad softcode' in caplog.text
 
-    def test_stop_terminates_thread(self, make_thread):
-        """stop() causes the thread to exit cleanly."""
-        thread = make_thread()
-        thread.stop()
-        thread.join(timeout=2)
-        assert not thread.is_alive()
+    def test_set_handler(self, make_thread):
+        """set_handler() swaps the handler; subsequent softcodes use the new one."""
+        received = []
+        done = threading.Event()
+
+        def handler_b(code):
+            received.append(('b', code))
+            done.set()
+
+        thread = make_thread(handler=lambda code: received.append(('a', code)))
+        thread.set_handler(handler_b)
+        thread.queue.put(RawSoftcode(3, 0))
+        assert done.wait(timeout=2)
+        assert received == [('b', 3)]

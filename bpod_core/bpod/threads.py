@@ -1,13 +1,12 @@
 """Threads for FSM execution and data collection from the Bpod hardware."""
 
 import logging
-import os
 import struct
 import threading
 import time
 from collections.abc import Callable
 from enum import IntEnum, auto
-from queue import Empty, SimpleQueue
+from queue import SimpleQueue
 
 import numpy as np
 import numpy.typing as npt
@@ -566,7 +565,18 @@ class EventThread(threading.Thread):
 
 
 class SoftcodeThread(threading.Thread):
-    """A thread for managing the execution of softcodes."""
+    """Consumer thread that executes softcode handlers sent from the Bpod.
+
+    Runs for the lifetime of the :class:`~bpod_core.bpod.Bpod` object as a daemon
+    thread. :class:`ReadThread` feeds :class:`~bpod_core.bpod.structs.RawSoftcode` items
+    into :attr:`queue`; ``SoftcodeThread`` drains that queue and calls the registered
+    handler for each softcode.
+
+    The handler can be swapped at any time via :meth:`set_handler` without restarting
+    the thread — the new handler takes effect on the next softcode.
+
+    Handler exceptions are caught, logged, and execution continues.
+    """
 
     queue: SimpleQueue[RawSoftcode]
     """Softcode queue shared with :class:`ReadThread`."""
@@ -580,31 +590,27 @@ class SoftcodeThread(threading.Thread):
         self.queue: SimpleQueue[RawSoftcode] = SimpleQueue()
         self._softcode_handler = softcode_handler
 
-    def stop(self) -> None:
-        """Signal the FSM thread to stop."""
-        self.queue.put(RawSoftcode(_EventID.STOP_SENTINEL, 0))
+    def set_handler(self, handler: Callable[[int], None] | None) -> None:
+        """Set the softcode handler, taking effect on the next received softcode."""
+        self._softcode_handler = handler
 
     def run(self) -> None:
         """Execute the SoftcodeThread."""
-        # assign members to local variables to avoid repeated attribute lookups
         queue = self.queue
-        softcode_handler = self._softcode_handler
-        handler_name = getattr(softcode_handler, '__name__', 'unknown')
 
         # enter the reading loop
         while True:
             softcode, received_ns = queue.get()
-            if softcode == _EventID.STOP_SENTINEL:
-                break
-            if softcode_handler is not None:
+            handler = self._softcode_handler
+            if handler is not None:
                 try:
                     start_ns = time.perf_counter_ns()
-                    softcode_handler(softcode)
+                    handler(softcode)
                     if logger.isEnabledFor(logging.DEBUG):
                         done_ns = time.perf_counter_ns()
                         logger.debug(
                             "Called '%s(%d)': latency=%.3f ms, duration=%.3f ms",
-                            handler_name,
+                            getattr(handler, '__name__', 'unknown'),
                             softcode,
                             (start_ns - received_ns) / 1e6,
                             (done_ns - start_ns) / 1e6,
@@ -612,7 +618,7 @@ class SoftcodeThread(threading.Thread):
                 except Exception as e:
                     logger.exception(
                         "Error in user-provided handler '%s' for softcode %d",
-                        handler_name,
+                        getattr(handler, '__name__', 'unknown'),
                         softcode,
                         exc_info=e,
                         stack_info=True,

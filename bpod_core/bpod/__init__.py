@@ -1347,22 +1347,9 @@ class Bpod(SerialDevice, AbstractBpod):
         ----------
         softcode_handler : Callable, optional
             The function to call when a softcode is received.
-
-        Raises
-        ------
-        RuntimeError
-            If a state machine is currently running.
         """
-        if self.is_running:
-            raise RuntimeError(
-                'Cannot set softcode handler while a state machine is running'
-            )
         self._softcode_handler = softcode_handler
-        self._softcode_thread.stop()
-        self._softcode_thread = SoftcodeThread(
-            softcode_handler=self._softcode_handler,
-        )
-        self._softcode_thread.start()
+        self._softcode_thread.set_handler(softcode_handler)
 
 
 class Channel:
