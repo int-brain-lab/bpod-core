@@ -462,6 +462,10 @@ class EventThread(threading.Thread):
                 # convert relative timestamps to absolute timestamps
                 t_bpod_us = base_time_bpod_us + bpod_count_us
 
+                # implicitly end current state before TrialEnd
+                if event_index == _EventID.END_FSM_CYCLES and current_state >= 0:
+                    self._append(t_bpod_us, _EventID.END_STATE, state_id=current_state)
+
                 # append the event to the buffer
                 state = -1 if event_index in stateless_events else current_state
                 self._append(t_bpod_us, event_index, state_id=state)
@@ -478,6 +482,7 @@ class EventThread(threading.Thread):
                             _EventID.END_STATE,
                             state_id=current_state,
                         )
+                        current_state = -1
                         continue
                     if target_state == target_back and use_back_op:  # >back operator
                         target_state = previous_state
@@ -490,7 +495,7 @@ class EventThread(threading.Thread):
                         t_bpod_us, _EventID.START_STATE, state_id=current_state
                     )
 
-                # implicitly reset active outputs at the end of the state machine
+                # implicitly reset active outputs at trial end
                 elif event_index == _EventID.END_FSM_CYCLES:
                     for idx in sorted(active_outputs):
                         output_id = _OUTPUT_ID_OFFSET + idx
