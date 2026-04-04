@@ -392,7 +392,7 @@ class TestSoftcodeThread:
             done.set()
 
         thread = make_thread(handler=handler)
-        thread.queue.put(RawSoftcode(7, 0))
+        thread.queue.put(RawSoftcode(7, 0, 0))
         assert done.wait(timeout=2)
         assert received == [7]
 
@@ -408,7 +408,7 @@ class TestSoftcodeThread:
 
         thread = make_thread(handler=handler)
         for code in [1, 5, 3]:
-            thread.queue.put(RawSoftcode(code, 0))
+            thread.queue.put(RawSoftcode(code, 0, 0))
         assert done.wait(timeout=2)
         assert received == [1, 5, 3]
 
@@ -416,7 +416,7 @@ class TestSoftcodeThread:
         """A warning is logged when no handler is defined."""
         thread = make_thread(handler=None)
         with caplog.at_level(logging.WARNING):
-            thread.queue.put(RawSoftcode(4, 0))
+            thread.queue.put(RawSoftcode(4, 0, 0))
             # give the thread time to process and log
             time.sleep(0.1)
         assert '4' in caplog.text
@@ -434,8 +434,8 @@ class TestSoftcodeThread:
 
         thread = make_thread(handler=handler)
         with caplog.at_level(logging.ERROR):
-            thread.queue.put(RawSoftcode(0, 0))
-            thread.queue.put(RawSoftcode(9, 0))
+            thread.queue.put(RawSoftcode(0, 0, 0))
+            thread.queue.put(RawSoftcode(9, 0, 0))
             assert done.wait(timeout=2)
         assert received == [9]
         assert 'bad softcode' in caplog.text
@@ -451,6 +451,6 @@ class TestSoftcodeThread:
 
         thread = make_thread(handler=lambda code: received.append(('a', code)))
         thread.set_handler(handler_b)
-        thread.queue.put(RawSoftcode(3, 0))
+        thread.queue.put(RawSoftcode(3, 0, 0))
         assert done.wait(timeout=2)
         assert received == [('b', 3)]
