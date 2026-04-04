@@ -616,10 +616,19 @@ class Bpod(SerialDevice, AbstractBpod):
             values.extend(ev_values)
             counters[io_key] += 1
 
-        # Add global timers, global counters, conditions and 'Tup' (no input channel)
+        # Add global timers (channel = 'GlobalTimer{i}', value = 1 for Start, 0 for End)
+        n = self._hardware.n_global_timers
+        for i in range(n):
+            names.append(f'GlobalTimer{i}_Start')
+            channels.append(f'GlobalTimer{i}')
+            values.append(1)
+        for i in range(n):
+            names.append(f'GlobalTimer{i}_End')
+            channels.append(f'GlobalTimer{i}')
+            values.append(0)
+
+        # Add global counters, conditions and 'Tup' (no input channel)
         for event_name, n in [
-            ('GlobalTimer{}_Start', self._hardware.n_global_timers),
-            ('GlobalTimer{}_End', self._hardware.n_global_timers),
             ('GlobalCounter{}_End', self._hardware.n_global_counters),
             ('Condition{}', self._hardware.n_conditions),
         ]:
