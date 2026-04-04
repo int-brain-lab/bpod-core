@@ -242,6 +242,7 @@ class ReadThread(threading.Thread):
             cycle_period_us = self._cycle_period_us
             q_events = self._queue_events
             q_softcodes = self._queue_softcodes
+            trial = self._trial
 
             # create buffers / memoryview for repeated serial reads
             opcode_buf = bytearray(2)  # buffer for opcodes
@@ -290,7 +291,7 @@ class ReadThread(threading.Thread):
                 elif opcode == 2:
                     received_ns = time.perf_counter_ns()
                     softcode = param - 1  # subtract 1 for zero-based indexing
-                    q_softcodes.put(RawSoftcode(softcode, received_ns))
+                    q_softcodes.put(RawSoftcode(softcode, received_ns, trial))
 
                 else:
                     raise RuntimeError(f'Received unknown opcode from Bpod: {opcode}')
@@ -588,26 +589,27 @@ class SoftcodeThread(threading.Thread):
         super().__init__(name='SoftcodeThread', daemon=True)
         self.queue: SimpleQueue[RawSoftcode] = SimpleQueue()
         self._softcode_handler = softcode_handler
+        self._idle = threading.Event()
+        self._idle.set()
+
+    def drain(self) -> None:
+        """Block until the queue is empty and any running handler has returned."""
+        if not self._idle.is_set():
+            logger.warning('Waiting for softcodes to be processed ...')
+        self._idle.wait()
 
     def set_handler(self, handler: Callable[[int], None] | None) -> None:
         """Set the softcode handler, taking effect on the next received softcode."""
         self._softcode_handler = handler
 
-    def stop(self) -> None:
-        """Signal the thread to drain the queue and exit."""
-        self.queue.put(RawSoftcode(_EventID.STOP_SENTINEL, 0))
-
     def run(self) -> None:
         """Execute the SoftcodeThread."""
-        logger.debug('SoftcodeThread starting')
         queue = self.queue
 
         # enter the reading loop
         while True:
-            softcode, received_ns = queue.get()
-            if softcode == _EventID.STOP_SENTINEL:
-                logger.debug('SoftcodeThread exiting')
-                break
+            softcode, received_ns, trial = queue.get()
+            self._idle.clear()
             handler = self._softcode_handler
             if handler is not None:
                 try:
@@ -616,10 +618,11 @@ class SoftcodeThread(threading.Thread):
                     if logger.isEnabledFor(logging.DEBUG):
                         done_ns = time.perf_counter_ns()
                         logger.debug(
-                            "Called '%s(%d)': "
+                            "'%s(%d)' called from state machine #%d: "
                             'dispatch latency=%.3f ms, duration=%.3f ms',
                             getattr(handler, '__name__', 'unknown'),
                             softcode,
+                            trial,
                             (start_ns - received_ns) / 1e6,
                             (done_ns - start_ns) / 1e6,
                         )
@@ -634,3 +637,5 @@ class SoftcodeThread(threading.Thread):
                 logger.warning(
                     'Received softcode %d from Bpod but no handler is defined', softcode
                 )
+            if queue.empty():
+                self._idle.set()

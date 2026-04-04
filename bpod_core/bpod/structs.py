@@ -64,6 +64,8 @@ class RawSoftcode(NamedTuple):
     """Zero-based softcode value."""
     received_ns: int
     """``time.perf_counter_ns()`` captured immediately after the serial read."""
+    trial: int
+    """Trial number."""
 
 
 class BpodSettings(msgspec.Struct):
