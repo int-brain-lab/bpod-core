@@ -7,6 +7,7 @@ from serial import SerialException
 
 from bpod_core.bpod import Bpod, BpodError
 from bpod_core.com import ExtendedSerial
+from bpod_core.constants import STRUCT_INT16_LE, STRUCT_UINT8
 from bpod_core.fsm import StateMachine
 
 
@@ -87,8 +88,8 @@ class TestGetVersionInfo:
         """Test retrieval of version info with supported firmware and hardware."""
         mock_bpod.serial0.mock_responses = {
             b'F': struct.pack('<2H', 23, 3),  # Firmware version 23, Bpod type 3
-            b'f': struct.pack('<H', 1),  # Minor firmware version 1
-            b'v': struct.pack('<B', 2),  # PCB revision 2
+            b'f': STRUCT_INT16_LE.pack(1),  # Minor firmware version 1
+            b'v': STRUCT_UINT8.pack(2),  # PCB revision 2
         }
         Bpod._get_version_info(mock_bpod)
         assert mock_bpod._version.firmware == (23, 1)
@@ -99,7 +100,7 @@ class TestGetVersionInfo:
         """Test failure when firmware version is unsupported."""
         mock_bpod.serial0.mock_responses = {
             b'F': struct.pack('<2H', 20, 3),  # Firmware version 20, Bpod type 3
-            b'f': struct.pack('<H', 1),  # Minor firmware version 1
+            b'f': STRUCT_INT16_LE.pack(1),  # Minor firmware version 1
         }
         with pytest.raises(BpodError, match=r'firmware .* is not supported'):
             Bpod._get_version_info(mock_bpod)
@@ -108,7 +109,7 @@ class TestGetVersionInfo:
         """Test failure when hardware version is unsupported."""
         mock_bpod.serial0.mock_responses = {
             b'F': struct.pack('<2H', 23, 2),  # Firmware version 23, Bpod type 2
-            b'f': struct.pack('<H', 1),  # Minor firmware version 1
+            b'f': STRUCT_INT16_LE.pack(1),  # Minor firmware version 1
         }
         with pytest.raises(BpodError, match=r'hardware .* is not supported'):
             Bpod._get_version_info(mock_bpod)

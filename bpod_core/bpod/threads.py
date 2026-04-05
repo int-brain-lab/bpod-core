@@ -13,9 +13,9 @@ import numpy.typing as npt
 import polars as pl
 
 from bpod_core.bpod.structs import (
-    CompiledStateMachine,
     RawEvent,
     RawSoftcode,
+    StateMachineLookup,
     TimeReferences,
     _InputEvents,
 )
@@ -31,10 +31,7 @@ _INITIAL_BUFFER_SIZE = 2048
 """Initial size of the event buffer in EventThread."""
 
 _OUTPUT_ID_OFFSET = 1000
-"""Event ID offset for output action events.
-
-Avoids collision with hardware events (0-254) and synthetic events (256-260).
-"""
+"""Event ID offset for output action events."""
 
 _EVENT_DTYPE = np.dtype(
     [
@@ -242,7 +239,6 @@ class ReadThread(threading.Thread):
             cycle_period_us = self._cycle_period_us
             q_events = self._queue_events
             q_softcodes = self._queue_softcodes
-            trial = self._trial
 
             # create buffers / memoryview for repeated serial reads
             opcode_buf = bytearray(2)  # buffer for opcodes
@@ -252,6 +248,9 @@ class ReadThread(threading.Thread):
             # handle events: start of state machine, start of state
             q_events.put(RawEvent(start_micros_us, _EventID.START_FSM))
             q_events.put(RawEvent(start_micros_us, _EventID.START_STATE))
+
+            # tracks the most recent Bpod cycle timestamp for softcode attribution
+            last_micros_us = start_micros_us
 
             # enter the reading loop
             while not self._stop_event.is_set():
@@ -279,6 +278,7 @@ class ReadThread(threading.Thread):
                     # unpack the cycle count and derive the event timestamp
                     (n_cycles,) = STRUCT_UINT32_LE.unpack_from(event_data_view, param)
                     derived_micros_us = start_micros_us + n_cycles * cycle_period_us
+                    last_micros_us = derived_micros_us
 
                     # hand events over to the EventThread
                     for event in event_data_view[:param]:
@@ -291,7 +291,12 @@ class ReadThread(threading.Thread):
                 elif opcode == 2:
                     received_ns = time.perf_counter_ns()
                     softcode = param - 1  # subtract 1 for zero-based indexing
-                    q_softcodes.put(RawSoftcode(softcode, received_ns, trial))
+
+                    # add softcode to the softcode queue
+                    # note: while incoming softcodes do not carry a timestamp, they are
+                    #       always preceded by a state change in the same cycle. We can
+                    #       thus use the last available timestamp for the softcode.
+                    q_softcodes.put(RawSoftcode(softcode, received_ns, last_micros_us))
 
                 else:
                     raise RuntimeError(f'Received unknown opcode from Bpod: {opcode}')
@@ -364,7 +369,7 @@ class EventThread(threading.Thread):
         self,
         *,
         trial: int,
-        fsm: CompiledStateMachine,
+        fsm: StateMachineLookup,
         data_queue: SimpleQueue[pl.LazyFrame],
         event_lookup: pl.DataFrame,
         action_names: list[str],
@@ -377,7 +382,7 @@ class EventThread(threading.Thread):
         ----------
         trial : int
             Zero-based trial index, used to populate the ``trial`` column.
-        fsm : CompiledStateMachine
+        fsm : StateMachineLookup
             Compiled state machine data for this trial.
         data_queue : SimpleQueue[pl.LazyFrame]
             Queue to push the completed trial DataFrame into.
@@ -392,7 +397,7 @@ class EventThread(threading.Thread):
         self.queue: SimpleQueue[RawEvent] = SimpleQueue()
         self._trial = trial
         self._data_queue = data_queue
-        self._state_transitions = fsm.state_transitions
+        self._state_transition_matrix = fsm.state_transition_matrix
         self._use_back_op = fsm.use_back_op
         self._time_reference = time_reference
         self._buffer: npt.NDArray = np.empty(_INITIAL_BUFFER_SIZE, dtype=_EVENT_DTYPE)
@@ -437,11 +442,11 @@ class EventThread(threading.Thread):
     def run(self) -> None:
         """Execute the EventThread."""
         event_queue = self.queue
-        state_transitions = self._state_transitions
+        state_transition_matrix = self._state_transition_matrix
         state_action_indices = self._state_action_indices
         resettable_indices = self._resettable_indices
         use_back_op = self._use_back_op
-        target_exit = len(state_transitions)
+        target_exit = state_transition_matrix.shape[0]
         target_back = 255
         stateless_events = (
             _EventID.START_FSM,
@@ -477,7 +482,7 @@ class EventThread(threading.Thread):
                 # handle state transitions
                 if event_index < 255:
                     # define the target state based on the state transition matrix
-                    target_state = state_transitions[current_state][event_index]
+                    target_state = state_transition_matrix[current_state][event_index]
                     if target_state == current_state:  # no transition
                         continue
                     if target_state == target_exit:  # state exited without a successor
@@ -591,6 +596,7 @@ class SoftcodeThread(threading.Thread):
         self._softcode_handler = softcode_handler
         self._idle = threading.Event()
         self._idle.set()
+        self._pc_base_ns: int = 0  # perf_counter_ns equivalent of session clock t=0
 
     def drain(self) -> None:
         """Block until the queue is empty and any running handler has returned."""
@@ -602,13 +608,21 @@ class SoftcodeThread(threading.Thread):
         """Set the softcode handler, taking effect on the next received softcode."""
         self._softcode_handler = handler
 
+    def set_time_reference(self, time_ref: TimeReferences) -> None:
+        """Update the session clock reference used for Bpod-relative latency logging."""
+        self._pc_base_ns = (
+            time_ref.reset_system_time_ns
+            - time_ref.init_system_time_ns
+            + time_ref.init_perf_counter_ns
+        )
+
     def run(self) -> None:
         """Execute the SoftcodeThread."""
         queue = self.queue
 
         # enter the reading loop
         while True:
-            softcode, received_ns, trial = queue.get()
+            softcode, received_ns, micros_us = queue.get()
             self._idle.clear()
             handler = self._softcode_handler
             if handler is not None:
@@ -617,12 +631,13 @@ class SoftcodeThread(threading.Thread):
                     handler(softcode)
                     if logger.isEnabledFor(logging.DEBUG):
                         done_ns = time.perf_counter_ns()
+                        fire_ns = self._pc_base_ns + micros_us * 1000
                         logger.debug(
-                            "'%s(%d)' called from state machine #%d: "
-                            'dispatch latency=%.3f ms, duration=%.3f ms',
+                            "'%s(%d)': "
+                            'latency=%.3f ms, dispatch=%.3f ms, duration=%.3f ms',
                             getattr(handler, '__name__', 'unknown'),
                             softcode,
-                            trial,
+                            (start_ns - fire_ns) / 1e6,
                             (start_ns - received_ns) / 1e6,
                             (done_ns - start_ns) / 1e6,
                         )

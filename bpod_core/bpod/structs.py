@@ -19,22 +19,19 @@ class _InputEvents(NamedTuple):
     """Pre-defined value for each event, or ``None`` if not applicable."""
 
 
-class CompiledStateMachine(NamedTuple):
-    """Per-trial data derived from a compiled :class:`~bpod_core.fsm.StateMachine`."""
+class StateMachineLookup(NamedTuple):
+    """Lookup data to decode the raw event stream during a state machine trial."""
 
     state_names: list[str]
     """Names of all states, indexed by state index."""
-    state_transitions: npt.NDArray[np.uint8]
+    state_transition_matrix: npt.NDArray[np.uint8]
     """Transition matrix of shape ``(n_states, 255)``."""
     state_actions: list[dict[str, int]]
     """Per-state mapping of action name to value."""
     use_back_op: bool
     """Whether the ``>back`` operator is used."""
     state_lookup: pl.DataFrame
-    """Categorical lookup DataFrame mapping state index to state name.
-
-    Pre-built at FSM compilation time for use in :meth:`~EventThread.get_data`.
-    """
+    """Categorical lookup DataFrame mapping state index to state name."""
 
 
 class TimeReferences(NamedTuple):
@@ -64,8 +61,8 @@ class RawSoftcode(NamedTuple):
     """Zero-based softcode value."""
     received_ns: int
     """``time.perf_counter_ns()`` captured immediately after the serial read."""
-    trial: int
-    """Trial number."""
+    micros_us: int
+    """Bpod session clock at the time of softcode firing (microseconds)."""
 
 
 class BpodSettings(msgspec.Struct):

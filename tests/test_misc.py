@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from bpod_core import misc
+from bpod_core.constants import FMT_UINT8
 from bpod_core.misc import ValidatedDict
 
 
@@ -355,7 +356,7 @@ class TestExtendPacked:
     def test_pack_unsigned_bytes(self):
         """Packs a list of unsigned bytes."""
         buf = bytearray()
-        misc.extend_packed(buf, [1, 2, 255], 'B')
+        misc.extend_packed(buf, [1, 2, 255], FMT_UINT8)
         assert buf == b'\x01\x02\xff'
 
     def test_pack_unsigned_shorts(self):
@@ -381,7 +382,7 @@ class TestExtendPacked:
     def test_extends_existing_buffer(self):
         """Appends to an existing bytearray without overwriting."""
         buf = bytearray(b'\xaa\xbb')
-        misc.extend_packed(buf, [1, 2], 'B')
+        misc.extend_packed(buf, [1, 2], FMT_UINT8)
         assert buf == b'\xaa\xbb\x01\x02'
 
     def test_invalid_format_raises_struct_error(self):
@@ -394,13 +395,13 @@ class TestExtendPacked:
         """Raises struct.error when value exceeds format range."""
         buf = bytearray()
         with pytest.raises(struct.error):
-            misc.extend_packed(buf, [256], 'B')  # max for 'B' is 255
+            misc.extend_packed(buf, [256], FMT_UINT8)  # max for uInt8 is 255
 
     def test_negative_for_unsigned_raises_struct_error(self):
         """Raises struct.error for negative value with unsigned format."""
         buf = bytearray()
         with pytest.raises(struct.error):
-            misc.extend_packed(buf, [-1], 'B')
+            misc.extend_packed(buf, [-1], FMT_UINT8)
 
 
 class TestValidatedDict:

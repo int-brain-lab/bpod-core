@@ -13,9 +13,9 @@ import polars as pl
 import pytest
 
 from bpod_core.bpod.structs import (
-    CompiledStateMachine,
     RawEvent,
     RawSoftcode,
+    StateMachineLookup,
     TimeReferences,
     _InputEvents,
 )
@@ -28,6 +28,7 @@ from bpod_core.bpod.threads import (
     _build_event_lookup,
     _EventID,
 )
+from bpod_core.constants import STRUCT_UINT32_LE, STRUCT_UINT64_LE
 
 _CONFIRM_OK = b'\x01'
 _CONFIRM_FAIL = b'\x00'
@@ -35,12 +36,12 @@ _CONFIRM_FAIL = b'\x00'
 
 def _start(micros_us: int = 0) -> bytes:
     """Encode start_micros_us as read by read_uint64."""
-    return struct.pack('<Q', micros_us)
+    return STRUCT_UINT64_LE.pack(micros_us)
 
 
 def _opcode1(events: list[int], n_cycles: int) -> bytes:
     """Encode an opcode-1 (hardware events) packet."""
-    return bytes([1, len(events), *events]) + struct.pack('<I', n_cycles)
+    return bytes([1, len(events), *events]) + STRUCT_UINT32_LE.pack(n_cycles)
 
 
 def _opcode2(softcode: int) -> bytes:
@@ -183,17 +184,15 @@ def _make_fsm(
     n_states: int = 2,
     transitions: dict[tuple[int, int], int] | None = None,
     state_actions: list[dict[str, int]] | None = None,
-) -> CompiledStateMachine:
+) -> StateMachineLookup:
     """Build a minimal CompiledStateMachine for testing."""
-    mat = np.arange(n_states, dtype=np.uint8)[:, np.newaxis] * np.ones(
-        (1, 255), dtype=np.uint8
-    )
+    mat = np.arange(n_states, dtype=np.uint8)[:, np.newaxis].repeat(255, axis=1)
     for (state, event), target in (transitions or {}).items():
         mat[state][event] = target
     state_names = [f'S{i}' for i in range(n_states)]
-    return CompiledStateMachine(
+    return StateMachineLookup(
         state_names=state_names,
-        state_transitions=mat,
+        state_transition_matrix=mat,
         state_actions=state_actions or [{} for _ in range(n_states)],
         use_back_op=False,
         state_lookup=pl.DataFrame(
@@ -212,7 +211,7 @@ class TestEventThread:
         threads = []
 
         def _make(
-            fsm: CompiledStateMachine | None = None,
+            fsm: StateMachineLookup | None = None,
             action_names: list[str] | None = None,
             event_names: list[str] | None = None,
             time_reference: TimeReferences | None = None,
