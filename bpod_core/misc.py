@@ -390,7 +390,7 @@ def extend_packed(
     https://docs.python.org/3/library/struct.html#format-characters
     """
     if values:
-        byte_array.extend(struct.pack(f'<{len(values)}{fmt}', *values))
+        byte_array.extend(struct.pack(f'<{len(values)}{fmt.lstrip("<>")}', *values))
 
 
 def prune_empty_parent_directories(
