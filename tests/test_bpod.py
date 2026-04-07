@@ -270,6 +270,13 @@ class TestSendStateMachine:
         fsm.add_state('b', 1, {'Tup': '>exit', 'Condition1': '>exit'}, {'PWM2': 255})
         return fsm
 
+    @pytest.fixture
+    def fsm_softcodes(self):
+        fsm = StateMachine()
+        fsm.add_state('a', 5, {'SoftCode0': 'b', 'Tup': '>exit'})
+        fsm.add_state('b', 0, {'Tup': '>exit'})
+        return fsm
+
     def test_send_state_machine_basic_25(self, fsm_basic, mock_bpod_25):
         """Test sending a basic state machine to Bpod 2.5."""
         mock_bpod_25.send_state_machine(fsm_basic, run_asap=False)
@@ -358,4 +365,13 @@ class TestSendStateMachine:
             b'\x01\x00\x0c\x00\xff\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x02\x00\x0c'
             b'\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10\x27\x00\x00\x10'
             b'\x27\x00\x00\x00'
+        )
+
+    def test_send_state_machine_softcodes_2p(self, fsm_softcodes, mock_bpod_25):
+        """Test sending a state machine with softcodes to Bpod 2.5."""
+        mock_bpod_25.send_state_machine(fsm_softcodes)
+        assert mock_bpod_25.serial0.last_write == (
+            b'C\x00\x00&\x00\x02\x00\x00\x00\x02\x02\x01K\x01\x00\x00\x00\x00\x00\x00'
+            b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00P\xc3\x00\x00\x00'
+            b'\x00\x00\x00\x00'
         )
