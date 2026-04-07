@@ -631,44 +631,39 @@ class Bpod(SerialDevice, AbstractBpod):
             event_channels.extend(ev_channels)
             event_values.extend(ev_values)
             counters[io_key] += 1
-        event_range_input = range(len(event_names))
+        _n_events = len(event_names)
+        range_input = range(_n_events)
 
         # global timer start events
-        range_start = event_range_input.stop
-        range_end = range_start
+        range_global_timer_starts = range(_n_events, _n_events + hw.n_global_timers)
         for i in range(hw.n_global_timers):
-            range_end += 1
             event_names.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}_Start')
             event_channels.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}')
             event_values.append(1)
-        event_range_global_timer_starts = range(range_start, range_end)
+        _n_events += hw.n_global_timers
 
         # global timer end events
-        range_start = range_end
+        range_global_timer_ends = range(_n_events, _n_events + hw.n_global_timers)
         for i in range(hw.n_global_timers):
-            range_end += 1
             event_names.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}_End')
             event_channels.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}')
             event_values.append(0)
-        event_range_global_timer_ends = range(range_start, range_end)
+        _n_events += hw.n_global_timers
 
         # global counter end events
-        range_start = range_end
+        range_global_counter_ends = range(_n_events, _n_events + hw.n_global_counters)
         for i in range(hw.n_global_counters):
-            range_end += 1
             event_names.append(f'{_CHANNEL_BASE_NAME_GLOBAL_COUNTER}{i}_End')
             event_channels.append(None)
             event_values.append(None)
-        event_range_global_counter_ends = range(range_start, range_end)
+        _n_events += hw.n_global_counters
 
         # condition events
-        range_start = range_end
+        range_conditions = range(_n_events, _n_events + hw.n_conditions)
         for i in range(hw.n_conditions):
-            range_end += 1
             event_names.append(f'{_CHANNEL_BASE_NAME_CONDITION}{i}')
             event_channels.append(None)
             event_values.append(None)
-        event_range_conditions = range(range_start, range_end)
 
         # state timer end event
         event_names.append('Tup')
@@ -681,11 +676,11 @@ class Bpod(SerialDevice, AbstractBpod):
         )
         self._event_indices = {k: v for v, k in enumerate(event_names)}
         self._input_event_ranges = _InputEventRanges(
-            input_channels=event_range_input,
-            global_timer_starts=event_range_global_timer_starts,
-            global_timer_ends=event_range_global_timer_ends,
-            global_counter_ends=event_range_global_counter_ends,
-            conditions=event_range_conditions,
+            input_channels=range_input,
+            global_timer_starts=range_global_timer_starts,
+            global_timer_ends=range_global_timer_ends,
+            global_counter_ends=range_global_counter_ends,
+            conditions=range_conditions,
         )
 
         modules = [m.name for m in self.modules]
