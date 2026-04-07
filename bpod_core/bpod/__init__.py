@@ -726,6 +726,10 @@ class Bpod(SerialDevice, AbstractBpod):
         self._physical_output_channels = [m.name for m in self.modules] + [
             o.name for o in self.outputs if o.io_type != b'U'
         ]
+        self._timer_channel_indices = {
+            k: v for v, k in enumerate(self._physical_output_channels)
+        }
+        self._timer_channel_indices[None] = 254
 
     @validate_call
     def set_status_led(self, enable: bool) -> bool:  # noqa: FBT001
@@ -951,7 +955,6 @@ class Bpod(SerialDevice, AbstractBpod):
         # hardware
         version = self.version
         cycle_frequency = self._hardware.cycle_frequency
-        physical_output_channels = self._physical_output_channels
 
         # dense lists for global timers, counters, conditions
         n_global_timers = max(state_machine.global_timers.keys(), default=-1) + 1
@@ -972,8 +975,7 @@ class Bpod(SerialDevice, AbstractBpod):
         event_indices = self._event_indices
         action_indices = self._action_indices
         condition_channel_indices = self._condition_channel_indices
-        timer_channel_indices = {k: v for v, k in enumerate(physical_output_channels)}
-        timer_channel_indices[None] = 254
+        timer_channel_indices = self._timer_channel_indices
 
         # build the state transition matrix (n_states x 255 events)
         state_transition_matrix = np.arange(n_states, dtype=np.uint8)[
@@ -985,7 +987,7 @@ class Bpod(SerialDevice, AbstractBpod):
                     target_indices[target]
                 )
 
-        # build annotation data structure for post-trial event decoding
+        # build annotation data structure for event decoding in EventThread
         annotations = StateMachineLookup(
             state_names=state_names,
             state_transition_matrix=state_transition_matrix,
@@ -1041,7 +1043,6 @@ class Bpod(SerialDevice, AbstractBpod):
         # INPUT EVENTS (variable length, per state):
         #   [count] [event_idx, target_idx] ...  for events on physical input channels
         append_events(self._input_event_ranges.input_channels)
-        # append_events(self.input_event_names[0], 'GlobalTimer0_Start')
 
         # ACTIONS (variable length, per state):
         #   [count] [action_idx, value] ...  (8-bit on Bpod 0.5-1, 16-bit on Bpod 2+)
