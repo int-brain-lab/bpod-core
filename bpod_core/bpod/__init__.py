@@ -16,12 +16,15 @@ from typing import Any, Literal, NamedTuple, cast, overload
 
 import numpy as np
 import polars as pl
-from pydantic import validate_call
+from pydantic import ConfigDict, validate_call
 from serial import SerialException
 
 from bpod_core import __version__ as bpod_core_version
 from bpod_core.bpod.abc import AbstractBpod
 from bpod_core.bpod.constants import (
+    _CHANNEL_BASE_NAME_CONDITION,
+    _CHANNEL_BASE_NAME_GLOBAL_COUNTER,
+    _CHANNEL_BASE_NAME_GLOBAL_TIMER,
     CHANNEL_TYPES_INPUT,
     CHANNEL_TYPES_OUTPUT,
     CONFIG_PATH,
@@ -41,6 +44,7 @@ from bpod_core.bpod.structs import (
     StateMachineLookup,
     TimeReferences,
     VersionInfo,
+    _InputEventRanges,
     _InputEvents,
 )
 from bpod_core.bpod.threads import (
@@ -589,72 +593,106 @@ class Bpod(SerialDevice, AbstractBpod):
         n_usb_ext = hw.input_description.count(b'Z')
         n_softcodes_per_usb = n_softcodes // (n_usb + n_usb_ext)
         n_app_softcodes = n_usb_ext * n_softcodes_per_usb
-        names: list[str] = []
-        channels: list[str | None] = []
-        values: list[int | None] = []
+        event_names: list[str] = []
+        event_channels: list[str | None] = []
+        event_values: list[int | None] = []
 
+        # physical input channel events
         counters = dict.fromkeys(CHANNEL_TYPES_INPUT, 0)
         for io_key in [bytes([x]) for x in hw.input_description]:
-            name = CHANNEL_TYPES_INPUT[io_key]
+            channel_name = CHANNEL_TYPES_INPUT[io_key]
             if io_key == b'U':  # Serial
                 module = self.modules[counters[io_key]]
                 ev_names = module.event_names
                 ev_channels: list[str | None] = [module.name] * len(ev_names)
                 ev_values: list[int | None] = [None] * len(ev_names)
             elif io_key == b'X':  # SoftCode
-                ev_names = [f'{name}{i}' for i in range(n_softcodes_per_usb)]
-                ev_channels = [name] * n_softcodes_per_usb
+                ev_names = [f'{channel_name}{i}' for i in range(n_softcodes_per_usb)]
+                ev_channels = [channel_name] * n_softcodes_per_usb
                 ev_values = list(range(n_softcodes_per_usb))
             elif io_key == b'Z':  # SoftCodeApp
-                ev_names = [f'{name}{i}' for i in range(n_app_softcodes)]
-                ev_channels = [name] * n_app_softcodes
+                ev_names = [f'{channel_name}{i}' for i in range(n_app_softcodes)]
+                ev_channels = [channel_name] * n_app_softcodes
                 ev_values = list(range(n_app_softcodes))
             elif io_key == b'F':  # Flex
-                channel = f'{name}{counters[io_key] + 1}'
+                channel = f'{channel_name}{counters[io_key] + 1}'
                 ev_names = [f'{channel}_{i}' for i in range(2)]
-                ev_channels = [channel, channel]
+                ev_channels = [channel] * 2
                 ev_values = [0, 1]
             elif io_key in b'PBW':  # Port, TTL, Wire
-                channel = f'{name}{counters[io_key] + 1}'
+                channel = f'{channel_name}{counters[io_key] + 1}'
                 ev_names = [f'{channel}_{s}' for s in ('High', 'Low')]
-                ev_channels = [channel, channel]
+                ev_channels = [channel] * 2
                 ev_values = [1, 0]
             else:
+                logger.warning('Skipping unsupported input channel: %s', io_key)
                 continue
-            names.extend(ev_names)
-            channels.extend(ev_channels)
-            values.extend(ev_values)
+            event_names.extend(ev_names)
+            event_channels.extend(ev_channels)
+            event_values.extend(ev_values)
             counters[io_key] += 1
+        event_range_input = range(len(event_names))
 
-        # Add global timers (channel = 'GlobalTimer{i}', value = 1 for Start, 0 for End)
+        # global timer start events
+        range_start = event_range_input.stop
+        range_end = range_start
         for i in range(hw.n_global_timers):
-            names.append(f'GlobalTimer{i}_Start')
-            channels.append(f'GlobalTimer{i}')
-            values.append(1)
-        for i in range(hw.n_global_timers):
-            names.append(f'GlobalTimer{i}_End')
-            channels.append(f'GlobalTimer{i}')
-            values.append(0)
+            range_end += 1
+            event_names.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}_Start')
+            event_channels.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}')
+            event_values.append(1)
+        event_range_global_timer_starts = range(range_start, range_end)
 
-        # Add global counters, conditions and 'Tup' (no input channel)
-        for event_name, n in [
-            ('GlobalCounter{}_End', hw.n_global_counters),
-            ('Condition{}', hw.n_conditions),
-        ]:
-            names.extend(event_name.format(i) for i in range(n))
-            channels.extend([None] * n)
-            values.extend([None] * n)
-        names.append('Tup')
-        channels.append(None)
-        values.append(None)
+        # global timer end events
+        range_start = range_end
+        for i in range(hw.n_global_timers):
+            range_end += 1
+            event_names.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}_End')
+            event_channels.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}')
+            event_values.append(0)
+        event_range_global_timer_ends = range(range_start, range_end)
+
+        # global counter end events
+        range_start = range_end
+        for i in range(hw.n_global_counters):
+            range_end += 1
+            event_names.append(f'{_CHANNEL_BASE_NAME_GLOBAL_COUNTER}{i}_End')
+            event_channels.append(None)
+            event_values.append(None)
+        event_range_global_counter_ends = range(range_start, range_end)
+
+        # condition events
+        range_start = range_end
+        for i in range(hw.n_conditions):
+            range_end += 1
+            event_names.append(f'{_CHANNEL_BASE_NAME_CONDITION}{i}')
+            event_channels.append(None)
+            event_values.append(None)
+        event_range_conditions = range(range_start, range_end)
+
+        # state timer end event
+        event_names.append('Tup')
+        event_channels.append(None)
+        event_values.append(None)
 
         self._n_softcodes = n_softcodes_per_usb
-        self._input_events = _InputEvents(names=names, channels=channels, values=values)
-        self._event_indices = {k: v for v, k in enumerate(names)}
+        self._input_events = _InputEvents(
+            names=event_names, channels=event_channels, values=event_values
+        )
+        self._event_indices = {k: v for v, k in enumerate(event_names)}
+        self._input_event_ranges = _InputEventRanges(
+            input_channels=event_range_input,
+            global_timer_starts=event_range_global_timer_starts,
+            global_timer_ends=event_range_global_timer_ends,
+            global_counter_ends=event_range_global_counter_ends,
+            conditions=event_range_conditions,
+        )
 
         modules = [m.name for m in self.modules]
         physical_input_channels = [i.name for i in self.inputs if i.io_type != b'U']
-        global_timers = [f'GlobalTimer{i}' for i in range(hw.n_global_timers)]
+        global_timers = [
+            f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}' for i in range(hw.n_global_timers)
+        ]
         self._condition_channel_indices = {
             k: v
             for v, k in enumerate(modules + physical_input_channels + global_timers)
@@ -961,18 +999,18 @@ class Bpod(SerialDevice, AbstractBpod):
             ),
         )
 
-        # Pre-build indexed transitions per state - for use in append_events
+        # Initialize bytearray for the compiled state machine.
+        # This will be appended to in the following sections.
+        fsm_bytes = bytearray()
+
+        # Pre-build indexed transitions per state - for use in append_events closure
         state_transition_indices = [
             [(event_indices[e], target_indices[t]) for e, t in s.transitions.items()]
             for s in states
         ]
 
-        # Initialize bytearray for the compiled state machine.
-        # This will be appended to in the following sections.
-        fsm_bytes = bytearray()
-
-        def append_events(event0: str, event1: str) -> None:
-            """Encode transitions for events in [event0, event1) into byte_array.
+        def append_events(index_range: range) -> None:
+            """Encode transitions for events in index_range into byte_array.
 
             For each state, this closure appends: [count] [event_idx, target_idx] ...
             where count is the number of transitions, event_idx is relative to event0,
@@ -980,22 +1018,18 @@ class Bpod(SerialDevice, AbstractBpod):
 
             Parameters
             ----------
-            event0 : str
-                First event name (inclusive lower bound).
-            event1 : str
-                Last event name (exclusive upper bound).
+            index_range : range
+                Range of events to encode.
             """
-            idx0 = event_indices[event0]
-            idx1 = event_indices[event1]
             for transitions in state_transition_indices:
-                in_range = [
-                    (event_idx - idx0, target_state_idx)
-                    for event_idx, target_state_idx in transitions
-                    if idx0 <= event_idx < idx1
-                ]
-                fsm_bytes.append(len(in_range))
-                for pair in in_range:
-                    fsm_bytes.extend(pair)
+                # add counter byte
+                counter_pos = len(fsm_bytes)
+                fsm_bytes.append(0)
+                # add transitions, increment counter
+                for event_idx, target_state_idx in transitions:
+                    if event_idx in index_range:
+                        fsm_bytes[counter_pos] += 1
+                        fsm_bytes.extend((event_idx - index_range[0], target_state_idx))
 
         # COUNTERS (4 bytes):
         fsm_bytes.extend((n_states, n_global_timers, n_global_counters, n_conditions))
@@ -1006,7 +1040,8 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # INPUT EVENTS (variable length, per state):
         #   [count] [event_idx, target_idx] ...  for events on physical input channels
-        append_events(self.input_event_names[0], 'GlobalTimer0_Start')
+        append_events(self._input_event_ranges.input_channels)
+        # append_events(self.input_event_names[0], 'GlobalTimer0_Start')
 
         # ACTIONS (variable length, per state):
         #   [count] [action_idx, value] ...  (8-bit on Bpod 0.5-1, 16-bit on Bpod 2+)
@@ -1027,10 +1062,10 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # REMAINING EVENTS
         #   [count] [event_idx, target_idx] ...  for each event
-        append_events('GlobalTimer0_Start', 'GlobalTimer0_End')  # global timer start
-        append_events('GlobalTimer0_End', 'GlobalCounter0_End')  # global timer end
-        append_events('GlobalCounter0_End', 'Condition0')  # global counter end
-        append_events('Condition0', 'Tup')  # conditions
+        append_events(self._input_event_ranges.global_timer_starts)
+        append_events(self._input_event_ranges.global_timer_ends)
+        append_events(self._input_event_ranges.global_counter_ends)
+        append_events(self._input_event_ranges.conditions)
 
         # GLOBAL TIMER CHANNELS
         fsm_bytes.extend(
@@ -1138,7 +1173,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # Return the compiled state machine and annotations
         return header + fsm_bytes, annotations
 
-    @validate_call(config={'arbitrary_types_allowed': True})
+    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
     def send_state_machine(
         self,
         state_machine: StateMachine,

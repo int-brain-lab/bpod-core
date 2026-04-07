@@ -19,6 +19,21 @@ class _InputEvents(NamedTuple):
     """Pre-defined value for each event, or ``None`` if not applicable."""
 
 
+class _InputEventRanges(NamedTuple):
+    """Index ranges for each input event category."""
+
+    input_channels: range
+    """Index range for input channel events."""
+    global_timer_starts: range
+    """Index range for global timer start events."""
+    global_timer_ends: range
+    """Index range for global timer end events."""
+    global_counter_ends: range
+    """Index range for global counter end events."""
+    conditions: range
+    """Index range for condition events."""
+
+
 class StateMachineLookup(NamedTuple):
     """Lookup data to decode the raw event stream during a state machine trial."""
 

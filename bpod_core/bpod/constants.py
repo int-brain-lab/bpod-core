@@ -19,6 +19,13 @@ MIN_BPOD_HW_VERSION = 3
 MAX_BPOD_HW_VERSION = 4
 """maximum supported hardware version"""
 
+_CHANNEL_BASE_NAME_GLOBAL_TIMER = 'GlobalTimer'
+"""Base name of global timer channels"""
+_CHANNEL_BASE_NAME_GLOBAL_COUNTER = 'GlobalCounter'
+"""Base name of global counter channels"""
+_CHANNEL_BASE_NAME_CONDITION = 'Condition'
+"""Base name of condition channels"""
+
 CHANNEL_TYPES_INPUT = {
     b'U': 'Serial',
     b'X': 'SoftCode',

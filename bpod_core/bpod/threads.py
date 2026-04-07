@@ -298,6 +298,7 @@ class ReadThread(threading.Thread):
                     #       thus use the last available timestamp for the softcode.
                     q_softcodes.put(RawSoftcode(softcode, received_ns, last_micros_us))
 
+                # HANDLE UNKNOWN OPCODES
                 else:
                     raise RuntimeError(f'Received unknown opcode from Bpod: {opcode}')
 
