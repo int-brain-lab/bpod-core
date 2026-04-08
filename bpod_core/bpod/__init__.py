@@ -101,8 +101,8 @@ class Bpod(SerialDevice, AbstractBpod):
     outputs: NamedTuple
     """Available output channels."""
 
-    modules: NamedTuple
-    """Available modules."""
+    modules: '_ModuleDict'
+    """Available modules, keyed by name."""
 
     @validate_call
     def __init__(
@@ -581,13 +581,13 @@ class Bpod(SerialDevice, AbstractBpod):
         return True
 
     def _disable_all_module_relays(self) -> None:
-        for module in self.modules:
+        for module in self.modules.values():
             module.set_relay(False)
 
     def _compile_input_events(self) -> None:
         """Compile input events supported by the Bpod hardware."""
         hw = self._hardware
-        n_serial_events = sum(len(m.event_names) for m in self.modules)
+        n_serial_events = sum(len(m.event_names) for m in self.modules.values())
         n_softcodes = hw.max_serial_events - n_serial_events
         n_usb = hw.input_description.count(b'X')
         n_usb_ext = hw.input_description.count(b'Z')
@@ -602,7 +602,7 @@ class Bpod(SerialDevice, AbstractBpod):
         for io_key in [bytes([x]) for x in hw.input_description]:
             channel_name = CHANNEL_TYPES_INPUT[io_key]
             if io_key == b'U':  # Serial
-                module = self.modules[counters[io_key]]
+                module = list(self.modules.values())[counters[io_key]]
                 ev_names = module.event_names
                 ev_channels: list[str | None] = [module.name] * len(ev_names)
                 ev_values: list[int | None] = [None] * len(ev_names)
@@ -683,7 +683,7 @@ class Bpod(SerialDevice, AbstractBpod):
             conditions=range_conditions,
         )
 
-        modules = [m.name for m in self.modules]
+        modules = list(self.modules)
         physical_input_channels = [i.name for i in self.inputs if i.io_type != b'U']
         global_timers = [
             f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}' for i in range(hw.n_global_timers)
@@ -701,7 +701,7 @@ class Bpod(SerialDevice, AbstractBpod):
         counters = dict.fromkeys(CHANNEL_TYPES_OUTPUT, 0)
         for io_key in [bytes([x]) for x in self._hardware.output_description]:
             if io_key == b'U':  # Serial
-                name = self.modules[counters[io_key]].name
+                name = list(self.modules)[counters[io_key]]
             elif io_key in b'XZ':  # SoftCode, SoftCodeApp
                 name = CHANNEL_TYPES_OUTPUT[io_key]
             elif io_key in b'FVPBW':  # Flex, Valve, PWM, TTL, Wire
@@ -718,7 +718,7 @@ class Bpod(SerialDevice, AbstractBpod):
         if self.version.machine == 4:
             self._actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
         self._action_indices = {k: v for v, k in enumerate(self._actions)}
-        self._physical_output_channels = [m.name for m in self.modules] + [
+        self._physical_output_channels = list(self.modules) + [
             o.name for o in self.outputs if o.io_type != b'U'
         ]
         self._timer_channel_indices = {
@@ -792,9 +792,9 @@ class Bpod(SerialDevice, AbstractBpod):
                 ),
             )
 
-        # create NamedTuple and store as class attribute
-        self.modules = NamedTuple('modules', [(m.name, Module) for m in modules])._make(
-            modules,
+        self.modules = _ModuleDict(
+            {m.name: m for m in modules},
+            available_modules=[m.name for m in modules if m.is_connected],
         )
 
         # update event names and output actions
@@ -1576,6 +1576,26 @@ class Output(Channel):
         self._serial0.write_struct('<c2B', b'O', self.index, state)
 
 
+class _ModuleDict(dict[str, 'Module']):
+    """A dict of :class:`Module` objects keyed by name."""
+
+    def __init__(
+        self, dictionary: dict[str, 'Module'], *, available_modules: list[str]
+    ) -> None:
+        super().__init__(dictionary)
+        self._available_modules = [f"'{x}'" for x in available_modules]
+
+    def __getitem__(self, key: str) -> 'Module':
+        try:
+            return super().__getitem__(key)
+        except KeyError as e:
+            if self._available_modules:
+                hint = f'connected modules: {", ".join(self._available_modules)}'
+            else:
+                hint = 'no modules connected to Bpod'
+            raise BpodError(f"No such module: '{key}'; {hint}") from e
+
+
 @dataclass
 class Module:
     """Represents a Bpod module with its configuration and event names."""
@@ -1601,8 +1621,17 @@ class Module:
     _custom_event_names: list[str] = field(default_factory=list)
     """A list of custom event names."""
 
+    _relay_is_enabled = False
+    """Whether relay for the module is enabled."""
+
+    def __repr__(self) -> str:
+        if not self.is_connected:
+            return 'unused module port'
+        if self.firmware_version:
+            return f'{self.name} on module port {self.index + 1})'
+        return self.name
+
     def __post_init__(self) -> None:
-        self._relay_enabled = False
         self._define_event_names()
 
     def _define_event_names(self) -> None:
@@ -1615,34 +1644,30 @@ class Module:
                 self.event_names.append(f'{self.name}_{idx}')
 
     @validate_call
-    def set_relay(self, enable: bool) -> None:  # noqa: FBT001
+    def set_relay(self, enabled: bool) -> None:  # noqa: FBT001
         """
         Enable or disable the serial relay for the module.
 
         Parameters
         ----------
-        enable : bool
+        enabled : bool
             True to enable the relay, False to disable it.
         """
-        if enable == self._relay_enabled:
+        if enabled == self._relay_is_enabled:
             return
-        if enable is True:
-            self._bpod._disable_all_module_relays()  # noqa: SLF001
+        if enabled:
+            for module in self._bpod.modules.values():
+                module.set_relay(False)
         logger.info(
-            '%sabling relay for module %s', {'En' if enable else 'Dis'}, self.name
+            '%sabling relay for module %s', {'En' if enabled else 'Dis'}, self.name
         )
-        self._bpod.serial0.write_struct('<cB?', b'J', self.index, enable)
-        self._relay_enabled = enable
+        self._bpod.serial0.write_struct('<cB?', b'J', self.index, enabled)
+        self._relay_is_enabled = enabled
 
     @property
     def relay(self) -> bool:
         """The current state of the serial relay."""
-        return self._relay_enabled
-
-    @relay.setter
-    def relay(self, state: bool) -> None:
-        """The current state of the module's serial relay."""
-        self.set_relay(state)
+        return self._relay_is_enabled
 
     @validate_call
     def load_serial_message(
