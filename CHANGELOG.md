@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - added `Bpod.peek_data` method to read trial data before trial end.
 - replaced use of `Queue` with `SimpleQueue`
 - switched `Bpod.module` field from `NamedTuple` to `dict`
+- replaced hashlib.blake2b with xxhash for state machine hashing
 
 ## [0.1.0a9] - 2026-04-02
 

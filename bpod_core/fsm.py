@@ -1,6 +1,5 @@
 """Module defining classes and types for creating and managing state machines."""
 
-import hashlib
 import re
 from os import PathLike
 from pathlib import Path
@@ -19,6 +18,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
+from xxhash import xxh3_64 as _xxh3_64
 
 from bpod_core.misc import ValidatedDict, suggest_similar
 
@@ -35,9 +35,6 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
     if issubclass(obj_type, BaseModel):
         return obj_type.model_validate(obj)
     raise NotImplementedError(f'Objects of type {type} are not supported')
-
-
-_msgpack_encoder = msgspec.msgpack.Encoder()
 
 
 def _validate_state_timer(v: Any, h: ValidatorFunctionWrapHandler) -> 'StateTimer':
@@ -952,18 +949,10 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         try:
             # when serializing to JSON, we first try to use Pydantic's private API,
             # which avoids an unnecessary string conversion
-            json_bytes = self.__pydantic_serializer__.to_json(
-                value=self,
-                exclude_defaults=True,
-                warnings=False,
-            )
+            return _xxh3_64(self.__pydantic_serializer__.to_json(self)).digest()
         except (AttributeError, TypeError):
             # if that fails, we fall back to the public API
-            json_bytes = self.model_dump_json(
-                exclude_defaults=True,
-                warnings=False,
-            ).encode()
-        return hashlib.blake2b(json_bytes, digest_size=8).digest()
+            return _xxh3_64(self.model_dump_json().encode()).digest()
 
     @property
     def hash(self) -> str:
@@ -990,6 +979,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             If the state machine is invalid.
         """
         current_hash = self._hash()
+
         if self._validation_hash == current_hash:
             if self._validation_error:
                 raise self._validation_error
