@@ -816,6 +816,9 @@ class Bpod(SerialDevice, AbstractBpod):
         ValueError
             If the state machine is invalid or not compatible with the hardware.
         """
+        # get nanosecond count for benchmarking
+        t0 = time.perf_counter_ns()
+
         # Check the general validity of the state machine (independent of hardware)
         state_machine.check()
 
@@ -891,6 +894,13 @@ class Bpod(SerialDevice, AbstractBpod):
         # TODO: validate conditions
         # TODO: Check that sync channel is not used as state output
 
+        # report benchmarking results
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                'Validated state machine in %d μs',
+                (time.perf_counter_ns() - t0) // 1e3,
+            )
+
     def send_softcode(self, softcode: int) -> None:
         """Send a softcode to the state machine.
 
@@ -941,6 +951,9 @@ class Bpod(SerialDevice, AbstractBpod):
         StateMachineLookup
             Annotation data for post-trial event stream decoding.
         """
+        # get nanosecond count for benchmarking
+        t0 = time.perf_counter_ns()
+
         # state machine
         states = list(state_machine.states.values())
         state_names = list(state_machine.states.keys())
@@ -1166,6 +1179,13 @@ class Bpod(SerialDevice, AbstractBpod):
         #   Will be prepended to the byte_array
         header = struct.pack('<?H', use_back_op, len(fsm_bytes))
 
+        # report benchmarking results
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                'Compiled state machine in %d μs',
+                (time.perf_counter_ns() - t0) // 1e3,
+            )
+
         # Return the compiled state machine and annotations
         return header + fsm_bytes, annotations
 
@@ -1202,7 +1222,6 @@ class Bpod(SerialDevice, AbstractBpod):
         :exc:`~validate_call.roar.validate_callCallHintViolation`
             If function arguments don't match type hints.
         """
-        t0 = perf_counter_ns()
         self._next_fsm_index += 1
         self._disable_all_module_relays()
         trial = self._next_fsm_index
@@ -1215,14 +1234,12 @@ class Bpod(SerialDevice, AbstractBpod):
         fsm_bytes, self._fsm_annotations = self._compile_state_machine(state_machine)
 
         # Send state machine to Bpod
+        t0 = perf_counter_ns()
         message = struct.pack('<c?', b'C', run_asap) + fsm_bytes
         self.serial0.write(message)
         if logger.isEnabledFor(logging.DEBUG):
             micros = (perf_counter_ns() - t0) // 1000
-            prefix = 'Compiled and' if skip_validation else 'Validated, compiled and'
-            logger.debug(
-                '%s sent state machine #%d to Bpod in %d μs', prefix, trial, micros
-            )
+            logger.debug('Sent state machine #%d to Bpod in %d μs', trial, micros)
         if run_asap:
             self._run_state_machine(blocking=False)
 
