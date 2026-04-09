@@ -499,12 +499,10 @@ class TestHash:
         assert len(hash_bytes) == 8, 'Expected 8 bytes for hash'
 
     def test_hash_hex_output(self):
-        """Hash property should return hex string."""
+        """Hash property should return bytes."""
         fsm = StateMachine()
-        hash_hex = fsm.hash
-        assert isinstance(hash_hex, str), 'Expected hex string for hash'
-        assert len(hash_hex) == 16, 'Expected 16 hex characters for hash'
-        assert all(c in '0123456789abcdef' for c in hash_hex)
+        hash_bytes = fsm.hash
+        assert isinstance(hash_bytes, bytes), 'Expected bytes for hash'
 
     def test_hash_consistency(self):
         """Identical FSMs should produce the same hash."""

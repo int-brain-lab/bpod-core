@@ -955,9 +955,9 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             return _xxh3_64(self.model_dump_json().encode()).digest()
 
     @property
-    def hash(self) -> str:
+    def hash(self) -> bytes:
         """Hash of the state machine."""
-        return self._hash().hex()
+        return self._hash()
 
     @property
     def valid(self) -> bool:
@@ -969,9 +969,14 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         else:
             return True
 
-    def check(self) -> None:
+    def check(self) -> bytes:
         """
-        Check validity of state machine.
+        Check validity of the state machine.
+
+        Returns
+        -------
+        bytes
+            The hash of the state machine.
 
         Raises
         ------
@@ -983,15 +988,18 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         if self._validation_hash == current_hash:
             if self._validation_error:
                 raise self._validation_error
+            return current_hash
+
+        try:
+            self._check()
+            self._validation_error = None
+        except ValueError as e:
+            self._validation_error = e
+            raise
         else:
-            try:
-                self._check()
-                self._validation_error = None
-            except ValueError as e:
-                self._validation_error = e
-                raise
-            finally:
-                self._validation_hash = current_hash
+            return current_hash
+        finally:
+            self._validation_hash = current_hash
 
     def _check(self) -> None:
         # Check for empty state machine
