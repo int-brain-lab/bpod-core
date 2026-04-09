@@ -36,6 +36,8 @@ class _InputEventRanges(NamedTuple):
 class StateMachineLookup(NamedTuple):
     """Lookup data to decode the raw event stream during a state machine trial."""
 
+    fsm_hash: bytes
+    """The state machine's hash value."""
     state_names: list[str]
     """Names of all states, indexed by state index."""
     state_transition_matrix: npt.NDArray[np.uint8]

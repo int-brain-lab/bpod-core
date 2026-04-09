@@ -72,6 +72,7 @@ class TestReadThread:
             q_softcodes: SimpleQueue[RawSoftcode] = SimpleQueue()
             thread = ReadThread(
                 serial=mock_ext_serial,
+                state_machine_hash=b'',
                 trial=0,
                 cycle_period_us=cycle_period_us,
                 queue_events=q_events,
@@ -191,6 +192,7 @@ def _make_fsm(
         mat[state][event] = target
     state_names = [f'S{i}' for i in range(n_states)]
     return StateMachineLookup(
+        fsm_hash=b'',
         state_names=state_names,
         state_transition_matrix=mat,
         state_actions=state_actions or [{} for _ in range(n_states)],

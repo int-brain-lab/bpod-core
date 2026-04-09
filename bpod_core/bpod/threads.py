@@ -187,6 +187,7 @@ class ReadThread(threading.Thread):
         self,
         *,
         serial: ExtendedSerial,
+        state_machine_hash: bytes,
         trial: int,
         cycle_period_us: int,
         queue_events: SimpleQueue[RawEvent],
@@ -199,6 +200,8 @@ class ReadThread(threading.Thread):
         ----------
         serial : ExtendedSerial
             The serial connection to the Bpod device.
+        state_machine_hash : bytes
+            The hash of the state machine.
         trial : int
             Zero-based trial index.
         cycle_period_us : int
@@ -211,6 +214,7 @@ class ReadThread(threading.Thread):
         super().__init__(name='ReadThread', daemon=True)
         self._serial = serial
         self._stop_event = threading.Event()
+        self._fsm_hash = state_machine_hash.hex()
         self._trial = trial
         self._cycle_period_us = cycle_period_us
         self._queue_events = queue_events
@@ -228,7 +232,9 @@ class ReadThread(threading.Thread):
                 raise RuntimeError(
                     f'State machine #{self._trial} not confirmed by Bpod'
                 )
-            logger.info('Starting state machine #%d', self._trial)
+            logger.info(
+                'Starting state machine %s / trial #%d', self._fsm_hash, self._trial
+            )
 
             # read the starting timestamps of the state machine
             # we do this early to get an accurate timestamp for the system clock
@@ -333,7 +339,9 @@ class ReadThread(threading.Thread):
 
         finally:
             self._queue_events.put(RawEvent(0, _EventID.STOP_SENTINEL))
-            logger.info('Exiting state machine #%d', self._trial)
+            logger.info(
+                'Exiting state machine %s / trial #%d', self._fsm_hash, self._trial
+            )
 
     @property
     def trial_number(self) -> int:

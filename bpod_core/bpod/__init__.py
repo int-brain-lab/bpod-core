@@ -7,6 +7,7 @@ import struct
 import time
 import traceback
 import weakref
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from queue import Empty, SimpleQueue
@@ -85,6 +86,8 @@ class Bpod(SerialDevice, AbstractBpod):
     _zmq_service: ServiceHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
+    _valid_state_machines: set[bytes]
+    _state_machine_cache: OrderedDict[bytes, tuple[bytes, StateMachineLookup]]
 
     _softcode_thread: SoftcodeThread
     _softcode_handler: Callable[[int], None] | None = None
@@ -123,6 +126,8 @@ class Bpod(SerialDevice, AbstractBpod):
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._fsm_annotations: StateMachineLookup | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
+        self._valid_state_machines = set()
+        self._state_machine_cache = OrderedDict()
 
         self._n_softcodes = 0
         self._softcode_thread = SoftcodeThread(softcode_handler=self._softcode_handler)
@@ -697,7 +702,7 @@ class Bpod(SerialDevice, AbstractBpod):
         """Compile the list of output actions supported by the Bpod hardware."""
         self._actions = []
 
-        # Compile actions for output channels
+        # compile actions for output channels
         counters = dict.fromkeys(CHANNEL_TYPES_OUTPUT, 0)
         for io_key in [bytes([x]) for x in self._hardware.output_description]:
             if io_key == b'U':  # Serial
@@ -711,7 +716,7 @@ class Bpod(SerialDevice, AbstractBpod):
             self._actions.append(name)
             counters[io_key] += 1
 
-        # Add output actions for global timers, global counters and analog thresholds
+        # add output actions for global timers, global counters and analog thresholds
         self._actions.extend(
             ['GlobalTimerTrig', 'GlobalTimerCancel', 'GlobalCounterReset'],
         )
@@ -802,7 +807,11 @@ class Bpod(SerialDevice, AbstractBpod):
         self._compile_output_actions()
         self._event_lookup = _build_event_lookup(self._input_events, self._actions)
 
-    def validate_state_machine(self, state_machine: StateMachine) -> None:
+        # invalidate caches
+        self._state_machine_cache.clear()
+        self._valid_state_machines.clear()
+
+    def validate_state_machine(self, state_machine: StateMachine) -> bytes:
         """
         Validate the provided state machine for compatibility with the hardware.
 
@@ -810,6 +819,11 @@ class Bpod(SerialDevice, AbstractBpod):
         ----------
         state_machine : StateMachine
             The state machine to validate.
+
+        Returns
+        -------
+        bytes
+            The hash of the validated state machine.
 
         Raises
         ------
@@ -819,13 +833,23 @@ class Bpod(SerialDevice, AbstractBpod):
         # get nanosecond count for benchmarking
         t0 = time.perf_counter_ns()
 
-        # Check the general validity of the state machine (independent of hardware)
-        state_machine.check()
+        # check the general validity of the state machine (independent of hardware)
+        fsm_hash = state_machine.check()
 
-        # Check if the '>back' operator is being used
+        # skip validation if the state machine has been successfully validated before
+        if fsm_hash in self._valid_state_machines:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    'Skipped validation of known state machine %s in %d μs',
+                    fsm_hash.hex(),
+                    (time.perf_counter_ns() - t0) // 1e3,
+                )
+            return fsm_hash
+
+        # check if the '>back' operator is being used
         use_back_op = '>back' in state_machine.states.transition_targets
 
-        # Validate the number of states, global timers, global counters and conditions.
+        # validate the number of states, global timers, global counters and conditions.
         n_states = len(state_machine.states)
         n_global_timers = max(state_machine.global_timers.keys(), default=-1) + 1
         n_global_counters = max(state_machine.global_counters.keys(), default=-1) + 1
@@ -842,7 +866,7 @@ class Bpod(SerialDevice, AbstractBpod):
                     f'{maximum_value} {name}'
                 )
 
-        # Validate states
+        # validate states
         max_uint32 = np.iinfo(np.uint32).max
         max_time_uint32 = max_uint32 / self._hardware.cycle_frequency
         for state_name, state in state_machine.states.items():
@@ -872,7 +896,7 @@ class Bpod(SerialDevice, AbstractBpod):
                     + suggest_similar(invalid_action, self._actions),
                 )
 
-        # Validate global timers
+        # validate global timers
         for timer_id, timer in state_machine.global_timers.items():
             if timer.channel not in (*self._physical_output_channels, None):
                 raise ValueError(
@@ -894,12 +918,19 @@ class Bpod(SerialDevice, AbstractBpod):
         # TODO: validate conditions
         # TODO: Check that sync channel is not used as state output
 
+        # add the state machine to the list of valid state machines
+        self._valid_state_machines.add(fsm_hash)
+
         # report benchmarking results
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                'Validated state machine in %d μs',
+                'Validated state machine %s in %d μs',
+                fsm_hash.hex(),
                 (time.perf_counter_ns() - t0) // 1e3,
             )
+
+        # return the state machine hash
+        return fsm_hash
 
     def send_softcode(self, softcode: int) -> None:
         """Send a softcode to the state machine.
@@ -930,7 +961,9 @@ class Bpod(SerialDevice, AbstractBpod):
         self._serial.write_struct('<cB', b'~', softcode)
 
     def _compile_state_machine(
-        self, state_machine: StateMachine
+        self,
+        state_machine: StateMachine,
+        state_machine_hash: bytes | None = None,
     ) -> tuple[bytes, StateMachineLookup]:
         """Compile a state machine into its binary wire format and annotation data.
 
@@ -943,6 +976,8 @@ class Bpod(SerialDevice, AbstractBpod):
         ----------
         state_machine : StateMachine
             The state machine to compile.
+        state_machine_hash : bytes | None
+            An optional hash of the state machine.
 
         Returns
         -------
@@ -953,6 +988,18 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         # get nanosecond count for benchmarking
         t0 = time.perf_counter_ns()
+
+        if state_machine_hash is None:
+            state_machine_hash = state_machine.hash
+        if state_machine_hash in self._state_machine_cache:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    'Reusing cached compiled state machine %s in %d μs',
+                    state_machine_hash.hex(),
+                    (time.perf_counter_ns() - t0) // 1e3,
+                )
+            self._state_machine_cache.move_to_end(state_machine_hash)
+            return self._state_machine_cache[state_machine_hash]
 
         # state machine
         states = list(state_machine.states.values())
@@ -997,21 +1044,20 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # build annotation data structure for event decoding in EventThread
         annotations = StateMachineLookup(
+            fsm_hash=state_machine_hash,
             state_names=state_names,
             state_transition_matrix=state_transition_matrix,
             state_actions=[dict(s.actions) for s in states],
             use_back_op=use_back_op,
-            state_lookup=pl.DataFrame(
-                {
-                    'state_id': pl.Series(range(n_states), dtype=pl.Int16),
-                    'state': pl.Series(state_names, dtype=pl.Categorical),
-                }
-            ),
+            state_lookup=dict(enumerate(state_names)),
         )
 
         # Initialize bytearray for the compiled state machine.
         # This will be appended to in the following sections.
-        fsm_bytes = bytearray()
+        #
+        # The first 3 bytes are reserved for the state machine header and will be set
+        # at the very end of the compilation
+        fsm_bytes = bytearray(3)
 
         # Pre-build indexed transitions per state - for use in append_events closure
         state_transition_indices = [
@@ -1176,18 +1222,23 @@ class Bpod(SerialDevice, AbstractBpod):
             fsm_bytes.append(0)
 
         # HEADER
-        #   Will be prepended to the byte_array
-        header = struct.pack('<?H', use_back_op, len(fsm_bytes))
+        struct.pack_into('<?H', fsm_bytes, 0, use_back_op, len(fsm_bytes) - 3)
+
+        # store the compiled state machine for future use
+        self._state_machine_cache[state_machine_hash] = (fsm_bytes, annotations)
+        if len(self._state_machine_cache) > 1024:
+            self._state_machine_cache.popitem(last=False)
 
         # report benchmarking results
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                'Compiled state machine in %d μs',
+                'Compiled state machine %s in %d μs',
+                state_machine_hash.hex(),
                 (time.perf_counter_ns() - t0) // 1e3,
             )
 
         # Return the compiled state machine and annotations
-        return header + fsm_bytes, annotations
+        return fsm_bytes, annotations
 
     @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
     def send_state_machine(
@@ -1195,7 +1246,6 @@ class Bpod(SerialDevice, AbstractBpod):
         state_machine: StateMachine,
         *,
         run_asap: bool = False,
-        skip_validation: bool = False,
     ) -> None:
         """
         Send a state machine to the Bpod.
@@ -1211,9 +1261,6 @@ class Bpod(SerialDevice, AbstractBpod):
         run_asap : bool, optional
             If True, the state machine will run immediately after the current one has
             finished. Default is False.
-        skip_validation : bool, optional
-            If True, the state machine will not be validated before being sent.
-            Default is False.
 
         Raises
         ------
@@ -1224,14 +1271,14 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         self._next_fsm_index += 1
         self._disable_all_module_relays()
-        trial = self._next_fsm_index
 
         # validate state machine
-        if not skip_validation:
-            self.validate_state_machine(state_machine)
+        fsm_hash = self.validate_state_machine(state_machine)
 
         # compile state machine
-        fsm_bytes, self._fsm_annotations = self._compile_state_machine(state_machine)
+        fsm_bytes, self._fsm_annotations = self._compile_state_machine(
+            state_machine, fsm_hash
+        )
 
         # Send state machine to Bpod
         t0 = perf_counter_ns()
@@ -1239,7 +1286,11 @@ class Bpod(SerialDevice, AbstractBpod):
         self.serial0.write(message)
         if logger.isEnabledFor(logging.DEBUG):
             micros = (perf_counter_ns() - t0) // 1000
-            logger.debug('Sent state machine #%d to Bpod in %d μs', trial, micros)
+            logger.debug(
+                'Sent state machine %s to Bpod in %d μs',
+                fsm_hash.hex(),
+                micros,
+            )
         if run_asap:
             self._run_state_machine(blocking=False)
 
@@ -1387,10 +1438,12 @@ class Bpod(SerialDevice, AbstractBpod):
         self._run_state_machine(blocking=blocking)
 
     def _run_state_machine(self, *, blocking: bool) -> None:
+        state_machine_lookup = cast('StateMachineLookup', self._fsm_annotations)
+
         # initialize new threads
         event_thread = EventThread(
             trial=self._next_fsm_index,
-            fsm=cast('StateMachineLookup', self._fsm_annotations),
+            fsm=state_machine_lookup,
             data_queue=self._trial_data,
             event_lookup=self._event_lookup,
             action_names=self._actions,
@@ -1398,6 +1451,7 @@ class Bpod(SerialDevice, AbstractBpod):
         )
         read_thread = ReadThread(
             serial=self.serial0,
+            state_machine_hash=state_machine_lookup.fsm_hash,
             trial=self._next_fsm_index,
             cycle_period_us=self._hardware.cycle_period_us,
             queue_events=event_thread.queue,

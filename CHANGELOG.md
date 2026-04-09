@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - replaced use of `Queue` with `SimpleQueue`
 - switched `Bpod.module` field from `NamedTuple` to `dict`
 - replaced hashlib.blake2b with xxhash for state machine hashing
+- cache compiled state machines to avoid recompilation
 
 ## [0.1.0a9] - 2026-04-02
 
