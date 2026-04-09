@@ -977,7 +977,9 @@ class Bpod(SerialDevice, AbstractBpod):
         state_machine : StateMachine
             The state machine to compile.
         state_machine_hash : bytes | None
-            An optional hash of the state machine.
+            Pre-computed hash of the state machine, as returned by
+            :meth:`~bpod_core.fsm.StateMachine.check`. If provided, skips
+            recomputation. If ``None``, the hash is computed internally.
 
         Returns
         -------
