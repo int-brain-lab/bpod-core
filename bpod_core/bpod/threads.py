@@ -404,7 +404,7 @@ class EventThread(threading.Thread):
         self._buffer: npt.NDArray = np.empty(_INITIAL_BUFFER_SIZE, dtype=_EVENT_DTYPE)
         self._n_events: int = 0
         self._event_lookup = event_lookup.lazy()
-        self._state_lookup = fsm.state_lookup.lazy()
+        self._state_lookup = fsm.state_lookup
 
         # pre-compute action index map for fast lookup in the hot loop
         action_index_map = {name: i for i, name in enumerate(action_names)}
@@ -544,7 +544,13 @@ class EventThread(threading.Thread):
             pl.from_numpy(data)
             .lazy()
             .join(self._event_lookup, on='event_id', how='left')
-            .join(self._state_lookup, on='state_id', how='left')
+            .with_columns(
+                pl.col('state_id')
+                .replace_strict(
+                    self._state_lookup, return_dtype=pl.Categorical, default=None
+                )
+                .alias('state')
+            )
             .with_columns(
                 pl.lit(self._trial).cast(pl.UInt16).alias('trial'),
                 pl.coalesce(

@@ -5,7 +5,6 @@ from typing import NamedTuple
 import msgspec
 import numpy as np
 import numpy.typing as npt
-import polars as pl
 
 
 class _InputEvents(NamedTuple):
@@ -45,8 +44,8 @@ class StateMachineLookup(NamedTuple):
     """Per-state mapping of action name to value."""
     use_back_op: bool
     """Whether the ``>back`` operator is used."""
-    state_lookup: pl.DataFrame
-    """Categorical lookup DataFrame mapping state index to state name."""
+    state_lookup: dict[int, str]
+    """Mapping from state index to state name."""
 
 
 class TimeReferences(NamedTuple):

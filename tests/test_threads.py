@@ -195,12 +195,7 @@ def _make_fsm(
         state_transition_matrix=mat,
         state_actions=state_actions or [{} for _ in range(n_states)],
         use_back_op=False,
-        state_lookup=pl.DataFrame(
-            {
-                'state_id': pl.Series(range(n_states), dtype=pl.Int16),
-                'state': pl.Series(state_names, dtype=pl.Categorical),
-            }
-        ),
+        state_lookup=dict(enumerate(state_names)),
     )
 
 
