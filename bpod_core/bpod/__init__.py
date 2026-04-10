@@ -91,7 +91,7 @@ class Bpod(SerialDevice, AbstractBpod):
     _zmq_service: ServiceHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
-    _valid_state_machines: set[bytes]
+    _validation_cache: LRUCache[bytes, Exception | None]
     _state_machine_cache: LRUCache[bytes, tuple[bytes, StateMachineLookup]]
 
     _softcode_thread: SoftcodeThread
@@ -131,7 +131,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._fsm_annotations: StateMachineLookup | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
-        self._valid_state_machines = set()
+        self._validation_cache = LRUCache(maxsize=1024)
         self._state_machine_cache = LRUCache(maxsize=1024)
 
         self._n_softcodes = 0
@@ -813,8 +813,8 @@ class Bpod(SerialDevice, AbstractBpod):
         self._event_lookup = _build_event_lookup(self._input_events, self._actions)
 
         # invalidate caches
+        self._validation_cache.clear()
         self._state_machine_cache.clear()
-        self._valid_state_machines.clear()
 
     def validate_state_machine(self, state_machine: StateMachine) -> bytes:
         """
@@ -841,11 +841,14 @@ class Bpod(SerialDevice, AbstractBpod):
         # check the general validity of the state machine (independent of hardware)
         fsm_hash = state_machine.check()
 
-        # skip validation if the state machine has been successfully validated before
-        if fsm_hash in self._valid_state_machines:
+        # skip validation if the state machine has been validated before
+        if fsm_hash in self._validation_cache:
+            exception = self._validation_cache[fsm_hash]
+            if exception is not None:
+                raise exception
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
-                    'Skipped validation of known state machine %s in %d μs',
+                    'Skipped validation of known valid state machine %s in %d μs',
                     fsm_hash.hex(),
                     (time.perf_counter_ns() - t0) // 1e3,
                 )
@@ -853,6 +856,11 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # check if the '>back' operator is being used
         use_back_op = '>back' in state_machine.states.transition_targets
+
+        def cache_and_raise_value_error(message: str) -> None:
+            e = ValueError(message)
+            self._validation_cache[fsm_hash] = e
+            raise e
 
         # validate the number of states, global timers, global counters and conditions.
         n_states = len(state_machine.states)
@@ -866,7 +874,7 @@ class Bpod(SerialDevice, AbstractBpod):
             ('conditions', n_conditions, self._hardware.n_conditions),
         ):
             if value > maximum_value:
-                raise ValueError(
+                cache_and_raise_value_error(
                     f'Too many {name} in state machine - hardware supports up to '
                     f'{maximum_value} {name}'
                 )
@@ -875,19 +883,19 @@ class Bpod(SerialDevice, AbstractBpod):
         max_time_uint32 = UINT32_MAX / self._hardware.cycle_frequency
         for state_name, state in state_machine.states.items():
             if state.timer > max_time_uint32:
-                raise ValueError(
+                cache_and_raise_value_error(
                     f"Invalid timer value {state.timer} for state '{state_name}' - "
                     f'must be between 0 and {max_time_uint32} seconds',
                 )
             for condition_name, target in state.transitions.items():
                 if target.startswith('>') and target not in VALID_OPERATORS:
-                    raise ValueError(
+                    cache_and_raise_value_error(
                         f"Invalid operator '{target}' for transition condition "
                         f"'{condition_name}' in state '{state_name}'"
                         + suggest_similar(target, VALID_OPERATORS),
                     )
                 if condition_name not in self.input_event_names:
-                    raise ValueError(
+                    cache_and_raise_value_error(
                         f"Invalid transition condition '{condition_name}' in state "
                         f"'{state_name}'"
                         + suggest_similar(condition_name, self.input_event_names),
@@ -895,7 +903,7 @@ class Bpod(SerialDevice, AbstractBpod):
             actions = set(state.actions.keys())
             if invalid_actions := actions.difference(self._actions):
                 invalid_action = invalid_actions.pop()
-                raise ValueError(
+                cache_and_raise_value_error(
                     f"Invalid action '{invalid_action}' in state '{state_name}'"
                     + suggest_similar(invalid_action, self._actions),
                 )
@@ -903,7 +911,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # validate global timers
         for timer_id, timer in state_machine.global_timers.items():
             if timer.channel not in (*self._physical_output_channels, None):
-                raise ValueError(
+                cache_and_raise_value_error(
                     f"Invalid channel '{timer.channel}' for global timer {timer_id}"
                     + suggest_similar(
                         timer.channel or '', self._physical_output_channels
@@ -912,7 +920,7 @@ class Bpod(SerialDevice, AbstractBpod):
             for key in ('duration', 'onset_delay', 'loop_interval'):
                 if getattr(timer, key) > max_time_uint32:
                     name = key.replace('_', ' ')
-                    raise ValueError(
+                    cache_and_raise_value_error(
                         f'Invalid {name} {getattr(timer, key)} for global timer '
                         f'{timer_id} - must be between 0 and {max_time_uint32} seconds'
                     )
@@ -923,7 +931,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # TODO: Check that sync channel is not used as state output
 
         # add the state machine to the list of valid state machines
-        self._valid_state_machines.add(fsm_hash)
+        self._validation_cache[fsm_hash] = None
 
         # report benchmarking results
         if logger.isEnabledFor(logging.DEBUG):

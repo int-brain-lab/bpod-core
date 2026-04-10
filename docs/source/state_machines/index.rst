@@ -347,10 +347,10 @@ hardware are known:
 
    import atexit
    import types
-   from typing import OrderedDict
    from unittest.mock import patch
    from types import SimpleNamespace
    from bpod_core.bpod import Bpod
+   from bpod_core.misc import LRUCache
 
    original_send = Bpod.send_state_machine
    original_validate = Bpod.validate_state_machine
@@ -364,8 +364,8 @@ hardware are known:
            n_conditions=64,
            cycle_frequency=1000,
        )
-       self._valid_state_machines = []
-       self._state_machine_cache = OrderedDict
+       self._validation_cache = LRUCache()
+       self._state_machine_cache = LRUCache()
        self.send_state_machine = types.MethodType(original_send, self)
        self.validate_state_machine = types.MethodType(original_validate, self)
 
