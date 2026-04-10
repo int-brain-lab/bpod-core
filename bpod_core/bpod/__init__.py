@@ -1252,6 +1252,7 @@ class Bpod(SerialDevice, AbstractBpod):
         state_machine: StateMachine,
         *,
         run_asap: bool = False,
+        skip_validation: bool = False,
     ) -> None:
         """
         Send a state machine to the Bpod.
@@ -1267,11 +1268,17 @@ class Bpod(SerialDevice, AbstractBpod):
         run_asap : bool, optional
             If True, the state machine will run immediately after the current one has
             finished. Default is False.
+        skip_validation : bool, optional
+            If True, the state machine will not be validated prior to compilation. This
+            will speed up the process, but may result in errors or unexpected behavior
+            if the state machine is invalid. Use with caution. Default is False.
 
         Raises
         ------
         ValueError
             If the state machine is invalid or exceeds hardware limitations.
+        RuntimeError
+            If the compilation failed.
         :exc:`~validate_call.roar.validate_callCallHintViolation`
             If function arguments don't match type hints.
         """
@@ -1279,12 +1286,26 @@ class Bpod(SerialDevice, AbstractBpod):
         self._disable_all_module_relays()
 
         # validate state machine
-        fsm_hash = self.validate_state_machine(state_machine)
+        if not skip_validation:
+            fsm_hash = self.validate_state_machine(state_machine)
+        else:
+            fsm_hash = state_machine.hash
 
         # compile state machine
-        fsm_bytes, self._fsm_annotations = self._compile_state_machine(
-            state_machine, fsm_hash
-        )
+        try:
+            fsm_bytes, self._fsm_annotations = self._compile_state_machine(
+                state_machine, fsm_hash
+            )
+        except Exception as e1:
+            # if the compilation failed after validation was bypassed, validate the
+            # state machine post-mortem before re-raising the exception in an attempt to
+            # get a more informative error message
+            if skip_validation:
+                try:
+                    self.validate_state_machine(state_machine)
+                except Exception as e2:
+                    raise e2 from e1
+            raise RuntimeError('Compilation of state machine failed') from e1
 
         # Send state machine to Bpod
         t0 = perf_counter_ns()
