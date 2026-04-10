@@ -1261,6 +1261,9 @@ class Bpod(SerialDevice, AbstractBpod):
         compatible with the Bpod and sends it to the device. It also validates the
         state machine for compatibility with the hardware before sending.
 
+        Validation and compilation results are cached, speeding up subsequent sends of
+        identical state machines.
+
         Parameters
         ----------
         state_machine : StateMachine
@@ -1281,6 +1284,10 @@ class Bpod(SerialDevice, AbstractBpod):
             If the compilation failed.
         :exc:`~validate_call.roar.validate_callCallHintViolation`
             If function arguments don't match type hints.
+
+        See Also
+        --------
+        validate_state_machine : Validation of state machines.
         """
         self._next_fsm_index += 1
         self._disable_all_module_relays()
