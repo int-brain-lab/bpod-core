@@ -12,12 +12,14 @@ from dataclasses import dataclass, field
 from queue import Empty, SimpleQueue
 from time import perf_counter_ns
 from types import TracebackType
-from typing import Any, Literal, NamedTuple, cast, overload
+from typing import Any, ClassVar, Literal, NamedTuple, cast, overload
 
+import msgspec
 import numpy as np
 import polars as pl
 from pydantic import ConfigDict, validate_call
 from serial import SerialException
+from xxhash import xxh3_64 as _xxh3_64
 
 from bpod_core import __version__ as bpod_core_version
 from bpod_core.bpod.abc import AbstractBpod
@@ -91,8 +93,14 @@ class Bpod(SerialDevice, AbstractBpod):
     _zmq_service: ServiceHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
-    _validation_cache: LRUCache[bytes, Exception | None]
-    _state_machine_cache: LRUCache[bytes, tuple[bytes, StateMachineLookup]]
+
+    _hardware_hash: bytes
+    _validation_cache: ClassVar[LRUCache[tuple[bytes, bytes], Exception | None]] = (
+        LRUCache(maxsize=1024)
+    )
+    _compilation_cache: ClassVar[
+        LRUCache[tuple[bytes, bytes], tuple[bytes, StateMachineLookup]]
+    ] = LRUCache(maxsize=1024)
 
     _softcode_thread: SoftcodeThread
     _softcode_handler: Callable[[int], None] | None = None
@@ -131,8 +139,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._fsm_annotations: StateMachineLookup | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
-        self._validation_cache = LRUCache(maxsize=1024)
-        self._state_machine_cache = LRUCache(maxsize=1024)
+        self._hardware_hash: bytes = b''
 
         self._n_softcodes = 0
         self._softcode_thread = SoftcodeThread(softcode_handler=self._softcode_handler)
@@ -812,9 +819,16 @@ class Bpod(SerialDevice, AbstractBpod):
         self._compile_output_actions()
         self._event_lookup = _build_event_lookup(self._input_events, self._actions)
 
-        # invalidate caches
-        self._validation_cache.clear()
-        self._state_machine_cache.clear()
+        # compute hardware identity hash for cache keying
+        self._hardware_hash = self._compute_hardware_hash()
+
+    def _compute_hardware_hash(self) -> bytes:
+        """Compute a hash for the current hardware configuration."""
+        return _xxh3_64(
+            msgspec.msgpack.encode(self._hardware, order='deterministic')
+            + msgspec.msgpack.encode(self._input_events.names, order='deterministic')
+            + msgspec.msgpack.encode(self._actions, order='deterministic')
+        ).digest()
 
     def validate_state_machine(self, state_machine: StateMachine) -> bytes:
         """
@@ -842,8 +856,9 @@ class Bpod(SerialDevice, AbstractBpod):
         fsm_hash = state_machine.check()
 
         # skip validation if the state machine has been validated before
-        if fsm_hash in self._validation_cache:
-            exception = self._validation_cache[fsm_hash]
+        cache_key = (self._hardware_hash, fsm_hash)
+        if cache_key in self._validation_cache:
+            exception = self._validation_cache[cache_key]
             if exception is not None:
                 raise exception
             if logger.isEnabledFor(logging.DEBUG):
@@ -859,7 +874,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         def cache_and_raise_value_error(message: str) -> None:
             e = ValueError(message)
-            self._validation_cache[fsm_hash] = e
+            self._validation_cache[cache_key] = e
             raise e
 
         # validate the number of states, global timers, global counters and conditions.
@@ -931,7 +946,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # TODO: Check that sync channel is not used as state output
 
         # add the state machine to the list of valid state machines
-        self._validation_cache[fsm_hash] = None
+        self._validation_cache[cache_key] = None
 
         # report benchmarking results
         if logger.isEnabledFor(logging.DEBUG):
@@ -1008,14 +1023,15 @@ class Bpod(SerialDevice, AbstractBpod):
             state_machine_hash = state_machine.hash
 
         # use cached results if they are available
-        if state_machine_hash in self._state_machine_cache:
+        cache_key = (self._hardware_hash, state_machine_hash)
+        if cache_key in self._compilation_cache:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
                     'Reusing cached compiled state machine %s in %d μs',
                     state_machine_hash.hex(),
                     (time.perf_counter_ns() - t0) // 1e3,
                 )
-            return self._state_machine_cache[state_machine_hash]
+            return self._compilation_cache[cache_key]
 
         # state machine
         states = list(state_machine.states.values())
@@ -1241,7 +1257,7 @@ class Bpod(SerialDevice, AbstractBpod):
         struct.pack_into('<?H', fsm_bytes, 0, use_back_op, len(fsm_bytes) - 3)
 
         # store the compiled state machine for future use
-        self._state_machine_cache[state_machine_hash] = (fsm_bytes, annotations)
+        self._compilation_cache[cache_key] = (fsm_bytes, annotations)
 
         # report benchmarking results
         if logger.isEnabledFor(logging.DEBUG):
