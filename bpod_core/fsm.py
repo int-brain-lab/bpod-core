@@ -3,7 +3,7 @@
 import re
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 
 import msgspec
 import yaml
@@ -20,7 +20,7 @@ from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 from xxhash import xxh3_64 as _xxh3_64
 
 from bpod_core.constants import UINT32_MAX
-from bpod_core.misc import ValidatedDict, suggest_similar
+from bpod_core.misc import LRUCache, ValidatedDict, suggest_similar
 
 
 def enc_hook(obj: Any) -> Any:
@@ -418,11 +418,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
     conditions: Conditions = Conditions()
     """A dictionary of conditions."""
 
-    _validation_hash: bytes = b''
-    """hash for caching of validation results."""
-
-    _validation_error: Exception | None = None
-    """The latest validation error."""
+    _check_cache: ClassVar[LRUCache[bytes, Exception | None]] = LRUCache(maxsize=1024)
+    """Cached results of validation checks."""
 
     def __repr__(self) -> str:
         fields = [f for f in StateMachine.model_fields if f != 'name']
@@ -985,21 +982,20 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         """
         current_hash = self._hash()
 
-        if self._validation_hash == current_hash:
-            if self._validation_error:
-                raise self._validation_error
+        if current_hash in self._check_cache:
+            exception = self._check_cache[current_hash]
+            if exception is not None:
+                raise exception
             return current_hash
 
         try:
             self._check()
-            self._validation_error = None
+            self._check_cache[current_hash] = None
         except ValueError as e:
-            self._validation_error = e
+            self._check_cache[current_hash] = e
             raise
-        else:
-            return current_hash
-        finally:
-            self._validation_hash = current_hash
+
+        return current_hash
 
     def _check(self) -> None:
         # Check for empty state machine
