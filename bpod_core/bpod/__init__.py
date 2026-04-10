@@ -61,7 +61,13 @@ from bpod_core.com import (
     find_ports,
     verify_serial_discovery,
 )
-from bpod_core.constants import FMT_UINT8, FMT_UINT16_LE, FMT_UINT32_LE, TeensyPID
+from bpod_core.constants import (
+    FMT_UINT8,
+    FMT_UINT16_LE,
+    FMT_UINT32_LE,
+    UINT32_MAX,
+    TeensyPID,
+)
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ServiceClient, ServiceEvent, ServiceHost, iter_services
 from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
@@ -867,8 +873,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 )
 
         # validate states
-        max_uint32 = np.iinfo(np.uint32).max
-        max_time_uint32 = max_uint32 / self._hardware.cycle_frequency
+        max_time_uint32 = UINT32_MAX / self._hardware.cycle_frequency
         for state_name, state in state_machine.states.items():
             if state.timer > max_time_uint32:
                 raise ValueError(

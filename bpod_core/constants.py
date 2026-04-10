@@ -3,6 +3,31 @@
 from enum import IntEnum
 from struct import Struct
 
+# maximum integer values
+INT8_MIN = -128
+"""Minimum value for a signed 8-bit integer."""
+INT16_MIN = -32768
+"""Minimum value for a signed 16-bit integer."""
+INT32_MIN = -2147483648
+"""Minimum value for a signed 32-bit integer."""
+INT64_MIN = -9223372036854775808
+"""Minimum value for a signed 64-bit integer."""
+INT8_MAX = 127
+"""Maximum value for a signed 8-bit integer."""
+INT16_MAX = 32767
+"""Maximum value for a signed 16-bit integer."""
+INT32_MAX = 2147483647
+"""Maximum value for a signed 32-bit integer."""
+INT64_MAX = 9223372036854775807
+"""Maximum value for a signed 64-bit integer."""
+UINT8_MAX = 255
+"""Maximum value for an unsigned 8-bit integer."""
+UINT16_MAX = 65535
+"""Maximum value for an unsigned 16-bit integer."""
+UINT32_MAX = 4294967295
+"""Maximum value for an unsigned 32-bit integer."""
+UINT64_MAX = 18446744073709551615
+
 # struct format strings
 FMT_UINT8 = 'B'
 """Format string for an unsigned 8-bit integer."""

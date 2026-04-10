@@ -20,6 +20,7 @@ from pydantic_core import PydanticCustomError
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 from xxhash import xxh3_64 as _xxh3_64
 
+from bpod_core.constants import UINT32_MAX
 from bpod_core.misc import ValidatedDict, suggest_similar
 
 
@@ -207,7 +208,7 @@ GlobalCounterThreshold = Annotated[
         title='Threshold',
         description='The count threshold to generate an event',
         ge=0,
-        le=np.iinfo(np.uint32).max,
+        le=UINT32_MAX,
     ),
 ]
 
