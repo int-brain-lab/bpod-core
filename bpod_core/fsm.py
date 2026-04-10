@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import msgspec
-import numpy as np
 import yaml
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
