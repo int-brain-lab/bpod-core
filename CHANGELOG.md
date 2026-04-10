@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## UNRELEASED
 
+### Added
+
+- `misc.LRUCache` - a simple LRU cache implementation based on `OrderedDict`.
+
 ### Changed
 
 - switched to Polars `LazyFrame` for storing trial data.

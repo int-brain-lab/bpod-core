@@ -7,7 +7,6 @@ import struct
 import time
 import traceback
 import weakref
-from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from queue import Empty, SimpleQueue
@@ -70,7 +69,7 @@ from bpod_core.constants import (
 )
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ServiceClient, ServiceEvent, ServiceHost, iter_services
-from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
+from bpod_core.misc import LRUCache, SettingsDict, extend_packed, suggest_similar
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +92,7 @@ class Bpod(SerialDevice, AbstractBpod):
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
     _valid_state_machines: set[bytes]
-    _state_machine_cache: OrderedDict[bytes, tuple[bytes, StateMachineLookup]]
+    _state_machine_cache: LRUCache[bytes, tuple[bytes, StateMachineLookup]]
 
     _softcode_thread: SoftcodeThread
     _softcode_handler: Callable[[int], None] | None = None
@@ -133,7 +132,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._fsm_annotations: StateMachineLookup | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
         self._valid_state_machines = set()
-        self._state_machine_cache = OrderedDict()
+        self._state_machine_cache = LRUCache(maxsize=1024)
 
         self._n_softcodes = 0
         self._softcode_thread = SoftcodeThread(softcode_handler=self._softcode_handler)
@@ -996,8 +995,11 @@ class Bpod(SerialDevice, AbstractBpod):
         # get nanosecond count for benchmarking
         t0 = time.perf_counter_ns()
 
+        # recompute the state machine hash if it was not provided
         if state_machine_hash is None:
             state_machine_hash = state_machine.hash
+
+        # use cached results if they are available
         if state_machine_hash in self._state_machine_cache:
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(
@@ -1005,7 +1007,6 @@ class Bpod(SerialDevice, AbstractBpod):
                     state_machine_hash.hex(),
                     (time.perf_counter_ns() - t0) // 1e3,
                 )
-            self._state_machine_cache.move_to_end(state_machine_hash)
             return self._state_machine_cache[state_machine_hash]
 
         # state machine
@@ -1233,8 +1234,6 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # store the compiled state machine for future use
         self._state_machine_cache[state_machine_hash] = (fsm_bytes, annotations)
-        if len(self._state_machine_cache) > 1024:
-            self._state_machine_cache.popitem(last=False)
 
         # report benchmarking results
         if logger.isEnabledFor(logging.DEBUG):
