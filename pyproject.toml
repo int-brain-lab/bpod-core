@@ -30,6 +30,7 @@ dependencies = [
   "filelock>=3.20.0",
   "psutil>=7.0.0",
   "polars>=1.38.1",
+  "xxhash>=3.6.0",
 ]
 license = { text = "MIT" }
 readme = "README.md"

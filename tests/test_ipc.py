@@ -10,6 +10,11 @@ from zeroconf import ServiceBrowser
 from bpod_core import ipc
 
 
+@pytest.fixture(autouse=True)
+def fast_event_loop(mocker):
+    mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 5)
+
+
 class TestLocalServiceAdvertisement:
     """Tests for LocalServiceAdvertisement class."""
 

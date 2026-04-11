@@ -134,6 +134,7 @@ def mock_bpod(mocker, mock_ext_serial, mock_settings):
     mock_bpod = mocker.MagicMock(spec=Bpod)
     mock_bpod.is_running = False
     mock_bpod._time_reference = mocker.MagicMock(spec=TimeReferences)
+    mock_bpod._softcode_thread = mocker.MagicMock()
     mock_bpod.serial0 = mock_ext_serial
     mock_bpod._identify_bpod.side_effect = lambda *args, **kwargs: Bpod._identify_bpod(
         mock_bpod,

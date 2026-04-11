@@ -7,6 +7,7 @@ from serial import SerialException
 
 from bpod_core.bpod import Bpod, BpodError
 from bpod_core.com import ExtendedSerial
+from bpod_core.constants import STRUCT_INT16_LE, STRUCT_UINT8
 from bpod_core.fsm import StateMachine
 
 
@@ -87,8 +88,8 @@ class TestGetVersionInfo:
         """Test retrieval of version info with supported firmware and hardware."""
         mock_bpod.serial0.mock_responses = {
             b'F': struct.pack('<2H', 23, 3),  # Firmware version 23, Bpod type 3
-            b'f': struct.pack('<H', 1),  # Minor firmware version 1
-            b'v': struct.pack('<B', 2),  # PCB revision 2
+            b'f': STRUCT_INT16_LE.pack(1),  # Minor firmware version 1
+            b'v': STRUCT_UINT8.pack(2),  # PCB revision 2
         }
         Bpod._get_version_info(mock_bpod)
         assert mock_bpod._version.firmware == (23, 1)
@@ -99,7 +100,7 @@ class TestGetVersionInfo:
         """Test failure when firmware version is unsupported."""
         mock_bpod.serial0.mock_responses = {
             b'F': struct.pack('<2H', 20, 3),  # Firmware version 20, Bpod type 3
-            b'f': struct.pack('<H', 1),  # Minor firmware version 1
+            b'f': STRUCT_INT16_LE.pack(1),  # Minor firmware version 1
         }
         with pytest.raises(BpodError, match=r'firmware .* is not supported'):
             Bpod._get_version_info(mock_bpod)
@@ -108,7 +109,7 @@ class TestGetVersionInfo:
         """Test failure when hardware version is unsupported."""
         mock_bpod.serial0.mock_responses = {
             b'F': struct.pack('<2H', 23, 2),  # Firmware version 23, Bpod type 2
-            b'f': struct.pack('<H', 1),  # Minor firmware version 1
+            b'f': STRUCT_INT16_LE.pack(1),  # Minor firmware version 1
         }
         with pytest.raises(BpodError, match=r'hardware .* is not supported'):
             Bpod._get_version_info(mock_bpod)
@@ -269,6 +270,13 @@ class TestSendStateMachine:
         fsm.add_state('b', 1, {'Tup': '>exit', 'Condition1': '>exit'}, {'PWM2': 255})
         return fsm
 
+    @pytest.fixture
+    def fsm_softcodes(self):
+        fsm = StateMachine()
+        fsm.add_state('a', 5, {'SoftCode0': 'b', 'Tup': '>exit'})
+        fsm.add_state('b', 0, {'Tup': '>exit'})
+        return fsm
+
     def test_send_state_machine_basic_25(self, fsm_basic, mock_bpod_25):
         """Test sending a basic state machine to Bpod 2.5."""
         mock_bpod_25.send_state_machine(fsm_basic, run_asap=False)
@@ -357,4 +365,13 @@ class TestSendStateMachine:
             b'\x01\x00\x0c\x00\xff\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x02\x00\x0c'
             b'\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10\x27\x00\x00\x10'
             b'\x27\x00\x00\x00'
+        )
+
+    def test_send_state_machine_softcodes_2p(self, fsm_softcodes, mock_bpod_25):
+        """Test sending a state machine with softcodes to Bpod 2.5."""
+        mock_bpod_25.send_state_machine(fsm_softcodes)
+        assert mock_bpod_25.serial0.last_write == (
+            b'C\x00\x00&\x00\x02\x00\x00\x00\x02\x02\x01K\x01\x00\x00\x00\x00\x00\x00'
+            b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00P\xc3\x00\x00\x00'
+            b'\x00\x00\x00\x00'
         )

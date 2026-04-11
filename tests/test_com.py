@@ -1,4 +1,3 @@
-import gc
 import logging
 import re
 from unittest.mock import MagicMock, call
@@ -499,7 +498,6 @@ class TestSerialDevice:
         device._rename_serial_device('fancy device')
         with caplog.at_level(logging.DEBUG):
             del device
-            gc.collect()
         assert 'fancy device' in caplog.text
         mock_extended_serial.close.assert_called_once()
 
@@ -507,16 +505,16 @@ class TestSerialDevice:
         """Finalizer closes the serial connection during garbage collection."""
         device = com.SerialDevice('/dev/ttyACM0', open_connection=True)
         del device
-        gc.collect()
         mock_extended_serial.close.assert_called_once()
 
     def test_finalizer_swallows_errors(self, mock_comports, mock_extended_serial):
         """Finalizer does not raise when serial.close() fails."""
-        mock_extended_serial.is_open = True
         mock_extended_serial.close.side_effect = Exception('Close failed')
-        device = com.SerialDevice('/dev/ttyACM0', open_connection=False)
+        device = com.SerialDevice('/dev/ttyACM0', open_connection=True)
+        finalizer = device._serial_device_finalizer
+        assert finalizer.alive
         del device
-        gc.collect()  # should not raise
+        assert not finalizer.alive
 
     def test_exit_swallows_close_errors(self, mock_comports, mock_extended_serial):
         """__exit__ does not raise when closing fails."""

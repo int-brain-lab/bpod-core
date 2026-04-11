@@ -363,6 +363,7 @@ hardware are known:
            n_conditions=64,
            cycle_frequency=1000,
        )
+       self._hardware_hash = b''
        self.send_state_machine = types.MethodType(original_send, self)
        self.validate_state_machine = types.MethodType(original_validate, self)
 

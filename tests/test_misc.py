@@ -7,7 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from bpod_core import misc
-from bpod_core.misc import ByteEnum, ValidatedDict
+from bpod_core.misc import ByteEnum, LRUCache, ValidatedDict
+from bpod_core.constants import FMT_UINT8
 
 
 class TestByteEnum:
@@ -413,7 +414,7 @@ class TestExtendPacked:
     def test_pack_unsigned_bytes(self):
         """Packs a list of unsigned bytes."""
         buf = bytearray()
-        misc.extend_packed(buf, [1, 2, 255], 'B')
+        misc.extend_packed(buf, [1, 2, 255], FMT_UINT8)
         assert buf == b'\x01\x02\xff'
 
     def test_pack_unsigned_shorts(self):
@@ -439,7 +440,7 @@ class TestExtendPacked:
     def test_extends_existing_buffer(self):
         """Appends to an existing bytearray without overwriting."""
         buf = bytearray(b'\xaa\xbb')
-        misc.extend_packed(buf, [1, 2], 'B')
+        misc.extend_packed(buf, [1, 2], FMT_UINT8)
         assert buf == b'\xaa\xbb\x01\x02'
 
     def test_invalid_format_raises_struct_error(self):
@@ -452,13 +453,13 @@ class TestExtendPacked:
         """Raises struct.error when value exceeds format range."""
         buf = bytearray()
         with pytest.raises(struct.error):
-            misc.extend_packed(buf, [256], 'B')  # max for 'B' is 255
+            misc.extend_packed(buf, [256], FMT_UINT8)  # max for uInt8 is 255
 
     def test_negative_for_unsigned_raises_struct_error(self):
         """Raises struct.error for negative value with unsigned format."""
         buf = bytearray()
         with pytest.raises(struct.error):
-            misc.extend_packed(buf, [-1], 'B')
+            misc.extend_packed(buf, [-1], FMT_UINT8)
 
 
 class TestValidatedDict:
@@ -708,6 +709,108 @@ class TestPruneEmptyParentDirectories:
 
         misc.prune_empty_parent_directories(target, root)
         assert not target.exists()
+
+
+class TestLRUCache:
+    """Tests for LRUCache."""
+
+    def test_set_and_get(self) -> None:
+        """Stores and retrieves a value by key."""
+        cache: LRUCache[str, int] = LRUCache(maxsize=2)
+        cache['a'] = 1
+        assert cache['a'] == 1
+
+    def test_evicts_least_recently_used(self) -> None:
+        """Evicts the oldest entry when maxsize is exceeded."""
+        cache: LRUCache[str, int] = LRUCache(maxsize=2)
+        cache['a'] = 1
+        cache['b'] = 2
+        cache['c'] = 3  # 'a' should be evicted
+        assert 'a' not in cache
+        assert 'b' in cache
+        assert 'c' in cache
+
+    def test_access_updates_recency(self) -> None:
+        """Reading a key promotes it to most recently used."""
+        cache: LRUCache[str, int] = LRUCache(maxsize=2)
+        cache['a'] = 1
+        cache['b'] = 2
+        _ = cache['a']  # 'a' is now most recently used; 'b' is LRU
+        cache['c'] = 3  # 'b' should be evicted, not 'a'
+        assert 'a' in cache
+        assert 'b' not in cache
+        assert 'c' in cache
+
+    def test_get_updates_recency(self) -> None:
+        """Reading a key through the get method promotes it to most recently used."""
+        cache: LRUCache[str, int] = LRUCache(maxsize=2)
+        cache['a'] = 1
+        cache['b'] = 2
+        cache.get('a')  # 'a' is now most recently used, 'c' is LRU
+        cache['c'] = 4  # 'b' should be evicted, not 'a'
+        assert 'a' in cache
+        assert 'b' not in cache
+        assert 'c' in cache
+
+    def test_update_existing_key_updates_recency(self) -> None:
+        """Overwriting an existing key promotes it to most recently used."""
+        cache: LRUCache[str, int] = LRUCache(maxsize=2)
+        cache['a'] = 1
+        cache['b'] = 2
+        cache['a'] = 99  # 'a' updated; 'b' becomes LRU
+        cache['c'] = 3  # 'b' should be evicted
+        assert cache['a'] == 99
+        assert 'b' not in cache
+        assert 'c' in cache
+
+    def test_len_does_not_exceed_maxsize(self) -> None:
+        """Length never exceeds maxsize after many insertions."""
+        cache: LRUCache[int, int] = LRUCache(maxsize=3)
+        for i in range(10):
+            cache[i] = i
+        assert len(cache) == 3
+
+    def test_default_maxsize(self) -> None:
+        """Default maxsize is 128."""
+        assert LRUCache().maxsize == 128
+
+    def test_maxsize_property(self) -> None:
+        """maxsize property reflects the value passed at construction."""
+        assert LRUCache(maxsize=64).maxsize == 64
+
+    def test_negative_maxsize_raises(self) -> None:
+        """Raises ValueError for a negative maxsize."""
+        with pytest.raises(ValueError, match='maxsize'):
+            LRUCache(maxsize=-1)
+
+    def test_get_returns_value(self) -> None:
+        """get returns the value for an existing key."""
+        cache: LRUCache[str, int] = LRUCache(maxsize=2)
+        cache['a'] = 1
+        assert cache.get('a') == 1
+
+    def test_get_returns_none_for_missing_key(self) -> None:
+        """get returns None by default for a missing key."""
+        cache: LRUCache[str, int] = LRUCache(maxsize=2)
+        assert cache.get('missing') is None
+
+    def test_get_returns_default_for_missing_key(self) -> None:
+        """get returns the provided default for a missing key."""
+        cache: LRUCache[str, int] = LRUCache(maxsize=2)
+        assert cache.get('missing', 99) == 99
+
+    def test_setdefault_returns_existing_value(self) -> None:
+        """setdefault returns the existing value without overwriting it."""
+        cache: LRUCache[str, int] = LRUCache(maxsize=2)
+        cache['a'] = 1
+        assert cache.setdefault('a', 99) == 1
+        assert cache['a'] == 1
+
+    def test_setdefault_inserts_and_returns_default(self) -> None:
+        """setdefault inserts and returns the default for a missing key."""
+        cache: LRUCache[str, int] = LRUCache(maxsize=2)
+        assert cache.setdefault('a', 99) == 99
+        assert cache['a'] == 99
 
 
 class TestDocstringInheritanceMixin:

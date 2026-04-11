@@ -1,13 +1,11 @@
 """Module defining classes and types for creating and managing state machines."""
 
-import hashlib
 import re
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 
 import msgspec
-import numpy as np
 import yaml
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
@@ -19,8 +17,10 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
+from xxhash import xxh3_64 as _xxh3_64
 
-from bpod_core.misc import ValidatedDict, suggest_similar
+from bpod_core.constants import UINT32_MAX
+from bpod_core.misc import LRUCache, ValidatedDict, suggest_similar
 
 
 def enc_hook(obj: Any) -> Any:
@@ -35,9 +35,6 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
     if issubclass(obj_type, BaseModel):
         return obj_type.model_validate(obj)
     raise NotImplementedError(f'Objects of type {type} are not supported')
-
-
-_msgpack_encoder = msgspec.msgpack.Encoder()
 
 
 def _validate_state_timer(v: Any, h: ValidatorFunctionWrapHandler) -> 'StateTimer':
@@ -210,7 +207,7 @@ GlobalCounterThreshold = Annotated[
         title='Threshold',
         description='The count threshold to generate an event',
         ge=0,
-        le=np.iinfo(np.uint32).max,
+        le=UINT32_MAX,
     ),
 ]
 
@@ -421,11 +418,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
     conditions: Conditions = Conditions()
     """A dictionary of conditions."""
 
-    _validation_hash: bytes = b''
-    """hash for caching of validation results."""
-
-    _validation_error: Exception | None = None
-    """The latest validation error."""
+    _check_cache: ClassVar[LRUCache[bytes, Exception | None]] = LRUCache(maxsize=1024)
+    """Cached results of validation checks."""
 
     def __repr__(self) -> str:
         fields = [f for f in StateMachine.model_fields if f != 'name']
@@ -952,23 +946,15 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         try:
             # when serializing to JSON, we first try to use Pydantic's private API,
             # which avoids an unnecessary string conversion
-            json_bytes = self.__pydantic_serializer__.to_json(
-                value=self,
-                exclude_defaults=True,
-                warnings=False,
-            )
+            return _xxh3_64(self.__pydantic_serializer__.to_json(self)).digest()
         except (AttributeError, TypeError):
             # if that fails, we fall back to the public API
-            json_bytes = self.model_dump_json(
-                exclude_defaults=True,
-                warnings=False,
-            ).encode()
-        return hashlib.blake2b(json_bytes, digest_size=8).digest()
+            return _xxh3_64(self.model_dump_json().encode()).digest()
 
     @property
-    def hash(self) -> str:
+    def hash(self) -> bytes:
         """Hash of the state machine."""
-        return self._hash().hex()
+        return self._hash()
 
     @property
     def valid(self) -> bool:
@@ -980,9 +966,14 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         else:
             return True
 
-    def check(self) -> None:
+    def check(self) -> bytes:
         """
-        Check validity of state machine.
+        Check validity of the state machine.
+
+        Returns
+        -------
+        bytes
+            The hash of the state machine.
 
         Raises
         ------
@@ -990,18 +981,21 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             If the state machine is invalid.
         """
         current_hash = self._hash()
-        if self._validation_hash == current_hash:
-            if self._validation_error:
-                raise self._validation_error
-        else:
-            try:
-                self._check()
-                self._validation_error = None
-            except ValueError as e:
-                self._validation_error = e
-                raise
-            finally:
-                self._validation_hash = current_hash
+
+        if current_hash in self._check_cache:
+            exception = self._check_cache[current_hash]
+            if exception is not None:
+                raise exception
+            return current_hash
+
+        try:
+            self._check()
+            self._check_cache[current_hash] = None
+        except ValueError as e:
+            self._check_cache[current_hash] = e
+            raise
+
+        return current_hash
 
     def _check(self) -> None:
         # Check for empty state machine
