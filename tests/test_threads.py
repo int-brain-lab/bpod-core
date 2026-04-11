@@ -20,7 +20,6 @@ from bpod_core.bpod.structs import (
     _InputEvents,
 )
 from bpod_core.bpod.threads import (
-    _INITIAL_BUFFER_SIZE,
     _TRIAL_DATA_SCHEMA,
     EventThread,
     ReadThread,
@@ -354,14 +353,18 @@ class TestEventThread:
         df = thread.peek_data().collect()
         assert len(df) > 0
 
-    def test_buffer_growth(self, make_thread):
+    def test_buffer_growth(self, mocker, make_thread):
         """Buffer doubles correctly."""
-        n = _INITIAL_BUFFER_SIZE + 10
+        init_buffer_size = 10
+        mocker.patch('bpod_core.bpod.threads._INITIAL_BUFFER_SIZE', init_buffer_size)
+        n = init_buffer_size + 1
         thread, data_queue = make_thread(event_names=['Ev0', 'Tup'])
+        assert len(thread._buffer) == init_buffer_size
         for _ in range(n):
             thread.queue.put(RawEvent(micros_us=0, event_id=0))
         thread.stop()
         thread.join(timeout=2)
+        assert len(thread._buffer) == init_buffer_size * 2
         df = self._collect(data_queue)
         assert len(df.filter(pl.col('event') == 'Ev0')) == n
 
@@ -414,7 +417,9 @@ class TestSoftcodeThread:
         with caplog.at_level(logging.WARNING):
             thread.queue.put(RawSoftcode(4, 0, 0))
             # give the thread time to process and log
-            time.sleep(0.1)
+            deadline = time.time() + 1
+            while (time.time() < deadline) and len(caplog.text) == 0:
+                time.sleep(0.0005)
         assert '4' in caplog.text
 
     def test_handler_exception_logged_and_continues(self, make_thread, caplog):

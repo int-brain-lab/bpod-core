@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 T = TypeVar('T')
 U = TypeVar('U')
 
+_EVENT_LOOP_POLL_MS = 100
+
 
 class ServiceError(Exception):
     """Base exception for IPC service errors."""
@@ -704,7 +706,7 @@ class ServiceHost(ServiceBase):
 
         while not stop_event.is_set():
             # wait for incoming requests (short poll so we can check stop_event)
-            if not req_rep_socket.poll(100):
+            if not req_rep_socket.poll(_EVENT_LOOP_POLL_MS):
                 continue
 
             # receive request
