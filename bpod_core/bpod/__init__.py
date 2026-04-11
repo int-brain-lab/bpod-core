@@ -1377,12 +1377,13 @@ class Bpod(SerialDevice, AbstractBpod):
         Blocks until the state machine thread completes. If no state machine is
         currently running, this method returns immediately.
         """
-        if self._read_thread is not None and self._read_thread.is_alive():
+        read_thread = self._read_thread
+        if read_thread is not None and read_thread.is_alive():
             logger.debug(
                 'Waiting for state machine #%d to finish ...',
-                self._read_thread.trial_number,
+                read_thread.trial_number,
             )
-            self._read_thread.join()
+            read_thread.join()
 
     @overload
     def peek_data(self, *, lazy: Literal[False] = False) -> pl.DataFrame: ...
