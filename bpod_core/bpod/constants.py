@@ -1,8 +1,13 @@
 """Constants used by the bpod module."""
 
+from uuid import UUID
+
 import platformdirs
 
 from bpod_core.constants import VID_TEENSY, TeensyPID
+
+BPOD_UUID_NAMESPACE = UUID('9dbb7a76-cb73-4b16-aaf7-f574f4d218f6')
+"""UUID namespace for Bpod devices"""
 
 VIDS_BPOD = [VID_TEENSY]
 """Vendor IDs of supported Bpod devices"""

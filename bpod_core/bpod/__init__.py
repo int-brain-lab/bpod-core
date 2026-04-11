@@ -13,6 +13,7 @@ from queue import Empty, SimpleQueue
 from time import perf_counter_ns
 from types import TracebackType
 from typing import Any, ClassVar, Literal, NamedTuple, cast, overload
+from uuid import uuid5
 
 import msgspec
 import numpy as np
@@ -27,6 +28,7 @@ from bpod_core.bpod.constants import (
     _CHANNEL_BASE_NAME_CONDITION,
     _CHANNEL_BASE_NAME_GLOBAL_COUNTER,
     _CHANNEL_BASE_NAME_GLOBAL_TIMER,
+    BPOD_UUID_NAMESPACE,
     CHANNEL_TYPES_INPUT,
     CHANNEL_TYPES_OUTPUT,
     CONFIG_PATH,
@@ -317,6 +319,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 'firmware': '.'.join([str(x) for x in self.version.firmware]),
                 'core': bpod_core_version,
             },
+            uuid=uuid5(BPOD_UUID_NAMESPACE, self._serial_number),
             event_handler=self._request_handler,
             port_pub=cast('int | None', port_pub),
             port_rep=cast('int | None', port_rep),

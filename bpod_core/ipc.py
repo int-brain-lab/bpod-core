@@ -24,7 +24,7 @@ import platformdirs
 import zmq
 from platformdirs import user_runtime_path
 from psutil import pid_exists
-from pydantic import UUID4, validate_call
+from pydantic import validate_call
 from typing_extensions import Self
 from zeroconf import (
     InterfaceChoice,
@@ -212,7 +212,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
         properties: dict[str, str | None] | None = None,
         *,
         pid: int | None = None,
-        uuid: UUID4 | None = None,
+        uuid: UUID | None = None,
     ) -> None:
         """
         Create a local service advertisement.
@@ -229,7 +229,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
             Additional key-value properties to advertise with the service.
         pid : int, optional
             Process ID of the service. Used to detect stale advertisements.
-        uuid : UUID4, optional
+        uuid : UUID, optional
             Unique identifier for this service instance. Generated if not provided.
         """
         uuid = uuid or uuid4()
@@ -349,7 +349,6 @@ class ServiceBase(contextlib.AbstractContextManager):
         self._lock_close = threading.Lock()
         self._zmq_context = zmq.Context()
         self._stop_event_loop = threading.Event()
-        self._uuid = uuid4()
 
     @staticmethod
     def _finalize_base(
@@ -432,6 +431,7 @@ class ServiceHost(ServiceBase):
         service_name: str,
         service_type: str,
         properties: dict[str, str | None] | None = None,
+        uuid: UUID | None = None,
         event_handler: Callable[[Any], Any] | None = None,
         port_pub: int | None = None,
         port_rep: int | None = None,
@@ -450,6 +450,8 @@ class ServiceHost(ServiceBase):
             Service type.
         properties : dict, optional
             Additional properties for service advertisement.
+        uuid : UUID, optional
+            UUID for local IPC. Will be generated if not provided.
         event_handler : callable, optional
             Function to handle incoming requests.
         port_pub : int, optional
@@ -463,6 +465,8 @@ class ServiceHost(ServiceBase):
         """
         # initialize base class
         super().__init__()
+
+        self._uuid = uuid or uuid4()
 
         self._bind_ip = IPV4_WILDCARD if remote else IPV4_LOOPBACK
         self._local_ip = get_local_ipv4() if remote else IPV4_LOOPBACK
