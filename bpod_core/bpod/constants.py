@@ -1,8 +1,13 @@
 """Constants used by the bpod module."""
 
+from uuid import UUID
+
 import platformdirs
 
 from bpod_core.constants import VID_TEENSY, TeensyPID
+
+BPOD_UUID_NAMESPACE = UUID('9dbb7a76-cb73-4b16-aaf7-f574f4d218f6')
+"""UUID namespace for Bpod devices"""
 
 VIDS_BPOD = [VID_TEENSY]
 """Vendor IDs of supported Bpod devices"""
@@ -18,6 +23,13 @@ MIN_BPOD_HW_VERSION = 3
 
 MAX_BPOD_HW_VERSION = 4
 """maximum supported hardware version"""
+
+_CHANNEL_BASE_NAME_GLOBAL_TIMER = 'GlobalTimer'
+"""Base name of global timer channels"""
+_CHANNEL_BASE_NAME_GLOBAL_COUNTER = 'GlobalCounter'
+"""Base name of global counter channels"""
+_CHANNEL_BASE_NAME_CONDITION = 'Condition'
+"""Base name of condition channels"""
 
 CHANNEL_TYPES_INPUT = {
     b'U': 'Serial',

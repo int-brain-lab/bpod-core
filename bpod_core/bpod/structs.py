@@ -5,7 +5,6 @@ from typing import NamedTuple
 import msgspec
 import numpy as np
 import numpy.typing as npt
-import polars as pl
 
 
 class _InputEvents(NamedTuple):
@@ -19,22 +18,36 @@ class _InputEvents(NamedTuple):
     """Pre-defined value for each event, or ``None`` if not applicable."""
 
 
-class CompiledStateMachine(NamedTuple):
-    """Per-trial data derived from a compiled :class:`~bpod_core.fsm.StateMachine`."""
+class _InputEventRanges(NamedTuple):
+    """Index ranges for each input event category."""
 
+    input_channels: range
+    """Index range for input channel events."""
+    global_timer_starts: range
+    """Index range for global timer start events."""
+    global_timer_ends: range
+    """Index range for global timer end events."""
+    global_counter_ends: range
+    """Index range for global counter end events."""
+    conditions: range
+    """Index range for condition events."""
+
+
+class StateMachineLookup(NamedTuple):
+    """Lookup data to decode the raw event stream during a state machine trial."""
+
+    fsm_hash: bytes
+    """The state machine's hash value."""
     state_names: list[str]
     """Names of all states, indexed by state index."""
-    state_transitions: npt.NDArray[np.uint8]
+    state_transition_matrix: npt.NDArray[np.uint8]
     """Transition matrix of shape ``(n_states, 255)``."""
     state_actions: list[dict[str, int]]
     """Per-state mapping of action name to value."""
     use_back_op: bool
     """Whether the ``>back`` operator is used."""
-    state_lookup: pl.DataFrame
-    """Categorical lookup DataFrame mapping state index to state name.
-
-    Pre-built at FSM compilation time for use in :meth:`~EventThread.get_data`.
-    """
+    state_lookup: dict[int, str]
+    """Mapping from state index to state name."""
 
 
 class TimeReferences(NamedTuple):
@@ -55,6 +68,17 @@ class RawEvent(NamedTuple):
     """Time of the event relative to the Bpod's session clock (microseconds)."""
     event_id: int
     """Index of the event."""
+
+
+class RawSoftcode(NamedTuple):
+    """Raw softcode data from the Bpod device."""
+
+    softcode: int
+    """Zero-based softcode value."""
+    received_ns: int
+    """``time.perf_counter_ns()`` captured immediately after the serial read."""
+    micros_us: int
+    """Bpod session clock at the time of softcode firing (microseconds)."""
 
 
 class BpodSettings(msgspec.Struct):

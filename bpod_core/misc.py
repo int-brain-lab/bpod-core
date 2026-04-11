@@ -1,5 +1,6 @@
 """Miscellaneous tools that don't fit the other categories."""
 
+import contextlib
 import difflib
 import errno
 import json
@@ -7,19 +8,22 @@ import logging
 import re
 import socket
 import struct
+from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
 
 import msgspec
 from filelock import FileLock
 from pydantic import Field, RootModel
+from typing_extensions import override
 
 logger = logging.getLogger(__name__)
 
 K = TypeVar('K')
 V = TypeVar('V')
+_T = TypeVar('_T')
 
 _RE_NON_ALPHANUMERIC = re.compile(r'[^a-zA-Z0-9_]')
 """Match non-alphanumeric characters except underscores."""
@@ -413,7 +417,7 @@ def extend_packed(
     https://docs.python.org/3/library/struct.html#format-characters
     """
     if values:
-        byte_array.extend(struct.pack(f'<{len(values)}{fmt}', *values))
+        byte_array.extend(struct.pack(f'<{len(values)}{fmt.lstrip("<>")}', *values))
 
 
 def prune_empty_parent_directories(
@@ -480,3 +484,97 @@ def prune_empty_parent_directories(
             root_directory=root_directory,
             remove_root=remove_root,
         )
+
+
+class LRUCache(OrderedDict[K, V]):
+    """Least-recently-used cache with a fixed maximum size.
+
+    Extends :class:`~collections.OrderedDict` to evict the least recently used entry
+    when the cache exceeds `maxsize`.
+
+    Examples
+    --------
+    The least recently used entry is automatically removed when the cache exceeds the
+    defined maximum size.
+
+    >>> cache = LRUCache(maxsize=2)
+    >>> cache['a'] = 1
+    >>> cache['b'] = 2
+    >>> cache['c'] = 3  # 'a' is evicted (least recently used)
+    >>> list(cache)
+    ['b', 'c']
+
+    You can use :class:`LRUCache` to cache the results of expensive computations
+
+    >>> cache: LRUCache[int, int] = LRUCache(maxsize=128)
+    >>> def expensive(n: int) -> int:
+    ...     if n in cache:
+    ...         return cache[n]
+    ...     result = n * n  # "expensive" computation
+    ...     cache[n] = result
+    ...     return result
+    >>> expensive(4)  # computed
+    16
+    >>> expensive(4)  # served from cache
+    16
+    """
+
+    def __init__(self, maxsize: int = 128) -> None:
+        """Initialize the cache.
+
+        Parameters
+        ----------
+        maxsize : int
+            Maximum number of entries to keep in the cache. Defaults to 128.
+
+        Raises
+        ------
+        ValueError
+            If ``maxsize`` is less than 0.
+        """
+        if maxsize < 0:
+            raise ValueError('maxsize must be >= 0')
+        self._maxsize = maxsize
+        super().__init__()
+
+    @override
+    def __getitem__(self, key: K) -> V:
+        value = super().__getitem__(key)
+        with contextlib.suppress(KeyError):
+            self.move_to_end(key)
+        return value
+
+    @override
+    def __setitem__(self, key: K, value: V) -> None:
+        if key in self:
+            self.move_to_end(key)  # update recency
+        super().__setitem__(key, value)
+
+        if len(self) > self._maxsize:
+            super().popitem(last=False)  # evict LRU
+
+    @overload
+    def get(self, key: K, default: None = None) -> V | None: ...
+    @overload
+    def get(self, key: K, default: V) -> V: ...
+    @overload
+    def get(self, key: K, default: _T) -> V | _T: ...
+    @override
+    def get(self, key: K, default: _T | None = None) -> V | _T | None:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    @override
+    def setdefault(self, key: K, default: V) -> V:
+        try:
+            return self[key]
+        except KeyError:
+            self[key] = default
+            return default
+
+    @property
+    def maxsize(self) -> int:
+        """Maximum number of entries allowed in the cache."""
+        return self._maxsize
