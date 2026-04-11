@@ -391,7 +391,7 @@ class TestIterServices:
 
     def test_yields_added_event(self, mock_advertisement):
         """`added` event is yielded as a local service appears."""
-        iterator = ipc.iter_services('service_type')
+        iterator = ipc.iter_services('service_type', poll_interval=0.01)
         event = next(iterator)
         assert event.kind == 'added'
         assert event.address == mock_advertisement.address

@@ -8,7 +8,65 @@ from pydantic import ValidationError
 
 from bpod_core import misc
 from bpod_core.constants import FMT_UINT8
-from bpod_core.misc import LRUCache, ValidatedDict
+from bpod_core.misc import ByteEnum, LRUCache, ValidatedDict
+
+
+class TestByteEnum:
+    """Tests for ByteEnum."""
+
+    @pytest.fixture
+    def op(self):
+        """A minimal ByteEnum subclass for testing."""
+
+        class Op(ByteEnum):
+            READ = 1
+            WRITE = 2
+            EXEC = ord('X')
+
+        return Op
+
+    def test_value(self, op):
+        """Member has the correct integer value."""
+        assert op.READ == 1
+        assert op.WRITE == 2
+
+    def test_as_bytes(self, op):
+        """as_bytes returns a single-byte bytes object matching the value."""
+        assert op.READ.as_bytes == b'\x01'
+        assert op.WRITE.as_bytes == b'\x02'
+
+    def test_as_bytes_length(self, op):
+        """as_bytes is always exactly one byte."""
+        for member in op:
+            assert len(member.as_bytes) == 1
+
+    def test_ascii_value(self, op):
+        """ord() values are correctly stored and round-trip via as_bytes."""
+        assert ord('X') == op.EXEC
+        assert op.EXEC.as_bytes == b'X'
+
+    def test_is_int(self, op):
+        """Members are integers (IntEnum behaviour preserved)."""
+        assert isinstance(op.READ, int)
+        assert op.READ + op.WRITE == 3
+
+    def test_iteration(self, op):
+        """Iterating over the enum yields all members."""
+        assert list(op) == [op.READ, op.WRITE, op.EXEC]
+
+    def test_invalid_negative(self):
+        """Negative values raise ValueError."""
+        with pytest.raises(ValueError, match='one byte'):
+
+            class Bad(ByteEnum):
+                NEG = -1
+
+    def test_invalid_too_large(self):
+        """Values above 255 raise ValueError."""
+        with pytest.raises(ValueError, match='one byte'):
+
+            class Bad(ByteEnum):
+                BIG = 256
 
 
 @pytest.mark.parametrize(
