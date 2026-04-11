@@ -74,6 +74,7 @@ typing = [
   "appdirs-stubs>=0.1.0",
   "docutils-stubs>=0.0.22",
   "mypy>=1.15.0",
+  "types-cachetools>=6.2.0.20260408",
   "types-docutils>=0.22.0",
   "types-psutil>=7.0.0",
   "types-pyserial>=3.5.0",

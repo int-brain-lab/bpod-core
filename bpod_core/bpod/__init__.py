@@ -17,7 +17,7 @@ from uuid import uuid5
 import msgspec
 import numpy as np
 import polars as pl
-from cachetools import LRUCache
+from cachetools import FIFOCache
 from pydantic import ConfigDict, validate_call
 from serial import SerialException
 from xxhash import xxh3_64 as _xxh3_64
@@ -97,12 +97,12 @@ class Bpod(SerialDevice, AbstractBpod):
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
     _hardware_hash: bytes
-    _validation_cache: ClassVar[LRUCache[tuple[bytes, bytes], None]] = LRUCache(
+    _validation_cache: ClassVar[FIFOCache[tuple[bytes, bytes], None]] = FIFOCache(
         maxsize=1024
     )
     _compilation_cache: ClassVar[
-        LRUCache[tuple[bytes, bytes, bool], tuple[bytes, StateMachineLookup, bool]]
-    ] = LRUCache(maxsize=1024)
+        FIFOCache[tuple[bytes, bytes, bool], tuple[bytes, StateMachineLookup, bool]]
+    ] = FIFOCache(maxsize=1024)
 
     _softcode_thread: SoftcodeThread
     _softcode_handler: Callable[[int], None] | None = None

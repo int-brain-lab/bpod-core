@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 
 import msgspec
 import yaml
-from cachetools import LRUCache
+from cachetools import FIFOCache
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
     BaseModel,
@@ -419,7 +419,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
     conditions: Conditions = Conditions()
     """A dictionary of conditions."""
 
-    _validation_cache: ClassVar[LRUCache[bytes, None]] = LRUCache(maxsize=1024)
+    _validation_cache: ClassVar[FIFOCache[bytes, None]] = FIFOCache(maxsize=1024)
     """Cache holding hashes of successfully validated state machine instances."""
 
     def __repr__(self) -> str:
