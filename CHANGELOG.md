@@ -10,7 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `misc.LRUCache` - a simple LRU cache implementation based on `OrderedDict`.
 - `misc.ByteEnum` - an extended `IntEnum` that caches its values as bytes.
 
 ### Changed
