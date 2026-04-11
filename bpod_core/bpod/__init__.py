@@ -868,7 +868,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 logger.debug(
                     'Skipped validation of known valid state machine %s in %d μs',
                     fsm_hash.hex(),
-                    (time.perf_counter_ns() - t0) // 1e3,
+                    (time.perf_counter_ns() - t0) // 1000,
                 )
             return fsm_hash
 
@@ -956,7 +956,7 @@ class Bpod(SerialDevice, AbstractBpod):
             logger.debug(
                 'Validated state machine %s in %d μs',
                 fsm_hash.hex(),
-                (time.perf_counter_ns() - t0) // 1e3,
+                (time.perf_counter_ns() - t0) // 1000,
             )
 
         # return the state machine hash
@@ -1032,7 +1032,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 logger.debug(
                     'Reusing cached compiled state machine %s in %d μs',
                     state_machine_hash.hex(),
-                    (time.perf_counter_ns() - t0) // 1e3,
+                    (time.perf_counter_ns() - t0) // 1000,
                 )
             return self._compilation_cache[cache_key]
 
@@ -1267,7 +1267,7 @@ class Bpod(SerialDevice, AbstractBpod):
             logger.debug(
                 'Compiled state machine %s in %d μs',
                 state_machine_hash.hex(),
-                (time.perf_counter_ns() - t0) // 1e3,
+                (time.perf_counter_ns() - t0) // 1000,
             )
 
         # Return the compiled state machine and annotations
