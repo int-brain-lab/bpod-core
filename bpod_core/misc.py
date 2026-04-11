@@ -1,6 +1,5 @@
 """Miscellaneous tools that don't fit the other categories."""
 
-import contextlib
 import difflib
 import errno
 import json
@@ -8,17 +7,15 @@ import logging
 import re
 import socket
 import struct
-from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from enum import IntEnum
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 import msgspec
 from filelock import FileLock
 from pydantic import Field, RootModel
-from typing_extensions import override
 
 logger = logging.getLogger(__name__)
 

@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from bpod_core import misc
 from bpod_core.constants import FMT_UINT8
-from bpod_core.misc import ByteEnum, LRUCache, ValidatedDict
+from bpod_core.misc import ByteEnum, ValidatedDict
 
 
 class TestByteEnum:
