@@ -1182,40 +1182,43 @@ class Bpod(SerialDevice, AbstractBpod):
         append_events(self._input_event_ranges.global_counter_ends)
         append_events(self._input_event_ranges.conditions)
 
-        # GLOBAL TIMER CHANNELS
-        fsm_bytes.extend(
-            timer_channel_indices[gt.channel if gt else None]
-            for gt in global_timers_list
-        )
-
-        # GLOBAL TIMER ON & OFF VALUES
-        # Bpod 2+ uses 16-bit values for value_on and value_off
-        format_string = FMT_UINT16_LE if version.machine == 4 else FMT_UINT8
-        for field_name in ('value_on', 'value_off'):
-            extend_packed(
-                fsm_bytes,
-                [getattr(gt, field_name, 0) for gt in global_timers_list],
-                format_string,
-            )
-
-        # GLOBAL TIMER LOOP & SEND_EVENTS
-        for field_name, default in (('loop', 0), ('send_events', 1)):
+        if n_global_timers:
+            # GLOBAL TIMER CHANNELS
             fsm_bytes.extend(
-                getattr(gt, field_name, default) for gt in global_timers_list
+                timer_channel_indices[gt.channel if gt else None]
+                for gt in global_timers_list
             )
+
+            # GLOBAL TIMER ON & OFF VALUES
+            # Bpod 2+ uses 16-bit values for value_on and value_off
+            format_string = FMT_UINT16_LE if version.machine == 4 else FMT_UINT8
+            for field_name in ('value_on', 'value_off'):
+                extend_packed(
+                    fsm_bytes,
+                    [getattr(gt, field_name, 0) for gt in global_timers_list],
+                    format_string,
+                )
+
+            # GLOBAL TIMER LOOP & SEND_EVENTS
+            for field_name, default in (('loop', 0), ('send_events', 1)):
+                fsm_bytes.extend(
+                    getattr(gt, field_name, default) for gt in global_timers_list
+                )
 
         # GLOBAL COUNTER EVENTS
-        fsm_bytes.extend(
-            event_indices[gc.event] if gc else 254 for gc in global_counters_list
-        )
+        if n_global_counters:
+            fsm_bytes.extend(
+                event_indices[gc.event] if gc else 254 for gc in global_counters_list
+            )
 
         # CONDITION CHANNELS & VALUES
-        fsm_bytes.extend(
-            condition_channel_indices[c.channel] if c else 0 for c in conditions_list
-        )
-        fsm_bytes.extend(c.value if c else 0 for c in conditions_list)
+        if n_conditions:
+            fsm_bytes.extend(
+                condition_channel_indices[c.channel] if c else 0
+                for c in conditions_list
+            )
+            fsm_bytes.extend(c.value if c else 0 for c in conditions_list)
 
-        # GLOBAL COUNTER RESETS
         if version.firmware < (23, 0):
             fsm_bytes.extend(
                 s.actions.get('GlobalCounterReset', -1) + 1 for s in states
