@@ -17,6 +17,7 @@ from uuid import uuid5
 import msgspec
 import numpy as np
 import polars as pl
+from cachetools import LRUCache
 from pydantic import ConfigDict, validate_call
 from serial import SerialException
 from xxhash import xxh3_64 as _xxh3_64
@@ -72,7 +73,7 @@ from bpod_core.constants import (
 )
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ServiceClient, ServiceEvent, ServiceHost, iter_services
-from bpod_core.misc import LRUCache, SettingsDict, extend_packed, suggest_similar
+from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ class Bpod(SerialDevice, AbstractBpod):
         maxsize=1024
     )
     _compilation_cache: ClassVar[
-        LRUCache[tuple[bytes, bytes], tuple[bytes, StateMachineLookup, bool]]
+        LRUCache[tuple[bytes, bytes, bool], tuple[bytes, StateMachineLookup, bool]]
     ] = LRUCache(maxsize=1024)
 
     _softcode_thread: SoftcodeThread
@@ -1041,12 +1042,12 @@ class Bpod(SerialDevice, AbstractBpod):
         state_machine_hash = known_hash or state_machine.hash
 
         # use cached results if they are available
-        cache_key = (self._hardware_hash, state_machine_hash)
+        cache_key = (self._hardware_hash, state_machine_hash, not skip_validation)
         if cache_key in self._compilation_cache:
             compiled_fsm, fsm_lookup, was_validated = self._compilation_cache[cache_key]
             if debugging:
                 logger.debug(
-                    'Compiled %s state machine retrieved from cache (%d μs)',
+                    'Retrieved compiled, %s state machine from cache (%d μs)',
                     'validated' if was_validated else 'unvalidated',
                     (perf_counter_ns() - t0) // 1000,
                 )

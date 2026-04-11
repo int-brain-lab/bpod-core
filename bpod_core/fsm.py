@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 
 import msgspec
 import yaml
+from cachetools import LRUCache
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
     BaseModel,
@@ -20,7 +21,7 @@ from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 from xxhash import xxh3_64 as _xxh3_64
 
 from bpod_core.constants import UINT32_MAX
-from bpod_core.misc import LRUCache, ValidatedDict, suggest_similar
+from bpod_core.misc import ValidatedDict, suggest_similar
 
 
 def enc_hook(obj: Any) -> Any:
