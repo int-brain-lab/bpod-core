@@ -418,8 +418,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
     conditions: Conditions = Conditions()
     """A dictionary of conditions."""
 
-    _check_cache: ClassVar[LRUCache[bytes, Exception | None]] = LRUCache(maxsize=1024)
-    """Cached results of validation checks."""
+    _validation_cache: ClassVar[LRUCache[bytes, None]] = LRUCache(maxsize=1024)
+    """Cache holding hashes of successfully validated state machine instances."""
 
     def __repr__(self) -> str:
         fields = [f for f in StateMachine.model_fields if f != 'name']
@@ -966,38 +966,22 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         else:
             return True
 
-    def check(self) -> bytes:
+    def check(self) -> None:
         """
         Check validity of the state machine.
-
-        Returns
-        -------
-        bytes
-            The hash of the state machine.
 
         Raises
         ------
         ValueError
             If the state machine is invalid.
         """
-        current_hash = self._hash()
+        self._check(known_hash=self._hash())
 
-        if current_hash in self._check_cache:
-            exception = self._check_cache[current_hash]
-            if exception is not None:
-                raise exception
-            return current_hash
+    def _check(self, *, known_hash: bytes) -> None:
+        # Shortcut if we already know that the state machine is valid
+        if known_hash in self._validation_cache:
+            return
 
-        try:
-            self._check()
-            self._check_cache[current_hash] = None
-        except ValueError as e:
-            self._check_cache[current_hash] = e
-            raise
-
-        return current_hash
-
-    def _check(self) -> None:
         # Check for empty state machine
         if len(self.states) == 0:
             raise ValueError('No states defined')
@@ -1031,3 +1015,6 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         # TODO: Check for manipulation of unused timers?
         # TODO: Check for manipulation of unused conditions?
+
+        # add state machine's hash to cache
+        self._validation_cache[known_hash] = None
