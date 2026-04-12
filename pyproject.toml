@@ -202,6 +202,7 @@ packages = ["bpod_core", "tests"]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
+plugins = ['pydantic.mypy']
 
 [tool.coverage.run]
 source_pkgs = ["bpod_core"]
