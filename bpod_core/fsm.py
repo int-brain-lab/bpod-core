@@ -772,7 +772,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             self.to_dict(exclude_defaults=exclude_defaults)
         ).decode()
 
-    @validate_call(config=ConfigDict(extra='forbid'))
+    @validate_call()
     def to_file(
         self,
         filename: PathLike | str,
