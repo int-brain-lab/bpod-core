@@ -988,26 +988,24 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             raise ValueError('No states defined')
 
         # Check for unreachable states
-        initial_state_name = next(iter(self.states.keys()))
+        initial_state_name = next(iter(self.states))
         transition_targets = self.states.transition_targets | {initial_state_name}
-        unreachable_states = [s for s in self.states if s not in transition_targets]
-        match len(unreachable_states):
-            case 0:
-                pass
-            case 1:
+        all_state_names = set(self.states)
+        unreachable_states = all_state_names.difference(transition_targets)
+        if unreachable_states:
+            if len(unreachable_states) == 1:
                 raise ValueError(f'State "{unreachable_states.pop()}" is unreachable')
-            case _:
-                missed_states_string = (
-                    ', '.join([f'"{s}"' for s in unreachable_states[:-1]])
-                    + f' and "{unreachable_states[-1]}"'
-                )
-                raise ValueError(f'States {missed_states_string} are unreachable')
+            unreachable_states_list = list(unreachable_states)
+            unreachable_states_string = (
+                ', '.join([f'"{s}"' for s in unreachable_states_list[:-1]])
+                + f' and "{unreachable_states_list[-1]}"'
+            )
+            raise ValueError(f'States {unreachable_states_string} are unreachable')
 
         # Check transitions for invalid target states
-        all_state_names = set(self.states.keys())
         for state_name, state in self.states.items():
             for condition_name, target in state.transitions.items():
-                if not target.startswith('>') and target not in all_state_names:
+                if target not in all_state_names and not target.startswith('>'):
                     raise ValueError(
                         f"Invalid target state '{target}' for transition condition"
                         f"'{condition_name}' in state '{state_name}'"
