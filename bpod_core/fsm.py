@@ -450,7 +450,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             return f"{self.__class__.__name__}(name='{self.name}', {string})"
         return f'{self.__class__.__name__}({string})'
 
-    @validate_call
+    @validate_call()
     def add_state(
         self,
         name: StateName,
@@ -466,14 +466,12 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         ----------
         name : str
             The name of the state to be added.
-        timer : float, optional
-            The duration of the state's timer in seconds. Default to 0.
+        timer : float, default: 0.0
+            The duration of the state's timer.
         transitions : dict, optional
-            A dictionary mapping conditions to target states for transitions.
-            Defaults to an empty dictionary.
+            An optional dictionary mapping conditions to target states for transitions.
         actions : dict, optional
-            A dictionary of actions to be executed on entering the state.
-            Defaults to an empty dictionary.
+            An optional dictionary of actions to be executed on entering the state.
         comment : str, optional
             An optional comment describing the state.
 
@@ -492,7 +490,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             comment=comment,
         )
 
-    @validate_call
+    @validate_call()
     def set_global_timer(
         self,
         index: Index,
@@ -504,7 +502,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         value_off: GlobalTimerChannelValue = 0,
         send_events: GlobalTimerSendEvents = True,
         loop: GlobalTimerLoop = 0,
-        loop_interval: GlobalTimerLoopInterval = 0,
+        loop_interval: GlobalTimerLoopInterval = 0.0,
         onset_trigger: GlobalTimerOnsetTrigger = 0,
     ) -> None:
         """
@@ -515,22 +513,22 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         index : int
             The index of the global timer to configure. Zero-based.
         duration : float
-            The duration of the global timer in seconds.
-        onset_delay : float, optional
-            The onset delay of the global timer in seconds. Default is 0.0.
+            The duration of the global timer.
+        onset_delay : float, default: 0.0
+            The onset delay of the global timer.
         channel : str, optional
-            The channel affected by the global timer. Default is None.
-        value_on : int, optional
-            The value to set the channel to when the timer is active. Default is 0.
-        value_off : int, optional
-            The value to set the channel to when the timer is inactive. Default is 0.
-        send_events : bool, optional
-            Whether the global timer sends events. Default is True.
-        loop : int, optional
-            The number of times the timer should loop. Default is 0.
-        loop_interval : float, optional
-            The interval in seconds between loops. Default is 0.
-        onset_trigger : int, optional
+            The channel affected by the global timer.
+        value_on : int, default: 0
+            The value to set the channel to when the timer is active.
+        value_off : int, default: 0
+            The value to set the channel to when the timer is inactive.
+        send_events : bool, default: True
+            Whether the global timer sends events.
+        loop : int, default: 0
+            The number of times the timer should loop
+        loop_interval : float, default: 0.0
+            The interval between loops.
+        onset_trigger : int, default: 0
             An integer whose bits indicate other global timers to trigger.
 
         Returns
@@ -549,7 +547,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             onset_trigger=onset_trigger,
         )
 
-    @validate_call
+    @validate_call()
     def set_global_counter(
         self,
         index: Index,
@@ -577,7 +575,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             threshold=threshold,
         )
 
-    @validate_call
+    @validate_call()
     def set_condition(
         self,
         index: Index,
@@ -721,9 +719,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Parameters
         ----------
-        exclude_defaults: bool, optional
+        exclude_defaults: bool, default: True
             Whether to exclude fields that are set to their default values.
-            Defaults to True.
 
         Returns
         -------
@@ -739,13 +736,12 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Parameters
         ----------
-        indent : int or None, optional
+        indent : int, optional
             If `indent` is a non-negative integer, then JSON array elements and object
             members will be pretty-printed with that indent level. An indent level of
             0 will only insert newlines. None is the most compact representation.
-        exclude_defaults: bool, optional
+        exclude_defaults: bool, default: True
             Whether to exclude fields that are set to their default values.
-            Defaults to True.
 
         Returns
         -------
@@ -759,9 +755,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Parameters
         ----------
-        exclude_defaults: bool, optional
+        exclude_defaults: bool, default: True
             Whether to exclude fields that are set to their default values.
-            Defaults to True.
 
         Returns
         -------
