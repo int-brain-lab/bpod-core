@@ -48,7 +48,7 @@ def _validate_seconds(v: Any, h: ValidatorFunctionWrapHandler) -> float:
         return cast('float', h(v))
     except ValidationError as e1:
         try:
-            return _timedelta_adapter.validate_python(v).total_seconds()
+            return h(_timedelta_adapter.validate_python(v).total_seconds())
         except ValidationError as e2:
             raise e1 from e2
 
