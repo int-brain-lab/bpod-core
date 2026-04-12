@@ -45,18 +45,17 @@ _timedelta_adapter = TypeAdapter(datetime.timedelta)
 
 def _validate_seconds(v: Any, h: ValidatorFunctionWrapHandler) -> float:
     try:
-        return h(v)  # first: try float
+        return cast('float', h(v))
     except ValidationError as e1:
         try:
-            td = _timedelta_adapter.validate_python(v)  # fallback: try timedelta
-            return h(td.total_seconds())
+            return _timedelta_adapter.validate_python(v).total_seconds()
         except ValidationError as e2:
             raise e1 from e2
 
 
 def _validate_state_timer(v: Any, h: ValidatorFunctionWrapHandler) -> float:
     try:
-        return h(v)
+        return cast('float', h(v))
     except ValidationError as e:
         for error in e.errors():
             if (error_type := error.get('type')) == 'greater_than_equal':
