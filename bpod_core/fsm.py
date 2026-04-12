@@ -1,5 +1,6 @@
 """Module defining classes and types for creating and managing state machines."""
 
+import datetime
 import re
 from os import PathLike
 from pathlib import Path
@@ -12,6 +13,7 @@ from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
     BaseModel,
     Field,
+    TypeAdapter,
     ValidationError,
     WrapValidator,
     validate_call,
@@ -38,12 +40,26 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
     raise NotImplementedError(f'Objects of type {type} are not supported')
 
 
-def _validate_state_timer(v: Any, h: ValidatorFunctionWrapHandler) -> 'StateTimer':
+_timedelta_adapter = TypeAdapter(datetime.timedelta)
+
+
+def _validate_seconds(v: Any, h: ValidatorFunctionWrapHandler) -> float:
     try:
-        return cast('StateTimer', h(v))
+        return h(v)  # first: try float
+    except ValidationError as e1:
+        try:
+            td = _timedelta_adapter.validate_python(v)  # fallback: try timedelta
+            return h(td.total_seconds())
+        except ValidationError as e2:
+            raise e1 from e2
+
+
+def _validate_state_timer(v: Any, h: ValidatorFunctionWrapHandler) -> float:
+    try:
+        return h(v)
     except ValidationError as e:
         for error in e.errors():
-            if error_type := 'greater_than_equal':
+            if (error_type := error.get('type')) == 'greater_than_equal':
                 raise PydanticCustomError(
                     error_type,
                     'Invalid State Timer - cannot be negative',
@@ -106,10 +122,11 @@ StateTimer = Annotated[
         title='State Timer',
         description="The state's timer in seconds",
         default=0.0,
-        allow_inf_nan=False,
         ge=0.0,
+        allow_inf_nan=False,
     ),
     WrapValidator(_validate_state_timer),
+    WrapValidator(_validate_seconds),
 ]
 
 
@@ -127,7 +144,9 @@ GlobalTimerDuration = Annotated[
         title='Global Timer Duration',
         description='The duration of the global timer in seconds',
         ge=0.0,
+        allow_inf_nan=False,
     ),
+    WrapValidator(_validate_seconds),
 ]
 
 GlobalTimerOnsetDelay = Annotated[
@@ -139,6 +158,7 @@ GlobalTimerOnsetDelay = Annotated[
         ge=0.0,
         allow_inf_nan=False,
     ),
+    WrapValidator(_validate_seconds),
 ]
 
 GlobalTimerChannel = Annotated[
@@ -188,8 +208,8 @@ GlobalTimerLoopInterval = Annotated[
         description='The interval in seconds that the global timer is looping',
         default=0.0,
         ge=0.0,
-        allow_inf_nan=False,
     ),
+    WrapValidator(_validate_seconds),
 ]
 
 GlobalTimerOnsetTrigger = Annotated[
