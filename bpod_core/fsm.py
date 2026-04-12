@@ -752,7 +752,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             self.to_dict(exclude_defaults=exclude_defaults)
         ).decode()
 
-    @validate_call
+    @validate_call(config=ConfigDict(extra='forbid'))
     def to_file(
         self,
         filename: PathLike | str,
@@ -772,12 +772,12 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         ----------
         filename : os.PathLike or str
             Destination path. The file extension determines the output type.
-        overwrite : bool, optional
-            If False (default) and the file already exists, a FileExistsError is
-            raised. If True, existing files will be overwritten.
-        create_directory : bool, optional
+        overwrite : bool, default: False
+            If False and the file already exists, a FileExistsError is raised.
+            If True, existing files will be overwritten.
+        create_directory : bool, default: False
             If True, the parent directory of the destination path will be created if it
-            doesn't exist. Default is False.
+            doesn't exist.
 
         Raises
         ------
@@ -795,27 +795,27 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         See https://graphviz.readthedocs.io/en/stable/manual.html#installation
         """
         # Handle file path
-        filename = Path(filename).resolve()
-        if filename.exists() and not overwrite:
-            raise FileExistsError(f"File '{filename}' already exists")
-        if not filename.parent.exists():
+        filepath = Path(filename).resolve()
+        if filepath.exists() and not overwrite:
+            raise FileExistsError(f"File '{filepath}' already exists")
+        if not filepath.parent.exists():
             if not create_directory:
-                raise FileNotFoundError(f"Directory '{filename.parent}' does not exist")
-            filename.parent.mkdir(parents=True, exist_ok=True)
-        suffix = filename.suffix.lower()
+                raise FileNotFoundError(f"Directory '{filepath.parent}' does not exist")
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+        suffix = filepath.suffix.lower()
 
         # JSON output
         if suffix == '.json':
-            filename.write_text(self.to_json(indent=2), encoding='utf-8')
+            filepath.write_text(self.to_json(indent=2), encoding='utf-8')
 
         # YAML output
         elif suffix in ('.yaml', '.yml'):
-            filename.write_text(self.to_yaml(), encoding='utf-8')
+            filepath.write_text(self.to_yaml(), encoding='utf-8')
 
         # Rendering via Graphviz
         elif suffix in ('.pdf', '.svg', '.png'):
             common_opts = {
-                'outfile': filename,
+                'outfile': filepath,
                 'cleanup': True,
                 'quiet': True,
             }
