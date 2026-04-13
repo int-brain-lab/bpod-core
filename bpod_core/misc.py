@@ -468,7 +468,7 @@ def prune_empty_parent_directories(
         Directory to check and remove if empty.
     root_directory : PathLike or str
         Root directory to stop at. Must be a parent directory of target_directory.
-    remove_root : bool, optional
+    remove_root : bool, default: False
         If True, also remove root_directory if it becomes empty.
 
     Raises
