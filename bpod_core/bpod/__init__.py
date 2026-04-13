@@ -872,8 +872,8 @@ class Bpod(SerialDevice, AbstractBpod):
             The state machine to validate.
         known_hash : bytes | None, optional
             Known hash of the state machine. Hash will be computed if not provided.
-        debugging : bool, optional
-            Whether to enable debug logging. Defaults to False.
+        debugging : bool, default: False
+            Whether to enable debug logging.
 
         Returns
         -------
@@ -1082,10 +1082,10 @@ class Bpod(SerialDevice, AbstractBpod):
             The state machine to compile.
         known_hash : bytes | None
             Known hash of the state machine. Hash will be computed if not provided.
-        skip_validation : bool, optional
-            Whether to skip validation of the state machine. Defaults to False.
-        debugging : bool, optional
-            Whether to enable debug logging. Defaults to False.
+        skip_validation : bool, default: False
+            Whether to skip validation of the state machine.
+        debugging : bool, default: False
+            Whether to enable debug logging.
 
         Returns
         -------
@@ -1394,13 +1394,13 @@ class Bpod(SerialDevice, AbstractBpod):
         ----------
         state_machine : StateMachine
             The state machine to be sent to the Bpod device.
-        run_asap : bool, optional
+        run_asap : bool, default: False
             If True, the state machine will run immediately after the current one has
-            finished. Default is False.
-        skip_validation : bool, optional
+            finished.
+        skip_validation : bool, default: False
             If True, the state machine will not be validated prior to compilation. This
             will speed up the process, but may result in errors or unexpected behavior
-            if the state machine is invalid. Use with caution. Default is False.
+            if the state machine is invalid. Use with caution.
 
         Raises
         ------
@@ -1505,7 +1505,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Parameters
         ----------
-        lazy : bool, optional
+        lazy : bool, default: False
             If ``True``, return a :class:`polars.LazyFrame`.
             If ``False`` (default), return a :class:`polars.DataFrame`.
 
@@ -1536,17 +1536,17 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Parameters
         ----------
-        concat : bool, optional
-            If ``False`` (default), pop and return one DataFrame, blocking until one is
+        concat : bool, default: False
+            If ``False``, pop and return one DataFrame, blocking until one is
             available.
             If ``True``, pop and concatenate all DataFrames currently in the queue into
             a single DataFrame, blocking until at least one is available.
-        rechunk : bool, optional
+        rechunk : bool, default: False
             If ``True``, make sure that the result data is in contiguous memory. Only
-            applies when ``concat=True``. Default is ``False``.
-        lazy : bool, optional
+            applies when ``concat=True``.
+        lazy : bool, default: False
             If ``True``, return a :class:`polars.LazyFrame`.
-            If ``False`` (default), return a :class:`polars.DataFrame`.
+            If ``False``, return a :class:`polars.DataFrame`.
 
         Returns
         -------
@@ -1591,8 +1591,8 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Parameters
         ----------
-        blocking : bool, optional
-            If True (default), block until the state machine finishes.
+        blocking : bool, default: True
+            If True, block until the state machine finishes.
             If False, return immediately after starting.
 
         Raises
@@ -2105,7 +2105,7 @@ def discover_remote_bpod(
     serial_number: str | None = None,
     location: str | None = None,
     timeout: float | None = 10.0,
-    poll_interval: float = 1,
+    poll_interval: float = 1.0,
     *,
     local: bool = True,
     remote: bool = True,
@@ -2121,15 +2121,15 @@ def discover_remote_bpod(
         Serial number of the Bpod device.
     location : str, optional
         Location of the Bpod device.
-    local : bool, optional
-        Whether to search for services on the local machine, by default True.
-    remote : bool, optional
-        Whether to also search for services on the network, by default True.
-    timeout : float or None, optional
-        How many seconds to monitor, by default 10.
+    timeout : float or None, default: 10.0
+        How many seconds to monitor.
         Pass ``None`` to monitor indefinitely until the iterator is closed.
-    poll_interval : float, optional
+    poll_interval : float, default: 1.0
         How often to poll for local service changes, in seconds. Default is 1.
+    local : bool, default: True
+        Whether to search for services on the local machine.
+    remote : bool, default: True
+        Whether to also search for services on the network.
 
     Yields
     ------

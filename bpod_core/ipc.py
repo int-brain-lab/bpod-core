@@ -803,8 +803,8 @@ class ServiceClient(ServiceBase, Generic[U]):
             The direct connection address for the REQ channel, by default None.
         event_handler : callable, optional
             A callback to handle PUB messages, by default None.
-        discovery_timeout : float, optional
-            Timeout in seconds for service discovery, by default 10.0.
+        discovery_timeout : float, default: 10.0
+            Timeout in seconds for service discovery.
         txt_properties : dict, optional
             Properties for service filtering during discovery, by default None.
         default_data_type : type, optional
@@ -1070,8 +1070,8 @@ class ServiceClient(ServiceBase, Generic[U]):
 def discover(
     service_type: str,
     properties: dict[str, str | None] | None = None,
-    timeout: float = 10,
-    poll_interval: float = 1,
+    timeout: float = 10.0,
+    poll_interval: float = 1.0,
     *,
     local: bool = True,
     remote: bool = True,
@@ -1085,15 +1085,14 @@ def discover(
         The service type to discover, e.g., 'bpod'
     properties : dict, optional
         Dictionary of expected service properties to match.
-    timeout : float, optional
+    timeout : float, default: 10.0
         How many seconds to wait for a matching service before timing out.
-        Default is 10.
-    poll_interval : float, optional
-        How often to poll for local service changes, in seconds. Default is 1.
-    local : bool, optional
-        Whether to search for a matching service on the local machine, by default True.
-    remote : bool, optional
-        Whether to search for a matching service on the network, by default True.
+    poll_interval : float, default: 1.0
+        How often to poll for local service changes, in seconds.
+    local : bool, default: True
+        Whether to search for a matching service on the local machine.
+    remote : bool, default: True
+        Whether to search for a matching service on the network.
 
     Returns
     -------
@@ -1180,8 +1179,8 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
         self,
         service_type: str,
         properties: dict[str, str | None] | None = None,
-        timeout: float | None = 10,
-        poll_interval: float = 1,
+        timeout: float | None = 10.0,
+        poll_interval: float = 1.0,
         *,
         local: bool = True,
         remote: bool = True,
@@ -1194,15 +1193,15 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
             The service type to discover, e.g., ``'bpod'``.
         properties : dict, optional
             Dictionary of expected service properties to match.
-        timeout : float or None, optional
-            How many seconds to monitor, by default 10.
+        timeout : float or None, default: 10.0
+            How many seconds to monitor.
             Pass ``None`` to monitor indefinitely until the iterator is closed.
-        poll_interval : float, optional
-            How often to poll for local service changes, in seconds. Default is 1.
-        local : bool, optional
-            Whether to search for services on the local machine, by default True.
-        remote : bool, optional
-            Whether to also search for services on the network, by default True.
+        poll_interval : float, default: 1.0
+            How often to poll for local service changes, in seconds.
+        local : bool, default: True
+            Whether to search for services on the local machine.
+        remote : bool, default: True
+            Whether to also search for services on the network.
         """
         if not local and not remote:
             raise ValueError('at least one of local or remote must be True')
@@ -1346,8 +1345,8 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
 def iter_services(
     service_type: str,
     properties: dict[str, str | None] | None = None,
-    timeout: float | None = 10,
-    poll_interval: float = 1,
+    timeout: float | None = 10.0,
+    poll_interval: float = 1.0,
     *,
     local: bool = True,
     remote: bool = True,
@@ -1364,15 +1363,15 @@ def iter_services(
         The service type to discover, e.g., 'bpod'.
     properties : dict, optional
         Dictionary of expected service properties to match.
-    timeout : float or None, optional
-        How many seconds to monitor, by default 10.
+    timeout : float or None, default: 10.0
+        How many seconds to monitor.
         Pass ``None`` to monitor indefinitely until the iterator is closed.
-    poll_interval : float, optional
-        How often to poll for local service changes, in seconds. Default is 1.
-    local : bool, optional
-        Whether to search for services on the local machine, by default True.
-    remote : bool, optional
-        Whether to also search for services on the network, by default True.
+    poll_interval : float, default: 1.0
+        How often to poll for local service changes, in seconds.
+    local : bool, default: True
+        Whether to search for services on the local machine.
+    remote : bool, default: True
+        Whether to also search for services on the network.
 
     Yields
     ------

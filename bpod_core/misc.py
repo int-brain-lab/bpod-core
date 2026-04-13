@@ -128,10 +128,10 @@ def suggest_similar(
         The string that is invalid or misspelled.
     valid_strings : Iterable[str]
         An iterable of valid strings to compare against.
-    format_string : str, optional
-        The format string for the suggestion. Defaults to " - did you mean '{}'?".
-    cutoff : float, optional
-        The similarity threshold for considering a match. Defaults to 0.6.
+    format_string : str, default: " - did you mean '{}'?"
+        The format string for the suggestion.
+    cutoff : float, default: 0.6
+        The similarity threshold for considering a match.
 
     Returns
     -------
