@@ -8,6 +8,7 @@ import traceback
 import weakref
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from datetime import timedelta
 from queue import Empty, SimpleQueue
 from time import perf_counter_ns, time_ns
 from types import TracebackType
@@ -50,6 +51,7 @@ from bpod_core.bpod.structs import (
     VersionInfo,
     _InputEventRanges,
     _InputEvents,
+    _ValidationData,
 )
 from bpod_core.bpod.threads import (
     _TRIAL_DATA_SCHEMA,
@@ -97,8 +99,8 @@ class Bpod(SerialDevice, AbstractBpod):
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
     _hardware_hash: bytes
-    _validation_cache: ClassVar[FIFOCache[tuple[bytes, bytes], None]] = FIFOCache(
-        maxsize=1024
+    _validation_cache: ClassVar[FIFOCache[tuple[bytes, bytes], _ValidationData]] = (
+        FIFOCache(maxsize=1024)
     )
     _compilation_cache: ClassVar[
         FIFOCache[tuple[bytes, bytes, bool], tuple[bytes, StateMachineLookup, bool]]
@@ -122,7 +124,7 @@ class Bpod(SerialDevice, AbstractBpod):
     modules: '_ModuleDict'
     """Available modules, keyed by name."""
 
-    @validate_call
+    @validate_call()
     def __init__(
         self,
         port: str | None = None,
@@ -732,11 +734,13 @@ class Bpod(SerialDevice, AbstractBpod):
             counters[io_key] += 1
 
         # add output actions for global timers, global counters and analog thresholds
-        self._actions.extend(
-            ['GlobalTimerTrig', 'GlobalTimerCancel', 'GlobalCounterReset'],
-        )
+        self._global_timer_actions = ['GlobalTimerTrig', 'GlobalTimerCancel']
+        self._global_counter_actions = ['GlobalCounterReset']
+        self._actions.extend(self._global_timer_actions)
+        self._actions.extend(self._global_counter_actions)
         if self.version.machine == 4:
             self._actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
+
         self._action_indices = {k: v for v, k in enumerate(self._actions)}
         self._physical_output_channels = list(self.modules) + [
             o.name for o in self.outputs if o.io_type != b'U'
@@ -746,7 +750,7 @@ class Bpod(SerialDevice, AbstractBpod):
         }
         self._timer_channel_indices[None] = 254
 
-    @validate_call
+    @validate_call()
     def set_status_led(self, enable: bool) -> bool:  # noqa: FBT001
         """Enable or disable the Bpod status LED.
 
@@ -847,7 +851,10 @@ class Bpod(SerialDevice, AbstractBpod):
         ValueError
             If the state machine is invalid or not compatible with the hardware.
         """
-        self._validate_state_machine(state_machine)
+        self._validate_state_machine(
+            state_machine=state_machine,
+            debugging=logger.isEnabledFor(logging.DEBUG),
+        )
 
     def _validate_state_machine(
         self,
@@ -855,7 +862,7 @@ class Bpod(SerialDevice, AbstractBpod):
         *,
         known_hash: bytes | None = None,
         debugging: bool = False,
-    ) -> None:
+    ) -> _ValidationData:
         """
         Validate the provided state machine for compatibility with the hardware.
 
@@ -867,6 +874,11 @@ class Bpod(SerialDevice, AbstractBpod):
             Known hash of the state machine. Hash will be computed if not provided.
         debugging : bool, optional
             Whether to enable debug logging. Defaults to False.
+
+        Returns
+        -------
+        _ValidationData
+            A named tuple with data to be reused during compilation
 
         Raises
         ------
@@ -886,38 +898,62 @@ class Bpod(SerialDevice, AbstractBpod):
                     'Skipped validation of known valid state machine (%s μs)',
                     (perf_counter_ns() - t0) // 1000,
                 )
-            return
+            return self._validation_cache[cache_key]
 
         # run hardware independent checks
-        state_machine._check(known_hash=fsm_hash)  # noqa: SLF001
+        check_data = state_machine._check(known_hash=fsm_hash)  # noqa: SLF001
 
         # check if the '>back' operator is being used
-        use_back_op = '>back' in state_machine.states.transition_targets
+        use_back_op = '>back' in check_data.transition_targets
 
-        # validate the number of states, global timers, global counters and conditions.
-        n_states = len(state_machine.states)
-        n_global_timers = max(state_machine.global_timers.keys(), default=-1) + 1
-        n_global_counters = max(state_machine.global_counters.keys(), default=-1) + 1
-        n_conditions = max(state_machine.conditions.keys(), default=-1) + 1
-        for name, value, maximum_value in (
-            ('states', n_states, self._hardware.max_states - 1 - use_back_op),
-            ('global timers', n_global_timers, self._hardware.n_global_timers),
-            ('global counters', n_global_counters, self._hardware.n_global_counters),
-            ('conditions', n_conditions, self._hardware.n_conditions),
+        # check the number of states
+        state_names = check_data.all_state_names
+        n_states = len(state_names)
+        max_n_states = self._hardware.max_states - 1 - use_back_op
+        if n_states > max_n_states:
+            raise ValueError(
+                f'{n_states} states in state machine - {self._serial_device_name} '
+                f'{self._version.machine_str} only supports up to {max_n_states} states'
+                + (" when using the '>back' operator" if use_back_op else '')
+            )
+
+        # check id's of global timers, global counters and conditions
+        global_timer_ids = set(state_machine.global_timers)
+        global_counter_ids = set(state_machine.global_counters)
+        condition_ids = set(state_machine.conditions)
+        for name, ids, maximum_value in (
+            ('Global Timer', global_timer_ids, self._hardware.n_global_timers),
+            ('Global Counter', global_counter_ids, self._hardware.n_global_counters),
+            ('Condition', condition_ids, self._hardware.n_conditions),
         ):
-            if value > maximum_value:
+            if ids and (largest_requested := max(ids)) >= maximum_value:
                 raise ValueError(
-                    f'Too many {name} in state machine - hardware supports up to '
-                    f'{maximum_value} {name}'
+                    f'Requested invalid {name} with index {largest_requested} - '
+                    f'{self._serial_device_name} {self._version.machine_str} supports '
+                    f'up to {maximum_value} {name}s with indices 0-{maximum_value - 1}'
                 )
 
+        # define valid input events and actions
+        valid_input_events = set(self._input_events.names)
+        valid_actions = set(self._actions)
+        if not global_timer_ids:
+            # TODO: remove global timer events from valid_input_events
+            valid_actions -= set(self._global_timer_actions)
+        if not global_counter_ids:
+            # TODO: remove global counter events from valid_input_events
+            valid_actions -= set(self._global_counter_actions)
+        if not condition_ids:
+            pass  # TODO: remove condition events from valid_input_events
+
         # validate states
+        valid_targets = set(state_names).union(VALID_OPERATORS)
         max_time_uint32 = UINT32_MAX / self._hardware.cycle_frequency
         for state_name, state in state_machine.states.items():
             if state.timer > max_time_uint32:
+                max_timedelta = timedelta(seconds=max_time_uint32)
                 raise ValueError(
-                    f"Invalid timer value {state.timer} for state '{state_name}' - "
-                    f'must be between 0 and {max_time_uint32} seconds',
+                    f"Invalid state timer for state '{state_name}' - must not exceed "
+                    f'{max_timedelta}',
                 )
             for condition_name, target in state.transitions.items():
                 if target.startswith('>') and target not in VALID_OPERATORS:
@@ -926,50 +962,76 @@ class Bpod(SerialDevice, AbstractBpod):
                         f"'{condition_name}' in state '{state_name}'"
                         + suggest_similar(target, VALID_OPERATORS),
                     )
-                if condition_name not in self.input_event_names:
+                if target not in valid_targets and target.startswith('>'):
+                    raise ValueError(
+                        f"Invalid operator '{target}' for transition condition "
+                        f"'{condition_name}' in state '{state_name}'"
+                        + suggest_similar(target, VALID_OPERATORS),
+                    )
+                if condition_name not in valid_input_events:
+                    # TODO: add more specific error messages if condition_name refers
+                    #       to a global timer, global counter or condition event
                     raise ValueError(
                         f"Invalid transition condition '{condition_name}' in state "
                         f"'{state_name}'"
                         + suggest_similar(condition_name, self.input_event_names),
                     )
-            actions = set(state.actions.keys())
-            if invalid_actions := actions.difference(self._actions):
-                invalid_action = invalid_actions.pop()
+
+            # validate actions
+            if bad_actions := set(state.actions).difference(valid_actions):
+                bad_action = bad_actions.pop()
+                if bad_action in self._global_timer_actions:
+                    detail = ' - no global timer has been set'
+                elif bad_action in self._global_counter_actions:
+                    detail = ' - no global counter has been set'
+                else:
+                    detail = suggest_similar(bad_action, self._actions)
                 raise ValueError(
-                    f"Invalid action '{invalid_action}' in state '{state_name}'"
-                    + suggest_similar(invalid_action, self._actions),
+                    f"Invalid action '{bad_action}' in state '{state_name}' {detail}"
                 )
 
         # validate global timers
-        for timer_id, timer in state_machine.global_timers.items():
-            if timer.channel not in (*self._physical_output_channels, None):
-                raise ValueError(
-                    f"Invalid channel '{timer.channel}' for global timer {timer_id}"
-                    + suggest_similar(
-                        timer.channel or '', self._physical_output_channels
-                    ),
-                )
-            for key in ('duration', 'onset_delay', 'loop_interval'):
-                if getattr(timer, key) > max_time_uint32:
-                    name = key.replace('_', ' ')
+        if global_timer_ids:
+            for timer_id, timer in state_machine.global_timers.items():
+                if timer.channel not in (*self._physical_output_channels, None):
                     raise ValueError(
-                        f'Invalid {name} {getattr(timer, key)} for global timer '
-                        f'{timer_id} - must be between 0 and {max_time_uint32} seconds'
+                        f"Invalid channel '{timer.channel}' for Global Timer {timer_id}"
+                        + suggest_similar(
+                            timer.channel or '', self._physical_output_channels
+                        ),
                     )
+                for key in ('duration', 'onset_delay', 'loop_interval'):
+                    if getattr(timer, key) > max_time_uint32:
+                        max_timedelta = timedelta(seconds=max_time_uint32)
+                        name = key.replace('_', ' ')
+                        raise ValueError(
+                            f'Invalid {name} {getattr(timer, key)} s for Global Timer '
+                            f'{timer_id} - {name} must not exceed {max_timedelta}'
+                        )
 
-        # TODO: validate global timer onset triggers
-        # TODO: validate global counters
-        # TODO: validate conditions
+        if global_counter_ids:
+            pass  # TODO: validate global counters
+
+        if condition_ids:
+            pass  # TODO: validate conditions
+
         # TODO: Check that sync channel is not used as state output
 
-        # add the state machine to the list of valid state machines
-        self._validation_cache[cache_key] = None
+        # add validated state machine to cache
+        validation_data = _ValidationData(
+            use_back_operator=use_back_op,
+            state_names=state_names,
+        )
+        self._validation_cache[cache_key] = validation_data
 
         # report benchmarking results
         if debugging:
             logger.debug(
                 'Validated state machine (%d μs)', (perf_counter_ns() - t0) // 1000
             )
+
+        # return expensive transition_targets for further use by caller
+        return validation_data
 
     def send_softcode(self, softcode: int) -> None:
         """Send a softcode to the state machine.
@@ -1053,18 +1115,25 @@ class Bpod(SerialDevice, AbstractBpod):
                 )
             return compiled_fsm, fsm_lookup, was_validated
 
-        # validate the state machine
+        # validate the state machine,
         if not skip_validation:
-            self._validate_state_machine(
+            validation_data = self._validate_state_machine(
                 state_machine,
                 known_hash=state_machine_hash,
                 debugging=debugging,
             )
+            use_back_op = validation_data.use_back_operator
+            state_names = validation_data.state_names
+        else:
+            use_back_op = any(
+                t == '>back'
+                for s in state_machine.states.values()
+                for t in s.transitions.values()
+            )
+            state_names = list(state_machine.states.keys())
 
         # state machine
         states = list(state_machine.states.values())
-        state_names = list(state_machine.states.keys())
-        use_back_op = '>back' in state_machine.states.transition_targets
         n_states = len(states)
 
         # hardware
@@ -1266,7 +1335,7 @@ class Bpod(SerialDevice, AbstractBpod):
             extend_packed(
                 fsm_bytes,
                 [
-                    round(getattr(gt, key, 0) * cycle_frequency)
+                    round(getattr(gt, key, 0.0) * cycle_frequency)
                     for gt in global_timers_list
                 ],
                 FMT_UINT32_LE,
@@ -1516,7 +1585,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # return data
         return data if lazy else data.collect()
 
-    @validate_call
+    @validate_call()
     def run_state_machine(self, *, blocking: bool = True) -> None:
         """Run the previously sent state machine.
 
@@ -1611,7 +1680,7 @@ class Bpod(SerialDevice, AbstractBpod):
         """Set the location of the Bpod device."""
         self._set_setting(['devices', self._serial_number, 'location'], location)
 
-    @validate_call
+    @validate_call()
     def set_softcode_handler(
         self, softcode_handler: Callable[[int], None] | None = None
     ) -> None:
@@ -1816,7 +1885,7 @@ class Module:
             else:
                 self.event_names.append(f'{self.name}_{idx}')
 
-    @validate_call
+    @validate_call()
     def set_relay(self, enabled: bool) -> None:  # noqa: FBT001
         """
         Enable or disable the serial relay for the module.
@@ -1842,7 +1911,7 @@ class Module:
         """The current state of the serial relay."""
         return self._relay_is_enabled
 
-    @validate_call
+    @validate_call()
     def load_serial_message(
         self,
         message_id: int,

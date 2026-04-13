@@ -4,7 +4,7 @@ import datetime
 import re
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, cast
 
 import msgspec
 import yaml
@@ -24,6 +24,15 @@ from xxhash import xxh3_64 as _xxh3_64
 
 from bpod_core.constants import UINT32_MAX
 from bpod_core.misc import ValidatedDict, suggest_similar
+
+
+class _CheckData(NamedTuple):
+    """Data returned by :meth:`StateMachine._check`."""
+
+    all_state_names: list[str]
+    """A set of all state names."""
+    transition_targets: set[str]
+    """A set of all transition targets."""
 
 
 def enc_hook(obj: Any) -> Any:
@@ -48,7 +57,8 @@ def _validate_seconds(v: Any, h: ValidatorFunctionWrapHandler) -> float:
         return cast('float', h(v))
     except ValidationError as e1:
         try:
-            return h(_timedelta_adapter.validate_python(v).total_seconds())
+            td = _timedelta_adapter.validate_python(v)
+            return cast('float', h(td.total_seconds()))
         except ValidationError as e2:
             raise e1 from e2
 
@@ -438,7 +448,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
     conditions: Conditions = Conditions()
     """A dictionary of conditions."""
 
-    _validation_cache: ClassVar[FIFOCache[bytes, None]] = FIFOCache(maxsize=1024)
+    _validation_cache: ClassVar[FIFOCache[bytes, _CheckData]] = FIFOCache(maxsize=1024)
     """Cache holding hashes of successfully validated state machine instances."""
 
     def __repr__(self) -> str:
@@ -992,10 +1002,10 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         """
         self._check(known_hash=self._hash())
 
-    def _check(self, *, known_hash: bytes) -> None:
+    def _check(self, *, known_hash: bytes) -> _CheckData:
         # Shortcut if we already know that the state machine is valid
         if known_hash in self._validation_cache:
-            return
+            return self._validation_cache[known_hash]
 
         # Check for empty state machine
         if len(self.states) == 0:
@@ -1003,9 +1013,11 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         # Check for unreachable states
         initial_state_name = next(iter(self.states))
-        transition_targets = self.states.transition_targets | {initial_state_name}
-        all_state_names = set(self.states)
-        unreachable_states = all_state_names.difference(transition_targets)
+        transition_targets = self.states.transition_targets
+        all_state_names = list(self.states)
+        unreachable_states = set(all_state_names).difference(
+            transition_targets | {initial_state_name}
+        )
         if unreachable_states:
             if len(unreachable_states) == 1:
                 raise ValueError(f'State "{unreachable_states.pop()}" is unreachable')
@@ -1023,11 +1035,15 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
                     raise ValueError(
                         f"Invalid target state '{target}' for transition condition"
                         f"'{condition_name}' in state '{state_name}'"
-                        + suggest_similar(target, all_state_names - {state_name})
+                        + suggest_similar(target, set(all_state_names) - {state_name})
                     )
 
-        # TODO: Check for manipulation of unused timers?
-        # TODO: Check for manipulation of unused conditions?
+        # add state machine's hash to cache, along with some data
+        data = _CheckData(
+            all_state_names=all_state_names,
+            transition_targets=transition_targets,
+        )
+        self._validation_cache[known_hash] = data
 
-        # add state machine's hash to cache
-        self._validation_cache[known_hash] = None
+        # returning expensive transition_targets for further use by caller
+        return data
