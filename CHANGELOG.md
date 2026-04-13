@@ -10,17 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `misc.LRUCache` - a simple LRU cache implementation based on `OrderedDict`.
+- `Bpod.peek_data` - read trial data before trial end.
 - `misc.ByteEnum` - an extended `IntEnum` that caches its values as bytes.
+- Timer fields in StateMachine now accept timedelta values in addition to floats.
 
 ### Changed
 
 - switched to Polars `LazyFrame` for storing trial data.
-- added `Bpod.peek_data` method to read trial data before trial end.
 - replaced use of `Queue` with `SimpleQueue`.
 - switched `Bpod.module` field from `NamedTuple` to `dict`.
 - replaced hashlib.blake2b with xxhash for state machine hashing.
-- cache compiled state machines to avoid recompilation.
+- cache validation and compilation of state machines.
 - `StateMachine.hash` now returns `bytes` instead of `str`.
 
 ## [0.1.0a9] - 2026-04-02

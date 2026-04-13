@@ -189,7 +189,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
     _closed = False
     """Flag to prevent double-finalization."""
 
-    @validate_call
+    @validate_call()
     def __init__(
         self,
         service_name: str,

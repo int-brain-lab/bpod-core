@@ -364,6 +364,8 @@ hardware are known:
            cycle_frequency=1000,
        )
        self._hardware_hash = b''
+       self._serial_device_name = 'Bpod'
+       self._version = SimpleNamespace(machine_str='Finite State Machine R2.0-2.5')
        self.send_state_machine = types.MethodType(original_send, self)
        self.validate_state_machine = types.MethodType(original_validate, self)
 
@@ -385,7 +387,7 @@ hardware are known:
    >>> bpod.send_state_machine(fsm)
    Traceback (most recent call last):
       ...
-   ValueError: Too many global timers in state machine - hardware supports up to 16 global timers
+   ValueError: Requested invalid Global Timer with index 20 - Bpod Finite State Machine R2.0-2.5 supports up to 16 Global Timers with indices 0-15
 
 
 Import and Export

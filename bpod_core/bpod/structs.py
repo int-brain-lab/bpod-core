@@ -7,6 +7,15 @@ import numpy as np
 import numpy.typing as npt
 
 
+class _ValidationData(NamedTuple):
+    """Data returned by :meth:`Bpod._validate_state_machine`."""
+
+    use_back_operator: bool
+    """Whether the state machine uses the ``>back`` operator."""
+    state_names: list[str]
+    """A list of all state names in the state machine."""
+
+
 class _InputEvents(NamedTuple):
     """Hardware-level input event names and their source channels."""
 

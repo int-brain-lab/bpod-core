@@ -52,4 +52,8 @@ class FSMCodeBlock(CodeBlock):
 
 def setup(app):
     app.add_directive('fsm_codeblock', FSMCodeBlock)
-    return {'version': '0.1'}
+    return {
+        'version': '0.1',
+        'parallel_read_safe': False,
+        'parallel_write_safe': True,
+    }
