@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Bpod.peek_data` - read trial data before trial end.
 - `misc.ByteEnum` - an extended `IntEnum` that caches its values as bytes.
 - Timer fields in StateMachine now accept timedelta values in addition to floats.
+- `bpod` CLI entry point for launching a Bpod instance that can be connected to via TCP
+  Unix Sockets.
 
 ### Changed
 

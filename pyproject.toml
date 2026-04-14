@@ -37,6 +37,9 @@ license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.10"
 
+[project.scripts]
+bpod = "bpod_core._cli:_bpod_cli"
+
 [dependency-groups]
 dev = [
   { include-group = "doc" },
