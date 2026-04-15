@@ -1,6 +1,5 @@
 """Command line interface tools."""
 
-
 import argparse
 import logging
 import os
