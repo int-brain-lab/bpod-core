@@ -1,6 +1,5 @@
 """Command line interface tools."""
 
-# ruff: noqa: T201
 
 import argparse
 import logging
@@ -10,6 +9,8 @@ import threading
 from types import FrameType
 
 from bpod_core.bpod import Bpod
+
+logger = logging.getLogger(__name__)
 
 
 def _bpod_cli() -> int:
@@ -71,7 +72,7 @@ def _bpod_cli() -> int:
             remote=cli_arguments.remote,
         ) as bpod:
             bpod.set_status_led(cli_arguments.led)
-            print('Press Ctrl+C to exit')
+            logger.info('Press Ctrl+C to exit')
             try:
                 shutdown_event.wait()  # Block until a shutdown signal is received
             finally:
@@ -79,7 +80,7 @@ def _bpod_cli() -> int:
 
     except Exception as e:
         # Report error without traceback for cleaner CLI UX
-        logging.error(str(e))  # noqa:LOG015, TRY400
+        logger.error(str(e))  # noqa: TRY400
         return 1
 
     else:
