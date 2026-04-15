@@ -226,7 +226,12 @@ class TestResetSessionClock:
             Bpod.reset_session_clock(mock_bpod)
 
 
-class TestSendStateMachine:
+class TestRun:
+    @pytest.fixture(autouse=True)
+    def patch_run_state_machine(self, mocker):
+        """Prevent _run_state_machine from starting threads in wire-format tests."""
+        mocker.patch.object(Bpod, '_run_state_machine')
+
     @pytest.fixture
     def fsm_basic(self):
         fsm = StateMachine()
@@ -277,29 +282,29 @@ class TestSendStateMachine:
         fsm.add_state('b', 0, {'Tup': '>exit'})
         return fsm
 
-    def test_send_state_machine_basic_25(self, fsm_basic, mock_bpod_25):
-        """Test sending a basic state machine to Bpod 2.5."""
-        mock_bpod_25.send_state_machine(fsm_basic, run_asap=False)
+    def test_run_basic_25(self, fsm_basic, mock_bpod_25):
+        """Test running a basic state machine on Bpod 2.5."""
+        mock_bpod_25.run(fsm_basic)
         assert mock_bpod_25.serial0.last_write == (
-            b'C\x00\x00&\x00\x02\x00\x00\x00\x01\x00\x00\x00\x01\t\xff\x00\x00\x00\x00'
+            b'C\x01\x00&\x00\x02\x00\x00\x00\x01\x00\x00\x00\x01\t\xff\x00\x00\x00\x00'
             b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10'\x00\x00\x10"
             b"'\x00\x00\x00"
         )
 
-    def test_send_state_machine_basic_2p(self, fsm_basic, mock_bpod_2p):
-        """Test sending a basic state machine to Bpod 2+."""
-        mock_bpod_2p.send_state_machine(fsm_basic, run_asap=False)
+    def test_run_basic_2p(self, fsm_basic, mock_bpod_2p):
+        """Test running a basic state machine on Bpod 2+."""
+        mock_bpod_2p.run(fsm_basic)
         assert mock_bpod_2p.serial0.last_write == (
-            b'C\x00\x00,\x00\x02\x00\x00\x00\x01\x00\x00\x00\x01\x00\x0b\x00\xff\x00'
+            b'C\x01\x00,\x00\x02\x00\x00\x00\x01\x00\x00\x00\x01\x00\x0b\x00\xff\x00'
             b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
             b"\x00\x00\x00\x10'\x00\x00\x10'\x00\x00\x00"
         )
 
-    def test_send_state_machine_global_timers_25(self, fsm_global_timers, mock_bpod_25):
-        """Test sending a state machine with global timers to Bpod 2.5."""
-        mock_bpod_25.send_state_machine(fsm_global_timers)
+    def test_run_global_timers_25(self, fsm_global_timers, mock_bpod_25):
+        """Test running a state machine with global timers on Bpod 2.5."""
+        mock_bpod_25.run(fsm_global_timers)
         assert mock_bpod_25.serial0.last_write == (
-            b'C\x00\x00\x61\x00\x02\x03\x00\x00\x00\x01\x00\x00\x00\x00\x01\x02\x01\x00'
+            b'C\x01\x00\x61\x00\x02\x03\x00\x00\x00\x01\x00\x00\x00\x00\x01\x02\x01\x00'
             b'\x00\x01\x02\x02\x00\x00\x00\x00\xfe\xfe\x09\x00\x00\x80\x00\x00\x40\x00'
             b'\x00\x01\x01\x01\x01\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
             b'\x00\x00\x10\x27\x00\x00\x10\x27\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
@@ -307,11 +312,11 @@ class TestSendStateMachine:
             b'\x00\x00\x00\x00\x00\x00\x30\x75\x00\x00\x00'
         )
 
-    def test_send_state_machine_global_timers_2p(self, fsm_global_timers, mock_bpod_2p):
-        """Test sending a state machine with global timers to Bpod 2+."""
-        mock_bpod_2p.send_state_machine(fsm_global_timers)
+    def test_run_global_timers_2p(self, fsm_global_timers, mock_bpod_2p):
+        """Test running a state machine with global timers on Bpod 2+."""
+        mock_bpod_2p.run(fsm_global_timers)
         assert mock_bpod_2p.serial0.last_write == (
-            b'C\x00\x00\x6b\x00\x02\x03\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x01\x02'
+            b'C\x01\x00\x6b\x00\x02\x03\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x01\x02'
             b'\x01\x00\x00\x01\x02\x02\x00\x00\x00\x00\xfe\xfe\x0b\x00\x00\x00\x00\x80'
             b'\x00\x00\x00\x00\x00\x40\x00\x00\x00\x01\x01\x01\x01\x00\x00\x00\x04\x00'
             b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10\x27\x00\x00\x10\x27'
@@ -320,58 +325,64 @@ class TestSendStateMachine:
             b'\x00\x00\x00'
         )
 
-    def test_send_state_machine_global_counters_25(
-        self,
-        fsm_global_counters,
-        mock_bpod_25,
-    ):
-        """Test sending a state machine with global counters to Bpod 2.5."""
-        mock_bpod_25.send_state_machine(fsm_global_counters)
+    def test_run_global_counters_25(self, fsm_global_counters, mock_bpod_25):
+        """Test running a state machine with global counters on Bpod 2.5."""
+        mock_bpod_25.run(fsm_global_counters)
         assert mock_bpod_25.serial0.last_write == (
-            b'C\x00\x00\x4a\x00\x03\x00\x03\x00\x01\x02\x02\x00\x00\x00\x01\x0a\xff\x00'
+            b'C\x01\x00\x4a\x00\x03\x00\x03\x00\x01\x02\x02\x00\x00\x00\x01\x0a\xff\x00'
             b'\x01\x09\xff\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x00\x00\x00\xfe'
             b'\xfe\x6d\x01\x01\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x20'
             b'\x4e\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
             b'\x00\x05\x00\x00\x00\x00'
         )
 
-    def test_send_state_machine_global_counters_2p(
-        self, fsm_global_counters, mock_bpod_2p
-    ):
-        """Test sending a state machine with global counters to Bpod 2+."""
-        mock_bpod_2p.send_state_machine(fsm_global_counters)
+    def test_run_global_counters_2p(self, fsm_global_counters, mock_bpod_2p):
+        """Test running a state machine with global counters on Bpod 2+."""
+        mock_bpod_2p.run(fsm_global_counters)
         assert mock_bpod_2p.serial0.last_write == (
-            b'C\x00\x00\x53\x00\x03\x00\x03\x00\x01\x02\x02\x00\x00\x00\x01\x00\x0c\x00'
+            b'C\x01\x00\x53\x00\x03\x00\x03\x00\x01\x02\x02\x00\x00\x00\x01\x00\x0c\x00'
             b'\xff\x00\x00\x00\x01\x00\x0b\x00\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00'
             b'\x01\x02\x03\x00\x00\x00\xfe\xfe\x57\x01\x01\x03\x00\x00\x00\x00\x00\x00'
             b'\x00\x00\x00\x00\x00\x00\x00\x00\x20\x4e\x00\x00\x00\x00\x00\x00\x00\x00'
             b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x05\x00\x00\x00\x00'
         )
 
-    def test_send_state_machine_conditions_25(self, fsm_conditions, mock_bpod_25):
-        """Test sending a state machine with conditions to Bpod 2.5."""
-        mock_bpod_25.send_state_machine(fsm_conditions)
+    def test_run_conditions_25(self, fsm_conditions, mock_bpod_25):
+        """Test running a state machine with conditions on Bpod 2.5."""
+        mock_bpod_25.run(fsm_conditions)
         assert mock_bpod_25.serial0.last_write == (
-            b'C\x00\x00\x2e\x00\x02\x00\x00\x02\x01\x02\x00\x00\x01\x09\xff\x01\x0a\xff'
+            b'C\x01\x00\x2e\x00\x02\x00\x00\x02\x01\x02\x00\x00\x01\x09\xff\x01\x0a\xff'
             b'\x00\x00\x00\x00\x00\x00\x00\x01\x01\x02\x00\x0a\x00\x01\x00\x00\x00\x00'
             b'\x00\x00\x00\x00\x00\x10\x27\x00\x00\x10\x27\x00\x00\x00'
         )
 
-    def test_send_state_machine_conditions_2p(self, fsm_conditions, mock_bpod_2p):
-        """Test sending a state machine with conditions to Bpod 2+."""
-        mock_bpod_2p.send_state_machine(fsm_conditions)
+    def test_run_conditions_2p(self, fsm_conditions, mock_bpod_2p):
+        """Test running a state machine with conditions on Bpod 2+."""
+        mock_bpod_2p.run(fsm_conditions)
         assert mock_bpod_2p.serial0.last_write == (
-            b'C\x00\x00\x36\x00\x02\x00\x00\x02\x01\x02\x00\x00\x01\x00\x0b\x00\xff\x00'
+            b'C\x01\x00\x36\x00\x02\x00\x00\x02\x01\x02\x00\x00\x01\x00\x0b\x00\xff\x00'
             b'\x01\x00\x0c\x00\xff\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x02\x00\x0c'
             b'\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x10\x27\x00\x00\x10'
             b'\x27\x00\x00\x00'
         )
 
-    def test_send_state_machine_softcodes_2p(self, fsm_softcodes, mock_bpod_25):
-        """Test sending a state machine with softcodes to Bpod 2.5."""
-        mock_bpod_25.send_state_machine(fsm_softcodes)
+    def test_run_softcodes_25(self, fsm_softcodes, mock_bpod_25):
+        """Test running a state machine with softcodes on Bpod 2.5."""
+        mock_bpod_25.run(fsm_softcodes)
         assert mock_bpod_25.serial0.last_write == (
-            b'C\x00\x00&\x00\x02\x00\x00\x00\x02\x02\x01K\x01\x00\x00\x00\x00\x00\x00'
+            b'C\x01\x00&\x00\x02\x00\x00\x00\x02\x02\x01K\x01\x00\x00\x00\x00\x00\x00'
             b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00P\xc3\x00\x00\x00'
             b'\x00\x00\x00\x00'
         )
+
+    def test_run_repeat(self, fsm_basic, mock_bpod_25):
+        """Calling run() without sma re-sends the same compiled bytes from cache."""
+        mock_bpod_25.run(fsm_basic)
+        first_write = mock_bpod_25.serial0.last_write
+        mock_bpod_25.run()
+        assert mock_bpod_25.serial0.last_write == first_write
+
+    def test_run_no_prior_sma(self, mock_bpod_25):
+        """Calling run() without a prior run raises RuntimeError."""
+        with pytest.raises(RuntimeError, match='No state machine has been run yet'):
+            mock_bpod_25.run()

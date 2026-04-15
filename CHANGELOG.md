@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- renamed `Bpod.send_state_machine` to `Bpod.run`.
+- removed `Bpod.run_state_machine`.
 - switched to Polars `LazyFrame` for storing trial data.
 - replaced use of `Queue` with `SimpleQueue`.
 - switched `Bpod.module` field from `NamedTuple` to `dict`.

@@ -99,6 +99,7 @@ class Bpod(SerialDevice, AbstractBpod):
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
     _hardware_hash: bytes
+    _last_fsm_hash: bytes | None = None
     _validation_cache: ClassVar[FIFOCache[tuple[bytes, bytes], _ValidationData]] = (
         FIFOCache(maxsize=1024)
     )
@@ -1373,30 +1374,27 @@ class Bpod(SerialDevice, AbstractBpod):
         return fsm_bytes, annotations, not skip_validation
 
     @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
-    def send_state_machine(
+    def run(
         self,
-        state_machine: StateMachine,
+        state_machine: StateMachine | None = None,
         *,
-        run_asap: bool = False,
         skip_validation: bool = False,
     ) -> None:
         """
-        Send a state machine to the Bpod.
+        Run a state machine on the Bpod.
 
-        This method compiles the provided state machine into a byte array format
-        compatible with the Bpod and sends it to the device. It also validates the
-        state machine for compatibility with the hardware before sending.
+        Validates, compiles, sends, and queues a state machine for immediate execution.
+        If the Bpod is currently running a state machine, the new one is queued to run
+        as soon as the current one finishes, with no inter-trial gap.
 
-        Validation and compilation results are cached, speeding up subsequent sends of
-        identical state machines.
+        If called without an argument, the previously sent state machine is re-sent
+        from the compilation cache and queued for immediate back-to-back execution.
 
         Parameters
         ----------
-        state_machine : StateMachine
-            The state machine to be sent to the Bpod device.
-        run_asap : bool, default: False
-            If True, the state machine will run immediately after the current one has
-            finished.
+        state_machine : StateMachine, optional
+            The state machine to run. If not provided, the previously sent state machine
+            is repeated.
         skip_validation : bool, default: False
             If True, the state machine will not be validated prior to compilation. This
             will speed up the process, but may result in errors or unexpected behavior
@@ -1404,6 +1402,8 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Raises
         ------
+        RuntimeError
+            If called without an argument and no state machine has been run yet.
         ValueError
             If the state machine is invalid or exceeds hardware limitations.
         :exc:`~validate_call.roar.validate_callCallHintViolation`
@@ -1412,47 +1412,63 @@ class Bpod(SerialDevice, AbstractBpod):
         See Also
         --------
         validate_state_machine : Validation of state machines.
+        wait : Block until the currently running state machine finishes.
         """
         debugging = logger.isEnabledFor(logging.DEBUG)
         self._next_fsm_index += 1
         self._disable_all_module_relays()
 
-        # get state machine hash
-        if debugging:
-            t0 = perf_counter_ns()
-            fsm_hash = state_machine.hash
-            d = (perf_counter_ns() - t0) // 1000
-            logger.debug('Computed state machine hash (%d μs)', d)
-        else:
-            fsm_hash = state_machine.hash
+        # If the user did not provide a state machine, recover the last run state
+        # machine from the compilation cache
+        if state_machine is None:
+            if self._last_fsm_hash is None:
+                raise RuntimeError('No state machine has been run yet')
+            cache_key = (self._hardware_hash, self._last_fsm_hash, not skip_validation)
+            fsm_bytes, self._fsm_annotations, _ = self._compilation_cache[cache_key]
 
-        # validate and compile state machine
-        fsm_was_validated = False
-        try:
-            fsm_bytes, self._fsm_annotations, fsm_was_validated = (
-                self._compile_state_machine(
-                    state_machine=state_machine,
-                    known_hash=fsm_hash,
-                    skip_validation=skip_validation,
-                    debugging=debugging,
+        # Otherwise go through the process of validating and compiling the state machine
+        else:
+            # 1) COMPUTE HASH
+            #    This allows us to bypass validation and compilation given a cache hit
+            if debugging:
+                t0 = perf_counter_ns()
+                fsm_hash = state_machine.hash
+                d = (perf_counter_ns() - t0) // 1000
+                logger.debug(
+                    'Computed hash of state machine: %s (%d μs)', fsm_hash.hex(), d
                 )
-            )
-        except Exception as e1:
-            # if the compilation failed after validation was bypassed, validate the
-            # state machine post-mortem before re-raising the exception in an attempt to
-            # get a more informative error message
-            if not fsm_was_validated:
-                try:
-                    self._validate_state_machine(
+            else:
+                fsm_hash = state_machine.hash
+
+            # 2) VALIDATE AND COMPILE
+            fsm_was_validated = False
+            try:
+                fsm_bytes, self._fsm_annotations, fsm_was_validated = (
+                    self._compile_state_machine(
                         state_machine=state_machine,
                         known_hash=fsm_hash,
+                        skip_validation=skip_validation,
+                        debugging=debugging,
                     )
-                except Exception as e2:
-                    raise e2 from e1
-            raise
+                )
+            except Exception as e1:
+                # if compilation failed after bypassing validation, validate post-mortem
+                # to get a more informative error message
+                if not fsm_was_validated:
+                    try:
+                        self._validate_state_machine(
+                            state_machine=state_machine,
+                            known_hash=fsm_hash,
+                        )
+                    except Exception as e2:
+                        raise e2 from e1
+                raise
 
-        # Send state machine to Bpod
-        message = struct.pack('<c?', b'C', run_asap) + fsm_bytes
+            # 3) STORE THE STATE MACHINE'S HASH
+            self._last_fsm_hash = fsm_hash
+
+        # Send state machine to Bpod; always queue for immediate back-to-back execution
+        message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
         if debugging:
             t0 = perf_counter_ns()
             self.serial0.write(message)
@@ -1461,8 +1477,42 @@ class Bpod(SerialDevice, AbstractBpod):
             )
         else:
             self.serial0.write(message)
-        if run_asap:
-            self._run_state_machine(blocking=False)
+
+        # Start threads
+        self._run_state_machine()
+
+    def _run_state_machine(self) -> None:
+        state_machine_lookup = cast('StateMachineLookup', self._fsm_annotations)
+
+        # initialize new threads
+        event_thread = EventThread(
+            trial=self._next_fsm_index,
+            fsm=state_machine_lookup,
+            data_queue=self._trial_data,
+            event_lookup=self._event_lookup,
+            action_names=self._actions,
+            time_reference=self._time_reference,
+        )
+        read_thread = ReadThread(
+            serial=self.serial0,
+            state_machine_hash=state_machine_lookup.fsm_hash,
+            trial=self._next_fsm_index,
+            cycle_period_us=self._hardware.cycle_period_us,
+            queue_events=event_thread.queue,
+            queue_softcodes=self._softcode_thread.queue,
+        )
+
+        # wait for an already running state machine to finish
+        self.wait()
+
+        # start threads
+        read_thread.start()
+        event_thread.start()
+
+        # set private class attributes
+        self._event_thread = event_thread
+        self._read_thread = read_thread
+        self._fsm_annotations = None
 
     @property
     def is_running(self) -> bool:
@@ -1584,66 +1634,6 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # return data
         return data if lazy else data.collect()
-
-    @validate_call()
-    def run_state_machine(self, *, blocking: bool = True) -> None:
-        """Run the previously sent state machine.
-
-        Parameters
-        ----------
-        blocking : bool, default: True
-            If True, block until the state machine finishes.
-            If False, return immediately after starting.
-
-        Raises
-        ------
-        RuntimeError
-            - If no state machine has been sent.
-            - If a state machine is already running.
-        """
-        if self.is_running:
-            raise RuntimeError('A state machine is already running')
-        if not self.is_ready:
-            raise RuntimeError('No state machine has been sent')
-        self.serial0.write(b'R')
-        self._run_state_machine(blocking=blocking)
-
-    def _run_state_machine(self, *, blocking: bool) -> None:
-        state_machine_lookup = cast('StateMachineLookup', self._fsm_annotations)
-
-        # initialize new threads
-        event_thread = EventThread(
-            trial=self._next_fsm_index,
-            fsm=state_machine_lookup,
-            data_queue=self._trial_data,
-            event_lookup=self._event_lookup,
-            action_names=self._actions,
-            time_reference=self._time_reference,
-        )
-        read_thread = ReadThread(
-            serial=self.serial0,
-            state_machine_hash=state_machine_lookup.fsm_hash,
-            trial=self._next_fsm_index,
-            cycle_period_us=self._hardware.cycle_period_us,
-            queue_events=event_thread.queue,
-            queue_softcodes=self._softcode_thread.queue,
-        )
-
-        # wait for an already running state machine to finish
-        self.wait()
-
-        # start threads
-        read_thread.start()
-        event_thread.start()
-
-        # set private class attributes
-        self._event_thread = event_thread
-        self._read_thread = read_thread
-        self._fsm_annotations = None
-
-        # wait for state machine to finish
-        if blocking and self.is_running:
-            self.wait()
 
     def stop_state_machine(self) -> None:
         """Stop the currently running state machine."""
