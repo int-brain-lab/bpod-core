@@ -180,6 +180,10 @@ Just a quick bugfix release ...
 
 First alpha release. Nothing works.
 
+[0.1.0a10]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a10
+
+[0.1.0a9]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a9
+
 [0.1.0a8]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a8
 
 [0.1.0a7]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a7
