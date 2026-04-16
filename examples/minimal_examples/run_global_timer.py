@@ -1,7 +1,7 @@
 """Global Timer Example.
 
 This example demonstrates how to define a state machine with a global timer and run it
-on a Bpod with debug logging enabled. The state machine alternates LEDs of Port 1 and
+on a Bpod with info logging enabled. The state machine alternates LEDs of Port 1 and
 Port 3 every 250 ms until a 5-second global timer expires, then exits the state machine.
 The trial data is finally returned to the user as a dataframe.
 """
@@ -12,7 +12,7 @@ from bpod_core.bpod import Bpod
 from bpod_core.fsm import StateMachine
 
 # configure debug logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 
 # create a new StateMachine instance and configure a 5-second global timer
 fsm = StateMachine()
@@ -44,9 +44,10 @@ fsm.add_state(
     actions={'PWM3': 255},
 )
 
-# connect to the Bpod, send the state machine, and run it
+# connect to the Bpod and run the state machine
 with Bpod() as bpod:
-    bpod.send_state_machine(fsm)
-    bpod.run_state_machine()
+    bpod.run(fsm)
 
+# collect the data and display it
 trial_data = bpod.get_data()
+trial_data.show(limit=None, tbl_width_chars=200)
