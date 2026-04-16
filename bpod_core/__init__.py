@@ -14,8 +14,3 @@ except importlib.metadata.PackageNotFoundError:
     with toml_file.open('r', encoding='utf8') as f:
         toml_data = toml.decode(f.read())
     __version__ = str(Version(toml_data['project']['version']))
-
-# Ensure submodules are accessible as attributes on the package (needed for Python 3.10)
-# Tests reference 'bpod_core.misc' for patching; importing here guarantees the attribute
-# exists.
-from . import misc  # noqa: F401
