@@ -6,7 +6,7 @@ import re
 import struct
 import traceback
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, field
 from datetime import timedelta
 from queue import Empty, SimpleQueue
@@ -1545,16 +1545,26 @@ class Bpod(SerialDevice, AbstractBpod):
             read_thread.join()
 
     @overload
-    def peek_data(self, *, lazy: Literal[False] = False) -> pl.DataFrame: ...
+    def peek_data(
+        self,
+        trigger_states: Collection[str] | None = ...,
+        *,
+        lazy: Literal[False] = False,
+    ) -> pl.DataFrame: ...
 
     @overload
-    def peek_data(self, *, lazy: Literal[True]) -> pl.LazyFrame: ...
+    def peek_data(
+        self, trigger_states: Collection[str] | None = ..., *, lazy: Literal[True]
+    ) -> pl.LazyFrame: ...
 
-    def peek_data(self, *, lazy=False):
-        """Return a snapshot of the current trial's data without blocking.
+    def peek_data(self, trigger_states: Collection[str] | None = None, *, lazy=False):
+        """Return a snapshot of the current trial's data.
 
         Parameters
         ----------
+        trigger_states : Collection of str, optional
+            Block until at least one of the given states has been entered, then return
+            the snapshot. If ``None`` (default), returns immediately.
         lazy : bool, default: False
             If ``True``, return a :class:`polars.LazyFrame`.
             If ``False`` (default), return a :class:`polars.DataFrame`.
@@ -1564,11 +1574,16 @@ class Bpod(SerialDevice, AbstractBpod):
         pl.DataFrame or pl.LazyFrame
             Events recorded so far in the current trial. Returns an empty DataFrame if
             no trial is running.
+
+        Raises
+        ------
+        ValueError
+            If one or several of the trigger states are not part of the state machine.
         """
         if self._event_thread is None:
             empty = pl.DataFrame(schema=_TRIAL_DATA_SCHEMA)
             return empty.lazy() if lazy else empty
-        data = self._event_thread.peek_data()
+        data = self._event_thread.peek_data(trigger_states)
         return data if lazy else data.collect()
 
     @overload

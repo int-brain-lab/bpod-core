@@ -4,7 +4,7 @@ import logging
 import struct
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from enum import IntEnum, auto
 from queue import SimpleQueue
 
@@ -412,7 +412,9 @@ class EventThread(threading.Thread):
         self._time_reference = time_reference
         self._buffer: npt.NDArray = np.empty(_INITIAL_BUFFER_SIZE, dtype=_EVENT_DTYPE)
         self._n_events: int = 0
+        self._check_trigger = threading.Event()
         self._event_lookup = event_lookup.lazy()
+        self._state_names = fsm.state_names
         self._state_lookup = fsm.state_lookup
         self._fsm_hash_str = fsm.fsm_hash.hex()
 
@@ -489,6 +491,8 @@ class EventThread(threading.Thread):
                 # append the event to the buffer
                 state = -1 if event_index in stateless_events else current_state
                 self._append(t_bpod_us, event_index, state_id=state)
+                if event_index == _EventID.START_STATE:
+                    self._check_trigger.set()
 
                 # handle state transitions
                 if event_index < 255:
@@ -514,6 +518,7 @@ class EventThread(threading.Thread):
                     self._append(
                         t_bpod_us, _EventID.START_STATE, state_id=current_state
                     )
+                    self._check_trigger.set()
 
                 # implicitly reset active outputs at trial end
                 elif event_index == _EventID.END_FSM_CYCLES:
@@ -541,6 +546,7 @@ class EventThread(threading.Thread):
                             active_outputs[idx] = val  # noqa: PERF403
         finally:
             self._enqueue_data()
+            self._check_trigger.set()
 
     @property
     def _buffer_view(self) -> npt.NDArray:
@@ -574,14 +580,46 @@ class EventThread(threading.Thread):
             .select(list(_TRIAL_DATA_SCHEMA))
         )
 
-    def peek_data(self) -> pl.LazyFrame:
+    def peek_data(
+        self,
+        trigger_states: Collection[str] | None = None,
+    ) -> pl.LazyFrame:
         """Return a snapshot of events recorded so far as a :class:`polars.LazyFrame`.
 
-        Safe to call from a different thread while the trial is running. The
-        returned DataFrame reflects events up to the moment ``_n_events`` was
-        read; one in-flight event may be missed.
+        Safe to call from a different thread while the trial is running. The returned
+        DataFrame reflects events up to the moment ``_n_events`` was read; one in-flight
+        event may be missed.
+
+        Parameters
+        ----------
+        trigger_states : Collection of str, optional
+            Block until at least one of the given states has been entered. If the trial
+            ends before any of the states have been entered, returns whatever was
+            recorded.
+
+        Returns
+        -------
+        pl.LazyFrame
+            A snapshot of the recorded events.
+
+        Raises
+        ------
+        ValueError
+            If one or several of the trigger states are not part of the state machine.
         """
-        return self._to_lazyframe(self._buffer_view.copy())
+        if trigger_states is None:
+            return self._to_lazyframe(self._buffer_view.copy())
+        if unknown_states := (set(trigger_states) - set(self._state_names)):
+            pt1 = f'Unknown trigger state{"s" if len(unknown_states) > 1 else ""}: '
+            pt2 = ', '.join([f"'{u}'" for u in sorted(unknown_states)])
+            raise ValueError(pt1 + pt2)
+        target_ids = [i for i, s in enumerate(self._state_names) if s in trigger_states]
+        while True:
+            self._check_trigger.clear()
+            view = self._buffer_view
+            if np.any(np.isin(view['state_id'], target_ids)) or not self.is_alive():
+                return self._to_lazyframe(view.copy())
+            self._check_trigger.wait()
 
     def _enqueue_data(self) -> None:
         """Enqueue recorded events as a :class:`polars.LazyFrame`."""
