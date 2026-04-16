@@ -7,15 +7,10 @@ import signal
 import threading
 from types import FrameType
 
-from bpod_core.bpod import Bpod
-
-logger = logging.getLogger(__name__)
+from bpod_core.bpod import Bpod, bpod_core_version
 
 
 def _bpod_cli() -> int:
-    # Simple logging setup for CLI output
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
-
     # Configure CLI interface and arguments
     transport = 'TCP or Unix sockets' if os.name == 'posix' else 'TCP'
     parser = argparse.ArgumentParser(
@@ -52,8 +47,28 @@ def _bpod_cli() -> int:
         action='store_false',
         help="Disable the device's status LED",
     )
+    parser.add_argument(
+        '-v',
+        '--verbose',
+        action='store_true',
+        help='Use verbose output',
+    )
+    parser.add_argument(
+        '--version',
+        action='store_true',
+        help='Show the version of bpod-core and exit',
+    )
     parser.set_defaults(led=True)
     cli_arguments = parser.parse_args()
+
+    # logging
+    log_level = logging.DEBUG if cli_arguments.verbose else logging.INFO
+    logging.basicConfig(level=log_level, format='%(message)s')
+    logger = logging.getLogger('bpod_cli')
+
+    if cli_arguments.version:
+        logger.info('bpod-core %s', bpod_core_version)
+        return 0
 
     shutdown_event = threading.Event()
 
