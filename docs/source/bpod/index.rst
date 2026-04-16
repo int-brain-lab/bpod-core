@@ -178,6 +178,7 @@ Data Format
    pqt_file = Path(_DOCS_STATIC) / "example_dataframe.pqt"
    data = pl.read_parquet(pqt_file)
    assert dict(data.schema) == _TRIAL_DATA_SCHEMA
+   pl.Config.set_tbl_width_chars(200)
 
 Data returned by :meth:`~bpod_core.bpod.Bpod.get_data` is organized in tabular form as a
 Polars :class:`~polars.DataFrame`. For the state machine in :numref:`on_the_fly_fsm` you
