@@ -99,12 +99,12 @@ class Bpod(SerialDevice, AbstractBpod):
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
     _hardware_hash: bytes
-    _last_fsm_hash: bytes | None = None
+    _last_cache_key: tuple[bytes, bytes, bool] | None = None
     _validation_cache: ClassVar[FIFOCache[tuple[bytes, bytes], _ValidationData]] = (
         FIFOCache(maxsize=1024)
     )
     _compilation_cache: ClassVar[
-        FIFOCache[tuple[bytes, bytes, bool], tuple[bytes, StateMachineLookup, bool]]
+        FIFOCache[tuple[bytes, bytes, bool], tuple[bytes, StateMachineLookup]]
     ] = FIFOCache(maxsize=1024)
 
     _softcode_thread: SoftcodeThread
@@ -133,7 +133,7 @@ class Bpod(SerialDevice, AbstractBpod):
         *,
         remote: bool = False,
     ) -> None:
-        logger.info('bpod_core %s', bpod_core_version)
+        logger.info('bpod-core %s', bpod_core_version)
         self._settings = SettingsDict(CONFIG_PATH / 'settings.json')
 
         # initialize members
@@ -178,16 +178,6 @@ class Bpod(SerialDevice, AbstractBpod):
         # update modules
         self.update_modules()
 
-        # start ZeroMQ service
-        self._start_zmq(use_zeroconf=remote)
-
-        # register destructors
-        self._bpod_finalizer = weakref.finalize(
-            self,
-            Bpod._bpod_cleanup,
-            self._serial,
-        )
-
         # log hardware information
         logger.info(
             'Connected to Bpod Finite State Machine %s on %s',
@@ -199,6 +189,17 @@ class Bpod(SerialDevice, AbstractBpod):
             *self.version.firmware,
             self._serial_number,
             self.version.pcb,
+        )
+
+        # start ZeroMQ service
+        self._start_zmq(use_zeroconf=remote)
+        logger.info('ZeroMQ service started on %s', self.address)
+
+        # register destructors
+        self._bpod_finalizer = weakref.finalize(
+            self,
+            Bpod._bpod_cleanup,
+            self._serial,
         )
 
     @staticmethod
@@ -338,6 +339,11 @@ class Bpod(SerialDevice, AbstractBpod):
     def _stop_zmq(self) -> None:
         if hasattr(self, '_zmq_service'):
             self._zmq_service.close()
+
+    @property
+    def address(self) -> str:
+        """The ZeroMQ address of the Bpod."""
+        return self._zmq_service.rep_tcp_addr
 
     def _get_setting(self, keys: list[str], default: Any = None) -> Any:
         return self._settings.get_nested(keys, default)
@@ -1028,7 +1034,9 @@ class Bpod(SerialDevice, AbstractBpod):
         # report benchmarking results
         if debugging:
             logger.debug(
-                'Validated state machine (%d μs)', (perf_counter_ns() - t0) // 1000
+                'Validated state machine %s (%d μs)',
+                fsm_hash.hex,
+                (perf_counter_ns() - t0) // 1000,
             )
 
         # return expensive transition_targets for further use by caller
@@ -1067,7 +1075,7 @@ class Bpod(SerialDevice, AbstractBpod):
         *,
         state_machine: StateMachine,
         known_hash: bytes | None = None,
-        skip_validation: bool = False,
+        validate: bool = True,
         debugging: bool = False,
     ) -> tuple[bytes, StateMachineLookup, bool]:
         """Compile a state machine into its binary wire format and annotation data.
@@ -1083,8 +1091,8 @@ class Bpod(SerialDevice, AbstractBpod):
             The state machine to compile.
         known_hash : bytes | None
             Known hash of the state machine. Hash will be computed if not provided.
-        skip_validation : bool, default: False
-            Whether to skip validation of the state machine.
+        validate : bool, default: True
+            Whether to validate the state machine.
         debugging : bool, default: False
             Whether to enable debug logging.
 
@@ -1105,19 +1113,19 @@ class Bpod(SerialDevice, AbstractBpod):
         state_machine_hash = known_hash or state_machine.hash
 
         # use cached results if they are available
-        cache_key = (self._hardware_hash, state_machine_hash, not skip_validation)
+        cache_key = (self._hardware_hash, state_machine_hash, validate)
         if cache_key in self._compilation_cache:
-            compiled_fsm, fsm_lookup, was_validated = self._compilation_cache[cache_key]
+            compiled_fsm, fsm_lookup = self._compilation_cache[cache_key]
             if debugging:
                 logger.debug(
                     'Retrieved compiled, %s state machine from cache (%d μs)',
-                    'validated' if was_validated else 'unvalidated',
+                    'validated' if validate else 'unvalidated',
                     (perf_counter_ns() - t0) // 1000,
                 )
-            return compiled_fsm, fsm_lookup, was_validated
+            return compiled_fsm, fsm_lookup, validate
 
         # validate the state machine,
-        if not skip_validation:
+        if validate:
             validation_data = self._validate_state_machine(
                 state_machine,
                 known_hash=state_machine_hash,
@@ -1358,27 +1366,25 @@ class Bpod(SerialDevice, AbstractBpod):
         struct.pack_into('<?H', fsm_bytes, 0, use_back_op, len(fsm_bytes) - 3)
 
         # store the compiled state machine for future use
-        self._compilation_cache[cache_key] = (
-            fsm_bytes,
-            annotations,
-            not skip_validation,
-        )
+        self._compilation_cache[cache_key] = (fsm_bytes, annotations)
 
         # report benchmarking results
         if debugging:
             logger.debug(
-                'Compiled state machine (%d μs)', (perf_counter_ns() - t0) // 1000
+                'Compiled state machine %s (%d μs)',
+                state_machine_hash,
+                (perf_counter_ns() - t0) // 1000,
             )
 
         # Return the compiled state machine and annotations
-        return fsm_bytes, annotations, not skip_validation
+        return fsm_bytes, annotations, validate
 
     @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
     def run(
         self,
         state_machine: StateMachine | None = None,
         *,
-        skip_validation: bool = False,
+        validate: bool = True,
     ) -> None:
         """
         Run a state machine on the Bpod.
@@ -1395,8 +1401,8 @@ class Bpod(SerialDevice, AbstractBpod):
         state_machine : StateMachine, optional
             The state machine to run. If not provided, the previously sent state machine
             is repeated.
-        skip_validation : bool, default: False
-            If True, the state machine will not be validated prior to compilation. This
+        validate : bool, default: True
+            If False, the state machine will not be validated prior to compilation. This
             will speed up the process, but may result in errors or unexpected behavior
             if the state machine is invalid. Use with caution.
 
@@ -1408,6 +1414,14 @@ class Bpod(SerialDevice, AbstractBpod):
             If the state machine is invalid or exceeds hardware limitations.
         :exc:`~validate_call.roar.validate_callCallHintViolation`
             If function arguments don't match type hints.
+
+        Notes
+        -----
+        This method returns once the state machine has been queued on the Bpod. The Bpod
+        will then begin executing the state machine as soon as possible — immediately
+        if the device is idle or right after the current state machine finishes.
+        Subsequent calls of this method will result in continuous acquisition and zero
+        inter-trial downtime (as long as the Bpod's run queue stays filled).
 
         See Also
         --------
@@ -1421,10 +1435,17 @@ class Bpod(SerialDevice, AbstractBpod):
         # If the user did not provide a state machine, recover the last run state
         # machine from the compilation cache
         if state_machine is None:
-            if self._last_fsm_hash is None:
+            if self._last_cache_key is None:
                 raise RuntimeError('No state machine has been run yet')
-            cache_key = (self._hardware_hash, self._last_fsm_hash, not skip_validation)
-            fsm_bytes, self._fsm_annotations, _ = self._compilation_cache[cache_key]
+            fsm_bytes, self._fsm_annotations = self._compilation_cache[
+                self._last_cache_key
+            ]
+            fsm_hash = self._last_cache_key[0]
+            if debugging:
+                logger.debug(
+                    'Retrieving state machine %s from cache',
+                    self._last_cache_key[1].hex(),
+                )
 
         # Otherwise go through the process of validating and compiling the state machine
         else:
@@ -1447,7 +1468,7 @@ class Bpod(SerialDevice, AbstractBpod):
                     self._compile_state_machine(
                         state_machine=state_machine,
                         known_hash=fsm_hash,
-                        skip_validation=skip_validation,
+                        validate=validate,
                         debugging=debugging,
                     )
                 )
@@ -1464,8 +1485,8 @@ class Bpod(SerialDevice, AbstractBpod):
                         raise e2 from e1
                 raise
 
-            # 3) STORE THE STATE MACHINE'S HASH
-            self._last_fsm_hash = fsm_hash
+            # 3) STORE THE CACHE KEY FOR REPEAT CALLS
+            self._last_cache_key = (self._hardware_hash, fsm_hash, validate)
 
         # Send state machine to Bpod; always queue for immediate back-to-back execution
         message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
@@ -1473,7 +1494,9 @@ class Bpod(SerialDevice, AbstractBpod):
             t0 = perf_counter_ns()
             self.serial0.write(message)
             logger.debug(
-                'Sent state machine to Bpod (%d μs)', (perf_counter_ns() - t0) // 1000
+                'Sent state machine %s to Bpod (%d μs)',
+                fsm_hash.hex(),
+                (perf_counter_ns() - t0) // 1000,
             )
         else:
             self.serial0.write(message)
@@ -1596,16 +1619,16 @@ class Bpod(SerialDevice, AbstractBpod):
         self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[True]
     ) -> pl.LazyFrame: ...
 
-    def get_data(self, *, concat=False, rechunk=False, lazy=False):
+    def get_data(self, *, concat=True, rechunk=False, lazy=False):
         """Return trial data from the data queue.
 
         Parameters
         ----------
-        concat : bool, default: False
-            If ``False``, pop and return one DataFrame, blocking until one is
-            available.
+        concat : bool, default: True
             If ``True``, pop and concatenate all DataFrames currently in the queue into
             a single DataFrame, blocking until at least one is available.
+            If ``False``, pop and return one DataFrame, blocking until one is
+            available.
         rechunk : bool, default: False
             If ``True``, make sure that the result data is in contiguous memory. Only
             applies when ``concat=True``.
