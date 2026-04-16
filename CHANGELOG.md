@@ -10,11 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Bpod.address property — exposes the ZeroMQ address of the running instance.
 - `Bpod.peek_data` - read trial data before trial end.
 - `misc.ByteEnum` - an extended `IntEnum` that caches its values as bytes.
 - Timer fields in StateMachine now accept timedelta values in addition to floats.
 - `bpod` CLI entry point for launching a Bpod instance that can be connected to via TCP
   Unix Sockets.
+- `state machine` column added to trial data output (hash of the FSM)
 
 ### Changed
 
@@ -43,9 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - replaced MD5 hashing of `fsm.StateMachine` with blake2b.
 - improved readability of `ValidationError` messages in `fsm.StateMachine`.
 - state machine runs are now handled by three separate threads:
-    - `ReadThread` for serial communication with the Bpod
-    - `EventThread` for handling and structuring the incoming data
-    - `SoftcodeThread` for executing soft-codes
+    - `ReadThread` for serial communication with the Bpod,
+    - `EventThread` for handling and structuring the incoming data, and
+    - `SoftcodeThread` for executing soft-codes.
 
 ### Fixed
 
