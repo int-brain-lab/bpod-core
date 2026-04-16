@@ -15,8 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     if: (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.base_ref == 'main') || github.event_name == 'workflow_call'
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
       - name: Verify lockfile
         run: |
           uv lock --check || (echo "::error file=uv.lock::uv.lock is not up to date" && exit 1)
@@ -45,7 +45,7 @@ jobs:
         os: [ "ubuntu-latest", "windows-latest", "macos-latest" ]
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - name: sync dependencies
         run: uv sync --no-default-groups --group test --group ci
       - name: run tox

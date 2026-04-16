@@ -350,8 +350,9 @@ hardware are known:
    from unittest.mock import patch
    from types import SimpleNamespace
    from bpod_core.bpod import Bpod
+   from unittest.mock import MagicMock
 
-   original_send = Bpod.send_state_machine
+   original_run = Bpod.run
    original_validate = Bpod.validate_state_machine
 
    def fake_init(self, *args, **kwargs):
@@ -363,7 +364,13 @@ hardware are known:
            n_conditions=64,
            cycle_frequency=1000,
        )
-       self.send_state_machine = types.MethodType(original_send, self)
+       self._bpod_finalizer = SimpleNamespace(detach=lambda: None)
+       self._serial_device_finalizer = SimpleNamespace(detach=lambda: None)
+       self._softcode_thread = MagicMock()
+       self._hardware_hash = b''
+       self._serial_device_name = 'Bpod'
+       self._version = SimpleNamespace(machine_str='Finite State Machine R2.0-2.5')
+       self.run = types.MethodType(original_run, self)
        self.validate_state_machine = types.MethodType(original_validate, self)
 
    patcher = patch.object(Bpod, "__init__", fake_init)
@@ -380,11 +387,11 @@ hardware are known:
    :group: runtime-validation
 
    >>> fsm.set_global_timer(index=20, duration=5)  # this validates OK
-   >>> bpod = Bpod()
-   >>> bpod.send_state_machine(fsm)
+   >>> with Bpod() as bpod:
+   ...     bpod.run(fsm)
    Traceback (most recent call last):
       ...
-   ValueError: Too many global timers in state machine - hardware supports up to 16 global timers
+   ValueError: Requested invalid Global Timer with index 20 - Bpod Finite State Machine R2.0-2.5 supports up to 16 Global Timers with indices 0-15
 
 
 Import and Export

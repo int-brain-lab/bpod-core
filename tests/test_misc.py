@@ -7,7 +7,66 @@ import pytest
 from pydantic import ValidationError
 
 from bpod_core import misc
-from bpod_core.misc import ValidatedDict
+from bpod_core.constants import FMT_UINT8
+from bpod_core.misc import ByteEnum, ValidatedDict
+
+
+class TestByteEnum:
+    """Tests for ByteEnum."""
+
+    @pytest.fixture
+    def op(self):
+        """A minimal ByteEnum subclass for testing."""
+
+        class Op(ByteEnum):
+            READ = 1
+            WRITE = 2
+            EXEC = ord('X')
+
+        return Op
+
+    def test_value(self, op):
+        """Member has the correct integer value."""
+        assert op.READ == 1
+        assert op.WRITE == 2
+
+    def test_as_bytes(self, op):
+        """as_bytes returns a single-byte bytes object matching the value."""
+        assert op.READ.as_bytes == b'\x01'
+        assert op.WRITE.as_bytes == b'\x02'
+
+    def test_as_bytes_length(self, op):
+        """as_bytes is always exactly one byte."""
+        for member in op:
+            assert len(member.as_bytes) == 1
+
+    def test_ascii_value(self, op):
+        """ord() values are correctly stored and round-trip via as_bytes."""
+        assert ord('X') == op.EXEC
+        assert op.EXEC.as_bytes == b'X'
+
+    def test_is_int(self, op):
+        """Members are integers (IntEnum behaviour preserved)."""
+        assert isinstance(op.READ, int)
+        assert op.READ + op.WRITE == 3
+
+    def test_iteration(self, op):
+        """Iterating over the enum yields all members."""
+        assert list(op) == [op.READ, op.WRITE, op.EXEC]
+
+    def test_invalid_negative(self):
+        """Negative values raise ValueError."""
+        with pytest.raises(ValueError, match='one byte'):
+
+            class Bad(ByteEnum):
+                NEG = -1
+
+    def test_invalid_too_large(self):
+        """Values above 255 raise ValueError."""
+        with pytest.raises(ValueError, match='one byte'):
+
+            class Bad(ByteEnum):
+                BIG = 256
 
 
 @pytest.mark.parametrize(
@@ -355,7 +414,7 @@ class TestExtendPacked:
     def test_pack_unsigned_bytes(self):
         """Packs a list of unsigned bytes."""
         buf = bytearray()
-        misc.extend_packed(buf, [1, 2, 255], 'B')
+        misc.extend_packed(buf, [1, 2, 255], FMT_UINT8)
         assert buf == b'\x01\x02\xff'
 
     def test_pack_unsigned_shorts(self):
@@ -381,7 +440,7 @@ class TestExtendPacked:
     def test_extends_existing_buffer(self):
         """Appends to an existing bytearray without overwriting."""
         buf = bytearray(b'\xaa\xbb')
-        misc.extend_packed(buf, [1, 2], 'B')
+        misc.extend_packed(buf, [1, 2], FMT_UINT8)
         assert buf == b'\xaa\xbb\x01\x02'
 
     def test_invalid_format_raises_struct_error(self):
@@ -394,13 +453,13 @@ class TestExtendPacked:
         """Raises struct.error when value exceeds format range."""
         buf = bytearray()
         with pytest.raises(struct.error):
-            misc.extend_packed(buf, [256], 'B')  # max for 'B' is 255
+            misc.extend_packed(buf, [256], FMT_UINT8)  # max for uInt8 is 255
 
     def test_negative_for_unsigned_raises_struct_error(self):
         """Raises struct.error for negative value with unsigned format."""
         buf = bytearray()
         with pytest.raises(struct.error):
-            misc.extend_packed(buf, [-1], 'B')
+            misc.extend_packed(buf, [-1], FMT_UINT8)
 
 
 class TestValidatedDict:

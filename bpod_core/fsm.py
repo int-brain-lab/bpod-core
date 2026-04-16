@@ -1,26 +1,38 @@
 """Module defining classes and types for creating and managing state machines."""
 
-import hashlib
+import datetime
 import re
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, cast
 
 import msgspec
-import numpy as np
 import yaml
+from cachetools import FIFOCache
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
     BaseModel,
     Field,
+    TypeAdapter,
     ValidationError,
     WrapValidator,
     validate_call,
 )
 from pydantic_core import PydanticCustomError
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
+from xxhash import xxh3_64 as _xxh3_64
 
+from bpod_core.constants import UINT32_MAX
 from bpod_core.misc import ValidatedDict, suggest_similar
+
+
+class _CheckData(NamedTuple):
+    """Data returned by :meth:`StateMachine._check`."""
+
+    all_state_names: list[str]
+    """A set of all state names."""
+    transition_targets: set[str]
+    """A set of all transition targets."""
 
 
 def enc_hook(obj: Any) -> Any:
@@ -37,15 +49,26 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
     raise NotImplementedError(f'Objects of type {type} are not supported')
 
 
-_msgpack_encoder = msgspec.msgpack.Encoder()
+_timedelta_adapter = TypeAdapter(datetime.timedelta)
 
 
-def _validate_state_timer(v: Any, h: ValidatorFunctionWrapHandler) -> 'StateTimer':
+def _validate_seconds(v: Any, h: ValidatorFunctionWrapHandler) -> float:
     try:
-        return cast('StateTimer', h(v))
+        return cast('float', h(v))
+    except ValidationError as e1:
+        try:
+            td = _timedelta_adapter.validate_python(v)
+            return cast('float', h(td.total_seconds()))
+        except ValidationError as e2:
+            raise e1 from e2
+
+
+def _validate_state_timer(v: Any, h: ValidatorFunctionWrapHandler) -> float:
+    try:
+        return cast('float', h(v))
     except ValidationError as e:
         for error in e.errors():
-            if error_type := 'greater_than_equal':
+            if (error_type := error.get('type')) == 'greater_than_equal':
                 raise PydanticCustomError(
                     error_type,
                     'Invalid State Timer - cannot be negative',
@@ -108,10 +131,11 @@ StateTimer = Annotated[
         title='State Timer',
         description="The state's timer in seconds",
         default=0.0,
-        allow_inf_nan=False,
         ge=0.0,
+        allow_inf_nan=False,
     ),
     WrapValidator(_validate_state_timer),
+    WrapValidator(_validate_seconds),
 ]
 
 
@@ -129,7 +153,9 @@ GlobalTimerDuration = Annotated[
         title='Global Timer Duration',
         description='The duration of the global timer in seconds',
         ge=0.0,
+        allow_inf_nan=False,
     ),
+    WrapValidator(_validate_seconds),
 ]
 
 GlobalTimerOnsetDelay = Annotated[
@@ -141,6 +167,7 @@ GlobalTimerOnsetDelay = Annotated[
         ge=0.0,
         allow_inf_nan=False,
     ),
+    WrapValidator(_validate_seconds),
 ]
 
 GlobalTimerChannel = Annotated[
@@ -190,8 +217,8 @@ GlobalTimerLoopInterval = Annotated[
         description='The interval in seconds that the global timer is looping',
         default=0.0,
         ge=0.0,
-        allow_inf_nan=False,
     ),
+    WrapValidator(_validate_seconds),
 ]
 
 GlobalTimerOnsetTrigger = Annotated[
@@ -210,7 +237,7 @@ GlobalCounterThreshold = Annotated[
         title='Threshold',
         description='The count threshold to generate an event',
         ge=0,
-        le=np.iinfo(np.uint32).max,
+        le=UINT32_MAX,
     ),
 ]
 
@@ -421,11 +448,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
     conditions: Conditions = Conditions()
     """A dictionary of conditions."""
 
-    _validation_hash: bytes = b''
-    """hash for caching of validation results."""
-
-    _validation_error: Exception | None = None
-    """The latest validation error."""
+    _validation_cache: ClassVar[FIFOCache[bytes, _CheckData]] = FIFOCache(maxsize=1024)
+    """Cache holding hashes of successfully validated state machine instances."""
 
     def __repr__(self) -> str:
         fields = [f for f in StateMachine.model_fields if f != 'name']
@@ -435,7 +459,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             return f"{self.__class__.__name__}(name='{self.name}', {string})"
         return f'{self.__class__.__name__}({string})'
 
-    @validate_call
+    @validate_call()
     def add_state(
         self,
         name: StateName,
@@ -451,14 +475,12 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         ----------
         name : str
             The name of the state to be added.
-        timer : float, optional
-            The duration of the state's timer in seconds. Default to 0.
+        timer : float, default: 0.0
+            The duration of the state's timer.
         transitions : dict, optional
-            A dictionary mapping conditions to target states for transitions.
-            Defaults to an empty dictionary.
+            An optional dictionary mapping conditions to target states for transitions.
         actions : dict, optional
-            A dictionary of actions to be executed on entering the state.
-            Defaults to an empty dictionary.
+            An optional dictionary of actions to be executed on entering the state.
         comment : str, optional
             An optional comment describing the state.
 
@@ -477,7 +499,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             comment=comment,
         )
 
-    @validate_call
+    @validate_call()
     def set_global_timer(
         self,
         index: Index,
@@ -489,7 +511,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         value_off: GlobalTimerChannelValue = 0,
         send_events: GlobalTimerSendEvents = True,
         loop: GlobalTimerLoop = 0,
-        loop_interval: GlobalTimerLoopInterval = 0,
+        loop_interval: GlobalTimerLoopInterval = 0.0,
         onset_trigger: GlobalTimerOnsetTrigger = 0,
     ) -> None:
         """
@@ -500,22 +522,22 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         index : int
             The index of the global timer to configure. Zero-based.
         duration : float
-            The duration of the global timer in seconds.
-        onset_delay : float, optional
-            The onset delay of the global timer in seconds. Default is 0.0.
+            The duration of the global timer.
+        onset_delay : float, default: 0.0
+            The onset delay of the global timer.
         channel : str, optional
-            The channel affected by the global timer. Default is None.
-        value_on : int, optional
-            The value to set the channel to when the timer is active. Default is 0.
-        value_off : int, optional
-            The value to set the channel to when the timer is inactive. Default is 0.
-        send_events : bool, optional
-            Whether the global timer sends events. Default is True.
-        loop : int, optional
-            The number of times the timer should loop. Default is 0.
-        loop_interval : float, optional
-            The interval in seconds between loops. Default is 0.
-        onset_trigger : int, optional
+            The channel affected by the global timer.
+        value_on : int, default: 0
+            The value to set the channel to when the timer is active.
+        value_off : int, default: 0
+            The value to set the channel to when the timer is inactive.
+        send_events : bool, default: True
+            Whether the global timer sends events.
+        loop : int, default: 0
+            The number of times the timer should loop
+        loop_interval : float, default: 0.0
+            The interval between loops.
+        onset_trigger : int, default: 0
             An integer whose bits indicate other global timers to trigger.
 
         Returns
@@ -534,7 +556,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             onset_trigger=onset_trigger,
         )
 
-    @validate_call
+    @validate_call()
     def set_global_counter(
         self,
         index: Index,
@@ -562,7 +584,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             threshold=threshold,
         )
 
-    @validate_call
+    @validate_call()
     def set_condition(
         self,
         index: Index,
@@ -706,9 +728,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Parameters
         ----------
-        exclude_defaults: bool, optional
+        exclude_defaults: bool, default: True
             Whether to exclude fields that are set to their default values.
-            Defaults to True.
 
         Returns
         -------
@@ -724,13 +745,12 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Parameters
         ----------
-        indent : int or None, optional
+        indent : int, optional
             If `indent` is a non-negative integer, then JSON array elements and object
             members will be pretty-printed with that indent level. An indent level of
             0 will only insert newlines. None is the most compact representation.
-        exclude_defaults: bool, optional
+        exclude_defaults: bool, default: True
             Whether to exclude fields that are set to their default values.
-            Defaults to True.
 
         Returns
         -------
@@ -744,9 +764,8 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Parameters
         ----------
-        exclude_defaults: bool, optional
+        exclude_defaults: bool, default: True
             Whether to exclude fields that are set to their default values.
-            Defaults to True.
 
         Returns
         -------
@@ -757,7 +776,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             self.to_dict(exclude_defaults=exclude_defaults)
         ).decode()
 
-    @validate_call
+    @validate_call()
     def to_file(
         self,
         filename: PathLike | str,
@@ -777,12 +796,12 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         ----------
         filename : os.PathLike or str
             Destination path. The file extension determines the output type.
-        overwrite : bool, optional
-            If False (default) and the file already exists, a FileExistsError is
-            raised. If True, existing files will be overwritten.
-        create_directory : bool, optional
+        overwrite : bool, default: False
+            If False and the file already exists, a FileExistsError is raised.
+            If True, existing files will be overwritten.
+        create_directory : bool, default: False
             If True, the parent directory of the destination path will be created if it
-            doesn't exist. Default is False.
+            doesn't exist.
 
         Raises
         ------
@@ -800,27 +819,27 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         See https://graphviz.readthedocs.io/en/stable/manual.html#installation
         """
         # Handle file path
-        filename = Path(filename).resolve()
-        if filename.exists() and not overwrite:
-            raise FileExistsError(f"File '{filename}' already exists")
-        if not filename.parent.exists():
+        filepath = Path(filename).resolve()
+        if filepath.exists() and not overwrite:
+            raise FileExistsError(f"File '{filepath}' already exists")
+        if not filepath.parent.exists():
             if not create_directory:
-                raise FileNotFoundError(f"Directory '{filename.parent}' does not exist")
-            filename.parent.mkdir(parents=True, exist_ok=True)
-        suffix = filename.suffix.lower()
+                raise FileNotFoundError(f"Directory '{filepath.parent}' does not exist")
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+        suffix = filepath.suffix.lower()
 
         # JSON output
         if suffix == '.json':
-            filename.write_text(self.to_json(indent=2), encoding='utf-8')
+            filepath.write_text(self.to_json(indent=2), encoding='utf-8')
 
         # YAML output
         elif suffix in ('.yaml', '.yml'):
-            filename.write_text(self.to_yaml(), encoding='utf-8')
+            filepath.write_text(self.to_yaml(), encoding='utf-8')
 
         # Rendering via Graphviz
         elif suffix in ('.pdf', '.svg', '.png'):
             common_opts = {
-                'outfile': filename,
+                'outfile': filepath,
                 'cleanup': True,
                 'quiet': True,
             }
@@ -952,23 +971,15 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         try:
             # when serializing to JSON, we first try to use Pydantic's private API,
             # which avoids an unnecessary string conversion
-            json_bytes = self.__pydantic_serializer__.to_json(
-                value=self,
-                exclude_defaults=True,
-                warnings=False,
-            )
+            return _xxh3_64(self.__pydantic_serializer__.to_json(self)).digest()
         except (AttributeError, TypeError):
             # if that fails, we fall back to the public API
-            json_bytes = self.model_dump_json(
-                exclude_defaults=True,
-                warnings=False,
-            ).encode()
-        return hashlib.blake2b(json_bytes, digest_size=8).digest()
+            return _xxh3_64(self.model_dump_json().encode()).digest()
 
     @property
-    def hash(self) -> str:
+    def hash(self) -> bytes:
         """Hash of the state machine."""
-        return self._hash().hex()
+        return self._hash()
 
     @property
     def valid(self) -> bool:
@@ -982,58 +993,57 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
     def check(self) -> None:
         """
-        Check validity of state machine.
+        Check validity of the state machine.
 
         Raises
         ------
         ValueError
             If the state machine is invalid.
         """
-        current_hash = self._hash()
-        if self._validation_hash == current_hash:
-            if self._validation_error:
-                raise self._validation_error
-        else:
-            try:
-                self._check()
-                self._validation_error = None
-            except ValueError as e:
-                self._validation_error = e
-                raise
-            finally:
-                self._validation_hash = current_hash
+        self._check(known_hash=self._hash())
 
-    def _check(self) -> None:
+    def _check(self, *, known_hash: bytes) -> _CheckData:
+        # Shortcut if we already know that the state machine is valid
+        if known_hash in self._validation_cache:
+            return self._validation_cache[known_hash]
+
         # Check for empty state machine
         if len(self.states) == 0:
             raise ValueError('No states defined')
 
         # Check for unreachable states
-        initial_state_name = next(iter(self.states.keys()))
-        transition_targets = self.states.transition_targets | {initial_state_name}
-        unreachable_states = [s for s in self.states if s not in transition_targets]
-        match len(unreachable_states):
-            case 0:
-                pass
-            case 1:
+        initial_state_name = next(iter(self.states))
+        transition_targets = self.states.transition_targets
+        all_state_names = list(self.states)
+        unreachable_states = set(all_state_names).difference(
+            transition_targets | {initial_state_name}
+        )
+        if unreachable_states:
+            if len(unreachable_states) == 1:
                 raise ValueError(f'State "{unreachable_states.pop()}" is unreachable')
-            case _:
-                missed_states_string = (
-                    ', '.join([f'"{s}"' for s in unreachable_states[:-1]])
-                    + f' and "{unreachable_states[-1]}"'
-                )
-                raise ValueError(f'States {missed_states_string} are unreachable')
+            unreachable_states_list = list(unreachable_states)
+            unreachable_states_string = (
+                ', '.join([f'"{s}"' for s in unreachable_states_list[:-1]])
+                + f' and "{unreachable_states_list[-1]}"'
+            )
+            raise ValueError(f'States {unreachable_states_string} are unreachable')
 
         # Check transitions for invalid target states
-        all_state_names = set(self.states.keys())
         for state_name, state in self.states.items():
             for condition_name, target in state.transitions.items():
-                if not target.startswith('>') and target not in all_state_names:
+                if target not in all_state_names and not target.startswith('>'):
                     raise ValueError(
                         f"Invalid target state '{target}' for transition condition"
                         f"'{condition_name}' in state '{state_name}'"
-                        + suggest_similar(target, all_state_names - {state_name})
+                        + suggest_similar(target, set(all_state_names) - {state_name})
                     )
 
-        # TODO: Check for manipulation of unused timers?
-        # TODO: Check for manipulation of unused conditions?
+        # add state machine's hash to cache, along with some data
+        data = _CheckData(
+            all_state_names=all_state_names,
+            transition_targets=transition_targets,
+        )
+        self._validation_cache[known_hash] = data
+
+        # returning expensive transition_targets for further use by caller
+        return data

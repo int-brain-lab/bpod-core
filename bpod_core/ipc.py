@@ -13,7 +13,6 @@ import weakref
 from abc import abstractmethod
 from collections import deque
 from collections.abc import Callable, Iterator
-from enum import IntEnum
 from pathlib import Path
 from types import ModuleType, TracebackType
 from typing import Any, Generic, Literal, NamedTuple, TypeVar, cast, overload
@@ -24,7 +23,7 @@ import platformdirs
 import zmq
 from platformdirs import user_runtime_path
 from psutil import pid_exists
-from pydantic import UUID4, validate_call
+from pydantic import validate_call
 from typing_extensions import Self
 from zeroconf import (
     InterfaceChoice,
@@ -38,6 +37,7 @@ from zeroconf import (
 from bpod_core.constants import IPV4_LOOPBACK, IPV4_WILDCARD
 from bpod_core.misc import (
     _RE_NON_ALPHANUMERIC,
+    ByteEnum,
     get_local_ipv4,
     prune_empty_parent_directories,
     to_snake_case,
@@ -47,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 U = TypeVar('U')
+
+_EVENT_LOOP_POLL_MS = 100
 
 
 class ServiceError(Exception):
@@ -61,35 +63,19 @@ class RemoteError(ServiceError):
         super().__init__(f'Remote {error_data.name}: {error_data.message}')
 
 
-class MessageKind(IntEnum):
+class MessageKind(ByteEnum):
     """The types of messages exchanged between host and clients."""
 
-    HELLO = 0
+    HELLO = ord('H')
     """A message sent by the client to initiate the handshake."""
-    WELCOME = 1
+    WELCOME = ord('W')
     """A message sent by the host to acknowledge the client's handshake."""
-    REQUEST = 2
+    REQUEST = ord('Q')
     """A request sent by the client."""
-    REPLY = 3
+    REPLY = ord('R')
     """A reply sent by the host."""
-    ERROR = 4
+    ERROR = ord('E')
     """An error message."""
-
-    _as_bytes: bytes
-
-    def __new__(cls, value: int) -> Self:
-        """Create a new MessageKind instance."""
-        if not 0 <= value <= 0xFF:
-            raise ValueError('Values must fit in one byte')
-        obj: MessageKind = int.__new__(cls, value)  # type: ignore[assignment]
-        obj._value_ = value
-        obj._as_bytes = value.to_bytes(1, 'little')
-        return obj
-
-    @property
-    def as_bytes(self) -> bytes:
-        """The message kind as a byte string."""
-        return self._as_bytes
 
 
 class ErrorData(msgspec.Struct):
@@ -203,7 +189,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
     _closed = False
     """Flag to prevent double-finalization."""
 
-    @validate_call
+    @validate_call()
     def __init__(
         self,
         service_name: str,
@@ -212,7 +198,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
         properties: dict[str, str | None] | None = None,
         *,
         pid: int | None = None,
-        uuid: UUID4 | None = None,
+        uuid: UUID | None = None,
     ) -> None:
         """
         Create a local service advertisement.
@@ -229,7 +215,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
             Additional key-value properties to advertise with the service.
         pid : int, optional
             Process ID of the service. Used to detect stale advertisements.
-        uuid : UUID4, optional
+        uuid : UUID, optional
             Unique identifier for this service instance. Generated if not provided.
         """
         uuid = uuid or uuid4()
@@ -349,7 +335,6 @@ class ServiceBase(contextlib.AbstractContextManager):
         self._lock_close = threading.Lock()
         self._zmq_context = zmq.Context()
         self._stop_event_loop = threading.Event()
-        self._uuid = uuid4()
 
     @staticmethod
     def _finalize_base(
@@ -432,6 +417,7 @@ class ServiceHost(ServiceBase):
         service_name: str,
         service_type: str,
         properties: dict[str, str | None] | None = None,
+        uuid: UUID | None = None,
         event_handler: Callable[[Any], Any] | None = None,
         port_pub: int | None = None,
         port_rep: int | None = None,
@@ -450,6 +436,8 @@ class ServiceHost(ServiceBase):
             Service type.
         properties : dict, optional
             Additional properties for service advertisement.
+        uuid : UUID, optional
+            UUID for local IPC. Will be generated if not provided.
         event_handler : callable, optional
             Function to handle incoming requests.
         port_pub : int, optional
@@ -463,6 +451,8 @@ class ServiceHost(ServiceBase):
         """
         # initialize base class
         super().__init__()
+
+        self._uuid = uuid or uuid4()
 
         self._bind_ip = IPV4_WILDCARD if remote else IPV4_LOOPBACK
         self._local_ip = get_local_ipv4() if remote else IPV4_LOOPBACK
@@ -700,7 +690,7 @@ class ServiceHost(ServiceBase):
 
         while not stop_event.is_set():
             # wait for incoming requests (short poll so we can check stop_event)
-            if not req_rep_socket.poll(100):
+            if not req_rep_socket.poll(_EVENT_LOOP_POLL_MS):
                 continue
 
             # receive request
@@ -813,8 +803,8 @@ class ServiceClient(ServiceBase, Generic[U]):
             The direct connection address for the REQ channel, by default None.
         event_handler : callable, optional
             A callback to handle PUB messages, by default None.
-        discovery_timeout : float, optional
-            Timeout in seconds for service discovery, by default 10.0.
+        discovery_timeout : float, default: 10.0
+            Timeout in seconds for service discovery.
         txt_properties : dict, optional
             Properties for service filtering during discovery, by default None.
         default_data_type : type, optional
@@ -897,7 +887,7 @@ class ServiceClient(ServiceBase, Generic[U]):
     ) -> None:
         """Process incoming PUB messages."""
         while not stop_event.is_set():
-            if not socket_sub.poll(100):
+            if not socket_sub.poll(10):
                 continue
             frame = socket_sub.recv(copy=False)
             message = decoder.decode(frame.buffer)
@@ -1080,8 +1070,8 @@ class ServiceClient(ServiceBase, Generic[U]):
 def discover(
     service_type: str,
     properties: dict[str, str | None] | None = None,
-    timeout: float = 10,
-    poll_interval: float = 1,
+    timeout: float = 10.0,
+    poll_interval: float = 1.0,
     *,
     local: bool = True,
     remote: bool = True,
@@ -1095,15 +1085,14 @@ def discover(
         The service type to discover, e.g., 'bpod'
     properties : dict, optional
         Dictionary of expected service properties to match.
-    timeout : float, optional
+    timeout : float, default: 10.0
         How many seconds to wait for a matching service before timing out.
-        Default is 10.
-    poll_interval : float, optional
-        How often to poll for local service changes, in seconds. Default is 1.
-    local : bool, optional
-        Whether to search for a matching service on the local machine, by default True.
-    remote : bool, optional
-        Whether to search for a matching service on the network, by default True.
+    poll_interval : float, default: 1.0
+        How often to poll for local service changes, in seconds.
+    local : bool, default: True
+        Whether to search for a matching service on the local machine.
+    remote : bool, default: True
+        Whether to search for a matching service on the network.
 
     Returns
     -------
@@ -1190,8 +1179,8 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
         self,
         service_type: str,
         properties: dict[str, str | None] | None = None,
-        timeout: float | None = 10,
-        poll_interval: float = 1,
+        timeout: float | None = 10.0,
+        poll_interval: float = 1.0,
         *,
         local: bool = True,
         remote: bool = True,
@@ -1204,15 +1193,15 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
             The service type to discover, e.g., ``'bpod'``.
         properties : dict, optional
             Dictionary of expected service properties to match.
-        timeout : float or None, optional
-            How many seconds to monitor, by default 10.
+        timeout : float or None, default: 10.0
+            How many seconds to monitor.
             Pass ``None`` to monitor indefinitely until the iterator is closed.
-        poll_interval : float, optional
-            How often to poll for local service changes, in seconds. Default is 1.
-        local : bool, optional
-            Whether to search for services on the local machine, by default True.
-        remote : bool, optional
-            Whether to also search for services on the network, by default True.
+        poll_interval : float, default: 1.0
+            How often to poll for local service changes, in seconds.
+        local : bool, default: True
+            Whether to search for services on the local machine.
+        remote : bool, default: True
+            Whether to also search for services on the network.
         """
         if not local and not remote:
             raise ValueError('at least one of local or remote must be True')
@@ -1356,8 +1345,8 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
 def iter_services(
     service_type: str,
     properties: dict[str, str | None] | None = None,
-    timeout: float | None = 10,
-    poll_interval: float = 1,
+    timeout: float | None = 10.0,
+    poll_interval: float = 1.0,
     *,
     local: bool = True,
     remote: bool = True,
@@ -1374,15 +1363,15 @@ def iter_services(
         The service type to discover, e.g., 'bpod'.
     properties : dict, optional
         Dictionary of expected service properties to match.
-    timeout : float or None, optional
-        How many seconds to monitor, by default 10.
+    timeout : float or None, default: 10.0
+        How many seconds to monitor.
         Pass ``None`` to monitor indefinitely until the iterator is closed.
-    poll_interval : float, optional
-        How often to poll for local service changes, in seconds. Default is 1.
-    local : bool, optional
-        Whether to search for services on the local machine, by default True.
-    remote : bool, optional
-        Whether to also search for services on the network, by default True.
+    poll_interval : float, default: 1.0
+        How often to poll for local service changes, in seconds.
+    local : bool, default: True
+        Whether to search for services on the local machine.
+    remote : bool, default: True
+        Whether to also search for services on the network.
 
     Yields
     ------

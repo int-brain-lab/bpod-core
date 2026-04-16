@@ -3,22 +3,65 @@
 from enum import IntEnum
 from struct import Struct
 
+# maximum integer values
+INT8_MIN = -128
+"""Minimum value for a signed 8-bit integer."""
+INT16_MIN = -32768
+"""Minimum value for a signed 16-bit integer."""
+INT32_MIN = -2147483648
+"""Minimum value for a signed 32-bit integer."""
+INT64_MIN = -9223372036854775808
+"""Minimum value for a signed 64-bit integer."""
+INT8_MAX = 127
+"""Maximum value for a signed 8-bit integer."""
+INT16_MAX = 32767
+"""Maximum value for a signed 16-bit integer."""
+INT32_MAX = 2147483647
+"""Maximum value for a signed 32-bit integer."""
+INT64_MAX = 9223372036854775807
+"""Maximum value for a signed 64-bit integer."""
+UINT8_MAX = 255
+"""Maximum value for an unsigned 8-bit integer."""
+UINT16_MAX = 65535
+"""Maximum value for an unsigned 16-bit integer."""
+UINT32_MAX = 4294967295
+"""Maximum value for an unsigned 32-bit integer."""
+UINT64_MAX = 18446744073709551615
+
+# struct format strings
+FMT_UINT8 = 'B'
+"""Format string for an unsigned 8-bit integer."""
+FMT_UINT16_LE = '<H'
+"""Format string for an unsigned 16-bit integer (little-endian)."""
+FMT_UINT32_LE = '<I'
+"""Format string for an unsigned 32-bit integer (little-endian)."""
+FMT_UINT64_LE = '<Q'
+"""Format string for an unsigned 64-bit integer (little-endian)."""
+FMT_INT8 = 'b'
+"""Format string for a signed 8-bit integer."""
+FMT_INT16_LE = '<h'
+"""Format string for a signed 16-bit integer (little-endian)."""
+FMT_INT32_LE = '<i'
+"""Format string for a signed 32-bit integer (little-endian)."""
+FMT_INT64_LE = '<q'
+"""Format string for a signed 64-bit integer (little-endian)."""
+
 # pre-compiled structs for common data types
-STRUCT_UINT8 = Struct('B')
+STRUCT_UINT8 = Struct(FMT_UINT8)
 """Compiled struct representing an unsigned 8-bit integer."""
-STRUCT_UINT16_LE = Struct('<H')
+STRUCT_UINT16_LE = Struct(FMT_UINT16_LE)
 """Compiled struct representing an unsigned 16-bit integer (little-endian)."""
-STRUCT_UINT32_LE = Struct('<I')
+STRUCT_UINT32_LE = Struct(FMT_UINT32_LE)
 """Compiled struct representing an unsigned 32-bit integer (little-endian)."""
-STRUCT_UINT64_LE = Struct('<Q')
+STRUCT_UINT64_LE = Struct(FMT_UINT64_LE)
 """Compiled struct representing an unsigned 64-bit integer (little-endian)."""
-STRUCT_INT8 = Struct('b')
+STRUCT_INT8 = Struct(FMT_INT8)
 """Compiled struct representing a signed 8-bit integer."""
-STRUCT_INT16_LE = Struct('<h')
+STRUCT_INT16_LE = Struct(FMT_INT16_LE)
 """Compiled struct representing a signed 16-bit integer (little-endian)."""
-STRUCT_INT32_LE = Struct('<i')
+STRUCT_INT32_LE = Struct(FMT_INT32_LE)
 """Compiled struct representing a signed 32-bit integer (little-endian)."""
-STRUCT_INT64_LE = Struct('<q')
+STRUCT_INT64_LE = Struct(FMT_INT64_LE)
 """Compiled struct representing a signed 64-bit integer (little-endian)."""
 
 IPV4_LOOPBACK = '127.0.0.1'

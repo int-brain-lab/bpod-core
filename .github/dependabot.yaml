@@ -1,6 +1,54 @@
 version: 2
+
 updates:
-- package-ecosystem: pip
-  directory: "/"
-  schedule:
-    interval: weekly
+  - package-ecosystem: pip
+    directory: "/"
+    target-branch: "develop"
+
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+
+    labels:
+      - "dependencies"
+      - "python"
+
+    open-pull-requests-limit: 5
+
+    groups:
+      python-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+    rebase-strategy: auto
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    target-branch: "develop"
+
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:00"
+
+    labels:
+      - "dependencies"
+      - "ci"
+
+    open-pull-requests-limit: 3
+
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+    rebase-strategy: auto

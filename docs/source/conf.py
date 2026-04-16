@@ -2,7 +2,7 @@ import importlib.util
 import inspect
 import json
 import sys
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 project_root = Path(__file__).parents[2].resolve()
@@ -92,7 +92,7 @@ def setup(app):
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'bpod-core'
-copyright = f'{date.year}, International Brain Laboratory'  # noqa: A001
+copyright = f'{datetime.now().year}, International Brain Laboratory'  # noqa: A001
 author = 'International Brain Laboratory'
 release = '.'.join(__version__.split('.')[:3])
 version = '.'.join(__version__.split('.')[:3])
@@ -136,6 +136,10 @@ extensions = [
     'doctest_codeblock',
     'fsm_codeblock',
 ]
+doctest_global_setup = f"""
+_DOCS_STATIC = __import__('pathlib').Path({str(docs_source_path / '_static')!r})
+"""
+
 source_suffix = ['.rst', '.md']
 
 copybutton_prompt_text = r'>>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: '
@@ -153,6 +157,9 @@ intersphinx_mapping = {
     'serial': ('https://pyserial.readthedocs.io/en/stable', None),
     'graphviz': ('https://graphviz.readthedocs.io/en/stable', None),
     'pydantic': ('https://docs.pydantic.dev/latest', None),
+    'msgspec': ('https://jcristharif.com/msgspec/', None),
+    'zmq': ('https://pyzmq.readthedocs.io/en/latest', None),
+    'zeroconf': ('https://python-zeroconf.readthedocs.io/en/latest/', None),
 }
 
 # -- Options for HTML output -------------------------------------------------

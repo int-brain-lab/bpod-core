@@ -8,6 +8,7 @@ import re
 import socket
 import struct
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+from enum import IntEnum
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 K = TypeVar('K')
 V = TypeVar('V')
+_T = TypeVar('_T')
 
 _RE_NON_ALPHANUMERIC = re.compile(r'[^a-zA-Z0-9_]')
 """Match non-alphanumeric characters except underscores."""
@@ -29,6 +31,38 @@ _RE_CASE_TRANSITION = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=\D)(?=\d)|(?<=\d)(?=\
 """Match case and digit transitions."""
 _RE_MULTIPLE_UNDERSCORES = re.compile(r'_{2,}')
 """Match multiple consecutive underscores."""
+
+
+class ByteEnum(IntEnum):
+    r"""An :class:`~enum.IntEnum` whose values are single unsigned bytes.
+
+    Subclass this to define enums with byte-sized values. Each member caches its value
+    as a :class:`bytes` object for zero-allocation wire encoding.
+
+    Examples
+    --------
+    >>> class Color(ByteEnum):
+    ...     RED = 1
+    ...     GREEN = 2
+    >>> Color.RED.as_bytes
+    b'\x01'
+    """
+
+    _as_bytes: bytes
+
+    def __new__(cls, value: int) -> 'ByteEnum':
+        """Create a new ByteEnum member."""
+        if not 0 <= value <= 0xFF:
+            raise ValueError(f'ByteEnum value must fit in one byte, got {value!r}')
+        obj: ByteEnum = int.__new__(cls, value)
+        obj._value_ = value
+        obj._as_bytes = value.to_bytes(1, 'little')
+        return obj
+
+    @property
+    def as_bytes(self) -> bytes:
+        """The enum value as a single-byte :class:`bytes` object."""
+        return self._as_bytes
 
 
 class DocstringInheritanceMixin:
@@ -94,10 +128,10 @@ def suggest_similar(
         The string that is invalid or misspelled.
     valid_strings : Iterable[str]
         An iterable of valid strings to compare against.
-    format_string : str, optional
-        The format string for the suggestion. Defaults to " - did you mean '{}'?".
-    cutoff : float, optional
-        The similarity threshold for considering a match. Defaults to 0.6.
+    format_string : str, default: " - did you mean '{}'?"
+        The format string for the suggestion.
+    cutoff : float, default: 0.6
+        The similarity threshold for considering a match.
 
     Returns
     -------
@@ -120,6 +154,18 @@ def set_nested(d: MutableMapping, keys: Sequence[Any], value: Any) -> None:
         A sequence of keys representing the nested path where the value should be set.
     value : Any
         The value to set at the specified path.
+
+    Examples
+    --------
+    >>> from bpod_core.misc import set_nested
+    >>> dictionary = {}
+    >>> set_nested(dictionary, ['a', 'b', 'c'], 42)
+    >>> dictionary
+    {'a': {'b': {'c': 42}}}
+
+    >>> set_nested(dictionary, ['a', 'b', 'x'], 99)
+    >>> dictionary
+    {'a': {'b': {'c': 42, 'x': 99}}}
     """
     if not keys:
         return  # Do nothing if keys is empty
@@ -148,11 +194,22 @@ def get_nested(d: MutableMapping, keys: Sequence[Any], default: Any = None) -> A
     -------
     Any
         The value at the nested path, or default if any key in the path is missing.
+
+    Examples
+    --------
+    >>> from bpod_core.misc import get_nested
+    >>> dictionary = {'a': {'b': {'c': 42}}}
+    >>> get_nested(dictionary, ['a', 'b', 'c'])
+    42
+
+    >>> get_nested(dictionary, ['a', 'x'], default='missing')
+    'missing'
     """
     for key in keys:
-        if not isinstance(d, MutableMapping) or key not in d:
+        try:
+            d = d[key]
+        except (KeyError, TypeError):  # noqa: PERF203
             return default
-        d = d[key]
     return d
 
 
@@ -390,7 +447,7 @@ def extend_packed(
     https://docs.python.org/3/library/struct.html#format-characters
     """
     if values:
-        byte_array.extend(struct.pack(f'<{len(values)}{fmt}', *values))
+        byte_array.extend(struct.pack(f'<{len(values)}{fmt.lstrip("<>")}', *values))
 
 
 def prune_empty_parent_directories(
@@ -411,7 +468,7 @@ def prune_empty_parent_directories(
         Directory to check and remove if empty.
     root_directory : PathLike or str
         Root directory to stop at. Must be a parent directory of target_directory.
-    remove_root : bool, optional
+    remove_root : bool, default: False
         If True, also remove root_directory if it becomes empty.
 
     Raises

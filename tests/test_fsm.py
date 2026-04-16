@@ -437,27 +437,16 @@ class TestCheck:
     def test_caching(self, mocker):
         """Check results are cached."""
         fsm = StateMachine()
-        _check = mocker.patch.object(StateMachine, '_check', wraps=fsm._check)
 
-        # Calling fsm.check() should call fsm._check()
+        # Failures are not cached
         with pytest.raises(ValueError, match='No states'):
             fsm.check()
-        _check.assert_called_once()
+        assert fsm.hash not in fsm._validation_cache
 
-        # Calling fsm.check() again should use cached results
-        with pytest.raises(ValueError, match='No states'):
-            fsm.check()
-        _check.assert_called_once()
-
-        # Adding a state should invalidate the cache
-        fsm.add_state('state1')
+        # Hashes of valid state machines are cached
+        fsm.add_state('a')
         fsm.check()
-        assert _check.call_count == 2
-        assert fsm._validation_error is None
-
-        # The cache should also work for valid state machines
-        fsm.check()
-        assert _check.call_count == 2
+        assert fsm.hash in fsm._validation_cache
 
     def test_valid_property(self):
         """Check that the valid property works."""
@@ -499,12 +488,10 @@ class TestHash:
         assert len(hash_bytes) == 8, 'Expected 8 bytes for hash'
 
     def test_hash_hex_output(self):
-        """Hash property should return hex string."""
+        """Hash property should return bytes."""
         fsm = StateMachine()
-        hash_hex = fsm.hash
-        assert isinstance(hash_hex, str), 'Expected hex string for hash'
-        assert len(hash_hex) == 16, 'Expected 16 hex characters for hash'
-        assert all(c in '0123456789abcdef' for c in hash_hex)
+        hash_bytes = fsm.hash
+        assert isinstance(hash_bytes, bytes), 'Expected bytes for hash'
 
     def test_hash_consistency(self):
         """Identical FSMs should produce the same hash."""
@@ -526,7 +513,9 @@ class TestHash:
         """Hash should be used for validation caching."""
         fsm = StateMachine()
         fsm.add_state('state_a')
-        assert fsm._validation_hash == b'', 'Hash should be empty before validation'
+        assert fsm.hash not in StateMachine._validation_cache, (
+            'Not cached before validation'
+        )
         fsm.check()
-        assert fsm._validation_hash != b'', 'Hash should be populated after validation'
-        assert isinstance(fsm._validation_hash, bytes)
+        assert fsm.hash in StateMachine._validation_cache, 'Cached after validation'
+        assert isinstance(fsm.hash, bytes)

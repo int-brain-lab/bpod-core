@@ -4,23 +4,32 @@ import contextlib
 import logging
 import re
 import struct
-import time
 import traceback
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, field
-from queue import Queue
+from datetime import timedelta
+from queue import Empty, SimpleQueue
+from time import perf_counter_ns, time_ns
 from types import TracebackType
-from typing import Any, NamedTuple, cast
+from typing import Any, ClassVar, Literal, NamedTuple, cast, overload
+from uuid import uuid5
 
+import msgspec
 import numpy as np
 import polars as pl
-from pydantic import validate_call
+from cachetools import FIFOCache
+from pydantic import ConfigDict, validate_call
 from serial import SerialException
+from xxhash import xxh3_64 as _xxh3_64
 
 from bpod_core import __version__ as bpod_core_version
 from bpod_core.bpod.abc import AbstractBpod
 from bpod_core.bpod.constants import (
+    _CHANNEL_BASE_NAME_CONDITION,
+    _CHANNEL_BASE_NAME_GLOBAL_COUNTER,
+    _CHANNEL_BASE_NAME_GLOBAL_TIMER,
+    BPOD_UUID_NAMESPACE,
     CHANNEL_TYPES_INPUT,
     CHANNEL_TYPES_OUTPUT,
     CONFIG_PATH,
@@ -36,13 +45,16 @@ from bpod_core.bpod.constants import (
 )
 from bpod_core.bpod.structs import (
     BpodInfo,
-    CompiledStateMachine,
     HardwareConfiguration,
+    StateMachineLookup,
     TimeReferences,
     VersionInfo,
+    _InputEventRanges,
     _InputEvents,
+    _ValidationData,
 )
 from bpod_core.bpod.threads import (
+    _TRIAL_DATA_SCHEMA,
     EventThread,
     ReadThread,
     SoftcodeThread,
@@ -54,7 +66,13 @@ from bpod_core.com import (
     find_ports,
     verify_serial_discovery,
 )
-from bpod_core.constants import TeensyPID
+from bpod_core.constants import (
+    FMT_UINT8,
+    FMT_UINT16_LE,
+    FMT_UINT32_LE,
+    UINT32_MAX,
+    TeensyPID,
+)
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ServiceClient, ServiceEvent, ServiceHost, iter_services
 from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
@@ -79,6 +97,17 @@ class Bpod(SerialDevice, AbstractBpod):
     _zmq_service: ServiceHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
+
+    _hardware_hash: bytes
+    _last_cache_key: tuple[bytes, bytes, bool] | None = None
+    _validation_cache: ClassVar[FIFOCache[tuple[bytes, bytes], _ValidationData]] = (
+        FIFOCache(maxsize=1024)
+    )
+    _compilation_cache: ClassVar[
+        FIFOCache[tuple[bytes, bytes, bool], tuple[bytes, StateMachineLookup]]
+    ] = FIFOCache(maxsize=1024)
+
+    _softcode_thread: SoftcodeThread
     _softcode_handler: Callable[[int], None] | None = None
 
     serial1: ExtendedSerial | None = None
@@ -93,10 +122,10 @@ class Bpod(SerialDevice, AbstractBpod):
     outputs: NamedTuple
     """Available output channels."""
 
-    modules: NamedTuple
-    """Available modules."""
+    modules: '_ModuleDict'
+    """Available modules, keyed by name."""
 
-    @validate_call
+    @validate_call()
     def __init__(
         self,
         port: str | None = None,
@@ -104,7 +133,7 @@ class Bpod(SerialDevice, AbstractBpod):
         *,
         remote: bool = False,
     ) -> None:
-        logger.info('bpod_core %s', bpod_core_version)
+        logger.info('bpod-core %s', bpod_core_version)
         self._settings = SettingsDict(CONFIG_PATH / 'settings.json')
 
         # initialize members
@@ -113,11 +142,12 @@ class Bpod(SerialDevice, AbstractBpod):
         )
         self._actions: list[str] = []
         self._event_lookup: pl.DataFrame = pl.DataFrame()
-        self._compiled_fsm: CompiledStateMachine | None = None
-        self._trial_data: Queue[pl.DataFrame] = Queue()
-        self._softcode_thread = SoftcodeThread(
-            softcode_handler=self._softcode_handler,
-        )
+        self._fsm_annotations: StateMachineLookup | None = None
+        self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
+        self._hardware_hash: bytes = b''
+
+        self._n_softcodes = 0
+        self._softcode_thread = SoftcodeThread(softcode_handler=self._softcode_handler)
         self._softcode_thread.start()
 
         # identify Bpod by port or serial number, open connection
@@ -127,8 +157,8 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # record reference system time
         self._time_reference = TimeReferences(
-            init_system_time_ns=time.time_ns(),
-            init_perf_counter_ns=time.perf_counter_ns(),
+            init_system_time_ns=time_ns(),
+            init_perf_counter_ns=perf_counter_ns(),
             reset_system_time_ns=0,
         )
         self.reset_session_clock()
@@ -148,16 +178,6 @@ class Bpod(SerialDevice, AbstractBpod):
         # update modules
         self.update_modules()
 
-        # start ZeroMQ service
-        self._start_zmq(use_zeroconf=remote)
-
-        # register destructors
-        self._bpod_finalizer = weakref.finalize(
-            self,
-            Bpod._bpod_cleanup,
-            self._serial,
-        )
-
         # log hardware information
         logger.info(
             'Connected to Bpod Finite State Machine %s on %s',
@@ -169,6 +189,17 @@ class Bpod(SerialDevice, AbstractBpod):
             *self.version.firmware,
             self._serial_number,
             self.version.pcb,
+        )
+
+        # start ZeroMQ service
+        self._start_zmq(use_zeroconf=remote)
+        logger.info('ZeroMQ service started on %s', self.address)
+
+        # register destructors
+        self._bpod_finalizer = weakref.finalize(
+            self,
+            Bpod._bpod_cleanup,
+            self._serial,
         )
 
     @staticmethod
@@ -214,6 +245,7 @@ class Bpod(SerialDevice, AbstractBpod):
             If the port could not be closed.
         """
         self.wait()
+        self._softcode_thread.drain()
         if hasattr(self, 'serial0'):
             self._request_disconnect(self.serial0)
         super().close()
@@ -291,6 +323,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 'firmware': '.'.join([str(x) for x in self.version.firmware]),
                 'core': bpod_core_version,
             },
+            uuid=uuid5(BPOD_UUID_NAMESPACE, self._serial_number),
             event_handler=self._request_handler,
             port_pub=cast('int | None', port_pub),
             port_rep=cast('int | None', port_rep),
@@ -306,6 +339,11 @@ class Bpod(SerialDevice, AbstractBpod):
     def _stop_zmq(self) -> None:
         if hasattr(self, '_zmq_service'):
             self._zmq_service.close()
+
+    @property
+    def address(self) -> str:
+        """The ZeroMQ address of the Bpod."""
+        return self._zmq_service.rep_tcp_addr
 
     def _get_setting(self, keys: list[str], default: Any = None) -> Any:
         return self._settings.get_nested(keys, default)
@@ -372,7 +410,9 @@ class Bpod(SerialDevice, AbstractBpod):
         logger.debug('Retrieving version information')
         v_major, machine_type = self.serial0.query_struct(b'F', '<2H')
         machine_type_str = MACHINE_TYPES.get(machine_type, 'unknown')
-        v_minor = self.serial0.query_struct(b'f', '<H')[0] if v_major > 22 else 0
+        v_minor = (
+            self.serial0.query_struct(b'f', FMT_UINT16_LE)[0] if v_major > 22 else 0
+        )
         v_firmware = (v_major, v_minor)
         if not MIN_BPOD_HW_VERSION <= machine_type <= MAX_BPOD_HW_VERSION:
             raise BpodError(
@@ -384,7 +424,9 @@ class Bpod(SerialDevice, AbstractBpod):
                 f'which is not supported. Please update the device to firmware '
                 f'v{MIN_BPOD_FW_VERSION[0]}.{MIN_BPOD_FW_VERSION[1]} or later.',
             )
-        pcv_rev = self.serial0.query_struct(b'v', '<B')[0] if v_major > 22 else None
+        pcv_rev = (
+            self.serial0.query_struct(b'v', FMT_UINT8)[0] if v_major > 22 else None
+        )
         self._version = VersionInfo(
             v_firmware, machine_type, machine_type_str, pcv_rev, bpod_core_version
         )
@@ -548,11 +590,11 @@ class Bpod(SerialDevice, AbstractBpod):
         # reset the session clock
         # bracket the serial round-trip to estimate reset time within ±(t1-t0)/2
         logger.debug('Resetting session clock')
-        t0 = time.perf_counter_ns()
+        t0 = perf_counter_ns()
         self.serial0.write(b'*')
         if not self.serial0.read_bool():
             return False
-        t1 = time.perf_counter_ns()
+        t1 = perf_counter_ns()
         perf_count_ns = (t0 + t1) // 2
 
         # Store time reference
@@ -564,86 +606,131 @@ class Bpod(SerialDevice, AbstractBpod):
             init_perf_counter_ns=start_perf_counter_ns,
             reset_system_time_ns=reset_time_ns,
         )
+        self._softcode_thread.set_time_reference(self._time_reference)
         return True
 
     def _disable_all_module_relays(self) -> None:
-        for module in self.modules:
+        for module in self.modules.values():
             module.set_relay(False)
 
     def _compile_input_events(self) -> None:
         """Compile input events supported by the Bpod hardware."""
-        n_serial_events = sum(len(m.event_names) for m in self.modules)
-        n_softcodes = self._hardware.max_serial_events - n_serial_events
-        n_usb = self._hardware.input_description.count(b'X')
-        n_usb_ext = self._hardware.input_description.count(b'Z')
+        hw = self._hardware
+        n_serial_events = sum(len(m.event_names) for m in self.modules.values())
+        n_softcodes = hw.max_serial_events - n_serial_events
+        n_usb = hw.input_description.count(b'X')
+        n_usb_ext = hw.input_description.count(b'Z')
         n_softcodes_per_usb = n_softcodes // (n_usb + n_usb_ext)
         n_app_softcodes = n_usb_ext * n_softcodes_per_usb
-        names: list[str] = []
-        channels: list[str | None] = []
-        values: list[int | None] = []
+        event_names: list[str] = []
+        event_channels: list[str | None] = []
+        event_values: list[int | None] = []
 
+        # physical input channel events
         counters = dict.fromkeys(CHANNEL_TYPES_INPUT, 0)
-        for io_key in [bytes([x]) for x in self._hardware.input_description]:
-            name = CHANNEL_TYPES_INPUT[io_key]
+        for io_key in [bytes([x]) for x in hw.input_description]:
+            channel_name = CHANNEL_TYPES_INPUT[io_key]
             if io_key == b'U':  # Serial
-                module = self.modules[counters[io_key]]
+                module = list(self.modules.values())[counters[io_key]]
                 ev_names = module.event_names
                 ev_channels: list[str | None] = [module.name] * len(ev_names)
                 ev_values: list[int | None] = [None] * len(ev_names)
             elif io_key == b'X':  # SoftCode
-                ev_names = [f'{name}{i}' for i in range(n_softcodes_per_usb)]
-                ev_channels = [name] * n_softcodes_per_usb
+                ev_names = [f'{channel_name}{i}' for i in range(n_softcodes_per_usb)]
+                ev_channels = [channel_name] * n_softcodes_per_usb
                 ev_values = list(range(n_softcodes_per_usb))
             elif io_key == b'Z':  # SoftCodeApp
-                ev_names = [f'{name}{i}' for i in range(n_app_softcodes)]
-                ev_channels = [name] * n_app_softcodes
+                ev_names = [f'{channel_name}{i}' for i in range(n_app_softcodes)]
+                ev_channels = [channel_name] * n_app_softcodes
                 ev_values = list(range(n_app_softcodes))
             elif io_key == b'F':  # Flex
-                channel = f'{name}{counters[io_key] + 1}'
+                channel = f'{channel_name}{counters[io_key] + 1}'
                 ev_names = [f'{channel}_{i}' for i in range(2)]
-                ev_channels = [channel, channel]
+                ev_channels = [channel] * 2
                 ev_values = [0, 1]
             elif io_key in b'PBW':  # Port, TTL, Wire
-                channel = f'{name}{counters[io_key] + 1}'
+                channel = f'{channel_name}{counters[io_key] + 1}'
                 ev_names = [f'{channel}_{s}' for s in ('High', 'Low')]
-                ev_channels = [channel, channel]
+                ev_channels = [channel] * 2
                 ev_values = [1, 0]
             else:
+                logger.warning('Skipping unsupported input channel: %s', io_key)
                 continue
-            names.extend(ev_names)
-            channels.extend(ev_channels)
-            values.extend(ev_values)
+            event_names.extend(ev_names)
+            event_channels.extend(ev_channels)
+            event_values.extend(ev_values)
             counters[io_key] += 1
+        _n_events = len(event_names)
+        range_input = range(_n_events)
 
-        # Add global timers, global counters, conditions and 'Tup' (no input channel)
-        for event_name, n in [
-            ('GlobalTimer{}_Start', self._hardware.n_global_timers),
-            ('GlobalTimer{}_End', self._hardware.n_global_timers),
-            ('GlobalCounter{}_End', self._hardware.n_global_counters),
-            ('Condition{}', self._hardware.n_conditions),
-        ]:
-            names.extend(event_name.format(i) for i in range(n))
-            channels.extend([None] * n)
-            values.extend([None] * n)
-        names.append('Tup')
-        channels.append(None)
-        values.append(None)
+        # global timer start events
+        range_global_timer_starts = range(_n_events, _n_events + hw.n_global_timers)
+        for i in range(hw.n_global_timers):
+            event_names.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}_Start')
+            event_channels.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}')
+            event_values.append(1)
+        _n_events += hw.n_global_timers
 
-        self._input_events = _InputEvents(names=names, channels=channels, values=values)
-        self._event_indices = {k: v for v, k in enumerate(names)}
-        self._physical_input_channels = [m.name for m in self.modules] + [
-            i.name for i in self.inputs if i.io_type != b'U'
+        # global timer end events
+        range_global_timer_ends = range(_n_events, _n_events + hw.n_global_timers)
+        for i in range(hw.n_global_timers):
+            event_names.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}_End')
+            event_channels.append(f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}')
+            event_values.append(0)
+        _n_events += hw.n_global_timers
+
+        # global counter end events
+        range_global_counter_ends = range(_n_events, _n_events + hw.n_global_counters)
+        for i in range(hw.n_global_counters):
+            event_names.append(f'{_CHANNEL_BASE_NAME_GLOBAL_COUNTER}{i}_End')
+            event_channels.append(None)
+            event_values.append(None)
+        _n_events += hw.n_global_counters
+
+        # condition events
+        range_conditions = range(_n_events, _n_events + hw.n_conditions)
+        for i in range(hw.n_conditions):
+            event_names.append(f'{_CHANNEL_BASE_NAME_CONDITION}{i}')
+            event_channels.append(None)
+            event_values.append(None)
+
+        # state timer end event
+        event_names.append('Tup')
+        event_channels.append(None)
+        event_values.append(None)
+
+        self._n_softcodes = n_softcodes_per_usb
+        self._input_events = _InputEvents(
+            names=event_names, channels=event_channels, values=event_values
+        )
+        self._event_indices = {k: v for v, k in enumerate(event_names)}
+        self._input_event_ranges = _InputEventRanges(
+            input_channels=range_input,
+            global_timer_starts=range_global_timer_starts,
+            global_timer_ends=range_global_timer_ends,
+            global_counter_ends=range_global_counter_ends,
+            conditions=range_conditions,
+        )
+
+        modules = list(self.modules)
+        physical_input_channels = [i.name for i in self.inputs if i.io_type != b'U']
+        global_timers = [
+            f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}' for i in range(hw.n_global_timers)
         ]
+        self._condition_channel_indices = {
+            k: v
+            for v, k in enumerate(modules + physical_input_channels + global_timers)
+        }
 
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""
         self._actions = []
 
-        # Compile actions for output channels
+        # compile actions for output channels
         counters = dict.fromkeys(CHANNEL_TYPES_OUTPUT, 0)
         for io_key in [bytes([x]) for x in self._hardware.output_description]:
             if io_key == b'U':  # Serial
-                name = self.modules[counters[io_key]].name
+                name = list(self.modules)[counters[io_key]]
             elif io_key in b'XZ':  # SoftCode, SoftCodeApp
                 name = CHANNEL_TYPES_OUTPUT[io_key]
             elif io_key in b'FVPBW':  # Flex, Valve, PWM, TTL, Wire
@@ -653,18 +740,24 @@ class Bpod(SerialDevice, AbstractBpod):
             self._actions.append(name)
             counters[io_key] += 1
 
-        # Add output actions for global timers, global counters and analog thresholds
-        self._actions.extend(
-            ['GlobalTimerTrig', 'GlobalTimerCancel', 'GlobalCounterReset'],
-        )
+        # add output actions for global timers, global counters and analog thresholds
+        self._global_timer_actions = ['GlobalTimerTrig', 'GlobalTimerCancel']
+        self._global_counter_actions = ['GlobalCounterReset']
+        self._actions.extend(self._global_timer_actions)
+        self._actions.extend(self._global_counter_actions)
         if self.version.machine == 4:
             self._actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
+
         self._action_indices = {k: v for v, k in enumerate(self._actions)}
-        self._physical_output_channels = [m.name for m in self.modules] + [
+        self._physical_output_channels = list(self.modules) + [
             o.name for o in self.outputs if o.io_type != b'U'
         ]
+        self._timer_channel_indices = {
+            k: v for v, k in enumerate(self._physical_output_channels)
+        }
+        self._timer_channel_indices[None] = 254
 
-    @validate_call
+    @validate_call()
     def set_status_led(self, enable: bool) -> bool:  # noqa: FBT001
         """Enable or disable the Bpod status LED.
 
@@ -730,15 +823,26 @@ class Bpod(SerialDevice, AbstractBpod):
                 ),
             )
 
-        # create NamedTuple and store as class attribute
-        self.modules = NamedTuple('modules', [(m.name, Module) for m in modules])._make(
-            modules,
+        self.modules = _ModuleDict(
+            {m.name: m for m in modules},
+            available_modules=[m.name for m in modules if m.is_connected],
         )
 
         # update event names and output actions
         self._compile_input_events()
         self._compile_output_actions()
         self._event_lookup = _build_event_lookup(self._input_events, self._actions)
+
+        # compute hardware identity hash for cache keying
+        self._hardware_hash = self._compute_hardware_hash()
+
+    def _compute_hardware_hash(self) -> bytes:
+        """Compute a hash for the current hardware configuration."""
+        return _xxh3_64(
+            msgspec.msgpack.encode(self._hardware, order='deterministic')
+            + msgspec.msgpack.encode(self._input_events.names, order='deterministic')
+            + msgspec.msgpack.encode(self._actions, order='deterministic')
+        ).digest()
 
     def validate_state_machine(self, state_machine: StateMachine) -> None:
         """
@@ -754,36 +858,109 @@ class Bpod(SerialDevice, AbstractBpod):
         ValueError
             If the state machine is invalid or not compatible with the hardware.
         """
-        # Check the general validity of the state machine (independent of hardware)
-        state_machine.check()
+        self._validate_state_machine(
+            state_machine=state_machine,
+            debugging=logger.isEnabledFor(logging.DEBUG),
+        )
 
-        # Check if the '>back' operator is being used
-        use_back_op = '>back' in state_machine.states.transition_targets
+    def _validate_state_machine(
+        self,
+        state_machine: StateMachine,
+        *,
+        known_hash: bytes | None = None,
+        debugging: bool = False,
+    ) -> _ValidationData:
+        """
+        Validate the provided state machine for compatibility with the hardware.
 
-        # Validate the number of states, global timers, global counters and conditions.
-        n_states = len(state_machine.states)
-        n_global_timers = max(state_machine.global_timers.keys(), default=-1) + 1
-        n_global_counters = max(state_machine.global_counters.keys(), default=-1) + 1
-        n_conditions = max(state_machine.conditions.keys(), default=-1) + 1
-        for name, value, maximum_value in (
-            ('states', n_states, self._hardware.max_states - 1 - use_back_op),
-            ('global timers', n_global_timers, self._hardware.n_global_timers),
-            ('global counters', n_global_counters, self._hardware.n_global_counters),
-            ('conditions', n_conditions, self._hardware.n_conditions),
+        Parameters
+        ----------
+        state_machine : StateMachine
+            The state machine to validate.
+        known_hash : bytes | None, optional
+            Known hash of the state machine. Hash will be computed if not provided.
+        debugging : bool, default: False
+            Whether to enable debug logging.
+
+        Returns
+        -------
+        _ValidationData
+            A named tuple with data to be reused during compilation
+
+        Raises
+        ------
+        ValueError
+            If the state machine is invalid or not compatible with the hardware.
+        """
+        # get nanosecond count for benchmarking
+        if debugging:
+            t0 = perf_counter_ns()
+
+        # skip validation if the state machine has been validated before
+        fsm_hash = known_hash or state_machine.hash
+        cache_key = (self._hardware_hash, fsm_hash)
+        if cache_key in self._validation_cache:
+            if debugging:
+                logger.debug(
+                    'Skipped validation of known valid state machine (%s μs)',
+                    (perf_counter_ns() - t0) // 1000,
+                )
+            return self._validation_cache[cache_key]
+
+        # run hardware independent checks
+        check_data = state_machine._check(known_hash=fsm_hash)  # noqa: SLF001
+
+        # check if the '>back' operator is being used
+        use_back_op = '>back' in check_data.transition_targets
+
+        # check the number of states
+        state_names = check_data.all_state_names
+        n_states = len(state_names)
+        max_n_states = self._hardware.max_states - 1 - use_back_op
+        if n_states > max_n_states:
+            raise ValueError(
+                f'{n_states} states in state machine - {self._serial_device_name} '
+                f'{self._version.machine_str} only supports up to {max_n_states} states'
+                + (" when using the '>back' operator" if use_back_op else '')
+            )
+
+        # check id's of global timers, global counters and conditions
+        global_timer_ids = set(state_machine.global_timers)
+        global_counter_ids = set(state_machine.global_counters)
+        condition_ids = set(state_machine.conditions)
+        for name, ids, maximum_value in (
+            ('Global Timer', global_timer_ids, self._hardware.n_global_timers),
+            ('Global Counter', global_counter_ids, self._hardware.n_global_counters),
+            ('Condition', condition_ids, self._hardware.n_conditions),
         ):
-            if value > maximum_value:
+            if ids and (largest_requested := max(ids)) >= maximum_value:
                 raise ValueError(
-                    f'Too many {name} in state machine - hardware supports up to '
-                    f'{maximum_value} {name}'
+                    f'Requested invalid {name} with index {largest_requested} - '
+                    f'{self._serial_device_name} {self._version.machine_str} supports '
+                    f'up to {maximum_value} {name}s with indices 0-{maximum_value - 1}'
                 )
 
-        # Validate states
-        max_state_duration = np.iinfo(np.uint32).max / self._hardware.cycle_frequency
+        # define valid input events and actions
+        valid_input_events = set(self._input_events.names)
+        valid_actions = set(self._actions)
+        if not global_timer_ids:
+            # TODO: remove global timer events from valid_input_events
+            valid_actions -= set(self._global_timer_actions)
+        if not global_counter_ids:
+            # TODO: remove global counter events from valid_input_events
+            valid_actions -= set(self._global_counter_actions)
+        if not condition_ids:
+            pass  # TODO: remove condition events from valid_input_events
+
+        # validate states
+        valid_targets = set(state_names).union(VALID_OPERATORS)
+        max_time_uint32 = UINT32_MAX / self._hardware.cycle_frequency
         for state_name, state in state_machine.states.items():
-            if state.timer > max_state_duration:
+            if state.timer > max_time_uint32:
+                max_timedelta = timedelta(seconds=max_time_uint32)
                 raise ValueError(
-                    f"Invalid timer value {state.timer} for state '{state_name}' - "
-                    f'must be between 0 and {max_state_duration} seconds',
+                    f"Invalid state timer for state '{state_name}' - must not exceed "
+                    f'{max_timedelta}',
                 )
             for condition_name, target in state.transitions.items():
                 if target.startswith('>') and target not in VALID_OPERATORS:
@@ -792,139 +969,278 @@ class Bpod(SerialDevice, AbstractBpod):
                         f"'{condition_name}' in state '{state_name}'"
                         + suggest_similar(target, VALID_OPERATORS),
                     )
-                if condition_name not in self.input_event_names:
+                if target not in valid_targets and target.startswith('>'):
+                    raise ValueError(
+                        f"Invalid operator '{target}' for transition condition "
+                        f"'{condition_name}' in state '{state_name}'"
+                        + suggest_similar(target, VALID_OPERATORS),
+                    )
+                if condition_name not in valid_input_events:
+                    # TODO: add more specific error messages if condition_name refers
+                    #       to a global timer, global counter or condition event
                     raise ValueError(
                         f"Invalid transition condition '{condition_name}' in state "
                         f"'{state_name}'"
                         + suggest_similar(condition_name, self.input_event_names),
                     )
-            actions = set(state.actions.keys())
-            if invalid_actions := actions.difference(self._actions):
-                invalid_action = invalid_actions.pop()
+
+            # validate actions
+            if bad_actions := set(state.actions).difference(valid_actions):
+                bad_action = bad_actions.pop()
+                if bad_action in self._global_timer_actions:
+                    detail = ' - no global timer has been set'
+                elif bad_action in self._global_counter_actions:
+                    detail = ' - no global counter has been set'
+                else:
+                    detail = suggest_similar(bad_action, self._actions)
                 raise ValueError(
-                    f"Invalid action '{invalid_action}' in state '{state_name}'"
-                    + suggest_similar(invalid_action, self._actions),
+                    f"Invalid action '{bad_action}' in state '{state_name}' {detail}"
                 )
 
-        # Validate global timers
-        for timer_id, timer in state_machine.global_timers.items():
-            if timer.channel not in (*self._physical_output_channels, None):
-                raise ValueError(
-                    f"Invalid channel '{timer.channel}' for global timer {timer_id}"
-                    + suggest_similar(
-                        timer.channel or '', self._physical_output_channels
-                    ),
-                )
+        # validate global timers
+        if global_timer_ids:
+            for timer_id, timer in state_machine.global_timers.items():
+                if timer.channel not in (*self._physical_output_channels, None):
+                    raise ValueError(
+                        f"Invalid channel '{timer.channel}' for Global Timer {timer_id}"
+                        + suggest_similar(
+                            timer.channel or '', self._physical_output_channels
+                        ),
+                    )
+                for key in ('duration', 'onset_delay', 'loop_interval'):
+                    if getattr(timer, key) > max_time_uint32:
+                        max_timedelta = timedelta(seconds=max_time_uint32)
+                        name = key.replace('_', ' ')
+                        raise ValueError(
+                            f'Invalid {name} {getattr(timer, key)} s for Global Timer '
+                            f'{timer_id} - {name} must not exceed {max_timedelta}'
+                        )
 
-        # TODO: validate global timer onset triggers
-        # TODO: validate global counters
-        # TODO: validate conditions
+        if global_counter_ids:
+            pass  # TODO: validate global counters
+
+        if condition_ids:
+            pass  # TODO: validate conditions
+
         # TODO: Check that sync channel is not used as state output
 
-    @validate_call(config={'arbitrary_types_allowed': True})
-    def send_state_machine(
-        self,
-        state_machine: StateMachine,
-        *,
-        run_asap: bool = False,
-    ) -> None:
-        """
-        Send a state machine to the Bpod.
+        # add validated state machine to cache
+        validation_data = _ValidationData(
+            use_back_operator=use_back_op,
+            state_names=state_names,
+        )
+        self._validation_cache[cache_key] = validation_data
 
-        This method compiles the provided state machine into a byte array format
-        compatible with the Bpod and sends it to the device. It also validates the
-        state machine for compatibility with the hardware before sending.
+        # report benchmarking results
+        if debugging:
+            logger.debug(
+                'Validated state machine %s (%d μs)',
+                fsm_hash.hex,
+                (perf_counter_ns() - t0) // 1000,
+            )
+
+        # return expensive transition_targets for further use by caller
+        return validation_data
+
+    def send_softcode(self, softcode: int) -> None:
+        """Send a softcode to the state machine.
+
+        Can be used to trigger transitions.
 
         Parameters
         ----------
-        state_machine : StateMachine
-            The state machine to be sent to the Bpod device.
-        run_asap : bool, optional
-            If True, the state machine will run immediately after the current one has
-            finished. Default is False.
+        softcode : int
+            The softcode value to send.
 
         Raises
         ------
         ValueError
-            If the state machine is invalid or exceeds hardware limitations.
-        :exc:`~validate_call.roar.validate_callCallHintViolation`
-            If function arguments don't match type hints.
+            If ``softcode`` is out of range.
         """
-        self._disable_all_module_relays()
-        self.validate_state_machine(state_machine)
+        if not (0 <= softcode < self._n_softcodes):
+            raise ValueError(
+                f'Softcode {softcode} is out of range - hardware supports softcodes '
+                f'0..{self._n_softcodes}'
+            )
+        if not self.is_running:
+            logger.warning(
+                'No state machine is running - softcode %d will have no effect',
+                softcode,
+            )
+        logger.debug('Sending softcode %d to Bpod', softcode)
+        self._serial.write_struct('<cB', b'~', softcode)
 
-        use_back_op = '>back' in state_machine.states.transition_targets
-        n_states = len(state_machine.states)
+    def _compile_state_machine(
+        self,
+        *,
+        state_machine: StateMachine,
+        known_hash: bytes | None = None,
+        validate: bool = True,
+        debugging: bool = False,
+    ) -> tuple[bytes, StateMachineLookup, bool]:
+        """Compile a state machine into its binary wire format and annotation data.
+
+        Builds the state transition matrix, encodes states, transitions, actions,
+        global timers, global counters, and conditions into a bytearray compatible
+        with the Bpod firmware, and returns annotation data for post-trial decoding
+        by :class:`~bpod_core.bpod.threads.EventThread`.
+
+        Parameters
+        ----------
+        state_machine : StateMachine
+            The state machine to compile.
+        known_hash : bytes | None
+            Known hash of the state machine. Hash will be computed if not provided.
+        validate : bool, default: True
+            Whether to validate the state machine.
+        debugging : bool, default: False
+            Whether to enable debug logging.
+
+        Returns
+        -------
+        bytes
+            Binary payload ready to be sent to the Bpod device.
+        StateMachineLookup
+            Annotation data for post-trial event stream decoding.
+        bool
+            Whether the state machine was validated
+        """
+        # get nanosecond count for benchmarking
+        if debugging:
+            t0 = perf_counter_ns()
+
+        # compute the state machine hash if it was not provided
+        state_machine_hash = known_hash or state_machine.hash
+
+        # use cached results if they are available
+        cache_key = (self._hardware_hash, state_machine_hash, validate)
+        if cache_key in self._compilation_cache:
+            compiled_fsm, fsm_lookup = self._compilation_cache[cache_key]
+            if debugging:
+                logger.debug(
+                    'Retrieved compiled, %s state machine from cache (%d μs)',
+                    'validated' if validate else 'unvalidated',
+                    (perf_counter_ns() - t0) // 1000,
+                )
+            return compiled_fsm, fsm_lookup, validate
+
+        # validate the state machine,
+        if validate:
+            validation_data = self._validate_state_machine(
+                state_machine,
+                known_hash=state_machine_hash,
+                debugging=debugging,
+            )
+            use_back_op = validation_data.use_back_operator
+            state_names = validation_data.state_names
+        else:
+            use_back_op = any(
+                t == '>back'
+                for s in state_machine.states.values()
+                for t in s.transitions.values()
+            )
+            state_names = list(state_machine.states.keys())
+
+        # state machine
+        states = list(state_machine.states.values())
+        n_states = len(states)
+
+        # hardware
+        version = self.version
+        cycle_frequency = self._hardware.cycle_frequency
+
+        # dense lists for global timers, counters, conditions
         n_global_timers = max(state_machine.global_timers.keys(), default=-1) + 1
+        global_timers_list = [
+            state_machine.global_timers.get(i) for i in range(n_global_timers)
+        ]
         n_global_counters = max(state_machine.global_counters.keys(), default=-1) + 1
+        global_counters_list = [
+            state_machine.global_counters.get(i) for i in range(n_global_counters)
+        ]
         n_conditions = max(state_machine.conditions.keys(), default=-1) + 1
-        physical_output_channels = self._physical_output_channels
-        physical_input_channels = self._physical_input_channels
+        conditions_list = [state_machine.conditions.get(i) for i in range(n_conditions)]
 
-        # compile dicts of indices to resolve strings to integers
-        target_indices = {
-            k: v for v, k in enumerate([*state_machine.states.keys(), 'exit'])
-        }
-        target_indices.update({'exit': n_states, '>exit': n_states})
-        target_indices.update({'>back': 255} if use_back_op else {})
+        # index lookups
+        target_indices = {k: v for v, k in enumerate([*state_names, '>exit'])}
+        if use_back_op:
+            target_indices['>back'] = 255
         event_indices = self._event_indices
         action_indices = self._action_indices
+        condition_channel_indices = self._condition_channel_indices
+        timer_channel_indices = self._timer_channel_indices
 
-        def append_events(event0: str, event1: str) -> None:
-            """Append state transitions for a range of events to byte_array.
+        # build the state transition matrix (n_states x 255 events)
+        state_transition_matrix = np.arange(n_states, dtype=np.uint8)[
+            :, np.newaxis
+        ].repeat(255, axis=1)
+        for state_idx, state in enumerate(states):
+            for event, target in state.transitions.items():
+                state_transition_matrix[state_idx][event_indices[event]] = (
+                    target_indices[target]
+                )
 
-            For each state, appends: [count] [event_idx, target_idx] ...
-            where count is the number of transitions, event_idx is relative to
-            event0, and target_idx is the target state index.
-
-            Parameters
-            ----------
-            event0 : str
-                First event name (inclusive lower bound).
-            event1 : str
-                Last event name (exclusive upper bound).
-            """
-            idx0 = event_indices[event0]
-            idx1 = event_indices[event1]
-            for state in state_machine.states.values():
-                counter_idx = len(byte_array)
-                byte_array.append(0)
-                for event, target in state.transitions.items():
-                    if idx0 <= (key_idx := event_indices[event]) < idx1:
-                        byte_array[counter_idx] += 1
-                        byte_array.extend((key_idx - idx0, target_indices[target]))
+        # build annotation data structure for event decoding in EventThread
+        annotations = StateMachineLookup(
+            fsm_hash=state_machine_hash,
+            state_names=state_names,
+            state_transition_matrix=state_transition_matrix,
+            state_actions=[dict(s.actions) for s in states],
+            use_back_op=use_back_op,
+            state_lookup=dict(enumerate(state_names)),
+        )
 
         # Initialize bytearray for the compiled state machine.
         # This will be appended to in the following sections.
         #
-        # HEADER (4 bytes):
-        #   [0] n_states          - number of states
-        #   [1] n_global_timers   - number of global timers
-        #   [2] n_global_counters - number of global counters
-        #   [3] n_conditions      - number of conditions
-        byte_array = bytearray(
-            (n_states, n_global_timers, n_global_counters, n_conditions),
-        )
+        # The first 3 bytes are reserved for the state machine header and will be set
+        # at the very end of the compilation
+        fsm_bytes = bytearray(3)
+
+        # Pre-build indexed transitions per state - for use in append_events closure
+        state_transition_indices = [
+            [(event_indices[e], target_indices[t]) for e, t in s.transitions.items()]
+            for s in states
+        ]
+
+        def append_events(index_range: range) -> None:
+            """Encode transitions for events in index_range into byte_array.
+
+            For each state, this closure appends: [count] [event_idx, target_idx] ...
+            where count is the number of transitions, event_idx is relative to event0,
+            and target_idx is the target state index.
+
+            Parameters
+            ----------
+            index_range : range
+                Range of events to encode.
+            """
+            for transitions in state_transition_indices:
+                # add counter byte
+                counter_pos = len(fsm_bytes)
+                fsm_bytes.append(0)
+                # add transitions, increment counter
+                for event_idx, target_state_idx in transitions:
+                    if event_idx in index_range:
+                        fsm_bytes[counter_pos] += 1
+                        fsm_bytes.extend((event_idx - index_range[0], target_state_idx))
+
+        # COUNTERS (4 bytes):
+        fsm_bytes.extend((n_states, n_global_timers, n_global_counters, n_conditions))
 
         # STATE TIMER TARGET INDICES (n_states bytes):
         # Target state index for each state's 'Tup' event (defaults to self)
-        for state_idx, state in enumerate(state_machine.states.values()):
-            for event, target in state.transitions.items():
-                if event == 'Tup':
-                    byte_array.append(target_indices[target])
-                    break
-            else:
-                byte_array.append(state_idx)
+        fsm_bytes.extend(state_transition_matrix[:, event_indices['Tup']].tobytes())
 
         # INPUT EVENTS (variable length, per state):
         #   [count] [event_idx, target_idx] ...  for events on physical input channels
-        append_events(self.input_event_names[0], 'GlobalTimer1_Start')
+        append_events(self._input_event_ranges.input_channels)
 
-        # OUTPUT ACTIONS (variable length, per state):
+        # ACTIONS (variable length, per state):
         #   [count] [action_idx, value] ...  (8-bit on Bpod 0.5-1, 16-bit on Bpod 2+)
         i1 = action_indices['GlobalTimerTrig']
         tmp_list: list[int] = []
-        for state in state_machine.states.values():
+        for state in states:
             counter_pos = len(tmp_list)
             tmp_list.append(0)
             for action_name, action_value in state.actions.items():
@@ -933,187 +1249,293 @@ class Bpod(SerialDevice, AbstractBpod):
                     tmp_list.extend(
                         (key_idx, action_value + ('SoftCode' in action_name))
                     )
-        extend_packed(byte_array, tmp_list, 'H' if self.version.machine == 4 else 'B')
-
-        # state transition matrix
-        state_transitions = np.arange(n_states, dtype=np.uint8)[
-            :,
-            np.newaxis,
-        ] * np.ones((1, 255), dtype=np.uint8)
-        for state_idx, state in enumerate(state_machine.states.values()):
-            for event, target in state.transitions.items():
-                target_idx = target_indices[target]
-                state_transitions[state_idx][event_indices[event]] = target_idx
-
-        # bundle per-state data for event timeline annotation
-        state_names = list(state_machine.states.keys())
-        self._compiled_fsm = CompiledStateMachine(
-            state_names=state_names,
-            state_transitions=state_transitions,
-            state_actions=[dict(s.actions) for s in state_machine.states.values()],
-            use_back_op=use_back_op,
-            state_lookup=pl.DataFrame(
-                {
-                    'state_id': pl.Series(range(len(state_names)), dtype=pl.Int16),
-                    'state': pl.Series(state_names, dtype=pl.Categorical),
-                }
-            ),
+        extend_packed(
+            fsm_bytes, tmp_list, FMT_UINT16_LE if version.machine == 4 else FMT_UINT8
         )
 
-        # Append remaining events
-        append_events('GlobalTimer0_Start', 'GlobalTimer0_End')  # global timer start
-        append_events('GlobalTimer0_End', 'GlobalCounter0_End')  # global timer end
-        append_events('GlobalCounter0_End', 'Condition0')  # global counter end
-        append_events('Condition0', 'Tup')  # conditions
+        # REMAINING EVENTS
+        #   [count] [event_idx, target_idx] ...  for each event
+        append_events(self._input_event_ranges.global_timer_starts)
+        append_events(self._input_event_ranges.global_timer_ends)
+        append_events(self._input_event_ranges.global_counter_ends)
+        append_events(self._input_event_ranges.conditions)
 
-        # Compile indices for global timers channels
-        timer_channel_indices = {k: v for v, k in enumerate(physical_output_channels)}
-        timer_channel_indices[None] = 254
-
-        # Append values for global timer channels to byte_array
-        idx0 = len(byte_array)
-        byte_array.extend(b'\xfe' * n_global_timers)  # default: 254
-        for timer_id, global_timer in state_machine.global_timers.items():
-            byte_array[idx0 + timer_id] = timer_channel_indices[global_timer.channel]
-
-        # Append values for global timers value_on and value_off to bytearray
-        # Bpod 2+ uses 16-bit values for value_on and value_off
-        format_string = 'H' if self.version.machine == 4 else 'B'
-        for field_name in ('value_on', 'value_off'):
-            extend_packed(
-                byte_array,
-                [
-                    getattr(state_machine.global_timers.get(idx), field_name, 0)
-                    for idx in range(n_global_timers)
-                ],
-                format_string,
+        if n_global_timers:
+            # GLOBAL TIMER CHANNELS
+            fsm_bytes.extend(
+                timer_channel_indices[gt.channel if gt else None]
+                for gt in global_timers_list
             )
 
-        # Append values for global timers loop and send_events to bytearray
-        for field_name, default in (('loop', b'\x00'), ('send_events', b'\x01')):
-            idx0 = len(byte_array)
-            byte_array.extend(default * n_global_timers)  # default: 254
-            for timer_id, global_timer in state_machine.global_timers.items():
-                byte_array[idx0 + timer_id] = getattr(global_timer, field_name)
+            # GLOBAL TIMER ON & OFF VALUES
+            # Bpod 2+ uses 16-bit values for value_on and value_off
+            format_string = FMT_UINT16_LE if version.machine == 4 else FMT_UINT8
+            for field_name in ('value_on', 'value_off'):
+                extend_packed(
+                    fsm_bytes,
+                    [getattr(gt, field_name, 0) for gt in global_timers_list],
+                    format_string,
+                )
 
-        # Append global counter events to bytearray
-        idx0 = len(byte_array)
-        byte_array.extend((254,) * n_global_counters)
-        for counter_id, global_counter in state_machine.global_counters.items():
-            byte_array[idx0 + counter_id] = event_indices[global_counter.event]
+            # GLOBAL TIMER LOOP & SEND_EVENTS
+            for field_name, default in (('loop', 0), ('send_events', 1)):
+                fsm_bytes.extend(
+                    getattr(gt, field_name, default) for gt in global_timers_list
+                )
 
-        # Compile indices for condition channels
-        global_timers = [
-            f'GlobalTimer{i + 1}' for i in range(self._hardware.n_global_timers)
-        ]
-        condition_channel_indices = {
-            k: v for v, k in enumerate(physical_input_channels + global_timers)
-        }
-
-        # Append values for conditions to bytearray
-        idx0 = len(byte_array)
-        byte_array.extend((0,) * n_conditions * 2)
-        for condition_id, condition in state_machine.conditions.items():
-            offset = idx0 + condition_id
-            byte_array[offset : offset + 2 * n_conditions : n_conditions] = (
-                condition_channel_indices[condition.channel],
-                condition.value,
+        # GLOBAL COUNTER EVENTS
+        if n_global_counters:
+            fsm_bytes.extend(
+                event_indices[gc.event] if gc else 254 for gc in global_counters_list
             )
 
-        # Append global counter resets
-        if self.version.firmware < (23, 0):
-            byte_array.extend(
-                s.actions.get('GlobalCounterReset', -1) + 1
-                for s in state_machine.states.values()
+        # CONDITION CHANNELS & VALUES
+        if n_conditions:
+            fsm_bytes.extend(
+                condition_channel_indices[c.channel] if c else 0
+                for c in conditions_list
+            )
+            fsm_bytes.extend(c.value if c else 0 for c in conditions_list)
+
+        if version.firmware < (23, 0):
+            fsm_bytes.extend(
+                s.actions.get('GlobalCounterReset', -1) + 1 for s in states
             )
         else:
-            counter_idx = len(byte_array)
-            byte_array.append(0)
-            for state_idx, state in enumerate(state_machine.states.values()):
+            counter_idx = len(fsm_bytes)
+            fsm_bytes.append(0)
+            for state_idx, state in enumerate(states):
                 if (value := state.actions.get('GlobalCounterReset', -1)) >= 0:
-                    byte_array[counter_idx] += 1
-                    byte_array.extend([state_idx, value + 1])
+                    fsm_bytes[counter_idx] += 1
+                    fsm_bytes.extend([state_idx, value + 1])
 
-        # Enable / disable analog thresholds
+        # ANALOG THRESHOLDS
         # TODO: this is just a placeholder for now
-        if self.version.machine == 4:
-            byte_array.extend([0, 0])
+        if version.machine == 4:
+            fsm_bytes.extend([0, 0])
 
-        # The format of the next values depends on the number of global timers
+        # Timer trigger/cancel bitmasks need enough bits to address all timers.
+        # Use the smallest integer type that fits n_global_timers bits.
         if self._hardware.n_global_timers > 16:
-            format_string = 'I'  # uint32
+            format_string = FMT_UINT32_LE
         elif self._hardware.n_global_timers > 8:
-            format_string = 'H'  # uint16
+            format_string = FMT_UINT16_LE
         else:
-            format_string = 'B'  # uint8
+            format_string = FMT_UINT8
 
-        # Pack global timer triggers and cancels into bytearray
+        # GLOBAL TIMER TRIGGERS AND CANCELS
         for key in ('GlobalTimerTrig', 'GlobalTimerCancel'):
-            extend_packed(
-                byte_array,
-                [s.actions.get(key, -1) + 1 for s in state_machine.states.values()],
-                format_string,
-            )
+            idx = [s.actions.get(key, -1) + 1 for s in states]
+            extend_packed(fsm_bytes, idx, format_string)
 
-        # Pack global timer onset triggers into bytearray
+        # GLOBAL TIMER ONSET TRIGGERS
         extend_packed(
-            byte_array,
-            [
-                getattr(state_machine.global_timers.get(idx, {}), 'onset_trigger', 0)
-                for idx in range(n_global_timers)
-            ],
+            fsm_bytes,
+            [getattr(gt, 'onset_trigger', 0) for gt in global_timers_list],
             format_string,
         )
 
-        # Pack state timers
-        extend_packed(
-            byte_array,
-            [
-                round(s.timer * self._hardware.cycle_frequency)
-                for s in state_machine.states.values()
-            ],
-            'I',  # uint32
-        )
+        # STATE TIMERS (uInt32)
+        state_timers = [round(s.timer * cycle_frequency) for s in states]
+        extend_packed(fsm_bytes, state_timers, FMT_UINT32_LE)
 
-        # Pack global timer durations, onset delays and loop intervals
+        # GLOBAL TIMER DURATION, ONSET DELAY, LOOP INTERVAL (uInt32)
         for key in ('duration', 'onset_delay', 'loop_interval'):
             extend_packed(
-                byte_array,
+                fsm_bytes,
                 [
-                    round(
-                        getattr(state_machine.global_timers.get(idx, {}), key, 0)
-                        * self._hardware.cycle_frequency,
-                    )
-                    for idx in range(n_global_timers)
+                    round(getattr(gt, key, 0.0) * cycle_frequency)
+                    for gt in global_timers_list
                 ],
-                'I',  # uint32
+                FMT_UINT32_LE,
             )
 
-        # Pack global counter thresholds
+        # GLOBAL COUNTER THRESHOLDS (uInt32)
         extend_packed(
-            byte_array,
-            [
-                getattr(state_machine.global_counters.get(idx, {}), 'threshold', 0)
-                for idx in range(n_global_counters)
-            ],
-            'I',  # uint32
+            fsm_bytes,
+            [getattr(gc, 'threshold', 0) for gc in global_counters_list],
+            FMT_UINT32_LE,
         )
 
-        # Footer (firmware 23+, 1 byte):
+        # FOOTER (firmware 23+, 1 byte):
         #   Reserved for additional opcodes
-        if self.version.firmware > (22, 0):
-            byte_array.append(0)
+        if version.firmware > (22, 0):
+            fsm_bytes.append(0)
 
-        # Send state machine to Bpod
+        # HEADER
+        struct.pack_into('<?H', fsm_bytes, 0, use_back_op, len(fsm_bytes) - 3)
+
+        # store the compiled state machine for future use
+        self._compilation_cache[cache_key] = (fsm_bytes, annotations)
+
+        # report benchmarking results
+        if debugging:
+            logger.debug(
+                'Compiled state machine %s (%d μs)',
+                state_machine_hash,
+                (perf_counter_ns() - t0) // 1000,
+            )
+
+        # Return the compiled state machine and annotations
+        return fsm_bytes, annotations, validate
+
+    @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
+    def run(
+        self,
+        state_machine: StateMachine | None = None,
+        *,
+        validate: bool = True,
+    ) -> None:
+        """
+        Run a state machine on the Bpod.
+
+        Validates, compiles, sends, and queues a state machine for immediate execution.
+        If the Bpod is currently running a state machine, the new one is queued to run
+        as soon as the current one finishes, with no inter-trial gap.
+
+        If called without an argument, the previously sent state machine is re-sent
+        from the compilation cache and queued for immediate back-to-back execution.
+
+        Parameters
+        ----------
+        state_machine : StateMachine, optional
+            The state machine to run. If not provided, the previously sent state machine
+            is repeated.
+        validate : bool, default: True
+            If False, the state machine will not be validated prior to compilation. This
+            will speed up the process, but may result in errors or unexpected behavior
+            if the state machine is invalid. Use with caution.
+
+        Raises
+        ------
+        RuntimeError
+            If called without an argument and no state machine has been run yet.
+        ValueError
+            If the state machine is invalid or exceeds hardware limitations.
+        :exc:`~validate_call.roar.validate_callCallHintViolation`
+            If function arguments don't match type hints.
+
+        Notes
+        -----
+        This method returns once the state machine has been queued on the Bpod. The Bpod
+        will then begin executing the state machine as soon as possible — immediately
+        if the device is idle or right after the current state machine finishes.
+        Subsequent calls of this method will result in continuous acquisition and zero
+        inter-trial downtime (as long as the Bpod's run queue stays filled).
+
+        See Also
+        --------
+        validate_state_machine : Validation of state machines.
+        wait : Block until the currently running state machine finishes.
+        """
+        debugging = logger.isEnabledFor(logging.DEBUG)
         self._next_fsm_index += 1
-        logger.debug('Sending state machine #%d to Bpod', self._next_fsm_index)
-        n_bytes = len(byte_array)
-        self.serial0.write_struct(
-            f'<c2?H{n_bytes}s', b'C', run_asap, use_back_op, n_bytes, byte_array
+        self._disable_all_module_relays()
+
+        # If the user did not provide a state machine, recover the last run state
+        # machine from the compilation cache
+        if state_machine is None:
+            if self._last_cache_key is None:
+                raise RuntimeError('No state machine has been run yet')
+            fsm_bytes, self._fsm_annotations = self._compilation_cache[
+                self._last_cache_key
+            ]
+            fsm_hash = self._last_cache_key[0]
+            if debugging:
+                logger.debug(
+                    'Retrieving state machine %s from cache',
+                    self._last_cache_key[1].hex(),
+                )
+
+        # Otherwise go through the process of validating and compiling the state machine
+        else:
+            # 1) COMPUTE HASH
+            #    This allows us to bypass validation and compilation given a cache hit
+            if debugging:
+                t0 = perf_counter_ns()
+                fsm_hash = state_machine.hash
+                d = (perf_counter_ns() - t0) // 1000
+                logger.debug(
+                    'Computed hash of state machine: %s (%d μs)', fsm_hash.hex(), d
+                )
+            else:
+                fsm_hash = state_machine.hash
+
+            # 2) VALIDATE AND COMPILE
+            fsm_was_validated = False
+            try:
+                fsm_bytes, self._fsm_annotations, fsm_was_validated = (
+                    self._compile_state_machine(
+                        state_machine=state_machine,
+                        known_hash=fsm_hash,
+                        validate=validate,
+                        debugging=debugging,
+                    )
+                )
+            except Exception as e1:
+                # if compilation failed after bypassing validation, validate post-mortem
+                # to get a more informative error message
+                if not fsm_was_validated:
+                    try:
+                        self._validate_state_machine(
+                            state_machine=state_machine,
+                            known_hash=fsm_hash,
+                        )
+                    except Exception as e2:
+                        raise e2 from e1
+                raise
+
+            # 3) STORE THE CACHE KEY FOR REPEAT CALLS
+            self._last_cache_key = (self._hardware_hash, fsm_hash, validate)
+
+        # Send state machine to Bpod; always queue for immediate back-to-back execution
+        message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
+        if debugging:
+            t0 = perf_counter_ns()
+            self.serial0.write(message)
+            logger.debug(
+                'Sent state machine %s to Bpod (%d μs)',
+                fsm_hash.hex(),
+                (perf_counter_ns() - t0) // 1000,
+            )
+        else:
+            self.serial0.write(message)
+
+        # Start threads
+        self._run_state_machine()
+
+    def _run_state_machine(self) -> None:
+        state_machine_lookup = cast('StateMachineLookup', self._fsm_annotations)
+
+        # initialize new threads
+        event_thread = EventThread(
+            trial=self._next_fsm_index,
+            fsm=state_machine_lookup,
+            data_queue=self._trial_data,
+            event_lookup=self._event_lookup,
+            action_names=self._actions,
+            time_reference=self._time_reference,
+        )
+        read_thread = ReadThread(
+            serial=self.serial0,
+            state_machine_hash=state_machine_lookup.fsm_hash,
+            trial=self._next_fsm_index,
+            cycle_period_us=self._hardware.cycle_period_us,
+            queue_events=event_thread.queue,
+            queue_softcodes=self._softcode_thread.queue,
         )
 
-        if run_asap:
-            self._run_state_machine(blocking=False)
+        # wait for an already running state machine to finish
+        self.wait()
+
+        # start threads
+        read_thread.start()
+        event_thread.start()
+
+        # set private class attributes
+        self._event_thread = event_thread
+        self._read_thread = read_thread
+        self._fsm_annotations = None
 
     @property
     def is_running(self) -> bool:
@@ -1123,7 +1545,7 @@ class Bpod(SerialDevice, AbstractBpod):
     @property
     def is_ready(self) -> bool:
         """Check if a compiled state machine is loaded and ready to run."""
-        return self._compiled_fsm is not None
+        return self._fsm_annotations is not None
 
     @property
     def is_queued(self) -> bool:
@@ -1137,26 +1559,82 @@ class Bpod(SerialDevice, AbstractBpod):
         Blocks until the state machine thread completes. If no state machine is
         currently running, this method returns immediately.
         """
-        if self._read_thread is not None and self._read_thread.is_alive():
+        read_thread = self._read_thread
+        if read_thread is not None and read_thread.is_alive():
             logger.debug(
                 'Waiting for state machine #%d to finish ...',
-                self._read_thread.trial_number,
+                read_thread.trial_number,
             )
-            self._read_thread.join()
+            read_thread.join()
 
-    def get_data(self, *, concat: bool = False, rechunk: bool = False) -> pl.DataFrame:
+    @overload
+    def peek_data(
+        self,
+        trigger_states: Collection[str] | None = ...,
+        *,
+        lazy: Literal[False] = False,
+    ) -> pl.DataFrame: ...
+
+    @overload
+    def peek_data(
+        self, trigger_states: Collection[str] | None = ..., *, lazy: Literal[True]
+    ) -> pl.LazyFrame: ...
+
+    def peek_data(self, trigger_states: Collection[str] | None = None, *, lazy=False):
+        """Return a snapshot of the current trial's data.
+
+        Parameters
+        ----------
+        trigger_states : Collection of str, optional
+            Block until at least one of the given states has been entered, then return
+            the snapshot. If ``None`` (default), returns immediately.
+        lazy : bool, default: False
+            If ``True``, return a :class:`polars.LazyFrame`.
+            If ``False`` (default), return a :class:`polars.DataFrame`.
+
+        Returns
+        -------
+        pl.DataFrame or pl.LazyFrame
+            Events recorded so far in the current trial. Returns an empty DataFrame if
+            no trial is running.
+
+        Raises
+        ------
+        ValueError
+            If one or several of the trigger states are not part of the state machine.
+        """
+        if self._event_thread is None:
+            empty = pl.DataFrame(schema=_TRIAL_DATA_SCHEMA)
+            return empty.lazy() if lazy else empty
+        data = self._event_thread.peek_data(trigger_states)
+        return data if lazy else data.collect()
+
+    @overload
+    def get_data(
+        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[False] = False
+    ) -> pl.DataFrame: ...
+
+    @overload
+    def get_data(
+        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[True]
+    ) -> pl.LazyFrame: ...
+
+    def get_data(self, *, concat=True, rechunk=False, lazy=False):
         """Return trial data from the data queue.
 
         Parameters
         ----------
-        concat : bool, optional
-            If ``False`` (default), pop and return one DataFrame, blocking until one is
-            available.
+        concat : bool, default: True
             If ``True``, pop and concatenate all DataFrames currently in the queue into
             a single DataFrame, blocking until at least one is available.
-        rechunk : bool, optional
+            If ``False``, pop and return one DataFrame, blocking until one is
+            available.
+        rechunk : bool, default: False
             If ``True``, make sure that the result data is in contiguous memory. Only
-            applies when ``concat=True``. Default is ``False``.
+            applies when ``concat=True``.
+        lazy : bool, default: False
+            If ``True``, return a :class:`polars.LazyFrame`.
+            If ``False``, return a :class:`polars.DataFrame`.
 
         Returns
         -------
@@ -1180,70 +1658,20 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         if self._trial_data.empty() and not self.is_running:
             raise BpodError('No trial data available')
+
         frames = [self._trial_data.get()]
         if concat:
-            frames.extend(
-                self._trial_data.get_nowait() for _ in range(self._trial_data.qsize())
-            )
-            return pl.concat(frames, rechunk=rechunk)
-        return frames[0]
+            while True:
+                try:
+                    frames.append(self._trial_data.get(block=False))
+                except Empty:  # noqa: PERF203
+                    break
+            data = pl.concat(frames, rechunk=rechunk)
+        else:
+            data = frames[0]
 
-    @validate_call
-    def run_state_machine(self, *, blocking: bool = True) -> None:
-        """Run the previously sent state machine.
-
-        Parameters
-        ----------
-        blocking : bool, optional
-            If True (default), block until the state machine finishes.
-            If False, return immediately after starting.
-
-        Raises
-        ------
-        RuntimeError
-            - If no state machine has been sent.
-            - If a state machine is already running.
-        """
-        if self.is_running:
-            raise RuntimeError('A state machine is already running')
-        if not self.is_ready:
-            raise RuntimeError('No state machine has been sent')
-        self.serial0.write(b'R')
-        self._run_state_machine(blocking=blocking)
-
-    def _run_state_machine(self, *, blocking: bool) -> None:
-        # initialize new threads
-        event_thread = EventThread(
-            trial=self._next_fsm_index,
-            fsm=cast('CompiledStateMachine', self._compiled_fsm),
-            data_queue=self._trial_data,
-            event_lookup=self._event_lookup,
-            action_names=self._actions,
-            time_reference=self._time_reference,
-        )
-        read_thread = ReadThread(
-            serial=self.serial0,
-            trial=self._next_fsm_index,
-            cycle_period_us=self._hardware.cycle_period_us,
-            queue_events=event_thread.queue,
-            queue_softcodes=self._softcode_thread.queue,
-        )
-
-        # wait for an already running state machine to finish
-        self.wait()
-
-        # start threads
-        read_thread.start()
-        event_thread.start()
-
-        # set private class attributes
-        self._event_thread = event_thread
-        self._read_thread = read_thread
-        self._compiled_fsm = None
-
-        # wait for state machine to finish
-        if blocking and self.is_running:
-            self.wait()
+        # return data
+        return data if lazy else data.collect()
 
     def stop_state_machine(self) -> None:
         """Stop the currently running state machine."""
@@ -1280,7 +1708,7 @@ class Bpod(SerialDevice, AbstractBpod):
         """Set the location of the Bpod device."""
         self._set_setting(['devices', self._serial_number, 'location'], location)
 
-    @validate_call
+    @validate_call()
     def set_softcode_handler(
         self, softcode_handler: Callable[[int], None] | None = None
     ) -> None:
@@ -1290,22 +1718,9 @@ class Bpod(SerialDevice, AbstractBpod):
         ----------
         softcode_handler : Callable, optional
             The function to call when a softcode is received.
-
-        Raises
-        ------
-        RuntimeError
-            If a state machine is currently running.
         """
-        if self.is_running:
-            raise RuntimeError(
-                'Cannot set softcode handler while a state machine is running'
-            )
         self._softcode_handler = softcode_handler
-        self._softcode_thread.stop()
-        self._softcode_thread = SoftcodeThread(
-            softcode_handler=self._softcode_handler,
-        )
-        self._softcode_thread.start()
+        self._softcode_thread.set_handler(softcode_handler)
 
 
 class Channel:
@@ -1431,6 +1846,26 @@ class Output(Channel):
         self._serial0.write_struct('<c2B', b'O', self.index, state)
 
 
+class _ModuleDict(dict[str, 'Module']):
+    """A dict of :class:`Module` objects keyed by name."""
+
+    def __init__(
+        self, dictionary: dict[str, 'Module'], *, available_modules: list[str]
+    ) -> None:
+        super().__init__(dictionary)
+        self._available_modules = [f"'{x}'" for x in available_modules]
+
+    def __getitem__(self, key: str) -> 'Module':
+        try:
+            return super().__getitem__(key)
+        except KeyError as e:
+            if self._available_modules:
+                hint = f'connected modules: {", ".join(self._available_modules)}'
+            else:
+                hint = 'no modules connected to Bpod'
+            raise BpodError(f"No such module: '{key}'; {hint}") from e
+
+
 @dataclass
 class Module:
     """Represents a Bpod module with its configuration and event names."""
@@ -1456,8 +1891,17 @@ class Module:
     _custom_event_names: list[str] = field(default_factory=list)
     """A list of custom event names."""
 
+    _relay_is_enabled = False
+    """Whether relay for the module is enabled."""
+
+    def __repr__(self) -> str:
+        if not self.is_connected:
+            return 'unused module port'
+        if self.firmware_version:
+            return f'{self.name} on module port {self.index + 1})'
+        return self.name
+
     def __post_init__(self) -> None:
-        self._relay_enabled = False
         self._define_event_names()
 
     def _define_event_names(self) -> None:
@@ -1469,37 +1913,33 @@ class Module:
             else:
                 self.event_names.append(f'{self.name}_{idx}')
 
-    @validate_call
-    def set_relay(self, enable: bool) -> None:  # noqa: FBT001
+    @validate_call()
+    def set_relay(self, enabled: bool) -> None:  # noqa: FBT001
         """
         Enable or disable the serial relay for the module.
 
         Parameters
         ----------
-        enable : bool
+        enabled : bool
             True to enable the relay, False to disable it.
         """
-        if enable == self._relay_enabled:
+        if enabled == self._relay_is_enabled:
             return
-        if enable is True:
-            self._bpod._disable_all_module_relays()  # noqa: SLF001
+        if enabled:
+            for module in self._bpod.modules.values():
+                module.set_relay(False)
         logger.info(
-            '%sabling relay for module %s', {'En' if enable else 'Dis'}, self.name
+            '%sabling relay for module %s', {'En' if enabled else 'Dis'}, self.name
         )
-        self._bpod.serial0.write_struct('<cB?', b'J', self.index, enable)
-        self._relay_enabled = enable
+        self._bpod.serial0.write_struct('<cB?', b'J', self.index, enabled)
+        self._relay_is_enabled = enabled
 
     @property
     def relay(self) -> bool:
         """The current state of the serial relay."""
-        return self._relay_enabled
+        return self._relay_is_enabled
 
-    @relay.setter
-    def relay(self, state: bool) -> None:
-        """The current state of the module's serial relay."""
-        self.set_relay(state)
-
-    @validate_call
+    @validate_call()
     def load_serial_message(
         self,
         message_id: int,
@@ -1693,7 +2133,7 @@ def discover_remote_bpod(
     serial_number: str | None = None,
     location: str | None = None,
     timeout: float | None = 10.0,
-    poll_interval: float = 1,
+    poll_interval: float = 1.0,
     *,
     local: bool = True,
     remote: bool = True,
@@ -1709,15 +2149,15 @@ def discover_remote_bpod(
         Serial number of the Bpod device.
     location : str, optional
         Location of the Bpod device.
-    local : bool, optional
-        Whether to search for services on the local machine, by default True.
-    remote : bool, optional
-        Whether to also search for services on the network, by default True.
-    timeout : float or None, optional
-        How many seconds to monitor, by default 10.
+    timeout : float or None, default: 10.0
+        How many seconds to monitor.
         Pass ``None`` to monitor indefinitely until the iterator is closed.
-    poll_interval : float, optional
+    poll_interval : float, default: 1.0
         How often to poll for local service changes, in seconds. Default is 1.
+    local : bool, default: True
+        Whether to search for services on the local machine.
+    remote : bool, default: True
+        Whether to also search for services on the network.
 
     Yields
     ------

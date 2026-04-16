@@ -6,6 +6,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0a10] - 2026-04-16
+
+### Added
+
+- Bpod.address property — exposes the ZeroMQ address of the running instance.
+- `Bpod.peek_data` - read trial data before trial end.
+- `misc.ByteEnum` - an extended `IntEnum` that caches its values as bytes.
+- Timer fields in StateMachine now accept timedelta values in addition to floats.
+- `bpod` CLI entry point for launching a Bpod instance that can be connected to via TCP
+  Unix Sockets.
+- `state machine` column added to trial data output (hash of the FSM)
+
+### Changed
+
+- renamed `Bpod.send_state_machine` to `Bpod.run`.
+- removed `Bpod.run_state_machine`.
+- switched to Polars `LazyFrame` for storing trial data.
+- replaced use of `Queue` with `SimpleQueue`.
+- switched `Bpod.module` field from `NamedTuple` to `dict`.
+- replaced hashlib.blake2b with xxhash for state machine hashing.
+- cache validation and compilation of state machines.
+- `StateMachine.hash` now returns `bytes` instead of `str`.
+
 ## [0.1.0a9] - 2026-04-02
 
 ### Added
@@ -22,9 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - replaced MD5 hashing of `fsm.StateMachine` with blake2b.
 - improved readability of `ValidationError` messages in `fsm.StateMachine`.
 - state machine runs are now handled by three separate threads:
-    - `ReadThread` for serial communication with the Bpod
-    - `EventThread` for handling and structuring the incoming data
-    - `SoftcodeThread` for executing soft-codes
+    - `ReadThread` for serial communication with the Bpod,
+    - `EventThread` for handling and structuring the incoming data, and
+    - `SoftcodeThread` for executing soft-codes.
 
 ### Fixed
 
@@ -156,6 +179,10 @@ Just a quick bugfix release ...
 ## [0.1.0a0] - 2025-04-17
 
 First alpha release. Nothing works.
+
+[0.1.0a10]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a10
+
+[0.1.0a9]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a9
 
 [0.1.0a8]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a8
 

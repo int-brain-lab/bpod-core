@@ -223,10 +223,10 @@ class ExtendedSerial(Serial):
 
         Parameters
         ----------
-        query : Buffer, optional
-            The query to be sent to the serial port. Defaults to an empty byte string.
-        expected_response : bytes, optional
-            The expected response from the serial port. Default: b'\x01'.
+        query : Buffer, default: b''
+            The query to be sent to the serial port.
+        expected_response : bytes, default: b'\x01'
+            The expected response from the serial port.
 
         Returns
         -------
@@ -395,7 +395,7 @@ def verify_serial_discovery(
     expected_message : bytes
         The exact byte sequence expected from the device.
     timeout : float, default: 1
-        Maximum time (in seconds) to wait for the discovery message. Defaults to 1 s.
+        Maximum time (in seconds) to wait for the discovery message.
     trigger : Callable, optional
         A function to call before reading. Use this to trigger the device's discovery
         routine.
@@ -439,8 +439,8 @@ class SerialDevice(AbstractContextManager):
         ----------
         port : str
             The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3').
-        open_connection : bool, optional
-            Whether to open the connection immediately, by default True.
+        open_connection : bool, default: True
+            Whether to open the connection immediately.
 
         Raises
         ------
@@ -495,6 +495,10 @@ class SerialDevice(AbstractContextManager):
             raise SerialException(
                 f'Failed to close connection to {device_name} on {serial.port}'
             ) from e
+
+    def __enter__(self) -> Self:
+        """Enter the context manager."""
+        return self
 
     def __exit__(
         self,
