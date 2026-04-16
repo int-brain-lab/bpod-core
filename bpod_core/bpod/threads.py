@@ -75,6 +75,7 @@ _EVENT_TYPE_ENUM = pl.Enum(
 _TRIAL_DATA_SCHEMA = {
     'time': pl.Datetime('us'),
     'trial': pl.UInt16,
+    'state machine': pl.Categorical,
     'state': pl.Categorical,
     'type': _EVENT_TYPE_ENUM,
     'event': pl.Categorical,
@@ -339,7 +340,7 @@ class ReadThread(threading.Thread):
 
         finally:
             self._queue_events.put(RawEvent(0, _EventID.STOP_SENTINEL))
-            logger.info(
+            logger.debug(
                 'Exiting state machine %s / trial #%d', self._fsm_hash, self._trial
             )
 
@@ -413,6 +414,7 @@ class EventThread(threading.Thread):
         self._n_events: int = 0
         self._event_lookup = event_lookup.lazy()
         self._state_lookup = fsm.state_lookup
+        self._fsm_hash_str = fsm.fsm_hash.hex()
 
         # pre-compute action index map for fast lookup in the hot loop
         action_index_map = {name: i for i, name in enumerate(action_names)}
@@ -561,6 +563,7 @@ class EventThread(threading.Thread):
             )
             .with_columns(
                 pl.lit(self._trial).cast(pl.UInt16).alias('trial'),
+                pl.lit(self._fsm_hash_str).cast(pl.Categorical).alias('state machine'),
                 pl.coalesce(
                     pl.col('value').replace(-1, None),
                     pl.col('default_value'),
