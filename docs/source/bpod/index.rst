@@ -24,8 +24,9 @@ serial connection is closed and any running trial is allowed to finish on exit.
    from unittest.mock import patch
    from types import SimpleNamespace
    from bpod_core.bpod import Bpod
+   from unittest.mock import MagicMock
 
-   original_send = Bpod.send_state_machine
+   original_run = Bpod.run
    original_validate = Bpod.validate_state_machine
 
    def fake_init(self, *args, **kwargs):
@@ -37,12 +38,13 @@ serial connection is closed and any running trial is allowed to finish on exit.
            n_conditions=64,
            cycle_frequency=1000,
        )
-       self._read_thread = None
        self._bpod_finalizer = SimpleNamespace(detach=lambda: None)
        self._serial_device_finalizer = SimpleNamespace(detach=lambda: None)
+       self._softcode_thread = MagicMock()
+       self._hardware_hash = b''
        self._serial = None
        self._serial_number = '14260000'
-       self.send_state_machine = types.MethodType(original_send, self)
+       self.run = types.MethodType(original_run, self)
        self.validate_state_machine = types.MethodType(original_validate, self)
 
    patcher = patch.object(Bpod, "__init__", fake_init)
