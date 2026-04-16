@@ -496,6 +496,10 @@ class SerialDevice(AbstractContextManager):
                 f'Failed to close connection to {device_name} on {serial.port}'
             ) from e
 
+    def __enter__(self) -> Self:
+        """Enter the context manager."""
+        return self
+
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
