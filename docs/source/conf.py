@@ -136,6 +136,10 @@ extensions = [
     'doctest_codeblock',
     'fsm_codeblock',
 ]
+doctest_global_setup = f"""
+_DOCS_STATIC = __import__('pathlib').Path({str(docs_source_path / '_static')!r})
+"""
+
 source_suffix = ['.rst', '.md']
 
 copybutton_prompt_text = r'>>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: '
