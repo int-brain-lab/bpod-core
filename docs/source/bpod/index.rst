@@ -51,13 +51,14 @@ serial connection is closed and any running trial is allowed to finish on exit.
    patcher.start()
    atexit.register(patcher.stop)
 
-.. doctest-code-block::
+.. testcode-code-block:: python3
    :caption: Using a context manager to connect to a Bpod.
    :group: bpod-context-manager
 
-   >>> from bpod_core.bpod import Bpod
-   >>> with Bpod('/dev/ttyACM0') as bpod:
-   ...     pass  # do things
+   from bpod_core.bpod import Bpod
+
+   with Bpod('/dev/ttyACM0') as bpod:
+       pass  # do things
 
 .. tip::
 
@@ -78,118 +79,255 @@ serial connection is closed and any running trial is allowed to finish on exit.
       >>> with Bpod(serial_number='14260000') as bpod:
       ...     pass  # do things ...
 
-Sending and Running a State Machine
-------------------------------------
 
-Sending and running state machines are two separate steps:
-:meth:`~bpod_core.bpod.Bpod.send_state_machine` compiles the FSM and
-transfers it to the device;
-:meth:`~bpod_core.bpod.Bpod.run_state_machine` starts its execution. Keeping them
-separate allows the next trial's FSM to be pre-loaded while the current one is
-still running (see :ref:`multi-trial-loop`).
+Running a State Machine
+-----------------------
 
-By default :meth:`~bpod_core.bpod.Bpod.run_state_machine` blocks until the
-trial completes:
+To run a state machine on a Bpod device, use the :meth:`~bpod_core.bpod.Bpod.run` method
+of your :class:`~bpod_core.bpod.Bpod` instance. It validates and compiles the state
+machine, and finally enqueues it on the Bpod for immediate execution.
+Calling :meth:`~bpod_core.bpod.Bpod.get_data` after a state machine run returns the
+collected data as a Polars :class:`~polars.DataFrame`.
 
-.. literalinclude:: ../../../examples/minimal_examples/run_global_timer.py
-   :language: python
-   :start-at: fsm = StateMachine()
+.. testcode-code-block:: python3
+   :caption: Defining and running a state machine.
+   :group: bpod-context-manager
+
+   from bpod_core.bpod import Bpod
+   from bpod_core.fsm import StateMachine
+
+   # define a state machine
+   fsm = StateMachine()
+   fsm.add_state('Wait', transitions={'Port1_High': 'LightPort1', 'Port2_High': 'LightPort2'})
+   fsm.add_state('LightPort1', timer=1, transitions={'Tup': '>exit'}, actions={'PWM1': 255})
+   fsm.add_state('LightPort2', timer=1, transitions={'Tup': '>exit'}, actions={'PWM2': 255})
+
+   # run the state machine
+   with Bpod() as bpod:
+       bpod.run(fsm)
+
+   # collect the data
+   data = bpod.get_data()
 
 .. note::
 
-   :meth:`~bpod_core.bpod.Bpod.get_data` is called *outside* the ``with``
-   block in the example above. The connection is already closed at that point,
-   but the data queue persists on the ``bpod`` object and is safe to drain
-   after the context exits.
+   In the example above, :meth:`~bpod_core.bpod.Bpod.get_data` is called *outside* the
+   context manager. The connection is already closed at that point, but the data queue
+   persists on the :class:`~bpod_core.bpod.Bpod` object and is safe to drain after the
+   context exits.
 
 .. seealso::
 
    Refer to :doc:`../state_machines/index` for the full reference of the
    :class:`~bpod_core.fsm.StateMachine` object.
 
-.. _multi-trial-loop:
 
-Multi-Trial Loop
-----------------
+Running Several State Machines
+------------------------------
 
-Pass ``blocking=False`` to return immediately after starting the trial. Use
-:meth:`~bpod_core.bpod.Bpod.wait` to synchronise before retrieving data and
-sending the next FSM:
+You can run :meth:`~bpod_core.bpod.Bpod.run` several times in quick succession.
+:class:`~bpod_core.bpod.Bpod` will automatically enqueue the state machines for
+execution on the Bpod hardware. Subsequent state machines will run with zero inter-trial
+downtime, allowing for continuous acquisition. When returning the data with
+:meth:`~bpod_core.bpod.Bpod.get_data` the data from individual trials will automatically
+be concatenated to a continuous Polars :class:`~polars.DataFrame`.
 
-.. code-block:: python
-
-   from bpod_core.bpod import Bpod
-
-   N_TRIALS = 100
+.. testcode-code-block:: python3
+   :caption: Running several trials of the same state machine in immediate succession.
+   :group: bpod-context-manager
 
    with Bpod() as bpod:
-       bpod.send_state_machine(build_fsm(trial=0))
-       bpod.run_state_machine(blocking=False)
+       for trial in range(1, 100):
+           bpod.run(fsm)
 
-       for trial in range(1, N_TRIALS):
-           bpod.wait()
-           data = bpod.get_data()
-           process(data)
-           bpod.send_state_machine(build_fsm(trial=trial))
-           bpod.run_state_machine(blocking=False)
+   data = bpod.get_data()
 
-       bpod.wait()
+Similarly, you can define state machines on-the-fly *within* the loop. The
+:meth:`~bpod_core.bpod.Bpod.run` method is non-blocking – as long as the individual
+state machines take longer to execute than the time it takes to prepare and upload their
+successors, they will run in a continuous fashion.
 
-   all_data = bpod.get_data(concat=True)
+.. testcode-code-block:: python3
+   :name: on_the_fly_fsm
+   :caption: Generating state machines on the fly.
+   :group: bpod-context-manager
 
-For the tightest possible inter-trial intervals, pass ``run_asap=True`` to
-:meth:`~bpod_core.bpod.Bpod.send_state_machine`. The device then starts the
-new FSM the instant the current trial exits, without waiting for a serial
-round-trip. The trade-off is that you must commit to the next FSM *before*
-inspecting the previous trial's data.
+   from random import random, randint
 
-.. tip::
+   with Bpod() as bpod:
+       for trial in range(100):
+           fsm = StateMachine()
+           d = random() / 10  # random duration between 0 and 100 ms
+           i = randint(0, 255)  # random PWM value between 0 and 255
+           fsm.add_state('s1', timer=d, transitions={'Tup': 's2'}, actions={'PWM1': i})
+           fsm.add_state('s2', timer=0.1, transitions={'Tup': '>exit'})
+           bpod.run(fsm)
 
-   Use ``blocking=False`` + :meth:`~bpod_core.bpod.Bpod.wait` when you need
-   to process data or adjust parameters between trials. Use ``run_asap=True``
-   when minimising inter-trial interval is the priority.
+   data = bpod.get_data()
 
-Retrieving and working with Trial Data
---------------------------------------
 
-:meth:`~bpod_core.bpod.Bpod.get_data` pops one trial from the data queue, blocking until
-data is available and returning the data as a Polars :class:`~polars.DataFrame`.
-Each call to :meth:`~bpod_core.bpod.Bpod.get_data` returns a :class:`~polars.DataFrame`
-with one row per event and the following columns:
+Data Format
+-----------
 
-- ``time`` – absolute Bpod timestamp (``Datetime(time_unit='us')``)
-- ``trial`` – zero-based trial index (``UInt16``)
-- ``state`` - state name (``Categorical``)
-- ``type`` – event type (``Enum``)
-- ``event`` – input event name, ``null`` for non-input rows (``Categorical``)
-- ``channel`` – channel name (``Categorical``)
-- ``value`` – channel value (``UInt8``)
+.. testsetup:: polars
 
-To work with the data, standard Polars expressions apply. For example, to extract all
-state transitions:
+   import polars as pl
+   from pathlib import Path
+   from bpod_core.bpod.threads import _TRIAL_DATA_SCHEMA
+
+   pqt_file = Path(_DOCS_STATIC) / "example_dataframe.pqt"
+   data = pl.read_parquet(pqt_file)
+   assert dict(data.schema) == _TRIAL_DATA_SCHEMA
+
+Data returned by :meth:`~bpod_core.bpod.Bpod.get_data` is organized in tabular form as a
+Polars :class:`~polars.DataFrame`. For the state machine in :numref:`on_the_fly_fsm` you
+may get something like this:
+
+.. doctest-code-block::
+   :caption: A Polars DataFrame as returned by :meth:`~bpod_core.bpod.Bpod.get_data`
+   :group: polars
+
+   >>> data
+   shape: (1_100, 8)
+   ┌────────────────────────────┬───────┬──────────────────┬───────┬─────────────────┬───────┬─────────┬───────┐
+   │ time                       ┆ trial ┆ state machine    ┆ state ┆ type            ┆ event ┆ channel ┆ value │
+   │ ---                        ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
+   │ datetime[μs]               ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u8    │
+   ╞════════════════════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
+   │ 2026-04-16 20:29:12.948426 ┆ 0     ┆ d1af27e5c2b13891 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
+   │ 2026-04-16 20:29:12.948426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
+   │ 2026-04-16 20:29:12.948426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 235   │
+   │ 2026-04-16 20:29:13.022426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+   │ 2026-04-16 20:29:13.022426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+   │ …                          ┆ …     ┆ …                ┆ …     ┆ …               ┆ …     ┆ …       ┆ …     │
+   │ 2026-04-16 20:29:19.121326 ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
+   │ 2026-04-16 20:29:19.131326 ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+   │ 2026-04-16 20:29:19.131326 ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+   │ 2026-04-16 20:29:19.131426 ┆ 99    ┆ 1719d07df94acabf ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+   │ 2026-04-16 20:29:19.131328 ┆ 99    ┆ 1719d07df94acabf ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
+   └────────────────────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
+
+The data is organized into one row per event and the following columns:
+
+- ``time`` – absolute Bpod timestamp (:class:`~polars.datatypes.Datetime`)
+- ``trial`` – zero-based trial index (:class:`~polars.datatypes.UInt16`)
+- ``state machine`` – hash of the state machine (``Categorical``)
+- ``state`` - state name (:class:`~polars.datatypes.Categorical`)
+- ``type`` – event type (:class:`~polars.datatypes.Enum`)
+- ``event`` – input event name, ``null`` for non-input rows (:class:`~polars.datatypes.Categorical`)
+- ``channel`` – channel name (:class:`~polars.datatypes.Categorical`)
+- ``value`` – channel value (:class:`~polars.datatypes.UInt8`)
+
+
+Absolute vs. Relative Timestamps
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The data is stored using absolute timestamps rather than relative ones. This avoids
+ambiguity when combining data across trials, state machines, or external data sources,
+and preserves the original temporal ordering without requiring additional context.
+Relative timestamps can always be derived on demand by subtracting the first timestamp
+from the ``time`` column. Notice how the inherent unit of the ``time`` column is
+preserved during this operation, with the resulting column automatically taking on the
+:class:`~polars.datatypes.Duration` type:
+
+.. doctest-code-block::
+   :caption: Transforming absolute timestamps into relative timestamps.
+   :group: polars
+
+   >>> data.with_columns(pl.col("time") - pl.col("time").first())
+   shape: (1_100, 8)
+   ┌──────────────┬───────┬──────────────────┬───────┬─────────────────┬───────┬─────────┬───────┐
+   │ time         ┆ trial ┆ state machine    ┆ state ┆ type            ┆ event ┆ channel ┆ value │
+   │ ---          ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
+   │ duration[μs] ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u8    │
+   ╞══════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
+   │ 0µs          ┆ 0     ┆ d1af27e5c2b13891 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
+   │ 0µs          ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
+   │ 0µs          ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 235   │
+   │ 74ms         ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+   │ 74ms         ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+   │ …            ┆ …     ┆ …                ┆ …     ┆ …               ┆ …     ┆ …       ┆ …     │
+   │ 6s 172900µs  ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
+   │ 6s 182900µs  ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+   │ 6s 182900µs  ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+   │ 6s 183ms     ┆ 99    ┆ 1719d07df94acabf ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+   │ 6s 182902µs  ┆ 99    ┆ 1719d07df94acabf ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
+   └──────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
+
+
+Filtering
+^^^^^^^^^
+
+The different columns are designed to facilitate filtering the data. If, for instance
+, you wanted to look at all events that affect the output channel ``PWM1``, you could
+filter the table like so:
+
+.. doctest-code-block::
+   :caption: Filtering by events is straightforward.
+   :group: polars
+
+   >>> import polars as pl
+   >>> data.filter(pl.col("channel") == "PWM1")
+   shape: (200, 8)
+   ┌────────────────────────────┬───────┬──────────────────┬───────┬──────────────┬───────┬─────────┬───────┐
+   │ time                       ┆ trial ┆ state machine    ┆ state ┆ type         ┆ event ┆ channel ┆ value │
+   │ ---                        ┆ ---   ┆ ---              ┆ ---   ┆ ---          ┆ ---   ┆ ---     ┆ ---   │
+   │ datetime[μs]               ┆ u16   ┆ cat              ┆ cat   ┆ enum         ┆ cat   ┆ cat     ┆ u8    │
+   ╞════════════════════════════╪═══════╪══════════════════╪═══════╪══════════════╪═══════╪═════════╪═══════╡
+   │ 2026-04-16 20:29:12.948426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 235   │
+   │ 2026-04-16 20:29:13.022426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
+   │ 2026-04-16 20:29:13.032526 ┆ 1     ┆ 007c1ac779aa4864 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 154   │
+   │ 2026-04-16 20:29:13.074626 ┆ 1     ┆ 007c1ac779aa4864 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
+   │ 2026-04-16 20:29:13.084726 ┆ 2     ┆ 4c848e03a2b511e4 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 214   │
+   │ …                          ┆ …     ┆ …                ┆ …     ┆ …            ┆ …     ┆ …       ┆ …     │
+   │ 2026-04-16 20:29:18.998726 ┆ 97    ┆ 1257c55134308481 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
+   │ 2026-04-16 20:29:19.008826 ┆ 98    ┆ 7d51489ce6f844f8 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 27    │
+   │ 2026-04-16 20:29:19.057726 ┆ 98    ┆ 7d51489ce6f844f8 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
+   │ 2026-04-16 20:29:19.067826 ┆ 99    ┆ 1719d07df94acabf ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 11    │
+   │ 2026-04-16 20:29:19.121326 ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
+   └────────────────────────────┴───────┴──────────────────┴───────┴──────────────┴───────┴─────────┴───────┘
+
+Storing Data
+^^^^^^^^^^^^
+
+Since most of the columns consist of `Categorical data <https://docs.pola.rs/user-guide/expressions/categorical-data-and-enums/>`_,
+data can be very efficiently written to disk as a `Parquet <https://en.wikipedia.org/wiki/Apache_Parquet>`_
+file using :meth:`~polars.DataFrame.write_parquet`:
 
 .. code-block:: python
 
-   state_transitions = trial_data.filter(
-       pl.col('type').is_in(['StateStart', 'StateEnd'])
-   )
+   data.write_parquet('data.pqt')
 
-Or to get only input events:
-
-.. code-block:: python
-
-   inputs = trial_data.filter(pl.col('type') == 'InputEvent')
-
-If you prefer to have a Pandas :class:`~pandas.DataFrame`, the data is easily converted:
+If you prefer Comma-Separated Values (CSV)—for example, to inspect the data in a
+spreadsheet editor such as Excel—use the :meth:`~polars.DataFrame.write_csv` method
+instead:
 
 .. code-block:: python
 
-   pandas_dataframe = trial_data.to_pandas()
+   data.write_csv('data.csv')
 
-To efficiently store the trial data to disk, use the Parquet format:
+Note that CSV files are typically about an order of magnitude larger than their Parquet
+equivalents.
+
+
+Pandas
+^^^^^^
+
+If you prefer `Pandas <https://pandas.pydata.org/>`_ over Polars, you can easily convert
+the data to a Pandas :class:`~pandas.DataFrame` using the built-in
+:meth:`~polars.DataFrame.to_pandas` method:
 
 .. code-block:: python
 
-   pandas_dataframe = trial_data.write_parquet('filename.pqt')
+   pandas_data = data.to_pandas()
 
-Refer to the `Polars documentation <https://docs.pola.rs/>`_ for further details.
+
+More on Polars
+^^^^^^^^^^^^^^
+
+The examples above only cover a small subset of what is possible with Polars. You can
+use the full expression system to filter, transform, aggregate, and analyze the data
+efficiently, even for large datasets.
+
+For a comprehensive overview of available operations and patterns, refer to the
+`Polars documentation <https://docs.pola.rs/>`_.
