@@ -137,7 +137,7 @@ be concatenated to a continuous Polars :class:`~polars.DataFrame`.
    :group: bpod-context-manager
 
    with Bpod() as bpod:
-       for trial in range(1, 100):
+       for trial in range(100):
            bpod.run(fsm)
 
    data = bpod.get_data()
