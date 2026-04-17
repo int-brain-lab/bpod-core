@@ -135,8 +135,12 @@ extensions = [
     'sphinx_toolbox.wikipedia',
     'doctest_codeblock',
     'fsm_codeblock',
+    'matplotlib.sphinxext.plot_directive',
 ]
 doctest_global_setup = f"""
+_DOCS_STATIC = __import__('pathlib').Path({str(docs_source_path / '_static')!r})
+"""
+plot_pre_code = f"""
 _DOCS_STATIC = __import__('pathlib').Path({str(docs_source_path / '_static')!r})
 """
 
@@ -243,3 +247,15 @@ graphviz_dot_args = [
     '-Efontsize=10',  # Edge font size
     '-Etooltip= ',  # no edge tooltips
 ]
+
+# -- Plot settings ---------------------------------------
+plot_include_source = True
+plot_formats = [('svg', 90)]
+plot_html_show_source_link = False
+plot_html_show_formats = False
+plot_apply_rcparams = True
+plot_rcparams = {
+    'font.size': 8,
+    'figure.constrained_layout.use': True,
+    'figure.facecolor': 'none',
+}

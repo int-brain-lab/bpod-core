@@ -288,6 +288,51 @@ filter the table like so:
    │ 2026-04-16 20:29:19.121326 ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
    └────────────────────────────┴───────┴──────────────────┴───────┴──────────────┴───────┴─────────┴───────┘
 
+Plotting
+^^^^^^^^
+
+Using filtering, it becomes relatively straightforward to extract data for plotting.
+We use data returned by the state machines in :numref:`on_the_fly_fsm` to produce a
+stairstep graph of the ``PWM1`` output channel over relative time:
+
+.. plot::
+   :context:
+   :include-source: false
+
+   import polars as pl
+   from pathlib import Path
+   from bpod_core.bpod.threads import _TRIAL_DATA_SCHEMA
+
+   pqt_file = Path(_DOCS_STATIC) / "example_dataframe.pqt"
+   data = pl.read_parquet(pqt_file)
+
+.. plot::
+   :caption: Visualising values of the ``PWM1`` channel across 10 trials.
+   :context:
+
+   import matplotlib.pyplot as plt
+   import polars as pl
+
+   # filter data to values of the 'PWM1' channel across the first 10 trials
+   filtered = data.filter(
+       (pl.col("channel") == "PWM1") &
+       (pl.col("trial") <= 10)
+   )
+
+   # extract two columns, relative 'time' and 'value'
+   x = filtered['time'] - filtered['time'].first()
+   y = filtered['value']
+
+   # matplotlib doesn't play nice with timedelta values, so we convert them to float
+   x = x.dt.total_seconds(fractional=True)
+
+   # plot
+   plt.step(x, y, where='post')
+   plt.xlabel('Time (s)')
+   plt.ylabel('PWM Value')
+   plt.show()
+
+
 Storing Data
 ^^^^^^^^^^^^
 
