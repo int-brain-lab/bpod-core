@@ -232,7 +232,6 @@ preserved during this operation, with the resulting column automatically taking 
 :class:`~polars.datatypes.Duration` type:
 
 .. doctest-code-block::
-   :caption: Transforming absolute timestamps into relative timestamps.
    :group: polars
 
    >>> data.with_columns(pl.col("time") - pl.col("time").first())
@@ -264,7 +263,6 @@ The different columns are designed to facilitate filtering the data. If, for ins
 filter the table like so:
 
 .. doctest-code-block::
-   :caption: Filtering by events is straightforward.
    :group: polars
 
    >>> import polars as pl
@@ -359,13 +357,32 @@ equivalents.
 Pandas
 ^^^^^^
 
-If you prefer `Pandas <https://pandas.pydata.org/>`_ over Polars, you can easily convert
-the data to a Pandas :class:`~pandas.DataFrame` using the built-in
+If you prefer :mod:`pandas` over :mod:`polars`, you can easily convert
+the data to a :class:`pandas.DataFrame` using the built-in
 :meth:`~polars.DataFrame.to_pandas` method:
 
-.. code-block:: python
+.. doctest-code-block::
+   :group: polars
 
-   pandas_data = data.to_pandas()
+   >>> data.to_pandas()
+                              time  trial     state machine state             type event channel  value
+   0    2026-04-16 20:29:12.948426      0  d1af27e5c2b13891   NaN       TrialStart   NaN     NaN    NaN
+   1    2026-04-16 20:29:12.948426      0  d1af27e5c2b13891    s1       StateStart   NaN     NaN    NaN
+   2    2026-04-16 20:29:12.948426      0  d1af27e5c2b13891    s1     OutputAction   NaN    PWM1  235.0
+   3    2026-04-16 20:29:13.022426      0  d1af27e5c2b13891    s1       InputEvent   Tup     NaN    NaN
+   4    2026-04-16 20:29:13.022426      0  d1af27e5c2b13891    s1         StateEnd   NaN     NaN    NaN
+   ...                         ...    ...               ...   ...              ...   ...     ...    ...
+   1095 2026-04-16 20:29:19.121326     99  1719d07df94acabf    s2     OutputAction   NaN    PWM1    0.0
+   1096 2026-04-16 20:29:19.131326     99  1719d07df94acabf    s2       InputEvent   Tup     NaN    NaN
+   1097 2026-04-16 20:29:19.131326     99  1719d07df94acabf    s2         StateEnd   NaN     NaN    NaN
+   1098 2026-04-16 20:29:19.131426     99  1719d07df94acabf   NaN         TrialEnd   NaN     NaN    NaN
+   1099 2026-04-16 20:29:19.131328     99  1719d07df94acabf   NaN  TrialEndControl   NaN     NaN    NaN
+   <BLANKLINE>
+   [1100 rows x 8 columns]
+
+.. note::
+
+   This operation requires that both :mod:`pandas` and :mod:`pyarrow` are installed.
 
 
 More on Polars

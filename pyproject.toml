@@ -59,6 +59,8 @@ doc = [
   "sphinx-toolbox>=4.0.0",
   "sphinx-github-style>=1.2.2",
   "matplotlib>=3.10.8",
+  "pyarrow>=23.0.1",
+  "pandas>=2.3.3",
 ]
 lint = [
   "ruff>=0.9.2",
