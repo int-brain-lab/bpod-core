@@ -90,7 +90,11 @@ class BpodError(Exception):
 
 
 class BpodKeyError(BpodError, KeyError):
-    """Exception class for Bpod-related key errors."""
+    """
+    Exception class for Bpod-related key errors.
+
+    Subclasses :class:`BpodError` and :class:`KeyError`.
+    """
 
 
 class Bpod(SerialDevice, AbstractBpod):
@@ -120,14 +124,14 @@ class Bpod(SerialDevice, AbstractBpod):
     serial2: ExtendedSerial | None = None
     """Tertiary serial device for communication with the Bpod - used by Bpod 2+ only."""
 
-    inputs: 'SuggestionDict[Input]'
-    """Available input channels."""
+    inputs: dict[str, 'Input']
+    """Dictionary of available input channels, keyed by name."""
 
-    outputs: 'SuggestionDict[Output]'
-    """Available output channels."""
+    outputs: dict[str, 'Output']
+    """Dictionary of available output channels, keyed by name."""
 
-    modules: '_ModuleDict'
-    """Available modules, keyed by name."""
+    modules: dict[str, 'Module']
+    """Dictionary of available modules, keyed by name."""
 
     @validate_call()
     def __init__(
@@ -1914,12 +1918,12 @@ class Module:
 
     def _define_event_names(self) -> None:
         """Define the module's event names."""
-        self.event_names = []
+        self._event_names = []
         for idx in range(self.n_events):
             if len(self._custom_event_names) > idx:
-                self.event_names.append(f'{self.name}_{self._custom_event_names[idx]}')
+                self._event_names.append(f'{self.name}_{self._custom_event_names[idx]}')
             else:
-                self.event_names.append(f'{self.name}_{idx}')
+                self._event_names.append(f'{self.name}_{idx}')
 
     @validate_call()
     def set_relay(self, enabled: bool) -> None:  # noqa: FBT001
@@ -1995,6 +1999,11 @@ class Module:
             message_bytes,
         )
         return self._bpod.serial0.verify()
+
+    @property
+    def event_names(self) -> list[str]:
+        """A list of event names associated with the module."""
+        return self._event_names
 
 
 class RemoteBpod(AbstractBpod):
