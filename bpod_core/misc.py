@@ -100,6 +100,15 @@ def to_snake_case(string: str) -> str:
     -------
     str
         The converted snake_case string.
+
+    Examples
+    --------
+    >>> to_snake_case('CamelCase')
+    'camel_case'
+    >>> to_snake_case('HTMLParser')
+    'html_parser'
+    >>> to_snake_case('version2dot0')
+    'version_2_dot_0'
     """
     string = _RE_NON_ALPHANUMERIC.sub('_', string)
     string = _RE_ACRONYM.sub(r'\1_\2', string)
@@ -137,9 +146,63 @@ def suggest_similar(
     -------
     str
         A formatted suggestion string if a match is found, otherwise an empty string.
+
+    Examples
+    --------
+    >>> "no such port" + suggest_similar('Prot1', ['Port1', 'Port2'])
+    "no such port - did you mean 'Port1'?"
+    >>> "no such port" + suggest_similar('xyz', ['Port1', 'Port2'])
+    'no such port'
     """
     matches = difflib.get_close_matches(invalid_string, valid_strings, 1, cutoff)
     return format_string.format(matches[0]) if len(matches) > 0 else ''
+
+
+class SuggestionDict(dict[str, V]):
+    """A dictionary that suggests similar keys on failed lookup.
+
+    On :class:`KeyError`, raises ``error_class`` with a message that includes the
+    closest match from the existing keys (via :func:`suggest_similar`), making typos and
+    near-misses easier to diagnose.
+
+    Parameters
+    ----------
+    dictionary : collections.abc.MutableMapping
+        Initial key-value pairs.
+    name : str, default: 'key'
+        Human-readable label for the key type used in the error message.
+    error_class : type[Exception], default: KeyError
+        Exception class to raise on failed lookup. Must accept a single string argument.
+
+    Examples
+    --------
+    >>> d = SuggestionDict({'Port1': 1, 'Port2': 2}, name='channel')
+    >>> d['Port1']
+    1
+    >>> d['Prot1']
+    Traceback (most recent call last):
+        ...
+    KeyError: "No such channel: 'Prot1' - did you mean 'Port1'?"
+    """
+
+    def __init__(
+        self,
+        dictionary: MutableMapping[str, V],
+        *,
+        name: str | None = None,
+        error_class: type[Exception] = KeyError,
+    ) -> None:
+        super().__init__(dictionary)
+        self._name = name or 'key'
+        self._error_class = error_class
+
+    def __getitem__(self, key: str) -> V:
+        try:
+            return super().__getitem__(key)
+        except KeyError as e:
+            raise self._error_class(
+                f"No such {self._name}: '{key}'" + suggest_similar(key, self.keys())
+            ) from e
 
 
 def set_nested(d: MutableMapping, keys: Sequence[Any], value: Any) -> None:
@@ -413,53 +476,6 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
         def __hash__(self) -> int: ...
     else:
         __hash__ = None
-
-
-class SuggestionDict(dict[str, V]):
-    """A dictionary that suggests similar keys on failed lookup.
-
-    On :class:`KeyError`, raises ``error_class`` with a message that includes the
-    closest match from the existing keys (via :func:`suggest_similar`), making typos and
-    near-misses easier to diagnose.
-
-    Parameters
-    ----------
-    dictionary : collections.abc.MutableMapping
-        Initial key-value pairs.
-    name : str, default: 'key'
-        Human-readable label for the key type used in the error message.
-    error_class : type[Exception], default: KeyError
-        Exception class to raise on failed lookup. Must accept a single string argument.
-
-    Examples
-    --------
-    >>> d = SuggestionDict({'Port1': 1, 'Port2': 2}, name='channel')
-    >>> d['Port1']
-    1
-    >>> d['Prot1']
-    Traceback (most recent call last):
-        ...
-    KeyError: "No such channel: 'Prot1' - did you mean 'Port1'?"
-    """
-
-    def __init__(
-        self,
-        dictionary: MutableMapping[str, V],
-        *,
-        name: str | None = None,
-        error_class: type[Exception] = KeyError,
-    ) -> None:
-        super().__init__(dictionary)
-        self._name = name or 'key'
-        self._error_class = error_class
-
-    def __getitem__(self, key: str) -> V:
-        try:
-            return super().__getitem__(key)
-        except KeyError as e:
-            raise self._error_class(
-                f"No such {self._name}: '{key}'" + suggest_similar(key, self.keys())
-            ) from e
 
 
 def extend_packed(
