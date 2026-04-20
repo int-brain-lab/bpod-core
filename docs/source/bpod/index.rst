@@ -172,6 +172,7 @@ Data Format
 .. testsetup:: polars
 
    import polars as pl
+   import pandas as pd
    from pathlib import Path
    from bpod_core.bpod.threads import _TRIAL_DATA_SCHEMA
 
@@ -179,6 +180,8 @@ Data Format
    data = pl.read_parquet(pqt_file)
    assert dict(data.schema) == _TRIAL_DATA_SCHEMA
    pl.Config.set_tbl_width_chars(200)
+   pd.set_option('display.width', 200)
+   pd.set_option('display.max_columns', None)
 
 Data returned by :meth:`~bpod_core.bpod.Bpod.get_data` is organized in tabular form as a
 Polars :class:`~polars.DataFrame`. For the state machine in :numref:`on_the_fly_fsm` you
