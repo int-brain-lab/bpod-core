@@ -12,7 +12,7 @@ from datetime import timedelta
 from queue import Empty, SimpleQueue
 from time import perf_counter_ns, time_ns
 from types import TracebackType
-from typing import Any, ClassVar, Literal, NamedTuple, cast, overload
+from typing import Any, ClassVar, Literal, cast, overload
 from uuid import uuid5
 
 import msgspec
@@ -75,7 +75,7 @@ from bpod_core.constants import (
 )
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ServiceClient, ServiceEvent, ServiceHost, iter_services
-from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
+from bpod_core.misc import SettingsDict, SuggestionDict, extend_packed, suggest_similar
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,10 @@ class BpodError(Exception):
     This exception is raised when an error specific to the Bpod device or its
     operations occurs.
     """
+
+
+class BpodKeyError(BpodError, KeyError):
+    """Exception class for Bpod-related key errors."""
 
 
 class Bpod(SerialDevice, AbstractBpod):
@@ -116,10 +120,10 @@ class Bpod(SerialDevice, AbstractBpod):
     serial2: ExtendedSerial | None = None
     """Tertiary serial device for communication with the Bpod - used by Bpod 2+ only."""
 
-    inputs: NamedTuple
+    inputs: 'SuggestionDict[Input]'
     """Available input channels."""
 
-    outputs: NamedTuple
+    outputs: 'SuggestionDict[Output]'
     """Available output channels."""
 
     modules: '_ModuleDict'
@@ -461,8 +465,7 @@ class Bpod(SerialDevice, AbstractBpod):
         ):
             n_channels = len(description)
             io_class = f'{channel_class.__name__.lower()}s'
-            channels = []
-            types = []
+            channels: dict[str, Any] = {}
 
             # loop over the description array and create channels
             for idx, io_key in enumerate(struct.unpack(f'<{n_channels}c', description)):
@@ -470,12 +473,15 @@ class Bpod(SerialDevice, AbstractBpod):
                     raise RuntimeError(f'Unknown {io_class[:-1]} type: {io_key}')
                 n = description[:idx].count(io_key) + 1
                 name = f'{channel_names[io_key]}{n}'
-                channels.append(channel_class(self, name, io_key, idx))
-                types.append((name, channel_class))
+                channels[name] = channel_class(self, name, io_key, idx)
 
-            # store channels to NamedTuple and set the latter as a class attribute
-            named_tuple = NamedTuple(io_class, types)._make(channels)
-            setattr(self, io_class, named_tuple)
+            # store channels to typed dict and set as a class attribute
+            name = 'input channel' if channel_class is Input else 'output channel'
+            setattr(
+                self,
+                io_class,
+                SuggestionDict(channels, name=name, error_class=BpodKeyError),
+            )
 
         # set the enabled state of the input channels
         self._set_enable_inputs()
@@ -565,7 +571,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
     def _set_enable_inputs(self) -> bool:
         logger.debug('Updating enabled state of input channels')
-        enable = [i.enabled for i in self.inputs]
+        enable = [i.enabled for i in self.inputs.values()]
         self.serial0.write_struct(f'<c{self._hardware.n_inputs}?', b'E', *enable)
         return self.serial0.read(1) == b'\x01'
 
@@ -713,7 +719,9 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
         modules = list(self.modules)
-        physical_input_channels = [i.name for i in self.inputs if i.io_type != b'U']
+        physical_input_channels = [
+            i.name for i in self.inputs.values() if i.io_type != b'U'
+        ]
         global_timers = [
             f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}' for i in range(hw.n_global_timers)
         ]
@@ -750,9 +758,9 @@ class Bpod(SerialDevice, AbstractBpod):
 
         self._action_indices = {k: v for v, k in enumerate(self._actions)}
         self._physical_output_channels = list(self.modules) + [
-            o.name for o in self.outputs if o.io_type != b'U'
+            o.name for o in self.outputs.values() if o.io_type != b'U'
         ]
-        self._timer_channel_indices = {
+        self._timer_channel_indices: dict[str | None, int] = {
             k: v for v, k in enumerate(self._physical_output_channels)
         }
         self._timer_channel_indices[None] = 254
@@ -1594,7 +1602,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Returns
         -------
-        pl.DataFrame or pl.LazyFrame
+        polars.DataFrame or polars.LazyFrame
             Events recorded so far in the current trial. Returns an empty DataFrame if
             no trial is running.
 
@@ -1638,7 +1646,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Returns
         -------
-        pl.DataFrame
+        polars.DataFrame or polars.LazyFrame
             One trial's data, or all available trials concatenated when ``concat=True``.
 
             Columns:
@@ -1863,7 +1871,7 @@ class _ModuleDict(dict[str, 'Module']):
                 hint = f'connected modules: {", ".join(self._available_modules)}'
             else:
                 hint = 'no modules connected to Bpod'
-            raise BpodError(f"No such module: '{key}'; {hint}") from e
+            raise BpodKeyError(f"No such module: '{key}'; {hint}") from e
 
 
 @dataclass
