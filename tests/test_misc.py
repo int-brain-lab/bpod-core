@@ -407,6 +407,46 @@ class TestSettingsDict:
         temp_settings.set_nested(['new', 'path'], 'value')
         spy.assert_called_once()
 
+    def test_setitem_rollback_new_key_on_save_failure(self, temp_settings, mocker):
+        """New key is removed from state if save fails."""
+        mocker.patch.object(temp_settings, '_save_to_file', side_effect=OSError)
+        with pytest.raises(OSError):
+            temp_settings['new'] = 'value'
+        assert 'new' not in temp_settings
+
+    def test_setitem_rollback_existing_key_on_save_failure(self, temp_settings, mocker):
+        """Existing key reverts to old value if save fails."""
+        temp_settings['key'] = 'old'
+        mocker.patch.object(temp_settings, '_save_to_file', side_effect=OSError)
+        with pytest.raises(OSError):
+            temp_settings['key'] = 'new'
+        assert temp_settings['key'] == 'old'
+
+    def test_delitem_rollback_on_save_failure(self, temp_settings, mocker):
+        """Deleted key is restored to state if save fails."""
+        temp_settings['key'] = 'value'
+        mocker.patch.object(temp_settings, '_save_to_file', side_effect=OSError)
+        with pytest.raises(OSError):
+            del temp_settings['key']
+        assert temp_settings['key'] == 'value'
+
+    def test_set_nested_rollback_new_path_on_save_failure(self, temp_settings, mocker):
+        """New nested path is removed from state if save fails."""
+        mocker.patch.object(temp_settings, '_save_to_file', side_effect=OSError)
+        with pytest.raises(OSError):
+            temp_settings.set_nested(['a', 'b'], 42)
+        assert temp_settings.get_nested(['a', 'b']) is None
+
+    def test_set_nested_rollback_existing_path_on_save_failure(
+        self, temp_settings, mocker
+    ):
+        """Existing nested value reverts to old value if save fails."""
+        temp_settings.set_nested(['a', 'b'], 42)
+        mocker.patch.object(temp_settings, '_save_to_file', side_effect=OSError)
+        with pytest.raises(OSError):
+            temp_settings.set_nested(['a', 'b'], 99)
+        assert temp_settings.get_nested(['a', 'b']) == 42
+
 
 class TestExtendPacked:
     """Tests for misc.extend_packed()."""

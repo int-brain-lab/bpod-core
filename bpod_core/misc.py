@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 K = TypeVar('K')
 V = TypeVar('V')
 _T = TypeVar('_T')
+_MISSING = object()
 
 _RE_NON_ALPHANUMERIC = re.compile(r'[^a-zA-Z0-9_]')
 """Match non-alphanumeric characters except underscores."""
@@ -307,7 +308,7 @@ def get_local_ipv4() -> str:
             raise
 
 
-class SettingsDict(MutableMapping):
+class SettingsDict(MutableMapping[str, Any]):
     """
     A dictionary-like persistent settings storage backed by a JSON file.
 
@@ -317,16 +318,14 @@ class SettingsDict(MutableMapping):
 
     File access is protected by a file lock for safe concurrent access from multiple
     processes.
+
+    Parameters
+    ----------
+    json_path : os.PathLike or str
+        Path to the JSON configuration file.
     """
 
     def __init__(self, json_path: PathLike | str) -> None:
-        """Initialize the SettingsDict instance.
-
-        Parameters
-        ----------
-        json_path : PathLike or str
-            Path to the JSON configuration file.
-        """
         self._json_path = Path(json_path).resolve()
         self._lock_path = self._json_path.with_suffix('.lock')
         self._file_lock = FileLock(self._lock_path)
@@ -348,23 +347,35 @@ class SettingsDict(MutableMapping):
         with self._file_lock, self._json_path.open('w') as f:
             json.dump(dictionary, f, indent=2)
 
-    def __getitem__(self, key: Any) -> Any:
+    def __getitem__(self, key: str) -> Any:
         return self._state[key]
 
-    def __setitem__(self, key: Any, value: Any) -> None:
+    def __setitem__(self, key: str, value: Any) -> None:
         if self._state.get(key) == value:
             return
+        old_value = self._state.get(key, _MISSING)
         self._state[key] = value
-        self._save_to_file()
+        try:
+            self._save_to_file()
+        except Exception:
+            if old_value is _MISSING:
+                del self._state[key]
+            else:
+                self._state[key] = old_value
+            raise
 
-    def __contains__(self, key: Any) -> bool:
+    def __contains__(self, key: object) -> bool:
         return key in self._state
 
-    def __delitem__(self, key: Any) -> None:
-        del self._state[key]
-        self._save_to_file()
+    def __delitem__(self, key: str) -> None:
+        old_value = self._state.pop(key)
+        try:
+            self._save_to_file()
+        except Exception:
+            self._state[key] = old_value
+            raise
 
-    def __iter__(self) -> Iterator[Any]:
+    def __iter__(self) -> Iterator[str]:
         return iter(list(self._state))
 
     def __len__(self) -> int:
@@ -373,12 +384,12 @@ class SettingsDict(MutableMapping):
     def __repr__(self) -> str:
         return repr(self._state)
 
-    def get_nested(self, keys: Sequence[Any], default: Any | None = None) -> Any:
+    def get_nested(self, keys: Sequence[str], default: Any | None = None) -> Any:
         """Retrieve a nested value using a sequence of keys.
 
         Parameters
         ----------
-        keys : Sequence
+        keys : Sequence of str
             A sequence of keys representing the nested path.
         default : Any, optional
             The value to return if the path does not exist. Defaults to None.
@@ -390,20 +401,28 @@ class SettingsDict(MutableMapping):
         """
         return get_nested(d=self._state, keys=keys, default=default)
 
-    def set_nested(self, keys: Sequence[Any], value: Any) -> None:
+    def set_nested(self, keys: Sequence[str], value: Any) -> None:
         """Set a nested value using a sequence of keys.
 
         Parameters
         ----------
-        keys : Sequence
+        keys : Sequence of str
             A sequence of keys representing the nested path.
         value : Any
             The value to set at the nested path.
         """
-        if get_nested(d=self._state, keys=keys) == value:
+        old_value = get_nested(d=self._state, keys=keys, default=_MISSING)
+        if old_value == value:
             return
         set_nested(d=self._state, keys=keys, value=value)
-        self._save_to_file()
+        try:
+            self._save_to_file()
+        except Exception:
+            if old_value is _MISSING:
+                set_nested(d=self._state, keys=keys[:-1], value={})
+            else:
+                set_nested(d=self._state, keys=keys, value=old_value)
+            raise
 
 
 class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
