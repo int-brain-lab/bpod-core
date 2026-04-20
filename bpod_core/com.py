@@ -4,6 +4,7 @@ import contextlib
 import logging
 import re
 import struct
+import sys
 import weakref
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
@@ -14,7 +15,16 @@ from serial import Serial, SerialException
 from serial.threaded import Protocol, ReaderThread
 from serial.tools.list_ports import comports
 from serial.tools.list_ports_common import ListPortInfo
-from typing_extensions import Buffer, Self
+
+if sys.version_info >= (3, 12):
+    from collections.abc import Buffer
+else:
+    from typing_extensions import Buffer
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 from bpod_core.constants import (
     STRUCT_INT8,

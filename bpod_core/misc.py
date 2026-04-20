@@ -7,11 +7,17 @@ import logging
 import re
 import socket
 import struct
+import sys
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from enum import IntEnum
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 import msgspec
 from filelock import FileLock
@@ -51,11 +57,11 @@ class ByteEnum(IntEnum):
 
     _as_bytes: bytes
 
-    def __new__(cls, value: int) -> 'ByteEnum':
+    def __new__(cls, value: int) -> 'Self':
         """Create a new ByteEnum member."""
         if not 0 <= value <= 0xFF:
             raise ValueError(f'ByteEnum value must fit in one byte, got {value!r}')
-        obj: ByteEnum = int.__new__(cls, value)
+        obj: Self = int.__new__(cls, value)
         obj._value_ = value
         obj._as_bytes = value.to_bytes(1, 'little')
         return obj
@@ -136,7 +142,7 @@ def suggest_similar(
     ----------
     invalid_string : str
         The string that is invalid or misspelled.
-    valid_strings : Iterable[str]
+    valid_strings : ~collections.abc.Iterable of str
         An iterable of valid strings to compare against.
     format_string : str, default: " - did you mean '{}'?"
         The format string for the suggestion.
@@ -163,16 +169,16 @@ class SuggestionDict(dict[str, V]):
     """A dictionary that suggests similar keys on failed lookup.
 
     On :class:`KeyError`, raises ``error_class`` with a message that includes the
-    closest match from the existing keys (via :func:`suggest_similar`), making typos and
+    closest match from the existing keys via :func:`suggest_similar`, making typos and
     near-misses easier to diagnose.
 
     Parameters
     ----------
-    dictionary : collections.abc.MutableMapping
+    dictionary : ~collections.abc.MutableMapping
         Initial key-value pairs.
     name : str, default: 'key'
         Human-readable label for the key type used in the error message.
-    error_class : type[Exception], default: KeyError
+    error_class : type of Exception, default: KeyError
         Exception class to raise on failed lookup. Must accept a single string argument.
 
     Examples
@@ -212,11 +218,11 @@ def set_nested(d: MutableMapping, keys: Sequence[Any], value: Any) -> None:
 
     Parameters
     ----------
-    d : MutableMapping
+    d : ~collections.abc.MutableMapping
         The dictionary in which to set the value.
-    keys : Sequence
+    keys : ~collections.abc.Sequence
         A sequence of keys representing the nested path where the value should be set.
-    value : Any
+    value : ~typing.Any
         The value to set at the specified path.
 
     Examples
@@ -247,11 +253,11 @@ def get_nested(d: MutableMapping, keys: Sequence[Any], default: Any = None) -> A
 
     Parameters
     ----------
-    d : MutableMapping
+    d : ~collections.abc.MutableMapping
         The dictionary from which to get a value.
-    keys : Sequence
+    keys : ~collections.abc.Sequence
         A sequence of keys representing the path to the desired value.
-    default : Any, optional
+    default : ~typing.Any, optional
         The value to return if the path does not exist. Defaults to None.
 
     Returns
@@ -321,7 +327,7 @@ class SettingsDict(MutableMapping[str, Any]):
 
     Parameters
     ----------
-    json_path : os.PathLike or str
+    json_path : ~os.PathLike or str
         Path to the JSON configuration file.
     """
 
@@ -389,7 +395,7 @@ class SettingsDict(MutableMapping[str, Any]):
 
         Parameters
         ----------
-        keys : Sequence of str
+        keys : ~collections.abc.Sequence of str
             A sequence of keys representing the nested path.
         default : Any, optional
             The value to return if the path does not exist. Defaults to None.
@@ -406,7 +412,7 @@ class SettingsDict(MutableMapping[str, Any]):
 
         Parameters
         ----------
-        keys : Sequence of str
+        keys : ~collections.abc.Sequence of str
             A sequence of keys representing the nested path.
         value : Any
             The value to set at the nested path.

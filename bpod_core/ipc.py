@@ -24,7 +24,6 @@ import zmq
 from platformdirs import user_runtime_path
 from psutil import pid_exists
 from pydantic import validate_call
-from typing_extensions import Self
 from zeroconf import (
     InterfaceChoice,
     IPVersion,
@@ -33,6 +32,11 @@ from zeroconf import (
     ServiceListener,
     Zeroconf,
 )
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 from bpod_core.constants import IPV4_LOOPBACK, IPV4_WILDCARD
 from bpod_core.misc import (
