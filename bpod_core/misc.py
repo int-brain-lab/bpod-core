@@ -373,6 +373,13 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
     Alternatively, you can also instantiate a ValidatedDict directly:
 
     >>> my_validated_dict = ValidatedDict[str, int]({'foo': 1, 'bar': 2})
+    >>> my_validated_dict['foo'] = 'bar'
+    Traceback (most recent call last):
+       ...
+    pydantic_core._pydantic_core.ValidationError: 1 validation error ...
+    foo
+      Input should be a valid integer, unable to parse string as an integer ...
+      ...
     """
 
     root: dict[K, V] = Field(default_factory=dict)
