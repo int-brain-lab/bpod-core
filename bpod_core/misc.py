@@ -408,6 +408,53 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
         __hash__ = None
 
 
+class SuggestionDict(dict[str, V]):
+    """A dictionary that suggests similar keys on failed lookup.
+
+    On :class:`KeyError`, raises ``error_class`` with a message that includes the
+    closest match from the existing keys (via :func:`suggest_similar`), making typos and
+    near-misses easier to diagnose.
+
+    Parameters
+    ----------
+    dictionary : collections.abc.MutableMapping
+        Initial key-value pairs.
+    name : str, default: 'key'
+        Human-readable label for the key type used in the error message.
+    error_class : type[Exception], default: KeyError
+        Exception class to raise on failed lookup. Must accept a single string argument.
+
+    Examples
+    --------
+    >>> d = SuggestionDict({'Port1': 1, 'Port2': 2}, name='channel')
+    >>> d['Port1']
+    1
+    >>> d['Prot1']
+    Traceback (most recent call last):
+        ...
+    KeyError: "No such channel: 'Prot1' - did you mean 'Port1'?"
+    """
+
+    def __init__(
+        self,
+        dictionary: MutableMapping[str, V],
+        *,
+        name: str | None = None,
+        error_class: type[Exception] = KeyError,
+    ) -> None:
+        super().__init__(dictionary)
+        self._name = name or 'key'
+        self._error_class = error_class
+
+    def __getitem__(self, key: str) -> V:
+        try:
+            return super().__getitem__(key)
+        except KeyError as e:
+            raise self._error_class(
+                f"No such {self._name}: '{key}'" + suggest_similar(key, self.keys())
+            ) from e
+
+
 def extend_packed(
     byte_array: bytearray,
     values: Sequence[int],
