@@ -1396,6 +1396,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self,
         state_machine: StateMachine | None = None,
         *,
+        trial_number: int | None = None,
         validate: bool = True,
     ) -> None:
         """
@@ -1413,6 +1414,9 @@ class Bpod(SerialDevice, AbstractBpod):
         state_machine : StateMachine, optional
             The state machine to run. If not provided, the previously sent state machine
             is repeated.
+        trial_number : int, optional
+            The trial number to assign to the state machine. If not provided, the trial
+            number is automatically incremented with each run.
         validate : bool, default: True
             If False, the state machine will not be validated prior to compilation. This
             will speed up the process, but may result in errors or unexpected behavior
@@ -1424,7 +1428,7 @@ class Bpod(SerialDevice, AbstractBpod):
             If called without an argument and no state machine has been run yet.
         ValueError
             If the state machine is invalid or exceeds hardware limitations.
-        :exc:`~validate_call.roar.validate_callCallHintViolation`
+        ValidationError
             If function arguments don't match type hints.
 
         Notes
@@ -1441,7 +1445,10 @@ class Bpod(SerialDevice, AbstractBpod):
         wait : Block until the currently running state machine finishes.
         """
         debugging = logger.isEnabledFor(logging.DEBUG)
-        self._next_fsm_index += 1
+        if trial_number is None:
+            self._next_fsm_index += 1
+        else:
+            self._next_fsm_index = trial_number
         self._disable_all_module_relays()
 
         # If the user did not provide a state machine, recover the last run state
