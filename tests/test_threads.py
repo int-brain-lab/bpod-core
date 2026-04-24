@@ -12,20 +12,20 @@ import numpy as np
 import polars as pl
 import pytest
 
-from bpod_core.bpod.structs import (
-    RawEvent,
-    RawSoftcode,
-    StateMachineLookup,
-    TimeReferences,
-    _InputEvents,
-)
-from bpod_core.bpod.threads import (
+from bpod_core.bpod._threads import (
     _TRIAL_DATA_SCHEMA,
     EventThread,
     ReadThread,
     SoftcodeThread,
     _build_event_lookup,
     _EventID,
+)
+from bpod_core.bpod.structs import (
+    RawEvent,
+    RawSoftcode,
+    StateMachineLookup,
+    TimeReferences,
+    _InputEvents,
 )
 from bpod_core.constants import STRUCT_UINT32_LE, STRUCT_UINT64_LE
 
@@ -356,7 +356,7 @@ class TestEventThread:
     def test_buffer_growth(self, mocker, make_thread):
         """Buffer doubles correctly."""
         init_buffer_size = 10
-        mocker.patch('bpod_core.bpod.threads._INITIAL_BUFFER_SIZE', init_buffer_size)
+        mocker.patch('bpod_core.bpod._threads._INITIAL_BUFFER_SIZE', init_buffer_size)
         n = init_buffer_size + 1
         thread, data_queue = make_thread(event_names=['Ev0', 'Tup'])
         assert len(thread._buffer) == init_buffer_size

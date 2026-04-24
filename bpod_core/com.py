@@ -4,7 +4,6 @@ import contextlib
 import logging
 import re
 import struct
-import sys
 import weakref
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager
@@ -16,16 +15,7 @@ from serial import Serial, SerialException
 from serial.threaded import Protocol, ReaderThread
 from serial.tools.list_ports import comports
 from serial.tools.list_ports_common import ListPortInfo
-
-if sys.version_info >= (3, 12):
-    from collections.abc import Buffer
-else:
-    from typing_extensions import Buffer
-
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:
-    from typing_extensions import Self
+from typing_extensions import Buffer, Self
 
 from bpod_core.constants import (
     STRUCT_INT8,
@@ -127,15 +117,15 @@ class ExtendedSerial(Serial):
         ----------
         format_string : str
             A format string that specifies the layout of the data. It should be
-            compatible with the `struct` module's format specifications.
-            See https://docs.python.org/3/library/struct.html#format-characters
+            compatible with the :mod:`struct` module's `format specifications
+            <https://docs.python.org/3/library/struct.html#format-characters>`__.
         *data : Any
             Variable-length arguments representing the data to be packed and written,
             corresponding to the format specifiers in `format_string`.
 
         Returns
         -------
-        int | None
+        int or None
             The number of bytes written to the serial port, or None if the write
             operation fails.
 
@@ -143,8 +133,14 @@ class ExtendedSerial(Serial):
         ------
         struct.error
             Error occurred during packing of the data into binary format.
-        serial.SerialTimeoutException
+        SerialTimeoutException
             In case a write timeout is configured for the port and the time is exceeded.
+
+        Examples
+        --------
+        Write a command byte followed by a 16-bit unsigned integer::
+
+            serial_port.write_struct('<BH', 0x4A, 1000)
         """
         buffer = struct.pack(format_string, *data)
         return self.write(buffer)
@@ -160,15 +156,21 @@ class ExtendedSerial(Serial):
         ----------
         format_string : str
             A format string that specifies the layout of the data to be read. It should
-            be compatible with the `struct` module's format specifications.
-            See https://docs.python.org/3/library/struct.html#format-characters
+            be compatible with the :mod:`struct` module's `format specifications
+            <https://docs.python.org/3/library/struct.html#format-characters>`__.
 
         Returns
         -------
-        tuple[Any, ...]
+        tuple
             A tuple containing the unpacked data read from the serial port. The
             structure of the tuple corresponds to the format specified in
             `format_string`.
+
+        Examples
+        --------
+        Read one unsigned 16-bit integer followed by two unsigned 8-bit integers::
+
+            major, minor, patch = serial_port.read_struct('<HBB')
         """
         n_bytes = struct.calcsize(format_string)
         return struct.unpack(format_string, super().read(n_bytes))
@@ -311,6 +313,12 @@ class ExtendedSerial(Serial):
         -------
         bytes
             Data returned by the serial device in response to the query.
+
+        Examples
+        --------
+        Send a command and read back multiple bytes::
+
+            response = serial_port.query(b'\x4A', size=4)
         """
         self.write(query)
         return self.read(size)
@@ -320,7 +328,7 @@ class ExtendedSerial(Serial):
         query: Buffer,
         format_string: str,
     ) -> tuple[Any, ...]:
-        """
+        r"""
         Query structured data from the serial port.
 
         This method queries a specified number of bytes from the serial port and
@@ -332,15 +340,21 @@ class ExtendedSerial(Serial):
             Query to be sent to the serial port.
         format_string : str
             A format string that specifies the layout of the data to be read. It should
-            be compatible with the `struct` module's format specifications.
-            See https://docs.python.org/3/library/struct.html#format-characters
+            be compatible with the :mod:`struct` module's `format specifications
+            <https://docs.python.org/3/library/struct.html#format-characters>`__.
 
         Returns
         -------
-        tuple[Any, ...]
+        tuple
             A tuple containing the unpacked data read from the serial port. The
             structure of the tuple corresponds to the format specified in
             `format_string`.
+
+        Examples
+        --------
+        Send a command and unpack the response as two unsigned 8-bit integers::
+
+            major, minor = serial_port.query_struct(b'\x4a', 'BB')
         """
         self.write(query)
         return self.read_struct(format_string)
@@ -413,7 +427,7 @@ class ChunkedSerialReader(Protocol):
 
         Parameters
         ----------
-        transport : ReaderThread
+        transport : ~serial.threaded.ReaderThread
             The reader thread that created this protocol instance.
         """
         self._port = transport.serial.portstr
@@ -463,11 +477,11 @@ def find_ports(**filters: FilterValue) -> list[ListPortInfo]:
 
         - Scalar: exact match
         - Sequence: match any item (OR logic)
-        - re.Pattern: regex match (use re.compile())
+        - re.Pattern: regex match (use :func:`re.compile`)
 
     Returns
     -------
-    list[ListPortInfo]
+    list of ListPortInfo
         Ports matching all criteria.
 
     Examples
@@ -490,7 +504,7 @@ def find_ports(**filters: FilterValue) -> list[ListPortInfo]:
 
     Notes
     -----
-    Strings use exact matching. Use re.compile() for regex patterns.
+    Strings use exact matching. Use :func:`re.compile` for regex patterns.
     """
 
     def matches(key: object, value: FilterValue) -> bool:

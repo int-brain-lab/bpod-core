@@ -32,18 +32,18 @@ class TestByteEnum:
 
     def test_as_bytes(self, op):
         """as_bytes returns a single-byte bytes object matching the value."""
-        assert op.READ.as_bytes == b'\x01'
-        assert op.WRITE.as_bytes == b'\x02'
+        assert op.READ.byte_value == b'\x01'
+        assert op.WRITE.byte_value == b'\x02'
 
     def test_as_bytes_length(self, op):
         """as_bytes is always exactly one byte."""
         for member in op:
-            assert len(member.as_bytes) == 1
+            assert len(member.byte_value) == 1
 
     def test_ascii_value(self, op):
         """ord() values are correctly stored and round-trip via as_bytes."""
         assert ord('X') == op.EXEC
-        assert op.EXEC.as_bytes == b'X'
+        assert op.EXEC.byte_value == b'X'
 
     def test_is_int(self, op):
         """Members are integers (IntEnum behaviour preserved)."""
@@ -56,14 +56,14 @@ class TestByteEnum:
 
     def test_invalid_negative(self):
         """Negative values raise ValueError."""
-        with pytest.raises(ValueError, match='one byte'):
+        with pytest.raises(OverflowError):
 
             class Bad(ByteEnum):
                 NEG = -1
 
     def test_invalid_too_large(self):
         """Values above 255 raise ValueError."""
-        with pytest.raises(ValueError, match='one byte'):
+        with pytest.raises(OverflowError):
 
             class Bad(ByteEnum):
                 BIG = 256

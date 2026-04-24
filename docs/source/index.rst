@@ -1,7 +1,7 @@
 .. include:: ../../README.md
    :parser: myst_parser.sphinx_
    :start-after: </p>
-   :end-before: ---
+   :end-before: ## Links
 
 .. toctree::
    :caption: Sections
@@ -11,10 +11,15 @@
    state_machines/index
    bpod/index
    faq
-   api
    schema
    developer_guide
    changelog
+
+.. toctree::
+  :hidden:
+  :caption: API Reference
+
+  api
 
 .. toctree::
    :caption: Links

@@ -1,5 +1,5 @@
-.caption-number {
-    font-weight: bold;
+.code-block-caption .caption-number {
+    margin-right: 0.5em;
 }
 
 figure.align-default {
@@ -10,27 +10,53 @@ figure.align-default figcaption {
     text-align: center;
 }
 
-a.headerlink {
+.sig-object a.headerlink {
     visibility: visible !important;
+    font-size: 0.8em;
     opacity: 0.5 !important;
-    transition: opacity 0.2s ease-in-out;
 }
 
-a.headerlink:hover {
-    opacity: 1.0 !important;
+.sig-object a.headerlink:hover {
+    opacity: 1 !important;
+    border: none;
+}
+
+a:has(.linkcode-link) {
+    border: none;
+    margin-left: 4px;
+    baseline-shift: -0.1em;
+}
+
+.linkcode-link {
+    margin-left: 0;
 }
 
 .linkcode-link::after {
     opacity: 0.5 !important;
-    margin-left: 4px;
-    transition: opacity 0.2s ease-in-out;
 }
 
 .linkcode-link:hover::after {
     opacity: 1.0 !important;
 }
 
+/* Center align graphviz objects */
+.graphviz object {
+  display: block;
+  margin: 0 auto;
+}
+
+.theme-switch {
+    display: none !important;
+}
+
+.sy-head-brand img {
+  height: 40px;
+}
+
 /* Hide the top "View page source" breadcrumb link */
 .wy-breadcrumbs-aside {
     display: none !important;
 }
+
+table.autosummary td:first-child { white-space: nowrap; }
+table.autosummary td:last-child  { width: 100%; }

@@ -1,9 +1,13 @@
 import importlib.util
 import inspect
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
+
+from docutils import nodes
+from sphinx.ext.intersphinx import InventoryAdapter
 
 project_root = Path(__file__).parents[2].resolve()
 docs_source_path = Path(__file__).parent.resolve()
@@ -84,8 +88,59 @@ def generate_fsm_examples(app):
             pf.write('\n'.join(page_lines) + '\n')
 
 
+_REFERENCE_URL_MAP = {
+    'polars.DataFrame': 'https://docs.pola.rs/py-polars/html/reference/dataframe',
+    'polars.LazyFrame': 'https://docs.pola.rs/py-polars/html/reference/lazyframe',
+    'typing.Annotated': 'https://docs.python.org/3/library/typing.html#typing.Annotated',
+    'numpy.uint8': 'https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.uint8',
+}
+
+
+def resolve_missing_references(_, env, node, contnode):
+    """Resolve missing cross-references not covered by intersphinx inventories."""
+
+    target = node.get('reftarget', '')
+
+    # Remap platform-specific serial.Serial subclasses to the public API entry
+    if re.match(r'^serial\.serial\w+\.Serial$', target):
+        node['reftarget'] = 'serial.Serial'
+        return None
+
+    # # Remap fully-parameterized ValidatedDict generics to typing.Annotated
+    # if re.match(r'^bpod_core\.misc\.ValidatedDict\[', target):
+    #     target = node['reftarget'] = 'typing.Annotated'
+
+    # Strip generic subscripts that intersphinx can't resolve
+    if '[' in target:
+        node['reftarget'] = target[: target.index('[')]
+        text = contnode.astext()
+        if '[' in text:
+            contnode[0] = nodes.Text(text[: text.index('[')])
+        return None
+
+    # Direct URL fallbacks for targets absent from all inventories
+    if target in _REFERENCE_URL_MAP:
+        ref = nodes.reference('', '', internal=False, refuri=_REFERENCE_URL_MAP[target])
+        ref += contnode
+        return ref
+
+    # For failed py:class lookups, retry as py:data or py:attribute
+    if node.get('refdomain') == 'py' and node.get('reftype') == 'class':
+        for inv in InventoryAdapter(env).named_inventory.values():
+            for alt in ('py:data', 'py:attribute'):
+                entry = inv.get(alt, {}).get(target)
+                if entry:
+                    _proj, _ver, location, _display = entry
+                    ref = nodes.reference('', '', internal=False, refuri=location)
+                    ref += contnode
+                    return ref
+
+    return None
+
+
 def setup(app):
     app.connect('builder-inited', generate_fsm_examples)
+    app.connect('missing-reference', resolve_missing_references, priority=400)
 
 
 # -- Project information -----------------------------------------------------
@@ -99,14 +154,6 @@ version = '.'.join(__version__.split('.')[:3])
 rst_prolog = f"""
 .. |version_code| replace:: ``{version}``
 """
-
-html_context = {
-    'display_github': False,
-    'github_user': 'int-brain-lab',
-    'github_repo': 'bpod-core',
-    'github_version': 'master',
-    'conf_py_path': '/docs/source/',
-}
 
 # -- dump json schema --------------------------------------------------------
 schema_root = project_root / 'schema'
@@ -128,11 +175,17 @@ extensions = [
     'sphinx.ext.autosummary',
     'sphinx.ext.graphviz',
     'sphinx.ext.doctest',
+    'sphinx.ext.inheritance_diagram',
     'sphinx_github_style',
     'sphinx_copybutton',
     'sphinx_design',
     'sphinx-jsonschema',
     'sphinx_toolbox.wikipedia',
+    # 'sphinx_toolbox.more_autodoc.autonamedtuple',
+    # 'sphinx_toolbox.more_autodoc.generic_bases',
+    'sphinx_toolbox.more_autodoc.typevars',
+    'sphinx_toolbox.more_autodoc.genericalias',
+    # 'sphinx_toolbox.more_autodoc.overloads',
     'doctest_codeblock',
     'fsm_codeblock',
     'matplotlib.sphinxext.plot_directive',
@@ -143,7 +196,6 @@ _DOCS_STATIC = __import__('pathlib').Path({str(docs_source_path / '_static')!r})
 plot_pre_code = f"""
 _DOCS_STATIC = __import__('pathlib').Path({str(docs_source_path / '_static')!r})
 """
-
 source_suffix = ['.rst', '.md']
 
 copybutton_prompt_text = r'>>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: '
@@ -154,50 +206,72 @@ exclude_patterns = []
 
 intersphinx_timeout = 30
 intersphinx_mapping = {
-    'python': ('https://docs.python.org/3.10', None),
+    'python': ('https://docs.python.org/3', None),
     'numpy': ('https://numpy.org/doc/stable', None),
     'pandas': ('https://pandas.pydata.org/docs', None),
     'polars': ('https://docs.pola.rs/api/python/stable', None),
     'pyarrow': ('https://arrow.apache.org/docs/', None),
     'serial': ('https://pyserial.readthedocs.io/en/stable', None),
     'graphviz': ('https://graphviz.readthedocs.io/en/stable', None),
-    'pydantic': ('https://docs.pydantic.dev/latest', None),
+    'pydantic': ('https://pydantic.dev/docs/validation/latest', None),
     'msgspec': ('https://jcristharif.com/msgspec/', None),
     'zmq': ('https://pyzmq.readthedocs.io/en/latest', None),
     'zeroconf': ('https://python-zeroconf.readthedocs.io/en/latest/', None),
+    'typing_extensions': ('https://typing-extensions.readthedocs.io/en/latest', None),
 }
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
+html_title = 'bpod-core documentation'
 html_logo = '_static/bpod-core.svg'
-html_theme = 'sphinx_rtd_theme'
+html_static_path = ['_static']
+html_css_files = ['custom.css']
+html_theme = 'shibuya'
 html_theme_options = {
-    'logo_only': True,
-    'collapse_navigation': True,
-    'sticky_navigation': True,
-    'navigation_depth': 4,
-    'includehidden': True,
-    'titles_only': False,
+    'color_mode': 'light',
 }
+html_context = {
+    'display_github': False,
+    'github_user': 'int-brain-lab',
+    'github_repo': 'bpod-core',
+    'github_version': 'master',
+    'conf_py_path': '/docs/source/',
+    # 'source_type': 'github',
+    # 'source_user': 'int-brain-lab',
+    # 'source_repo': 'bpod-core',
+    # 'source_version': 'develop',
+    # 'source_docs_path': '/docs/source/',
+}
+html_favicon = '_static/favicon.svg'
 
 # -- Settings for automatic API generation -----------------------------------
-autodoc_mock_imports = ['_typeshed']
+autodoc_mock_imports = ['_typeshed', 'serial']
 autodoc_class_signature = 'separated'  # 'mixed', 'separated'
 autodoc_member_order = 'groupwise'  # 'alphabetical', 'groupwise', 'bysource'
-autodoc_inherit_docstrings = False
-autodoc_typehints = 'description'  # 'description', 'signature', 'none', 'both'
+autodoc_inherit_docstrings = True
+autodoc_typehints = 'signature'  # 'description', 'signature', 'none', 'both'
 autodoc_typehints_description_target = 'all'  # 'all', 'documented', 'documented_params'
 autodoc_typehints_format = 'short'  # 'fully-qualified', 'short'
-autodoc_default_options = {'exclude-members': '__new__'}
+autodoc_use_type_comments = False
+autodoc_default_options = {
+    'member-order': 'groupwise',
+    'show-inheritance': True,
+    'undoc-members': True,
+    'exclude-members': '__new__, __init__, model_config',
+    'class-doc-from': 'class',
+}
+autodoc_type_aliases = {}
 
 autosummary_generate = True
 autosummary_imported_members = False
 
-typehints_defaults = None
+always_use_bars_union = True
+typehints_defaults = 'comma'
 typehints_use_rtype = True
 typehints_use_signature = False
-typehints_use_signature_return = True
+typehints_use_signature_return = False
+typehints_document_overloads = True
 
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True
@@ -213,24 +287,44 @@ napoleon_use_rtype = True
 napoleon_use_keyword = True
 napoleon_preprocess_types = True
 napoleon_type_aliases = {
-    'ndarray': 'numpy.ndarray',
-    'DataFrame': 'pandas.DataFrame',
-    'Series': 'pandas.Series',
-    'Mapping': 'collections.abc.Mapping',
-    'ValidationError': 'pydantic.ValidationError',
+    'ndarray': '~numpy.ndarray',
+    'Mapping': '~collections.abc.Mapping',
+    'MutableMapping': '~collections.abc.MutableMapping',
+    'Collection': '~collections.abc.Collection',
+    'Sequence': '~collections.abc.Sequence',
+    'Iterable': '~collections.abc.Iterable',
+    'ValidationError': '~pydantic_core.ValidationError',
+    'Buffer': '~collections.abc.Buffer',
+    'Callable': '~collections.abc.Callable',
+    'PathLike': '~os.PathLike',
+    'Any': '~typing.Any',
+    'UUID': '~uuid.UUID',
+    'SerialException': '~serial.SerialException',
+    'SerialTimeoutException': '~serial.SerialTimeoutException',
+    'StateMachine': '~bpod_core.fsm.StateMachine',
+    'StateMachineLookup': '~bpod_core.bpod.structs.StateMachineLookup',
+    'SimpleQueue': '~queue.SimpleQueue',
+    'DataFrame': 'polars.DataFrame',
+    'LazyFrame': 'polars.LazyFrame',
+    'TimeReferences': '~bpod_core.bpod.structs.TimeReferences',
+    'BpodInfo': '~bpod_core.bpod.structs.BpodInfo',
+    'Digraph': '~graphviz.Digraph',
+    'ListPortInfo': '~serial.tools.list_ports.ListPortInfo',
+    'TypeVar': '~typing.TypeVar',
+    'ValidatedDict': '~bpod_core.misc.ValidatedDict',
 }
 napoleon_attr_annotations = True
 
 graphviz_output_format = 'svg'
-graphviz_inline = False
+# graphviz_inline = False
 
 numfig = True
-html_static_path = ['_static']
-html_css_files = ['custom.css']
 
 linkcode_link_text = ' '
 pygments_style = 'default'
 highlight_language = 'python3'
+
+nitpicky = True
 
 # -- Graphviz settings -----------------------------------
 graphviz_dot = 'dot'
