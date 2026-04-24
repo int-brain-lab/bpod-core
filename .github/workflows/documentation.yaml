@@ -26,13 +26,13 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
         with:
-          python-version: 3.13
+          python-version: 3.14
       - uses: ts-graphviz/setup-graphviz@v2
       - name: sync dependencies
         run: uv sync --no-default-groups --group doc
       - name: build documentation
         run: uv run sphinx-build docs/source docs/build
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/build/
 
@@ -44,4 +44,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0a11] - 2026-04-24
+
+### Added
+
+- `ExtendedSerial.read_struct_iter` and `ExtendedSerial.stream_struct` methods.
+- `misc.SuggestionDict` for key lookup with typo suggestions.
+- added optional `trial_number` parameter to `Bpod.run` method.
+
+### Changed
+
+- Replaced `NamedTuples` with `misc.SuggestionDict` for `Bpod.inputs` and
+  `Bpod.outputs`
+- Refactored Sphinx documentation and API reference.
+
 ## [0.1.0a10] - 2026-04-16
 
 ### Added
@@ -179,6 +193,9 @@ Just a quick bugfix release ...
 ## [0.1.0a0] - 2025-04-17
 
 First alpha release. Nothing works.
+
+
+[0.1.0a11]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a11
 
 [0.1.0a10]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a10
 

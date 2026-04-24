@@ -138,7 +138,6 @@ StateTimer = Annotated[
     WrapValidator(_validate_seconds),
 ]
 
-
 StateComment = Annotated[
     str,
     Field(
@@ -286,7 +285,6 @@ OutputActionValue = Annotated[
     ),
 ]
 
-
 StateName = Annotated[
     str,
     Field(
@@ -297,6 +295,7 @@ StateName = Annotated[
     ),
     WrapValidator(_validate_state_name),
 ]
+"""A valid state machine state name."""
 
 Event = Annotated[
     str,
@@ -403,7 +402,7 @@ class States(ValidatedDict[StateName, State], title='States'):
     """A collection of states."""
 
     @property
-    def transition_targets(self) -> set[StateName | Operator]:
+    def transition_targets(self) -> set[str]:
         """A set of all transition targets."""
         return {t for s in self.values() for t in s.transitions.values()}
 
@@ -630,8 +629,9 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Notes
         -----
-        This method depends on the Graphviz system libraries to be installed.
-        See https://graphviz.readthedocs.io/en/stable/manual.html#installation
+        This method depends on the `Graphviz system libraries
+        <https://graphviz.readthedocs.io/en/stable/manual.html#installation>`_ to be
+        installed.
         """
         # Initialize the Digraph with the name of the state machine
         dot = Digraph(self.name)
@@ -794,7 +794,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Parameters
         ----------
-        filename : os.PathLike or str
+        filename : PathLike or str
             Destination path. The file extension determines the output type.
         overwrite : bool, default: False
             If False and the file already exists, a FileExistsError is raised.
@@ -815,8 +815,9 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Notes
         -----
-        Rendering diagrams depends on the Graphviz system libraries to be installed.
-        See https://graphviz.readthedocs.io/en/stable/manual.html#installation
+        Rendering diagrams depends on the `Graphviz system libraries
+        <https://graphviz.readthedocs.io/en/stable/manual.html#installation>`_ to be
+        installed.
         """
         # Handle file path
         filepath = Path(filename).resolve()
@@ -871,7 +872,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Notes
         -----
-        This is a thin wrapper around :meth:`~BaseModel.model_validate`
+        This is a thin wrapper around :meth:`~pydantic.BaseModel.model_validate`
         """
         return StateMachine.model_validate(data)
 
@@ -897,7 +898,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Notes
         -----
-        This is a thin wrapper around :meth:`~BaseModel.model_validate_json`
+        This is a thin wrapper around :meth:`~pydantic.BaseModel.model_validate_json`
         """
         try:
             return cls.model_validate_json(json_str)
@@ -935,7 +936,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         Parameters
         ----------
-        filename : os.PathLike or str
+        filename : PathLike or str
             The path to the file containing the state machine.
 
         Returns
@@ -999,6 +1000,12 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         ------
         ValueError
             If the state machine is invalid.
+
+        Notes
+        -----
+        This method only checks the general structure of the state machine, not its
+        compatibility with the hardware. For the latter, see
+        :meth:`~bpod_core.bpod.Bpod.validate_state_machine`.
         """
         self._check(known_hash=self._hash())
 

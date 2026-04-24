@@ -5,10 +5,11 @@ import logging
 import re
 import struct
 import weakref
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager
+from struct import Struct
 from types import TracebackType
-from typing import Any
+from typing import Any, Literal, overload
 
 from serial import Serial, SerialException
 from serial.threaded import Protocol, ReaderThread
@@ -116,15 +117,15 @@ class ExtendedSerial(Serial):
         ----------
         format_string : str
             A format string that specifies the layout of the data. It should be
-            compatible with the `struct` module's format specifications.
-            See https://docs.python.org/3/library/struct.html#format-characters
+            compatible with the :mod:`struct` module's `format specifications
+            <https://docs.python.org/3/library/struct.html#format-characters>`__.
         *data : Any
             Variable-length arguments representing the data to be packed and written,
             corresponding to the format specifiers in `format_string`.
 
         Returns
         -------
-        int | None
+        int or None
             The number of bytes written to the serial port, or None if the write
             operation fails.
 
@@ -132,8 +133,14 @@ class ExtendedSerial(Serial):
         ------
         struct.error
             Error occurred during packing of the data into binary format.
-        serial.SerialTimeoutException
+        SerialTimeoutException
             In case a write timeout is configured for the port and the time is exceeded.
+
+        Examples
+        --------
+        Write a command byte followed by a 16-bit unsigned integer::
+
+            serial_port.write_struct('<BH', 0x4A, 1000)
         """
         buffer = struct.pack(format_string, *data)
         return self.write(buffer)
@@ -149,18 +156,144 @@ class ExtendedSerial(Serial):
         ----------
         format_string : str
             A format string that specifies the layout of the data to be read. It should
-            be compatible with the `struct` module's format specifications.
-            See https://docs.python.org/3/library/struct.html#format-characters
+            be compatible with the :mod:`struct` module's `format specifications
+            <https://docs.python.org/3/library/struct.html#format-characters>`__.
 
         Returns
         -------
-        tuple[Any, ...]
+        tuple
             A tuple containing the unpacked data read from the serial port. The
             structure of the tuple corresponds to the format specified in
             `format_string`.
+
+        Examples
+        --------
+        Read one unsigned 16-bit integer followed by two unsigned 8-bit integers::
+
+            major, minor, patch = serial_port.read_struct('<HBB')
         """
         n_bytes = struct.calcsize(format_string)
         return struct.unpack(format_string, super().read(n_bytes))
+
+    @overload
+    def read_struct_iter(
+        self, fmt: str | Struct, n: int = 1, *, flatten: Literal[False] = False
+    ) -> Iterator[tuple[Any, ...]]: ...
+
+    @overload
+    def read_struct_iter(
+        self, fmt: str | Struct, n: int = 1, *, flatten: Literal[True]
+    ) -> Iterator[Any]: ...
+
+    def read_struct_iter(
+        self,
+        fmt: str | Struct,
+        n: int = 1,
+        *,
+        flatten: bool = False,
+    ) -> Iterator[tuple[Any, ...]] | Iterator[Any]:
+        """Read structured data from the serial port as an iterator.
+
+        Parameters
+        ----------
+        fmt : str or struct.Struct
+            A pre-compiled struct or a format string compatible with the :mod:`struct`
+            module's `format specifications
+            <https://docs.python.org/3/library/struct.html#format-characters>`__.
+        n : int, default: 1
+            Number of records to read.
+        flatten : bool, default: False
+            If ``True``, yield individual values instead of tuples.
+
+        Yields
+        ------
+        tuple or Any
+            Each unpacked record as a tuple, or individual values if ``flatten=True``.
+
+        Notes
+        -----
+        All bytes are read in a single call before any records are yielded. Use
+        :meth:`stream_struct` instead if records should be yielded as they arrive.
+
+        Examples
+        --------
+        Read three records as tuples::
+
+            for value, flag in serial_port.read_struct_iter('<HB', 3):
+                print(value, flag)
+
+        Read two records as individual integers::
+
+            v1, f1, v2, f2 = serial_port.read_struct_iter('<HB', 2, flatten=True)
+        """
+        s = fmt if isinstance(fmt, Struct) else Struct(fmt)
+        data = self.read(n * s.size)
+        if flatten:
+            yield from (v for t in s.iter_unpack(data) for v in t)
+        else:
+            yield from s.iter_unpack(data)
+
+    @overload
+    def stream_struct(
+        self, fmt: str | Struct, n: int, *, flatten: Literal[True] = True
+    ) -> Iterator[Any]: ...
+
+    @overload
+    def stream_struct(
+        self, fmt: str | Struct, n: int, *, flatten: Literal[False]
+    ) -> Iterator[tuple[Any, ...]]: ...
+
+    def stream_struct(
+        self,
+        fmt: str | Struct,
+        n: int,
+        *,
+        flatten: bool = True,
+    ) -> Iterator[Any] | Iterator[tuple[Any, ...]]:
+        """Stream structured data from the serial port, yielding one record at a time.
+
+        Parameters
+        ----------
+        fmt : str or struct.Struct
+            A pre-compiled struct or a format string compatible with the :mod:`struct`
+            module's `format specifications
+            <https://docs.python.org/3/library/struct.html#format-characters>`__.
+        n : int
+            Number of records to read.
+        flatten : bool, default: True
+            If ``True``, yield individual values instead of tuples.
+
+        Yields
+        ------
+        Any or tuple
+            Individual values if ``flatten=True``, otherwise one tuple per record.
+
+        Notes
+        -----
+        Each record is read and yielded as soon as its bytes arrive, using one
+        :meth:`~serial.Serial.readinto` call per record. Use :meth:`read_struct_iter`
+        instead if all data is available upfront and a single read call is preferred.
+
+        Examples
+        --------
+        Stream 100 uint32 samples, yielding each as it arrives::
+
+            for sample in serial_port.stream_struct('<I', 100):
+                process(sample)
+
+        Stream 10 records of 3 floats as tuples::
+
+            for x, y, z in serial_port.stream_struct('<3f', 10, flatten=False):
+                print(x, y, z)
+        """
+        s = fmt if isinstance(fmt, Struct) else Struct(fmt)
+        buf = bytearray(s.size)
+        for _ in range(n):
+            self.readinto(buf)
+            if flatten:
+                yield from s.unpack(buf)
+            else:
+                yield s.unpack(buf)
 
     def query(self, query: Buffer, size: int = 1) -> bytes:
         r"""
@@ -180,6 +313,12 @@ class ExtendedSerial(Serial):
         -------
         bytes
             Data returned by the serial device in response to the query.
+
+        Examples
+        --------
+        Send a command and read back multiple bytes::
+
+            response = serial_port.query(b'\x4A', size=4)
         """
         self.write(query)
         return self.read(size)
@@ -189,7 +328,7 @@ class ExtendedSerial(Serial):
         query: Buffer,
         format_string: str,
     ) -> tuple[Any, ...]:
-        """
+        r"""
         Query structured data from the serial port.
 
         This method queries a specified number of bytes from the serial port and
@@ -201,15 +340,21 @@ class ExtendedSerial(Serial):
             Query to be sent to the serial port.
         format_string : str
             A format string that specifies the layout of the data to be read. It should
-            be compatible with the `struct` module's format specifications.
-            See https://docs.python.org/3/library/struct.html#format-characters
+            be compatible with the :mod:`struct` module's `format specifications
+            <https://docs.python.org/3/library/struct.html#format-characters>`__.
 
         Returns
         -------
-        tuple[Any, ...]
+        tuple
             A tuple containing the unpacked data read from the serial port. The
             structure of the tuple corresponds to the format specified in
             `format_string`.
+
+        Examples
+        --------
+        Send a command and unpack the response as two unsigned 8-bit integers::
+
+            major, minor = serial_port.query_struct(b'\x4a', 'BB')
         """
         self.write(query)
         return self.read_struct(format_string)
@@ -282,7 +427,7 @@ class ChunkedSerialReader(Protocol):
 
         Parameters
         ----------
-        transport : ReaderThread
+        transport : ~serial.threaded.ReaderThread
             The reader thread that created this protocol instance.
         """
         self._port = transport.serial.portstr
@@ -332,11 +477,11 @@ def find_ports(**filters: FilterValue) -> list[ListPortInfo]:
 
         - Scalar: exact match
         - Sequence: match any item (OR logic)
-        - re.Pattern: regex match (use re.compile())
+        - re.Pattern: regex match (use :func:`re.compile`)
 
     Returns
     -------
-    list[ListPortInfo]
+    list of ListPortInfo
         Ports matching all criteria.
 
     Examples
@@ -359,7 +504,7 @@ def find_ports(**filters: FilterValue) -> list[ListPortInfo]:
 
     Notes
     -----
-    Strings use exact matching. Use re.compile() for regex patterns.
+    Strings use exact matching. Use :func:`re.compile` for regex patterns.
     """
 
     def matches(key: object, value: FilterValue) -> bool:

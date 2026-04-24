@@ -12,7 +12,6 @@ updates:
 
     labels:
       - "dependencies"
-      - "python"
 
     open-pull-requests-limit: 5
 
@@ -42,7 +41,6 @@ updates:
 
     labels:
       - "dependencies"
-      - "ci"
 
     open-pull-requests-limit: 3
 

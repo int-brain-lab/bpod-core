@@ -4,8 +4,8 @@
 
 # bpod-core
 
-A Python library for communicating with the [*Bpod Finite State
-Machine*](https://sanworks.io/).
+A Python library for communicating with [*Bpod Finite State
+Machines*](https://sanworks.io/).
 
 > [!WARNING]
 > bpod-core is under development and not yet ready for production use.

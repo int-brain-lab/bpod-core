@@ -1,20 +1,21 @@
 Finite-State Machines
 =====================
 
-This chapter introduces the finite-state machine (FSM) concept and explains how to
+This chapter introduces the concept of Finite-State Machines and explains how to
 create, validate, visualize, import, and export state machines with bpod-core.
 
-What is a Finite State Machine?
+What is a Finite-State Machine?
 -------------------------------
 A :wikipedia:`finite-state machine` (FSM) is a model of computation made up of a finite
 number of *states* and *transitions* between those states. At any given moment, the
 machine is in exactly one state, and certain *events* cause it to move, or transition,
-to another state. Think of the finite-state machine as a flowchart with a list of named
-boxes (states) and arrows (transitions) between them—this type of flowchart is called a
-*state diagram*.
+to another state. Think of the :abbr:`FSM(Finite-State Machine)` as a flowchart with a
+list of named boxes (states) and arrows (transitions) between them—this type of
+flowchart is called a *state diagram*.
 
 .. graphviz::
    :caption: A state diagram.
+   :align: center
 
    digraph {
       S1 [label="State 1"];
@@ -23,12 +24,13 @@ boxes (states) and arrows (transitions) between them—this type of flowchart is
       S1 -> S2 [label="Event"];
    }
 
-In practice, finite-state machines are used to model a wide range of systems where
-behavior depends on a sequence of events, making the logic easier to design and
-understand. A simple light switch offers an intuitive example of a finite-state machine.
-It has only two states—*Off* and *On*—and two events that trigger transitions between
-them: *flip up* and *flip down*. At any given moment, the switch is in exactly one
-state, and performing the corresponding flip moves the system to the other.
+In practice, :abbr:`FSMs(Finite-State Machines)` are used to model a wide range of
+systems where behavior depends on a sequence of events, making the logic easier to
+design and understand. A simple light switch offers an intuitive example of an
+:abbr:`FSM(Finite-State Machine)`. It has only two states—*Off* and *On*—and two events
+that trigger transitions between them: *flip up* and *flip down*. At any given moment,
+the switch is in exactly one state, and performing the corresponding flip moves the
+system to the other.
 
 .. graphviz::
    :caption: Flip up, flip down—ad infinitum.
@@ -102,15 +104,15 @@ buzzer, or delivering a reward.
       { rank=same; c; d; }
    }
 
-The finite-state machine pictured above represents a single trial in a behavioral
-experiment. It heavily relies on timers to define both the duration of states and their
-associated output actions. The *Stimulus* ends automatically when its timer expires,
-moving the subject into the *Wait* state. From there, the trial can proceed in two ways:
-if the subject performs the required action (pressing a lever) within the allotted time
-of the *Wait* state, the machine transitions to *Reward*; otherwise, a *Buzzer* signals
-a missed opportunity. The durations of both the reward and the buzzer are again governed
-by their respective timers, after which either state transitions to the trial’s *End*
-state and, finally, to the trial’s exit.
+The :abbr:`FSM(Finite-State Machine)` pictured above represents a single trial in a
+behavioral experiment. It heavily relies on timers to define both the duration of states
+and their associated output actions. The *Stimulus* ends automatically when its timer
+expires, moving the subject into the *Wait* state. From there, the trial can proceed in
+two ways: if the subject performs the required action (pressing a lever) within the
+allotted time of the *Wait* state, the machine transitions to *Reward*; otherwise, a
+*Buzzer* signals a missed opportunity. The durations of both the reward and the buzzer
+are again governed by their respective timers, after which either state transitions to
+the trial’s *End* state and, finally, to the trial’s exit.
 
 .. admonition:: Key Concepts
    :class: tip
@@ -143,11 +145,12 @@ state and, finally, to the trial’s exit.
 
 The `StateMachine` Data Model
 -----------------------------
-In bpod-core, an FSM is represented by the :class:`~bpod_core.fsm.StateMachine` class.
-It defines states, state transitions, and the output actions assigned to each state. It
-also introduces Bpod-specific concepts such as state timers, global timers, conditions,
-and global counters. Finally, it provides tools for validation, visualization, and
-importing/exporting to and from other formats.
+In bpod-core, an :abbr:`FSM(Finite State Machine)` is represented by the
+:class:`~bpod_core.fsm.StateMachine` class. It defines states, state transitions, and
+the output actions assigned to each state. It also introduces Bpod-specific concepts
+such as state timers, global timers, conditions, and global counters. Finally, it
+provides tools for validation, visualization, and importing/exporting to and from other
+formats.
 
 
 Creating a State Machine

@@ -7,21 +7,33 @@ import logging
 import re
 import socket
 import struct
-from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import (
+    Hashable,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from enum import IntEnum
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import msgspec
 from filelock import FileLock
 from pydantic import Field, RootModel
+from typing_extensions import Self, override
 
 logger = logging.getLogger(__name__)
 
-K = TypeVar('K')
+K = TypeVar('K', bound=Hashable)
+"""Key type variable for generic mappings such as :class:`ValidatedDict`."""
 V = TypeVar('V')
-_T = TypeVar('_T')
+"""Value type variable for generic mappings such as :class:`ValidatedDict`."""
+
+_MISSING = object()
+"""Sentinel for distinguishing a missing key from a key set to None."""
 
 _RE_NON_ALPHANUMERIC = re.compile(r'[^a-zA-Z0-9_]')
 """Match non-alphanumeric characters except underscores."""
@@ -34,34 +46,52 @@ _RE_MULTIPLE_UNDERSCORES = re.compile(r'_{2,}')
 
 
 class ByteEnum(IntEnum):
-    r"""An :class:`~enum.IntEnum` whose values are single unsigned bytes.
+    r"""An :class:`~enum.IntEnum` restricted to single-byte values (0–255).
 
-    Subclass this to define enums with byte-sized values. Each member caches its value
-    as a :class:`bytes` object for zero-allocation wire encoding.
+    Subclass this to define enums whose integer values fit in one unsigned byte. Each
+    member additionally exposes its value as a :class:`bytes` object via
+    :attr:`byte_value` for zero-allocation wire encoding.
+
+    Raises
+    ------
+    OverflowError
+        If a member's value is outside the range of a single, unsigned byte.
 
     Examples
     --------
+    Subclass :class:`ByteEnum` to create a custom enum type:
+
     >>> class Color(ByteEnum):
     ...     RED = 1
     ...     GREEN = 2
-    >>> Color.RED.as_bytes
+
+    It can be used like a regular :class:`~enum.IntEnum`:
+
+    >>> Color.RED.value
+    1
+
+    Additionally, you can access it's values as :class:`bytes` objects:
+
+    >>> Color.RED.byte_value
     b'\x01'
     """
 
     _as_bytes: bytes
 
-    def __new__(cls, value: int) -> 'ByteEnum':
+    def __new__(cls, value: int) -> 'Self':
         """Create a new ByteEnum member."""
-        if not 0 <= value <= 0xFF:
-            raise ValueError(f'ByteEnum value must fit in one byte, got {value!r}')
-        obj: ByteEnum = int.__new__(cls, value)
+        obj: Self = int.__new__(cls, value)
         obj._value_ = value
-        obj._as_bytes = value.to_bytes(1, 'little')
+        try:
+            obj._as_bytes = value.to_bytes(1, 'little', signed=False)
+        except OverflowError:
+            msg = f'Value must fit in a single, unsigned byte - got {value!r}'
+            raise OverflowError(msg) from None
         return obj
 
     @property
-    def as_bytes(self) -> bytes:
-        """The enum value as a single-byte :class:`bytes` object."""
+    def byte_value(self) -> bytes:
+        """The member's :attr:`~enum.Enum.value` as a :class:`bytes` object."""
         return self._as_bytes
 
 
@@ -100,6 +130,15 @@ def to_snake_case(string: str) -> str:
     -------
     str
         The converted snake_case string.
+
+    Examples
+    --------
+    >>> to_snake_case('CamelCase')
+    'camel_case'
+    >>> to_snake_case('HTMLParser')
+    'html_parser'
+    >>> to_snake_case('version2dot0')
+    'version_2_dot_0'
     """
     string = _RE_NON_ALPHANUMERIC.sub('_', string)
     string = _RE_ACRONYM.sub(r'\1_\2', string)
@@ -126,7 +165,7 @@ def suggest_similar(
     ----------
     invalid_string : str
         The string that is invalid or misspelled.
-    valid_strings : Iterable[str]
+    valid_strings : Iterable of str
         An iterable of valid strings to compare against.
     format_string : str, default: " - did you mean '{}'?"
         The format string for the suggestion.
@@ -137,9 +176,64 @@ def suggest_similar(
     -------
     str
         A formatted suggestion string if a match is found, otherwise an empty string.
+
+    Examples
+    --------
+    >>> 'no such port' + suggest_similar('Prot1', ['Port1', 'Port2'])
+    "no such port - did you mean 'Port1'?"
+    >>> 'no such port' + suggest_similar('xyz', ['Port1', 'Port2'])
+    'no such port'
     """
     matches = difflib.get_close_matches(invalid_string, valid_strings, 1, cutoff)
     return format_string.format(matches[0]) if len(matches) > 0 else ''
+
+
+class SuggestionDict(dict[str, V]):
+    """A dictionary that suggests similar keys on failed lookup.
+
+    On :class:`KeyError`, raises ``error_class`` with a message that includes the
+    closest match from the existing keys via :func:`suggest_similar`, making typos and
+    near-misses easier to diagnose.
+
+    Parameters
+    ----------
+    dictionary : MutableMapping
+        Initial key-value pairs.
+    name : str, default: 'key'
+        Human-readable label for the key type used in the error message.
+    error_class : type of Exception, default: KeyError
+        Exception class to raise on failed lookup. Must accept a single string argument.
+
+    Examples
+    --------
+    >>> d = SuggestionDict({'Port1': 1, 'Port2': 2}, name='channel')
+    >>> d['Port1']
+    1
+    >>> d['Prot1']
+    Traceback (most recent call last):
+        ...
+    KeyError: "No such channel: 'Prot1' - did you mean 'Port1'?"
+    """
+
+    def __init__(
+        self,
+        dictionary: MutableMapping[str, V],
+        *,
+        name: str | None = None,
+        error_class: type[Exception] = KeyError,
+    ) -> None:
+        super().__init__(dictionary)
+        self._name = name or 'key'
+        self._error_class = error_class
+
+    @override
+    def __getitem__(self, key: str) -> V:
+        try:
+            return super().__getitem__(key)
+        except KeyError as e:
+            raise self._error_class(
+                f"No such {self._name}: '{key}'" + suggest_similar(key, self.keys())
+            ) from e
 
 
 def set_nested(d: MutableMapping, keys: Sequence[Any], value: Any) -> None:
@@ -187,8 +281,8 @@ def get_nested(d: MutableMapping, keys: Sequence[Any], default: Any = None) -> A
         The dictionary from which to get a value.
     keys : Sequence
         A sequence of keys representing the path to the desired value.
-    default : Any, optional
-        The value to return if the path does not exist. Defaults to None.
+    default : Any, default: None
+        The value to return if the path does not exist.
 
     Returns
     -------
@@ -244,7 +338,7 @@ def get_local_ipv4() -> str:
             raise
 
 
-class SettingsDict(MutableMapping):
+class SettingsDict(MutableMapping[str, Any]):
     """
     A dictionary-like persistent settings storage backed by a JSON file.
 
@@ -254,16 +348,14 @@ class SettingsDict(MutableMapping):
 
     File access is protected by a file lock for safe concurrent access from multiple
     processes.
+
+    Parameters
+    ----------
+    json_path : PathLike or str
+        Path to the JSON configuration file.
     """
 
     def __init__(self, json_path: PathLike | str) -> None:
-        """Initialize the SettingsDict instance.
-
-        Parameters
-        ----------
-        json_path : PathLike or str
-            Path to the JSON configuration file.
-        """
         self._json_path = Path(json_path).resolve()
         self._lock_path = self._json_path.with_suffix('.lock')
         self._file_lock = FileLock(self._lock_path)
@@ -285,40 +377,59 @@ class SettingsDict(MutableMapping):
         with self._file_lock, self._json_path.open('w') as f:
             json.dump(dictionary, f, indent=2)
 
-    def __getitem__(self, key: Any) -> Any:
+    @override
+    def __getitem__(self, key: str) -> Any:
         return self._state[key]
 
-    def __setitem__(self, key: Any, value: Any) -> None:
+    @override
+    def __setitem__(self, key: str, value: Any) -> None:
         if self._state.get(key) == value:
             return
+        old_value = self._state.get(key, _MISSING)
         self._state[key] = value
-        self._save_to_file()
+        try:
+            self._save_to_file()
+        except Exception:
+            if old_value is _MISSING:
+                del self._state[key]
+            else:
+                self._state[key] = old_value
+            raise
 
-    def __contains__(self, key: Any) -> bool:
+    @override
+    def __contains__(self, key: object) -> bool:
         return key in self._state
 
-    def __delitem__(self, key: Any) -> None:
-        del self._state[key]
-        self._save_to_file()
+    @override
+    def __delitem__(self, key: str) -> None:
+        old_value = self._state.pop(key)
+        try:
+            self._save_to_file()
+        except Exception:
+            self._state[key] = old_value
+            raise
 
-    def __iter__(self) -> Iterator[Any]:
+    @override
+    def __iter__(self) -> Iterator[str]:
         return iter(list(self._state))
 
+    @override
     def __len__(self) -> int:
         return len(self._state)
 
+    @override
     def __repr__(self) -> str:
         return repr(self._state)
 
-    def get_nested(self, keys: Sequence[Any], default: Any | None = None) -> Any:
+    def get_nested(self, keys: Sequence[str], default: Any | None = None) -> Any:
         """Retrieve a nested value using a sequence of keys.
 
         Parameters
         ----------
-        keys : Sequence
+        keys : Sequence of str
             A sequence of keys representing the nested path.
-        default : Any, optional
-            The value to return if the path does not exist. Defaults to None.
+        default : Any, default: None
+            The value to return if the path does not exist.
 
         Returns
         -------
@@ -327,32 +438,45 @@ class SettingsDict(MutableMapping):
         """
         return get_nested(d=self._state, keys=keys, default=default)
 
-    def set_nested(self, keys: Sequence[Any], value: Any) -> None:
+    def set_nested(self, keys: Sequence[str], value: Any) -> None:
         """Set a nested value using a sequence of keys.
 
         Parameters
         ----------
-        keys : Sequence
+        keys : Sequence of str
             A sequence of keys representing the nested path.
         value : Any
             The value to set at the nested path.
         """
-        if get_nested(d=self._state, keys=keys) == value:
+        old_value = get_nested(d=self._state, keys=keys, default=_MISSING)
+        if old_value == value:
             return
         set_nested(d=self._state, keys=keys, value=value)
-        self._save_to_file()
+        try:
+            self._save_to_file()
+        except Exception:
+            if old_value is _MISSING:
+                set_nested(d=self._state, keys=keys[:-1], value={})
+            else:
+                set_nested(d=self._state, keys=keys, value=old_value)
+            raise
 
 
-class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
+class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V]):
     """A dict-like container with runtime validation for keys and values.
 
     This class wraps a standard :py:class:`dict` and integrates with Pydantic's
-    :class:`RootModel` to validate keys and values upon mutation. It behaves like a
-    mutable mapping for all common operations (get, set, delete, iterate, len) and
-    compares equal to regular dicts with the same contents.
+    :class:`~pydantic.RootModel` to validate keys and values upon mutation. It behaves
+    like a mutable mapping for all common operations (get, set, delete, iterate, len)
+    and compares equal to regular dicts with the same contents.
 
-    Notes
-    -----
+    Parameters
+    ----------
+    root : Mapping, optional
+        Initial key-value pairs. Defaults to an empty :class:`dict`.
+
+    Examples
+    --------
     Subclass :class:`ValidatedDict` to create a custom type with validation:
 
     >>> class TestDict(ValidatedDict[str, int]):
@@ -373,29 +497,48 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V], Generic[K, V]):
     Alternatively, you can also instantiate a ValidatedDict directly:
 
     >>> my_validated_dict = ValidatedDict[str, int]({'foo': 1, 'bar': 2})
+    >>> my_validated_dict['foo'] = 'bar'
+    Traceback (most recent call last):
+       ...
+    pydantic_core._pydantic_core.ValidationError: 1 validation error ...
+    foo
+      Input should be a valid integer, unable to parse string as an integer ...
+      ...
     """
 
     root: dict[K, V] = Field(default_factory=dict)
+    """
+    Underlying :class:`dict`; mutating it directly bypasses validation.
 
+    :meta private:
+    """
+
+    @override
     def __getitem__(self, key: K) -> V:
         return self.root[key]
 
+    @override
     def __setitem__(self, key: K, value: V) -> None:
         validated = type(self).model_validate({key: value}).root
         self.root[key] = validated[key]
 
+    @override
     def __delitem__(self, key: K) -> None:
         del self.root[key]
 
+    @override
     def __iter__(self) -> Iterator[K]:  # type: ignore[override]
         return iter(self.root)
 
+    @override
     def __len__(self) -> int:
         return len(self.root)
 
+    @override
     def __repr__(self) -> str:
         return repr(self.root)
 
+    @override
     def __eq__(self, other: object) -> bool:
         return self.root == other
 
@@ -424,7 +567,7 @@ def extend_packed(
     byte_array : bytearray
         The bytearray that will be modified in-place by appending the packed binary
         data.
-    values : Sequence[int]
+    values : Sequence of int
         Integer values to convert to binary. The number of values determines how many
         times the format character is repeated.
     fmt : str

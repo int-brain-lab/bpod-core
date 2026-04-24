@@ -394,9 +394,9 @@ class EventThread(threading.Thread):
             Zero-based trial index, used to populate the ``trial`` column.
         fsm : StateMachineLookup
             Compiled state machine data for this trial.
-        data_queue : SimpleQueue[pl.LazyFrame]
+        data_queue : SimpleQueue of LazyFrame
             Queue to push the completed trial DataFrame into.
-        event_lookup : pl.DataFrame
+        event_lookup : polars.DataFrame
             Pre-built event metadata lookup, see :func:`_build_event_lookup`.
         action_names : list of str
             Names of all output channels, indexed by action ID.
@@ -440,6 +440,7 @@ class EventThread(threading.Thread):
         value: int = -1,
     ) -> None:
         """Append an event to the buffer, growing it if necessary."""
+        logger.debug('time %d: %s', time_bpod_us, event_index, stacklevel=2)
         if self._n_events == len(self._buffer):
             new_buf = np.empty(len(self._buffer) * 2, dtype=_EVENT_DTYPE)
             new_buf[: self._n_events] = self._buffer
@@ -599,7 +600,7 @@ class EventThread(threading.Thread):
 
         Returns
         -------
-        pl.LazyFrame
+        LazyFrame
             A snapshot of the recorded events.
 
         Raises

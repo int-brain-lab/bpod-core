@@ -12,7 +12,7 @@ from datetime import timedelta
 from queue import Empty, SimpleQueue
 from time import perf_counter_ns, time_ns
 from types import TracebackType
-from typing import Any, ClassVar, Literal, NamedTuple, cast, overload
+from typing import Any, ClassVar, Literal, cast, overload
 from uuid import uuid5
 
 import msgspec
@@ -21,9 +21,17 @@ import polars as pl
 from cachetools import FIFOCache
 from pydantic import ConfigDict, validate_call
 from serial import SerialException
+from typing_extensions import override
 from xxhash import xxh3_64 as _xxh3_64
 
 from bpod_core import __version__ as bpod_core_version
+from bpod_core.bpod._threads import (
+    _TRIAL_DATA_SCHEMA,
+    EventThread,
+    ReadThread,
+    SoftcodeThread,
+    _build_event_lookup,
+)
 from bpod_core.bpod.abc import AbstractBpod
 from bpod_core.bpod.constants import (
     _CHANNEL_BASE_NAME_CONDITION,
@@ -53,13 +61,6 @@ from bpod_core.bpod.structs import (
     _InputEvents,
     _ValidationData,
 )
-from bpod_core.bpod.threads import (
-    _TRIAL_DATA_SCHEMA,
-    EventThread,
-    ReadThread,
-    SoftcodeThread,
-    _build_event_lookup,
-)
 from bpod_core.com import (
     ExtendedSerial,
     SerialDevice,
@@ -75,7 +76,7 @@ from bpod_core.constants import (
 )
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ServiceClient, ServiceEvent, ServiceHost, iter_services
-from bpod_core.misc import SettingsDict, extend_packed, suggest_similar
+from bpod_core.misc import SettingsDict, SuggestionDict, extend_packed, suggest_similar
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,10 @@ class BpodError(Exception):
     This exception is raised when an error specific to the Bpod device or its
     operations occurs.
     """
+
+
+class BpodKeyError(BpodError, KeyError):
+    """Exception class for Bpod-related key errors."""
 
 
 class Bpod(SerialDevice, AbstractBpod):
@@ -116,14 +121,14 @@ class Bpod(SerialDevice, AbstractBpod):
     serial2: ExtendedSerial | None = None
     """Tertiary serial device for communication with the Bpod - used by Bpod 2+ only."""
 
-    inputs: NamedTuple
-    """Available input channels."""
+    inputs: dict[str, 'Input']
+    """Dictionary of available input channels, keyed by name."""
 
-    outputs: NamedTuple
-    """Available output channels."""
+    outputs: dict[str, 'Output']
+    """Dictionary of available output channels, keyed by name."""
 
-    modules: '_ModuleDict'
-    """Available modules, keyed by name."""
+    modules: dict[str, 'Module']
+    """Dictionary of available modules, keyed by name."""
 
     @validate_call()
     def __init__(
@@ -441,8 +446,8 @@ class Bpod(SerialDevice, AbstractBpod):
         else:
             hardware_conf = list(self.serial0.query_struct(b'H', '<2H5B'))
             hardware_conf.insert(-4, 3)  # max bytes per serial msg always = 3
-        hardware_conf.extend(self.serial0.read_struct(f'<{hardware_conf[-1]}s1B'))
-        hardware_conf.extend(self.serial0.read_struct(f'<{hardware_conf[-1]}s'))
+        hardware_conf.extend(self.serial0.read_struct(f'<{hardware_conf[-1]}sB'))
+        hardware_conf.append(self.serial0.read(hardware_conf[-1]))
 
         # compute additional fields
         cycle_frequency = 1_000_000 // hardware_conf[1]  # cycle_period_us is at index 1
@@ -461,8 +466,7 @@ class Bpod(SerialDevice, AbstractBpod):
         ):
             n_channels = len(description)
             io_class = f'{channel_class.__name__.lower()}s'
-            channels = []
-            types = []
+            channels: dict[str, Any] = {}
 
             # loop over the description array and create channels
             for idx, io_key in enumerate(struct.unpack(f'<{n_channels}c', description)):
@@ -470,12 +474,15 @@ class Bpod(SerialDevice, AbstractBpod):
                     raise RuntimeError(f'Unknown {io_class[:-1]} type: {io_key}')
                 n = description[:idx].count(io_key) + 1
                 name = f'{channel_names[io_key]}{n}'
-                channels.append(channel_class(self, name, io_key, idx))
-                types.append((name, channel_class))
+                channels[name] = channel_class(self, name, io_key, idx)
 
-            # store channels to NamedTuple and set the latter as a class attribute
-            named_tuple = NamedTuple(io_class, types)._make(channels)
-            setattr(self, io_class, named_tuple)
+            # store channels to typed dict and set as a class attribute
+            name = 'input channel' if channel_class is Input else 'output channel'
+            setattr(
+                self,
+                io_class,
+                SuggestionDict(channels, name=name, error_class=BpodKeyError),
+            )
 
         # set the enabled state of the input channels
         self._set_enable_inputs()
@@ -565,7 +572,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
     def _set_enable_inputs(self) -> bool:
         logger.debug('Updating enabled state of input channels')
-        enable = [i.enabled for i in self.inputs]
+        enable = [i.enabled for i in self.inputs.values()]
         self.serial0.write_struct(f'<c{self._hardware.n_inputs}?', b'E', *enable)
         return self.serial0.read(1) == b'\x01'
 
@@ -713,7 +720,9 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
         modules = list(self.modules)
-        physical_input_channels = [i.name for i in self.inputs if i.io_type != b'U']
+        physical_input_channels = [
+            i.name for i in self.inputs.values() if i.io_type != b'U'
+        ]
         global_timers = [
             f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}' for i in range(hw.n_global_timers)
         ]
@@ -750,9 +759,9 @@ class Bpod(SerialDevice, AbstractBpod):
 
         self._action_indices = {k: v for v, k in enumerate(self._actions)}
         self._physical_output_channels = list(self.modules) + [
-            o.name for o in self.outputs if o.io_type != b'U'
+            o.name for o in self.outputs.values() if o.io_type != b'U'
         ]
-        self._timer_channel_indices = {
+        self._timer_channel_indices: dict[str | None, int] = {
             k: v for v, k in enumerate(self._physical_output_channels)
         }
         self._timer_channel_indices[None] = 254
@@ -1384,6 +1393,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self,
         state_machine: StateMachine | None = None,
         *,
+        trial_number: int | None = None,
         validate: bool = True,
     ) -> None:
         """
@@ -1401,6 +1411,9 @@ class Bpod(SerialDevice, AbstractBpod):
         state_machine : StateMachine, optional
             The state machine to run. If not provided, the previously sent state machine
             is repeated.
+        trial_number : int, optional
+            The trial number to assign to the state machine. If not provided, the trial
+            number is automatically incremented with each run.
         validate : bool, default: True
             If False, the state machine will not be validated prior to compilation. This
             will speed up the process, but may result in errors or unexpected behavior
@@ -1412,7 +1425,7 @@ class Bpod(SerialDevice, AbstractBpod):
             If called without an argument and no state machine has been run yet.
         ValueError
             If the state machine is invalid or exceeds hardware limitations.
-        :exc:`~validate_call.roar.validate_callCallHintViolation`
+        ValidationError
             If function arguments don't match type hints.
 
         Notes
@@ -1429,7 +1442,10 @@ class Bpod(SerialDevice, AbstractBpod):
         wait : Block until the currently running state machine finishes.
         """
         debugging = logger.isEnabledFor(logging.DEBUG)
-        self._next_fsm_index += 1
+        if trial_number is None:
+            self._next_fsm_index += 1
+        else:
+            self._next_fsm_index = trial_number
         self._disable_all_module_relays()
 
         # If the user did not provide a state machine, recover the last run state
@@ -1594,7 +1610,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Returns
         -------
-        pl.DataFrame or pl.LazyFrame
+        DataFrame or LazyFrame
             Events recorded so far in the current trial. Returns an empty DataFrame if
             no trial is running.
 
@@ -1638,18 +1654,20 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Returns
         -------
-        pl.DataFrame
+        DataFrame or LazyFrame
             One trial's data, or all available trials concatenated when ``concat=True``.
 
             Columns:
 
-            - ``time`` – absolute Bpod timestamp (``Datetime(time_unit='us')``)
-            - ``trial`` – zero-based trial index (``UInt16``)
-            - ``state`` – state name (``Categorical``)
-            - ``type`` – event type (``Enum``)
-            - ``event`` – input event name (``Categorical``)
-            - ``channel`` – channel name (``Categorical``)
-            - ``value`` – channel value (``UInt8``)
+            - **time** (:class:`~polars.datatypes.Datetime`) – absolute Bpod timestamp.
+            - **trial** (:class:`~polars.datatypes.UInt16`) – zero-based trial index.
+            - **state machine** (:class:`~polars.datatypes.Categorical`) – state machine
+              hash, see :meth:`~bpod_core.fsm.StateMachine.hash`.
+            - **state** (:class:`~polars.datatypes.Categorical`) – state name.
+            - **type** (:class:`~polars.datatypes.Enum`) – event type.
+            - **event** (:class:`~polars.datatypes.Categorical`) – input event name.
+            - **channel** (:class:`~polars.datatypes.Categorical`) – channel name.
+            - **value** (:class:`~polars.datatypes.UInt8`) – channel value.
 
         Raises
         ------
@@ -1682,9 +1700,9 @@ class Bpod(SerialDevice, AbstractBpod):
         if self._read_thread is not None:
             self._read_thread.join()
 
+    @override
     @property
     def name(self) -> str | None:
-        """Get the name of the Bpod device."""
         return cast(
             'str | None',
             self._get_setting(['devices', self._serial_number, 'name'], None),
@@ -1692,12 +1710,11 @@ class Bpod(SerialDevice, AbstractBpod):
 
     @name.setter
     def name(self, name: str | None) -> None:
-        """Set the name of the Bpod device."""
         self._set_setting(['devices', self._serial_number, 'name'], name)
 
+    @override
     @property
     def location(self) -> str | None:
-        """Get the location of the Bpod device."""
         return cast(
             'str | None',
             self._get_setting(['devices', self._serial_number, 'location'], None),
@@ -1705,7 +1722,6 @@ class Bpod(SerialDevice, AbstractBpod):
 
     @location.setter
     def location(self, location: str | None) -> None:
-        """Set the location of the Bpod device."""
         self._set_setting(['devices', self._serial_number, 'location'], location)
 
     @validate_call()
@@ -1863,7 +1879,7 @@ class _ModuleDict(dict[str, 'Module']):
                 hint = f'connected modules: {", ".join(self._available_modules)}'
             else:
                 hint = 'no modules connected to Bpod'
-            raise BpodError(f"No such module: '{key}'; {hint}") from e
+            raise BpodKeyError(f"No such module: '{key}'; {hint}") from e
 
 
 @dataclass
@@ -1906,12 +1922,12 @@ class Module:
 
     def _define_event_names(self) -> None:
         """Define the module's event names."""
-        self.event_names = []
+        self._event_names = []
         for idx in range(self.n_events):
             if len(self._custom_event_names) > idx:
-                self.event_names.append(f'{self.name}_{self._custom_event_names[idx]}')
+                self._event_names.append(f'{self.name}_{self._custom_event_names[idx]}')
             else:
-                self.event_names.append(f'{self.name}_{idx}')
+                self._event_names.append(f'{self.name}_{idx}')
 
     @validate_call()
     def set_relay(self, enabled: bool) -> None:  # noqa: FBT001
@@ -1987,6 +2003,11 @@ class Module:
             message_bytes,
         )
         return self._bpod.serial0.verify()
+
+    @property
+    def event_names(self) -> list[str]:
+        """A list of event names associated with the module."""
+        return self._event_names
 
 
 class RemoteBpod(AbstractBpod):
@@ -2070,15 +2091,18 @@ class RemoteBpod(AbstractBpod):
     def _event_handler(self, message: dict) -> None:
         pass
 
+    @override
     @property
-    def name(self) -> str | None:  # noqa: D102
+    def name(self) -> str | None:
         return self._name
 
+    @override
     @property
-    def location(self) -> str | None:  # noqa: D102
+    def location(self) -> str | None:
         return self._location
 
-    def set_status_led(self, enable: bool) -> bool:  # noqa: D102, FBT001
+    @override
+    def set_status_led(self, enable: bool) -> bool:
         return self._remote_call('set_status_led', enable) or False
 
 
@@ -2161,7 +2185,7 @@ def discover_remote_bpod(
 
     Yields
     ------
-    ServiceEvent
+    ~bpod_core.ipc.ServiceEvent
         A named tuple with the following fields:
 
         - kind: str, either 'added' or 'removed'

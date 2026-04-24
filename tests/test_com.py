@@ -1,5 +1,6 @@
 import logging
 import re
+import struct
 from unittest.mock import MagicMock, call
 
 import numpy as np
@@ -7,6 +8,7 @@ import pytest
 from serial import SerialException
 
 from bpod_core import com
+from bpod_core.constants import STRUCT_UINT64_LE
 
 
 @pytest.fixture
@@ -126,6 +128,107 @@ class TestEnhancedSerial:
         value_out = mock_serial.read_bool()
         mock_serial.super_read.assert_called_with(1)
         assert value_out is True
+
+
+class TestReadStructIter:
+    """Tests for ExtendedSerial.read_struct_iter."""
+
+    def test_yields_tuples(self, mock_serial):
+        """Yields one tuple per record when flatten=False."""
+        mock_serial.super_read.return_value = struct.pack('<QQ', 100, 200)
+        result = list(mock_serial.read_struct_iter(STRUCT_UINT64_LE, 2))
+        assert result == [(100,), (200,)]
+
+    def test_flatten(self, mock_serial):
+        """Yields individual values when flatten=True."""
+        mock_serial.super_read.return_value = struct.pack('<QQ', 100, 200)
+        r1, r2 = list(mock_serial.read_struct_iter(STRUCT_UINT64_LE, 2, flatten=True))
+        assert r1 == 100
+        assert r2 == 200
+
+    def test_reads_correct_byte_count(self, mock_serial):
+        """Reads n * fmt.size bytes in a single call."""
+        mock_serial.super_read.return_value = struct.pack('<QQQ', 1, 2, 3)
+        list(mock_serial.read_struct_iter(STRUCT_UINT64_LE, 3))
+        mock_serial.super_read.assert_called_once_with(24)
+
+    def test_format_string(self, mock_serial):
+        """Accepts a format string in place of a pre-compiled Struct."""
+        mock_serial.super_read.return_value = struct.pack('<QQ', 100, 200)
+        result = list(mock_serial.read_struct_iter('<Q', 2))
+        assert result == [(100,), (200,)]
+
+    def test_format_string_flatten(self, mock_serial):
+        """Accepts a format string and flattens values."""
+        mock_serial.super_read.return_value = struct.pack('<QQ', 100, 200)
+        result = list(mock_serial.read_struct_iter('<Q', 2, flatten=True))
+        assert result == [100, 200]
+
+
+class TestStreamStruct:
+    """Tests for ExtendedSerial.stream_struct."""
+
+    @pytest.fixture
+    def mock_readinto(self, mocker, request):
+        """Mock Serial.readinto to fill buffer from a list of byte responses."""
+        responses = iter(request.param)
+
+        def side_effect(buf):
+            data = next(responses)
+            buf[:] = data
+            return len(data)
+
+        return mocker.patch('bpod_core.com.Serial.readinto', side_effect=side_effect)
+
+    @pytest.mark.parametrize(
+        'mock_readinto',
+        [[struct.pack('<Q', 100), struct.pack('<Q', 200)]],
+        indirect=True,
+    )
+    def test_yields_tuples(self, mock_serial, mock_readinto):
+        """Yields one tuple per record when flatten=False."""
+        result = list(mock_serial.stream_struct(STRUCT_UINT64_LE, 2, flatten=False))
+        assert result == [(100,), (200,)]
+
+    @pytest.mark.parametrize(
+        'mock_readinto',
+        [[struct.pack('<Q', 100), struct.pack('<Q', 200)]],
+        indirect=True,
+    )
+    def test_flatten(self, mock_serial, mock_readinto):
+        """Yields individual values when flatten=True (default)."""
+        result = list(mock_serial.stream_struct(STRUCT_UINT64_LE, 2))
+        assert result == [100, 200]
+
+    @pytest.mark.parametrize(
+        'mock_readinto',
+        [[struct.pack('<Q', i) for i in range(3)]],
+        indirect=True,
+    )
+    def test_calls_readinto_per_record(self, mock_serial, mock_readinto):
+        """Calls readinto once per record, not once for all data."""
+        list(mock_serial.stream_struct(STRUCT_UINT64_LE, 3))
+        assert mock_readinto.call_count == 3
+
+    @pytest.mark.parametrize(
+        'mock_readinto',
+        [[struct.pack('<Q', 100), struct.pack('<Q', 200)]],
+        indirect=True,
+    )
+    def test_format_string(self, mock_serial, mock_readinto):
+        """Accepts a format string in place of a pre-compiled Struct."""
+        result = list(mock_serial.stream_struct('<Q', 2, flatten=False))
+        assert result == [(100,), (200,)]
+
+    @pytest.mark.parametrize(
+        'mock_readinto',
+        [[struct.pack('<Q', 100), struct.pack('<Q', 200)]],
+        indirect=True,
+    )
+    def test_format_string_flatten(self, mock_serial, mock_readinto):
+        """Accepts a format string and flattens values."""
+        result = list(mock_serial.stream_struct('<Q', 2))
+        assert result == [100, 200]
 
 
 class TestChunkedSerialReader:

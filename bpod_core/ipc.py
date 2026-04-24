@@ -24,7 +24,7 @@ import zmq
 from platformdirs import user_runtime_path
 from psutil import pid_exists
 from pydantic import validate_call
-from typing_extensions import Self
+from typing_extensions import Self, override
 from zeroconf import (
     InterfaceChoice,
     IPVersion,
@@ -46,7 +46,9 @@ from bpod_core.misc import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
+"""Per-call reply type for :class:`~ServiceClient`."""
 U = TypeVar('U')
+"""Default reply type for :class:`ServiceClient`, set at construction."""
 
 _EVENT_LOOP_POLL_MS = 100
 
@@ -130,7 +132,7 @@ class ServiceEvent(NamedTuple):
     """A service discovery event yielded by :func:`iter_services`."""
 
     kind: Literal['added', 'removed']
-    """The type of event: 'added' for new services, 'removed' for removed services."""
+    """``added`` when a service appears, ``removed`` when it disappears."""
     address: str
     """The address of the service."""
     properties: dict[str, str | None]
@@ -368,6 +370,7 @@ class ServiceBase(contextlib.AbstractContextManager):
             with contextlib.suppress(Exception):
                 zmq_context.destroy(linger=0)
 
+    @override
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
@@ -438,7 +441,7 @@ class ServiceHost(ServiceBase):
             Additional properties for service advertisement.
         uuid : UUID, optional
             UUID for local IPC. Will be generated if not provided.
-        event_handler : callable, optional
+        event_handler : Callable, optional
             Function to handle incoming requests.
         port_pub : int, optional
             TCP port to bind the PUB socket. If None, a random available port is chosen.
@@ -675,11 +678,11 @@ class ServiceHost(ServiceBase):
 
         def encode_and_send(kind: MessageKind, data: Any) -> None:
             try:
-                reply_frames = [kind.as_bytes, encode(data)]
+                reply_frames = [kind.byte_value, encode(data)]
             except Exception as e:
                 logger.exception('Error encoding reply to client')
                 reply_frames = [
-                    MessageKind.ERROR.as_bytes,
+                    MessageKind.ERROR.byte_value,
                     encode(serialize_exception(e)),
                 ]
             finally:
@@ -801,7 +804,7 @@ class ServiceClient(ServiceBase, Generic[U]):
             The service type to discover or connect to.
         address : str, optional
             The direct connection address for the REQ channel, by default None.
-        event_handler : callable, optional
+        event_handler : Callable, optional
             A callback to handle PUB messages, by default None.
         discovery_timeout : float, default: 10.0
             Timeout in seconds for service discovery.
@@ -942,7 +945,7 @@ class ServiceClient(ServiceBase, Generic[U]):
         with self._lock_req:  # acquire lock
             # encode request
             try:
-                request_kind_bytes = request_kind.as_bytes
+                request_kind_bytes = request_kind.byte_value
                 request_data_bytes = self._encoder.encode(request_data)
             except Exception as e:
                 raise ValueError('Error encoding request to host') from e
@@ -1019,8 +1022,10 @@ class ServiceClient(ServiceBase, Generic[U]):
 
         Returns
         -------
-        U or T
-            The reply data from the server.
+        Any
+            The deserialized reply from the server. If ``reply_type`` is given, returns
+            an instance of ``reply_type``; otherwise returns an instance of
+            ``default_data_type`` defined during instantiation of the class.
 
         Raises
         ------
@@ -1130,6 +1135,7 @@ class _ServiceListenerIterator(ServiceListener):
         self._seen_remote: dict[str, ServiceEvent] = {}
         self._local_ipv4 = get_local_ipv4()
 
+    @override
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         # get service info
         info = zc.get_service_info(type_, name)
@@ -1151,13 +1157,15 @@ class _ServiceListenerIterator(ServiceListener):
         self._seen_remote[name] = event
         self._queue.put(event)
 
-    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:  # noqa: ARG002
+    @override
+    def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         if name in self._seen_remote:
             _, address, properties = self._seen_remote.pop(name)
             event = ServiceEvent('removed', address, properties)
             self._queue.put(event)
 
-    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:  # noqa: ARG002
+    @override
+    def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         logger.debug('Ignoring update for service: %s', name)
 
 

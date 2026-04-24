@@ -3,10 +3,9 @@
 from abc import ABC, abstractmethod
 
 from bpod_core.bpod.structs import HardwareConfiguration, VersionInfo
-from bpod_core.misc import DocstringInheritanceMixin
 
 
-class AbstractBpod(DocstringInheritanceMixin, ABC):
+class AbstractBpod(ABC):
     """Abstract base class for Bpod objects."""
 
     _version: VersionInfo

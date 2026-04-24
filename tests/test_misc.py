@@ -32,18 +32,18 @@ class TestByteEnum:
 
     def test_as_bytes(self, op):
         """as_bytes returns a single-byte bytes object matching the value."""
-        assert op.READ.as_bytes == b'\x01'
-        assert op.WRITE.as_bytes == b'\x02'
+        assert op.READ.byte_value == b'\x01'
+        assert op.WRITE.byte_value == b'\x02'
 
     def test_as_bytes_length(self, op):
         """as_bytes is always exactly one byte."""
         for member in op:
-            assert len(member.as_bytes) == 1
+            assert len(member.byte_value) == 1
 
     def test_ascii_value(self, op):
         """ord() values are correctly stored and round-trip via as_bytes."""
         assert ord('X') == op.EXEC
-        assert op.EXEC.as_bytes == b'X'
+        assert op.EXEC.byte_value == b'X'
 
     def test_is_int(self, op):
         """Members are integers (IntEnum behaviour preserved)."""
@@ -56,14 +56,14 @@ class TestByteEnum:
 
     def test_invalid_negative(self):
         """Negative values raise ValueError."""
-        with pytest.raises(ValueError, match='one byte'):
+        with pytest.raises(OverflowError):
 
             class Bad(ByteEnum):
                 NEG = -1
 
     def test_invalid_too_large(self):
         """Values above 255 raise ValueError."""
-        with pytest.raises(ValueError, match='one byte'):
+        with pytest.raises(OverflowError):
 
             class Bad(ByteEnum):
                 BIG = 256
@@ -406,6 +406,46 @@ class TestSettingsDict:
         spy = mocker.spy(temp_settings, '_save_to_file')
         temp_settings.set_nested(['new', 'path'], 'value')
         spy.assert_called_once()
+
+    def test_setitem_rollback_new_key_on_save_failure(self, temp_settings, mocker):
+        """New key is removed from state if save fails."""
+        mocker.patch.object(temp_settings, '_save_to_file', side_effect=OSError)
+        with pytest.raises(OSError):
+            temp_settings['new'] = 'value'
+        assert 'new' not in temp_settings
+
+    def test_setitem_rollback_existing_key_on_save_failure(self, temp_settings, mocker):
+        """Existing key reverts to old value if save fails."""
+        temp_settings['key'] = 'old'
+        mocker.patch.object(temp_settings, '_save_to_file', side_effect=OSError)
+        with pytest.raises(OSError):
+            temp_settings['key'] = 'new'
+        assert temp_settings['key'] == 'old'
+
+    def test_delitem_rollback_on_save_failure(self, temp_settings, mocker):
+        """Deleted key is restored to state if save fails."""
+        temp_settings['key'] = 'value'
+        mocker.patch.object(temp_settings, '_save_to_file', side_effect=OSError)
+        with pytest.raises(OSError):
+            del temp_settings['key']
+        assert temp_settings['key'] == 'value'
+
+    def test_set_nested_rollback_new_path_on_save_failure(self, temp_settings, mocker):
+        """New nested path is removed from state if save fails."""
+        mocker.patch.object(temp_settings, '_save_to_file', side_effect=OSError)
+        with pytest.raises(OSError):
+            temp_settings.set_nested(['a', 'b'], 42)
+        assert temp_settings.get_nested(['a', 'b']) is None
+
+    def test_set_nested_rollback_existing_path_on_save_failure(
+        self, temp_settings, mocker
+    ):
+        """Existing nested value reverts to old value if save fails."""
+        temp_settings.set_nested(['a', 'b'], 42)
+        mocker.patch.object(temp_settings, '_save_to_file', side_effect=OSError)
+        with pytest.raises(OSError):
+            temp_settings.set_nested(['a', 'b'], 99)
+        assert temp_settings.get_nested(['a', 'b']) == 42
 
 
 class TestExtendPacked:
