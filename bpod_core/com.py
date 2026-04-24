@@ -6,10 +6,11 @@ import re
 import struct
 import sys
 import weakref
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager
+from struct import Struct
 from types import TracebackType
-from typing import Any
+from typing import Any, Literal, overload
 
 from serial import Serial, SerialException
 from serial.threaded import Protocol, ReaderThread
@@ -171,6 +172,126 @@ class ExtendedSerial(Serial):
         """
         n_bytes = struct.calcsize(format_string)
         return struct.unpack(format_string, super().read(n_bytes))
+
+    @overload
+    def read_struct_iter(
+        self, fmt: str | Struct, n: int = 1, *, flatten: Literal[False] = False
+    ) -> Iterator[tuple[Any, ...]]: ...
+
+    @overload
+    def read_struct_iter(
+        self, fmt: str | Struct, n: int = 1, *, flatten: Literal[True]
+    ) -> Iterator[Any]: ...
+
+    def read_struct_iter(
+        self,
+        fmt: str | Struct,
+        n: int = 1,
+        *,
+        flatten: bool = False,
+    ) -> Iterator[tuple[Any, ...]] | Iterator[Any]:
+        """Read structured data from the serial port as an iterator.
+
+        Parameters
+        ----------
+        fmt : str or struct.Struct
+            A pre-compiled struct or a format string compatible with the :mod:`struct`
+            module's `format specifications
+            <https://docs.python.org/3/library/struct.html#format-characters>`__.
+        n : int, default: 1
+            Number of records to read.
+        flatten : bool, default: False
+            If ``True``, yield individual values instead of tuples.
+
+        Yields
+        ------
+        tuple or Any
+            Each unpacked record as a tuple, or individual values if ``flatten=True``.
+
+        Notes
+        -----
+        All bytes are read in a single call before any records are yielded. Use
+        :meth:`stream_struct` instead if records should be yielded as they arrive.
+
+        Examples
+        --------
+        Read three records as tuples::
+
+            for value, flag in serial_port.read_struct_iter('<HB', 3):
+                print(value, flag)
+
+        Read three uint16 values as individual integers::
+
+            a, b, c = serial_port.read_struct_iter('<H', 3, flatten=True)
+        """
+        s = fmt if isinstance(fmt, Struct) else Struct(fmt)
+        data = self.read(n * s.size)
+        if flatten:
+            yield from (v for t in s.iter_unpack(data) for v in t)
+        else:
+            yield from s.iter_unpack(data)
+
+    @overload
+    def stream_struct(
+        self, fmt: str | Struct, n: int, *, flatten: Literal[True] = True
+    ) -> Iterator[Any]: ...
+
+    @overload
+    def stream_struct(
+        self, fmt: str | Struct, n: int, *, flatten: Literal[False]
+    ) -> Iterator[tuple[Any, ...]]: ...
+
+    def stream_struct(
+        self,
+        fmt: str | Struct,
+        n: int,
+        *,
+        flatten: bool = True,
+    ) -> Iterator[Any] | Iterator[tuple[Any, ...]]:
+        """Stream structured data from the serial port, yielding one record at a time.
+
+        Parameters
+        ----------
+        fmt : str or struct.Struct
+            A pre-compiled struct or a format string compatible with the :mod:`struct`
+            module's `format specifications
+            <https://docs.python.org/3/library/struct.html#format-characters>`__.
+        n : int
+            Number of records to read.
+        flatten : bool, default: True
+            If ``True``, yield individual values instead of tuples.
+
+        Yields
+        ------
+        Any or tuple
+            Individual values if ``flatten=True``, otherwise one tuple per record.
+
+        Notes
+        -----
+        Each record is read and yielded as soon as its bytes arrive, using one
+        :meth:`~serial.Serial.readinto` call per record. Use :meth:`read_struct_iter`
+        instead if all data is available upfront and a single read call is preferred.
+
+        Examples
+        --------
+        Stream 100 uint32 samples, yielding each as it arrives::
+
+            for sample in serial_port.stream_struct('<I', 100):
+                process(sample)
+
+        Stream 10 records of 3 floats as tuples::
+
+            for x, y, z in serial_port.stream_struct('<3f', 10, flatten=False):
+                print(x, y, z)
+        """
+        s = fmt if isinstance(fmt, Struct) else Struct(fmt)
+        buf = bytearray(s.size)
+        for _ in range(n):
+            self.readinto(buf)
+            if flatten:
+                yield from s.unpack(buf)
+            else:
+                yield s.unpack(buf)
 
     def query(self, query: Buffer, size: int = 1) -> bytes:
         r"""
