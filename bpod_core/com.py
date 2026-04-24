@@ -178,14 +178,12 @@ class ExtendedSerial(Serial):
     @overload
     def read_struct_iter(
         self, fmt: str | Struct, n: int = 1, *, flatten: Literal[False] = False
-    ) -> Iterator[tuple[Any, ...]]:
-        ...
+    ) -> Iterator[tuple[Any, ...]]: ...
 
     @overload
     def read_struct_iter(
         self, fmt: str | Struct, n: int = 1, *, flatten: Literal[True]
-    ) -> Iterator[Any]:
-        ...
+    ) -> Iterator[Any]: ...
 
     def read_struct_iter(
         self,
@@ -238,14 +236,12 @@ class ExtendedSerial(Serial):
     @overload
     def stream_struct(
         self, fmt: str | Struct, n: int, *, flatten: Literal[True] = True
-    ) -> Iterator[Any]:
-        ...
+    ) -> Iterator[Any]: ...
 
     @overload
     def stream_struct(
         self, fmt: str | Struct, n: int, *, flatten: Literal[False]
-    ) -> Iterator[tuple[Any, ...]]:
-        ...
+    ) -> Iterator[tuple[Any, ...]]: ...
 
     def stream_struct(
         self,
