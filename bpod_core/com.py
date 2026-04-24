@@ -178,12 +178,14 @@ class ExtendedSerial(Serial):
     @overload
     def read_struct_iter(
         self, fmt: str | Struct, n: int = 1, *, flatten: Literal[False] = False
-    ) -> Iterator[tuple[Any, ...]]: ...
+    ) -> Iterator[tuple[Any, ...]]:
+        ...
 
     @overload
     def read_struct_iter(
         self, fmt: str | Struct, n: int = 1, *, flatten: Literal[True]
-    ) -> Iterator[Any]: ...
+    ) -> Iterator[Any]:
+        ...
 
     def read_struct_iter(
         self,
@@ -222,9 +224,9 @@ class ExtendedSerial(Serial):
             for value, flag in serial_port.read_struct_iter('<HB', 3):
                 print(value, flag)
 
-        Read three uint16 values as individual integers::
+        Read two records as individual integers::
 
-            a, b, c = serial_port.read_struct_iter('<H', 3, flatten=True)
+            v1, f1, v2, f2 = serial_port.read_struct_iter('<HB', 2, flatten=True)
         """
         s = fmt if isinstance(fmt, Struct) else Struct(fmt)
         data = self.read(n * s.size)
@@ -236,12 +238,14 @@ class ExtendedSerial(Serial):
     @overload
     def stream_struct(
         self, fmt: str | Struct, n: int, *, flatten: Literal[True] = True
-    ) -> Iterator[Any]: ...
+    ) -> Iterator[Any]:
+        ...
 
     @overload
     def stream_struct(
         self, fmt: str | Struct, n: int, *, flatten: Literal[False]
-    ) -> Iterator[tuple[Any, ...]]: ...
+    ) -> Iterator[tuple[Any, ...]]:
+        ...
 
     def stream_struct(
         self,
