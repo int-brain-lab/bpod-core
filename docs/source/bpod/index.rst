@@ -165,14 +165,14 @@ successor takes less time than the current state machine takes to execute.
 
    data = bpod.get_data()
 
-Finally, it is possible to retrieve a partial copy of a state machine's data while its
+Finally, it is possible to retrieve a partial copy of a state machine's data while it's
 still running. To do so, use the :meth:`~bpod_core.bpod.Bpod.peek_data` method. In the
-following example we use two state machine's per trial. The first measures the duration
+following example we use two state machines per trial. The first measures the duration
 of an input event, while the second one returns an output action of identical duration.
 :meth:`~bpod_core.bpod.Bpod.peek_data` blocks until one of the ``trigger_states`` has
 been reached—in this case the ``pause`` state—and then returns the data collected up to
 that point. This way, you can use the results from one state machine to prepare the next
-without loosing the downtime inbetween state machine runs.
+without introducing idle time between state machine runs.
 
 .. testcode-code-block:: python3
    :name: peek_data_fsm
@@ -207,8 +207,6 @@ without loosing the downtime inbetween state machine runs.
            bpod.run(fsm2, trial_number=i)
 
    data = bpod.get_data()  # collect data across all state machine runs
-   data.write_parquet('/home/flo/Downloads/2fsm.pqt')
-   print(data)
 
 Data Format
 -----------
