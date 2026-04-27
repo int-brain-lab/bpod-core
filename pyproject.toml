@@ -18,7 +18,8 @@ classifiers = [
 ]
 dependencies = [
   "numpy",
-  "pydantic>=2.0",
+  "pydantic>=2.0.0",
+  "pydantic-extra-types>=2.0.0",
   "pyserial>=3.5",
   "graphviz>=0.20.0",
   "pyzmq>=27.0.0",
