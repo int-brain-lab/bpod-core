@@ -462,7 +462,8 @@ If you prefer `Pandas <https://pandas.pydata.org/>`__ over
 
 .. note::
 
-   This operation requires that both :mod:`pandas` and :mod:`pyarrow` are installed.
+   This operation requires that both `pandas <https://pandas.pydata.org/>`__ and
+   `PyArrow <https://arrow.apache.org/docs/python/>`__ are installed.
 
 
 More on Polars

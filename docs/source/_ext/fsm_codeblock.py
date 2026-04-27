@@ -1,8 +1,20 @@
+"""
+Sphinx extension providing the ``fsm_codeblock`` and ``fsm-figure`` directives.
+
+``fsm_codeblock`` renders code as a highlighted ``.. code-block::`` and a hidden
+``.. testcode::`` block (for the ``doctest`` builder), and also executes the code
+immediately so that the resulting :class:`~bpod_core.fsm.StateMachine` is rendered into
+light and dark SVG diagrams alongside the document.
+
+``fsm-figure`` displays the light/dark SVG pair produced by ``fsm_codeblock`` as a
+captioned figure, switching between variants based on the active color mode.
+"""
+
 import textwrap
 from pathlib import Path
 
 from docutils import nodes
-from docutils.parsers.rst import directives
+from docutils.parsers.rst import Directive, directives
 from docutils.statemachine import StringList
 from sphinx.directives.code import CodeBlock
 
@@ -31,7 +43,7 @@ class FSMCodeBlock(CodeBlock):
             env._fsm_codeblock_namespaces = {}
         name_space_store = env._fsm_codeblock_namespaces
 
-        # execute code within the selected namespace and save state diagram to file
+        # execute code and render light/dark SVG diagrams
         is_doctest = getattr(env, 'app', None) and env.app.builder.name == 'doctest'
         if not is_doctest:
             name_space = name_space_store.setdefault(group, {}) if group else {}
@@ -39,7 +51,20 @@ class FSMCodeBlock(CodeBlock):
             fsm = name_space.get('fsm')
             if fsm and 'filename' in self.options:
                 source_path = Path(self.state.document['source']).parent
-                fsm.to_file(source_path / self.options['filename'], overwrite=True)
+                filepath = source_path / self.options['filename']
+                config = env.app.config
+                digraph_light = fsm.to_digraph(**config.fsm_light_colors)
+                digraph_dark = fsm.to_digraph(**config.fsm_dark_colors)
+                digraph_light.render(
+                    outfile=filepath.with_stem(filepath.stem + '__light'),
+                    cleanup=True,
+                    quiet=True,
+                )
+                digraph_dark.render(
+                    outfile=filepath.with_stem(filepath.stem + '__dark'),
+                    cleanup=True,
+                    quiet=True,
+                )
 
         container = nodes.Element()
         self.state.nested_parse(
@@ -50,8 +75,40 @@ class FSMCodeBlock(CodeBlock):
         return nodes_list
 
 
+class FSMFigure(Directive):
+    """Directive that renders light and dark SVG variants of an FSM diagram."""
+
+    required_arguments = 1  # diagram stem, e.g. 'hello_world_01'
+    optional_arguments = 0
+    has_content = True  # caption text
+
+    def run(self):
+        stem = self.arguments[0]
+        caption = '\n   '.join(self.content)  # re-indent for figure body
+
+        strings = [
+            '.. container:: light-only',
+            '',
+            f'   .. figure:: {stem}__light.svg',
+            '',
+            f'      {caption}',
+            '',
+            '.. container:: dark-only',
+            '',
+            f'   .. figure:: {stem}__dark.svg',
+            '',
+            f'      {caption}',
+            '',
+        ]
+
+        container = nodes.Element()
+        self.state.nested_parse(StringList(strings), self.content_offset, container)
+        return list(container.children)
+
+
 def setup(app):
     app.add_directive('fsm_codeblock', FSMCodeBlock)
+    app.add_directive('fsm-figure', FSMFigure)
     return {
         'version': '0.1',
         'parallel_read_safe': False,

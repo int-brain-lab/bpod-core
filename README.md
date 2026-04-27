@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/int-brain-lab/bpod-core/refs/heads/main/docs/source/_static/bpod-core.svg" />
-</p>
-
 # bpod-core
 
 A Python library for communicating with [*Bpod Finite State

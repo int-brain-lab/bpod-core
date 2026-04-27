@@ -1,3 +1,11 @@
+"""
+Sphinx Extension providing ``doctest-code-block`` & ``testcode-code-block`` directives.
+
+These directives render code as a highlighted ``.. code-block::`` while simultaneously
+registering it as a hidden ``.. doctest::`` or ``.. testcode::`` block so that the
+``doctest`` builder can execute it.
+"""
+
 from __future__ import annotations
 
 from docutils import nodes
