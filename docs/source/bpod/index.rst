@@ -80,8 +80,8 @@ serial connection is closed and any running trial is allowed to finish on exit.
       ...     pass  # do things ...
 
 
-Running a State Machine
------------------------
+Running State Machines
+----------------------
 
 To run a state machine on a Bpod device, use the :meth:`~bpod_core.bpod.Bpod.run` method
 of your :class:`~bpod_core.bpod.Bpod` instance. It validates and compiles the state
@@ -122,15 +122,24 @@ collected data as a Polars :class:`~polars.DataFrame` (see section `Data Format`
    :class:`~bpod_core.fsm.StateMachine` object.
 
 
-Running Several State Machines
-------------------------------
+Zero-Downtime Execution
+^^^^^^^^^^^^^^^^^^^^^^^
 
-You can run :meth:`~bpod_core.bpod.Bpod.run` several times in quick succession.
-:class:`~bpod_core.bpod.Bpod` will automatically enqueue the state machines for
-execution on the Bpod hardware. Subsequent state machines will run with zero inter-trial
-downtime, allowing for continuous acquisition. When returning the data with
-:meth:`~bpod_core.bpod.Bpod.get_data` the data from individual trials will automatically
-be concatenated to a continuous Polars :class:`~polars.DataFrame`.
+You can run :meth:`~bpod_core.bpod.Bpod.run` several times in quick succession. Each
+call automatically blocks until the hardware is ready to accept the next state machine.
+The Bpod starts executing the transferred state machine as soon as possible—either right
+away if no trial is running, or as soon as the preceding trial ends—enabling
+back-to-back execution of state machines with zero inter-trial downtime and continuous
+acquisition.
+
+.. dark-light-figure:: /_static/bpod_run
+
+   Timeline of four consecutive :meth:`~bpod_core.bpod.Bpod.run` calls across the Host
+   PC and Bpod.
+
+When calling :meth:`~bpod_core.bpod.Bpod.get_data`, data from individual trials is
+automatically concatenated to a continuous Polars :class:`~polars.DataFrame`. In the
+following example, a single state machine is executed 100 times:
 
 .. testcode-code-block:: python3
    :caption: Running several trials of the same state machine in immediate succession.
@@ -142,10 +151,14 @@ be concatenated to a continuous Polars :class:`~polars.DataFrame`.
 
    data = bpod.get_data()
 
+On-The-Fly Execution
+^^^^^^^^^^^^^^^^^^^^
+
 Similarly, you can define state machines on-the-fly *within* the loop. The
-:meth:`~bpod_core.bpod.Bpod.run` method is non-blocking and the individual state
-machines will run continuously, as long as preparing and uploading a state machine's
-successor takes less time than the current state machine takes to execute.
+:meth:`~bpod_core.bpod.Bpod.run` method is non-blocking (unless the Bpod is not
+yet ready to accept a transfer) and the individual state machines will run continuously,
+as long as preparing and uploading a state machine's successor takes less time than the
+current state machine takes to execute.
 
 .. testcode-code-block:: python3
    :name: on_the_fly_fsm
@@ -165,14 +178,18 @@ successor takes less time than the current state machine takes to execute.
 
    data = bpod.get_data()
 
+Retrieval of Partial Data
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
 Finally, it is possible to retrieve a partial copy of a state machine's data while it's
 still running. To do so, use the :meth:`~bpod_core.bpod.Bpod.peek_data` method. In the
-following example we use two state machines per trial. The first measures the duration
+following example, we use two state machines per trial. The first measures the duration
 of an input event, while the second one returns an output action of identical duration.
 :meth:`~bpod_core.bpod.Bpod.peek_data` blocks until one of the ``trigger_states`` has
 been reached—in this case the ``pause`` state—and then returns the data collected up to
 that point. This way, you can use the results from one state machine to prepare the next
-without introducing idle time between state machine runs.
+without introducing idle time between state machine runs. The final call to
+:meth:`~bpod_core.bpod.Bpod.get_data` will collect data across all trials.
 
 .. testcode-code-block:: python3
    :name: peek_data_fsm
@@ -332,8 +349,8 @@ type:
 Filtering
 ^^^^^^^^^
 
-The different columns are designed to facilitate filtering the data. If, for instance
-, you wanted to look at all events that affect the output channel ``PWM1``, you could
+The different columns are designed to facilitate filtering the data. If, for instance,
+you wanted to look at all events that affect the output channel ``PWM1``, you could
 filter the table like so:
 
 .. doctest-code-block::
@@ -363,9 +380,9 @@ filter the table like so:
 Plotting
 ^^^^^^^^
 
-Using filtering, it becomes relatively straightforward to extract data for plotting.
-We use data returned by the state machines in :numref:`on_the_fly_fsm` to produce a
-stairstep graph of the ``PWM1`` output channel over relative time:
+Filtering makes it straightforward to extract data for plotting. We use data returned
+by the state machines in :numref:`on_the_fly_fsm` to produce a stairstep graph of the
+``PWM1`` output channel over relative time:
 
 .. plot::
    :context:
@@ -414,7 +431,7 @@ stairstep graph of the ``PWM1`` output channel over relative time:
 Storing Data
 ^^^^^^^^^^^^
 
-Since most of the columns consist of `Categorical data <https://docs.pola.rs/user-guide/expressions/categorical-data-and-enums/>`_,
+Because most of the columns consist of `Categorical data <https://docs.pola.rs/user-guide/expressions/categorical-data-and-enums/>`_,
 data can be very efficiently written to disk as a `Parquet <https://en.wikipedia.org/wiki/Apache_Parquet>`_
 file using :meth:`~polars.DataFrame.write_parquet`:
 

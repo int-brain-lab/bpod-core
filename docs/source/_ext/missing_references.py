@@ -22,7 +22,7 @@ _REFERENCE_URL_MAP = {
 }
 
 
-def _resolve(_, env, node, contnode):
+def _resolve(app, env, node, contnode):
     """Resolve missing cross-references not covered by intersphinx inventories."""
 
     target = node.get('reftarget', '')
@@ -32,9 +32,19 @@ def _resolve(_, env, node, contnode):
         node['reftarget'] = 'serial.Serial'
         return None
 
-    # # Remap fully-parameterized ValidatedDict generics to typing.Annotated
-    # if re.match(r'^bpod_core\.misc\.ValidatedDict\[', target):
-    #     target = node['reftarget'] = 'typing.Annotated'
+    # Remap fully-parameterized ValidatedDict generics
+    if re.match(r'^bpod_core\.misc\.ValidatedDict\[', target):
+        contnode[0] = nodes.Text('ValidatedDict')
+        node['reftarget'] = 'bpod_core.misc.ValidatedDict'
+        return env.get_domain('py').resolve_xref(
+            env,
+            node.get('refdoc', env.docname),
+            app.builder,
+            node.get('reftype', 'class'),
+            'bpod_core.misc.ValidatedDict',
+            node,
+            contnode,
+        )
 
     # Strip generic subscripts that intersphinx can't resolve
     if '[' in target:

@@ -55,6 +55,7 @@ extensions = [
     'sphinx_toolbox.more_autodoc.typevars',
     'sphinx_toolbox.more_autodoc.genericalias',
     # 'sphinx_toolbox.more_autodoc.overloads',
+    'dark_light_figure',
     'doctest_codeblock',
     'fsm_codeblock',
     'fsm_examples',

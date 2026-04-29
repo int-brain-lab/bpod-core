@@ -1,20 +1,17 @@
 """
-Sphinx extension providing the ``fsm_codeblock`` and ``fsm-figure`` directives.
+Sphinx extension providing the ``fsm_codeblock`` directive.
 
-``fsm_codeblock`` renders code as a highlighted ``.. code-block::`` and a hidden
-``.. testcode::`` block (for the ``doctest`` builder), and also executes the code
-immediately so that the resulting :class:`~bpod_core.fsm.StateMachine` is rendered into
-light and dark SVG diagrams alongside the document.
-
-``fsm-figure`` displays the light/dark SVG pair produced by ``fsm_codeblock`` as a
-captioned figure, switching between variants based on the active color mode.
+Renders code as a highlighted ``.. code-block::`` and a hidden ``.. testcode::`` block
+(for the ``doctest`` builder), and also executes the code immediately so that the
+resulting :class:`~bpod_core.fsm.StateMachine` is rendered into light and dark SVG
+diagrams alongside the document.
 """
 
 import textwrap
 from pathlib import Path
 
 from docutils import nodes
-from docutils.parsers.rst import Directive, directives
+from docutils.parsers.rst import directives
 from docutils.statemachine import StringList
 from sphinx.directives.code import CodeBlock
 
@@ -75,40 +72,9 @@ class FSMCodeBlock(CodeBlock):
         return nodes_list
 
 
-class FSMFigure(Directive):
-    """Directive that renders light and dark SVG variants of an FSM diagram."""
-
-    required_arguments = 1  # diagram stem, e.g. 'hello_world_01'
-    optional_arguments = 0
-    has_content = True  # caption text
-
-    def run(self):
-        stem = self.arguments[0]
-        caption = '\n   '.join(self.content)  # re-indent for figure body
-
-        strings = [
-            '.. container:: light-only',
-            '',
-            f'   .. figure:: {stem}__light.svg',
-            '',
-            f'      {caption}',
-            '',
-            '.. container:: dark-only',
-            '',
-            f'   .. figure:: {stem}__dark.svg',
-            '',
-            f'      {caption}',
-            '',
-        ]
-
-        container = nodes.Element()
-        self.state.nested_parse(StringList(strings), self.content_offset, container)
-        return list(container.children)
-
-
 def setup(app):
+    """Register the ``fsm_codeblock`` directive."""
     app.add_directive('fsm_codeblock', FSMCodeBlock)
-    app.add_directive('fsm-figure', FSMFigure)
     return {
         'version': '0.1',
         'parallel_read_safe': False,
