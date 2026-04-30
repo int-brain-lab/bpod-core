@@ -564,6 +564,14 @@ class TestSerialDevice:
         with pytest.raises(SerialException, match='Failed to close connection'):
             device.close()
 
+    def test_close_detaches_finalizer(self, mock_comports, mock_extended_serial):
+        """close() detaches the live finalizer registered during open()."""
+        device = com.SerialDevice('/dev/ttyACM0', open_connection=True)
+        finalizer = device._serial_device_finalizer
+        assert finalizer is not None and finalizer.alive
+        device.close()
+        assert not finalizer.alive
+
     def test_port_property(self, mock_comports, mock_extended_serial):
         """port property returns the device path."""
         device = com.SerialDevice('/dev/ttyACM0', open_connection=False)

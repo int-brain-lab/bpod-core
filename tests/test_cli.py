@@ -1,5 +1,7 @@
 """Tests for the _bpod_cli entry point."""
 
+import logging
+import signal
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -98,3 +100,31 @@ class TestBpodCli:
             pytest.raises(SystemExit),
         ):
             _bpod_cli()
+
+    def test_version_flag(self, caplog):
+        """--version logs the version string and returns 0 without opening a device."""
+        with (
+            patch('sys.argv', ['bpod', '--version']),
+            patch('bpod_core._cli.bpod_core_version', '1.2.3'),
+            caplog.at_level(logging.INFO, logger='bpod_cli'),
+        ):
+            result = _bpod_cli()
+        assert result == 0
+        assert 'bpod-core 1.2.3' in caplog.text
+
+    def test_signal_handler_triggers_shutdown(self, mock_bpod_cls):
+        """Registered signal handler sets the shutdown event."""
+        captured_handlers: dict[int, object] = {}
+        mock_event = MagicMock(spec=threading.Event)
+
+        with (
+            patch('sys.argv', ['bpod']),
+            patch('bpod_core._cli.signal.signal', side_effect=lambda s, h: captured_handlers.update({s: h})),
+            patch('bpod_core._cli.threading.Event', return_value=mock_event),
+        ):
+            _bpod_cli()
+
+        assert captured_handlers, 'no signal handlers were registered'
+        handler = next(iter(captured_handlers.values()))
+        handler(signal.SIGINT, None)
+        mock_event.set.assert_called_once()

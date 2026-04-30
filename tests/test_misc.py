@@ -122,6 +122,40 @@ class TestSuggestSimilar:
         assert result == " - did you mean 'banana'?"
 
 
+class TestSuggestionDict:
+    """Tests for SuggestionDict."""
+
+    @pytest.fixture
+    def ports(self):
+        return misc.SuggestionDict({'Port1': 1, 'Port2': 2}, name='channel')
+
+    def test_existing_key(self, ports):
+        """Returns value for a valid key."""
+        assert ports['Port1'] == 1
+
+    def test_missing_key_suggests_close_match(self, ports):
+        """Raises KeyError with a suggestion for a near-miss key."""
+        with pytest.raises(KeyError, match="No such channel: 'Prot1'"):
+            _ = ports['Prot1']
+
+    def test_missing_key_no_suggestion(self, ports):
+        """Raises KeyError without suggestion when no close match exists."""
+        with pytest.raises(KeyError, match="No such channel: 'xyz'"):
+            _ = ports['xyz']
+
+    def test_custom_error_class(self):
+        """Raises the specified error_class instead of KeyError."""
+        d = misc.SuggestionDict({'a': 1}, name='item', error_class=ValueError)
+        with pytest.raises(ValueError, match="No such item: 'x'"):
+            _ = d['x']
+
+    def test_default_name(self):
+        """Uses 'key' as the name when none is provided."""
+        d = misc.SuggestionDict({'a': 1})
+        with pytest.raises(KeyError, match="No such key"):
+            _ = d['b']
+
+
 class TestSetNested:
     """Tests for set_nested utility."""
 
@@ -541,10 +575,11 @@ class TestValidatedDict:
         assert repr(validated_dict) == repr({'a': 1})
 
     def test_equality(self, validated_dict):
-        """Test equality operator."""
-        assert dict(validated_dict) == {}
+        """ValidatedDict.__eq__ compares against a plain dict."""
+        assert validated_dict == {}
         validated_dict['a'] = 1
-        assert dict(validated_dict) == {'a': 1}
+        assert validated_dict == {'a': 1}
+        assert validated_dict != {'a': 2}
 
     def test_runtime_validate_key(self, validated_dict):
         """Test runtime validation of keys."""
