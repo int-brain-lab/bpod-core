@@ -3,22 +3,23 @@
    :end-before: ## Links
 
 .. toctree::
-   :caption: Sections
+   :caption: User Guide
    :maxdepth: 3
    :hidden:
 
    state_machines/index
    bpod/index
+   data_format
    faq
-   schema
-   developer_guide
    changelog
 
 .. toctree::
-  :hidden:
-  :caption: API Reference
+   :caption: Developer Guide
+   :hidden:
 
-  api
+   contributing
+   schema
+   api
 
 .. toctree::
    :caption: Links

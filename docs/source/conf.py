@@ -70,6 +70,10 @@ exclude_patterns = []
 numfig = True
 nitpicky = True
 
+# -- MyST ----------------------------------------------------------------------
+
+myst_heading_anchors = 2
+
 # -- Code blocks ---------------------------------------------------------------
 
 doctest_global_setup = f"""
