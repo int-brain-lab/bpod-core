@@ -12,6 +12,7 @@ from cachetools import FIFOCache
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     TypeAdapter,
     ValidationError,
@@ -20,6 +21,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
+from pydantic_extra_types.color import Color, ColorType
 from xxhash import xxh3_64 as _xxh3_64
 
 from bpod_core.constants import UINT32_MAX
@@ -430,7 +432,14 @@ class Conditions(ValidatedDict[Index, Condition], title='Conditions'):
 
 
 class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
-    """Represents a state machine with a collection of states."""
+    """Definition of a Bpod finite-state machine."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            '$id': 'https://github.com/int-brain-lab/bpod-core/blob/main/.schema/statemachine.json',
+            '$schema': 'https://json-schema.org/draft/2020-12/schema',
+        },
+    )
 
     name: StateMachineName = 'State Machine'
     """The name of the state machine."""
@@ -610,17 +619,27 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             value=value,
         )
 
-    def to_digraph(self) -> Digraph:
+    @validate_call()
+    def to_digraph(
+        self,
+        color_stroke: ColorType = 'black',
+        color_fill: ColorType = 'white',
+        color_highlight: ColorType = 'lightblue',
+        color_back: ColorType = 'red',
+    ) -> Digraph:
         """
         Return a graphviz Digraph instance representing the state machine.
 
-        The Digraph includes:
-
-        - A point-shaped node representing the start of the state machine,
-        - An optional 'exit' node if any state transitions to 'exit',
-        - Record-like nodes for each state displaying state name, timer, comment and
-          output actions, and
-        - Edges representing state transitions based on conditions.
+        Parameters
+        ----------
+        color_stroke : ColorType, default: 'black'
+            Color for fonts, node outlines, and edges.
+        color_fill : ColorType, default: 'white'
+            Background color of state nodes.
+        color_highlight : ColorType, default: 'lightblue'
+            Background color of state header and comment rows.
+        color_back : ColorType, default: 'red'
+            Color for edges resulting from ``>back`` transitions.
 
         Returns
         -------
@@ -640,16 +659,37 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         if len(self.states) == 0:
             return dot
 
+        # get string representations of color parameters
+        c_stroke: str = Color(color_stroke).as_hex(format='long')
+        c_background = Color(color_fill).as_hex(format='long')
+        c_highlight = Color(color_highlight).as_hex(format='long')
+        c_back = Color(color_back).as_hex(format='long')
+
         # Set default graph attributes and styling
         fontname = 'Helvetica,Arial,sans-serif'
         dot.attr(overlap='false', splines='true', rankdir='LR')
-        dot.attr('graph', fontname=fontname, fontsize='11', bgcolor='transparent')
-        dot.attr('node', fontname=fontname, fontsize='11', bgcolor='white')
-        dot.attr('edge', fontname=fontname, fontsize='10')
+        dot.attr(
+            'graph',
+            fontname=fontname,
+            fontsize='11',
+            fontcolor=c_stroke,
+            bgcolor='transparent',
+            outputorder='edgesfirst',
+        )
+        dot.attr(
+            'node', fontname=fontname, fontsize='11', fontcolor=c_stroke, color=c_stroke
+        )
+        dot.attr(
+            'edge', fontname=fontname, fontsize='10', fontcolor=c_stroke, color=c_stroke
+        )
 
         # Add start node and edge to first state
         dot.node(
-            name='', shape='circle', style='filled', fillcolor='black', width='0.25'
+            name='',
+            shape='circle',
+            style='filled',
+            color=c_stroke,
+            width='0.25',
         )
         dot.edge('', next(iter(self.states.keys())))
         with dot.subgraph() as s:
@@ -658,15 +698,14 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
         # Add exit node if any states transition to it
         targets = [t for s in self.states.values() for t in s.transitions.values()]
-        if 'exit' in targets or '>exit' in targets:
+        if any(t in ('exit', '>exit') for t in targets):
             dot.node(
                 name='exit',
                 label='',
                 shape='doublecircle',
                 style='filled',
-                fillcolor='black',
+                color=c_stroke,
                 width='0.125',
-                rank='sink',
             )
             with dot.subgraph() as s:
                 s.attr(rank='sink')
@@ -678,7 +717,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         for state_name, state in self.states.items():
             # Create table cells for comment if present
             comment = (
-                f'<TR><TD ALIGN="LEFT" COLSPAN="2" BGCOLOR="LIGHTBLUE">'
+                f'<TR><TD ALIGN="LEFT" COLSPAN="2" BGCOLOR="{c_highlight}">'
                 f'<I>{state.comment}</I></TD></TR>'
                 if state.comment is not None and len(state.comment) > 0
                 else ''
@@ -686,16 +725,18 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
             # Create table rows for output actions
             actions = ''.join(
-                f'<TR><TD ALIGN="LEFT">{k}</TD><TD ALIGN="RIGHT">{v}</TD></TR>'
+                f'<TR><TD ALIGN="LEFT">{k}  </TD><TD ALIGN="RIGHT">{v}</TD></TR>'
                 for k, v in state.actions.items()
             )
 
             # Create HTML table label with state info
             label = (
                 '<<TABLE BORDER="1" CELLBORDER="0" CELLSPACING="0" ALIGN="LEFT" '
-                'BGCOLOR="WHITE"><TR><TD BGCOLOR="LIGHTBLUE" ALIGN="LEFT">'
-                f'<B>{state_name}  </B></TD><TD BGCOLOR="LIGHTBLUE" ALIGN="RIGHT">'
-                f'{state.timer:g} s</TD></TR>{comment}{actions}</TABLE>>'
+                f'BGCOLOR="{c_background}"><TR><TD BGCOLOR="{c_highlight}" COLSPAN="2">'
+                '<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0">'
+                f'<TR><TD ALIGN="LEFT"><B>{state_name} </B></TD>'
+                f'<TD ALIGN="RIGHT"><B> </B>{state.timer:g}&#8239;s</TD></TR>'
+                f'</TABLE></TD></TR>{comment}{actions}</TABLE>>'
             )
 
             # Add state node
@@ -705,13 +746,13 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
             # Use a subgraph to keep edges from the same state on the same rank
             with dot.subgraph() as s:
                 s.attr(rank='same')
-                for label, target in state.transitions.items():
-                    if 'exit' in target:
-                        dot.edge(state_name, 'exit', label)
+                for edge_label, target in state.transitions.items():
+                    if target in ('exit', '>exit'):
+                        dot.edge(state_name, 'exit', edge_label)
                     elif target == '>back':
-                        back_ops.append((state_name, label))
+                        back_ops.append((state_name, edge_label))
                     else:
-                        dot.edge(state_name, target, label)
+                        dot.edge(state_name, target, edge_label)
                         s.node(target)
 
         # Add edges for back transitions
@@ -719,7 +760,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
         for source, label in back_ops:
             for target, state in self.states.items():
                 if source in state.transitions.values():
-                    dot.edge(source, target, label, color='red', fontcolor='red')
+                    dot.edge(source, target, label, color=c_back, fontcolor=c_back)
 
         return dot
 

@@ -95,28 +95,6 @@ class ByteEnum(IntEnum):
         return self._as_bytes
 
 
-class DocstringInheritanceMixin:
-    """Mixin that automatically inherits docstrings from parent classes.
-
-    When a subclass overrides a method or property without providing its own docstring,
-    this mixin copies the docstring from the nearest parent class that defines one. This
-    avoids having to duplicate docstrings across abstract methods and their concrete
-    implementations.
-    """
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        for name, attr in vars(cls).items():
-            if name in {'__init__', '__new__'}:
-                continue
-            if (callable(attr) or isinstance(attr, property)) and not attr.__doc__:
-                for base in cls.__mro__[1:]:
-                    base_attr = vars(base).get(name)
-                    if base_attr is not None and base_attr.__doc__:
-                        attr.__doc__ = base_attr.__doc__
-                        break
-
-
 def to_snake_case(string: str) -> str:
     """
     Convert a given string to snake_case.

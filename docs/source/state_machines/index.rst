@@ -174,7 +174,7 @@ used to generate timer-based events. By default, this timer is set to 0 s, meani
 state will immediately trigger a timeout event. The created state machine can be
 visualized using the following state diagram:
 
-.. figure:: hello_world_01.svg
+.. dark-light-figure:: hello_world_01
 
    Well hello!
 
@@ -194,7 +194,7 @@ our state machine's :attr:`~bpod_core.fsm.StateMachine.states` dictionary.
 Now our state machine contains two states: `Hello` and `World`. However, they are not
 yet connected, which is obvious in the state diagram below:
 
-.. figure:: hello_world_02.svg
+.. dark-light-figure:: hello_world_02
 
    That doesn't look right.
 
@@ -218,7 +218,7 @@ A state's transitions are defined in a Python :class:`dict`, where keys are the
 triggering events (e.g. `Tup`), and values are the transition targets (either another
 state's name or an operator such as ``>exit`` or ``>back``).
 
-.. figure:: hello_world_03.svg
+.. dark-light-figure:: hello_world_03
 
    Getting there.
 
@@ -237,7 +237,7 @@ turning on an output channel:
 
 And with that, our `Hello, World!` example is complete:
 
-.. figure:: hello_world_04.svg
+.. dark-light-figure:: hello_world_04
 
    Our finite-state machine is complete.
 

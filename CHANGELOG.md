@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0a12] - 2026-04-30
+
+Just some minor improvements ...
+
+### Changed
+
+- further refinements to documentation.
+- cleaned up rendering of Graphviz graphs.
+
+### Removed
+
+- removed unused `misc.DocstringInheritanceMixin`
+
 ## [0.1.0a11] - 2026-04-24
 
 ### Added
@@ -16,9 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Replaced `NamedTuples` with `misc.SuggestionDict` for `Bpod.inputs` and
+- replaced `NamedTuples` with `misc.SuggestionDict` for `Bpod.inputs` and
   `Bpod.outputs`
-- Refactored Sphinx documentation and API reference.
+- refactored Sphinx documentation and API reference.
 
 ## [0.1.0a10] - 2026-04-16
 
@@ -194,6 +207,8 @@ Just a quick bugfix release ...
 
 First alpha release. Nothing works.
 
+
+[0.1.0a12]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a12
 
 [0.1.0a11]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a11
 

@@ -45,8 +45,26 @@ a:has(.linkcode-link) {
   margin: 0 auto;
 }
 
-.theme-switch {
-    display: none !important;
+:root {
+  --graphviz-filter: none;
+  --graphviz-blend: normal;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root { --graphviz-filter: invert(); --graphviz-blend: screen; }
+}
+
+[data-color-mode="dark"] {
+  --graphviz-filter: invert(); --graphviz-blend: screen;
+}
+
+[data-color-mode="light"] {
+  --graphviz-filter: none; --graphviz-blend: normal;
+}
+
+img.graphviz, object.graphviz, img.plot-directive, img.invert {
+  filter: var(--graphviz-filter);
+  mix-blend-mode: var(--graphviz-blend);
 }
 
 .sy-head-brand img {

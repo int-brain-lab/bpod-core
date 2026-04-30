@@ -122,6 +122,40 @@ class TestSuggestSimilar:
         assert result == " - did you mean 'banana'?"
 
 
+class TestSuggestionDict:
+    """Tests for SuggestionDict."""
+
+    @pytest.fixture
+    def ports(self):
+        return misc.SuggestionDict({'Port1': 1, 'Port2': 2}, name='channel')
+
+    def test_existing_key(self, ports):
+        """Returns value for a valid key."""
+        assert ports['Port1'] == 1
+
+    def test_missing_key_suggests_close_match(self, ports):
+        """Raises KeyError with a suggestion for a near-miss key."""
+        with pytest.raises(KeyError, match="No such channel: 'Prot1'"):
+            _ = ports['Prot1']
+
+    def test_missing_key_no_suggestion(self, ports):
+        """Raises KeyError without suggestion when no close match exists."""
+        with pytest.raises(KeyError, match="No such channel: 'xyz'"):
+            _ = ports['xyz']
+
+    def test_custom_error_class(self):
+        """Raises the specified error_class instead of KeyError."""
+        d = misc.SuggestionDict({'a': 1}, name='item', error_class=ValueError)
+        with pytest.raises(ValueError, match="No such item: 'x'"):
+            _ = d['x']
+
+    def test_default_name(self):
+        """Uses 'key' as the name when none is provided."""
+        d = misc.SuggestionDict({'a': 1})
+        with pytest.raises(KeyError, match='No such key'):
+            _ = d['b']
+
+
 class TestSetNested:
     """Tests for set_nested utility."""
 
@@ -541,10 +575,11 @@ class TestValidatedDict:
         assert repr(validated_dict) == repr({'a': 1})
 
     def test_equality(self, validated_dict):
-        """Test equality operator."""
-        assert dict(validated_dict) == {}
+        """ValidatedDict.__eq__ compares against a plain dict."""
+        assert validated_dict == {}
         validated_dict['a'] = 1
-        assert dict(validated_dict) == {'a': 1}
+        assert validated_dict == {'a': 1}
+        assert validated_dict != {'a': 2}
 
     def test_runtime_validate_key(self, validated_dict):
         """Test runtime validation of keys."""
@@ -749,65 +784,3 @@ class TestPruneEmptyParentDirectories:
 
         misc.prune_empty_parent_directories(target, root)
         assert not target.exists()
-
-
-class TestDocstringInheritanceMixin:
-    """Tests for DocstringInheritanceMixin."""
-
-    def test_inherits_method_docstring(self):
-        """Subclass method without docstring inherits from parent."""
-
-        class Base(misc.DocstringInheritanceMixin):
-            def foo(self):
-                """Base docstring."""
-
-        class Child(Base):
-            def foo(self):
-                pass
-
-        assert Child.foo.__doc__ == 'Base docstring.'
-
-    def test_does_not_overwrite_existing_docstring(self):
-        """Subclass method with its own docstring is not overwritten."""
-
-        class Base(misc.DocstringInheritanceMixin):
-            def foo(self):
-                """Base docstring."""
-
-        class Child(Base):
-            def foo(self):
-                """Child docstring."""
-
-        assert Child.foo.__doc__ == 'Child docstring.'
-
-    def test_inherits_property_docstring(self):
-        """Subclass property without docstring inherits from parent."""
-
-        class Base(misc.DocstringInheritanceMixin):
-            @property
-            def bar(self):
-                """Base property docstring."""
-                return 1
-
-        class Child(Base):
-            @property
-            def bar(self):
-                return 2
-
-        assert Child.bar.__doc__ == 'Base property docstring.'
-
-    def test_inherits_from_grandparent(self):
-        """Docstring is inherited across multiple levels of inheritance."""
-
-        class Base(misc.DocstringInheritanceMixin):
-            def foo(self):
-                """Base docstring."""
-
-        class Middle(Base):
-            pass
-
-        class Child(Middle):
-            def foo(self):
-                pass
-
-        assert Child.foo.__doc__ == 'Base docstring.'

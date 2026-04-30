@@ -1,7 +1,7 @@
 JSON Schema
 ===========
 
-.. jsonschema:: ../../schema/statemachine.json
+.. jsonschema:: ../../.schema/statemachine.json
    :lift_description:
    :lift_definitions:
    :auto_reference:
