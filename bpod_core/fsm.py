@@ -325,6 +325,7 @@ class Actions(ValidatedDict[OutputActionName, OutputActionValue], title='Actions
     """A collection of actions."""
 
     if TYPE_CHECKING:
+
         def __init__(
             self, root: dict[OutputActionName, OutputActionValue] | None = ...
         ) -> None: ...
@@ -336,6 +337,7 @@ class Transitions(
     """A collection of state transitions."""
 
     if TYPE_CHECKING:
+
         def __init__(
             self, root: dict[Event, StateName | Operator] | None = ...
         ) -> None: ...
