@@ -12,6 +12,7 @@ from cachetools import FIFOCache
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     TypeAdapter,
     ValidationError,
@@ -324,7 +325,6 @@ class Actions(ValidatedDict[OutputActionName, OutputActionValue], title='Actions
     """A collection of actions."""
 
     if TYPE_CHECKING:
-
         def __init__(
             self, root: dict[OutputActionName, OutputActionValue] | None = ...
         ) -> None: ...
@@ -336,7 +336,6 @@ class Transitions(
     """A collection of state transitions."""
 
     if TYPE_CHECKING:
-
         def __init__(
             self, root: dict[Event, StateName | Operator] | None = ...
         ) -> None: ...
@@ -431,7 +430,14 @@ class Conditions(ValidatedDict[Index, Condition], title='Conditions'):
 
 
 class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
-    """Represents a state machine with a collection of states."""
+    """Definition of a Bpod finite-state machine."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            '$id': 'https://github.com/int-brain-lab/bpod-core/blob/main/.schema/statemachine.json',
+            '$schema': 'https://json-schema.org/draft/2020-12/schema',
+        },
+    )
 
     name: StateMachineName = 'State Machine'
     """The name of the state machine."""

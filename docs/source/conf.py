@@ -25,7 +25,7 @@ rst_prolog = f"""
 
 # -- Schema generation ---------------------------------------------------------
 
-schema_root = project_root / 'schema'
+schema_root = project_root / '.schema'
 schema_root.mkdir(exist_ok=True)
 with schema_root.joinpath('statemachine.json').open('w') as f:
     schema = StateMachine.model_json_schema()
