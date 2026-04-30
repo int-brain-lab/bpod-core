@@ -325,7 +325,6 @@ class Actions(ValidatedDict[OutputActionName, OutputActionValue], title='Actions
     """A collection of actions."""
 
     if TYPE_CHECKING:
-
         def __init__(
             self, root: dict[OutputActionName, OutputActionValue] | None = ...
         ) -> None: ...
@@ -337,7 +336,6 @@ class Transitions(
     """A collection of state transitions."""
 
     if TYPE_CHECKING:
-
         def __init__(
             self, root: dict[Event, StateName | Operator] | None = ...
         ) -> None: ...
@@ -436,7 +434,7 @@ class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
 
     model_config = ConfigDict(
         json_schema_extra={
-            '$id': 'https://github.com/int-brain-lab/bpod-core/blob/main/.schema/statemachine.json',
+            '$id': 'https://raw.githubusercontent.com/int-brain-lab/bpod-core/main/.schema/statemachine.json',
             '$schema': 'https://json-schema.org/draft/2020-12/schema',
         },
     )
