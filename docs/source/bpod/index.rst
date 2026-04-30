@@ -125,7 +125,7 @@ collected data as a Polars :class:`~polars.DataFrame` (see :doc:`/data_format`).
 Zero-Downtime Execution
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-You can run :meth:`~bpod_core.bpod.Bpod.run` several times in quick succession. Each
+You can invoke :meth:`~bpod_core.bpod.Bpod.run` several times in quick succession. Each
 call automatically blocks until the hardware is ready to accept the next state machine.
 The Bpod starts executing the transferred state machine as soon as possible—either right
 away if no trial is running, or as soon as the preceding trial ends—enabling
@@ -151,8 +151,8 @@ following example, a single state machine is executed 100 times:
 
    data = bpod.get_data()
 
-On-The-Fly Execution
-^^^^^^^^^^^^^^^^^^^^
+On-The-Fly Definition
+^^^^^^^^^^^^^^^^^^^^^
 
 Similarly, you can define state machines on-the-fly *within* the loop. The
 :meth:`~bpod_core.bpod.Bpod.run` method is non-blocking (unless the Bpod is not

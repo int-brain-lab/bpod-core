@@ -25,5 +25,5 @@
    :caption: Links
    :hidden:
 
-   bpod-core on GitHub <https://github.com/int-brain-lab/bpod-core>
-   bpod-core on PyPI <https://pypi.org/project/bpod-core/>
+   GitHub <https://github.com/int-brain-lab/bpod-core>
+   PyPI <https://pypi.org/project/bpod-core/>
