@@ -67,7 +67,7 @@ For the state machine in :numref:`on_the_fly_fsm` the returned
    │ 2026-04-16 20:29:12.948426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
    │ 2026-04-16 20:29:12.948426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 235   │
    │ 2026-04-16 20:29:13.022426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
-   │ 2026-04-16 20:29:12.948426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+   │ 2026-04-16 20:29:13.022426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
    │ …                          ┆ …     ┆ …                ┆ …     ┆ …               ┆ …     ┆ …       ┆ …     │
    │ 2026-04-16 20:29:19.121326 ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
    │ 2026-04-16 20:29:19.131326 ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │

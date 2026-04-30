@@ -152,7 +152,7 @@ class TestSuggestionDict:
     def test_default_name(self):
         """Uses 'key' as the name when none is provided."""
         d = misc.SuggestionDict({'a': 1})
-        with pytest.raises(KeyError, match="No such key"):
+        with pytest.raises(KeyError, match='No such key'):
             _ = d['b']
 
 

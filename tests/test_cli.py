@@ -119,7 +119,10 @@ class TestBpodCli:
 
         with (
             patch('sys.argv', ['bpod']),
-            patch('bpod_core._cli.signal.signal', side_effect=lambda s, h: captured_handlers.update({s: h})),
+            patch(
+                'bpod_core._cli.signal.signal',
+                side_effect=lambda s, h: captured_handlers.update({s: h}),
+            ),
             patch('bpod_core._cli.threading.Event', return_value=mock_event),
         ):
             _bpod_cli()
