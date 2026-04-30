@@ -252,7 +252,7 @@
       "type": "object"
     }
   },
-  "$id": "https://github.com/int-brain-lab/bpod-core/blob/main/.schema/statemachine.json",
+  "$id": "https://raw.githubusercontent.com/int-brain-lab/bpod-core/main/.schema/statemachine.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Definition of a Bpod finite-state machine.",
   "properties": {
