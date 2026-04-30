@@ -270,7 +270,7 @@ class TestFromConstructors:
 class TestSchema:
     def test_schema(self):
         """Test that the schema file exists and is up to date."""
-        schema_path = Path(__file__).parents[1].joinpath('schema/statemachine.json')
+        schema_path = Path(__file__).parents[1].joinpath('.schema/statemachine.json')
         assert schema_path.exists(), 'schema file does not exist'
         with schema_path.open('r') as f:
             data = f.read()
