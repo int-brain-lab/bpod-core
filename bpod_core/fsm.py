@@ -18,6 +18,7 @@ from pydantic import (
     ValidationError,
     WrapValidator,
     validate_call,
+    BeforeValidator,
 )
 from pydantic_core import PydanticCustomError
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
@@ -127,6 +128,12 @@ def _validate_operator(v: Any, h: ValidatorFunctionWrapHandler) -> 'Operator':
         raise
 
 
+def _validate_binary_string(v: Any) -> Any:
+    if isinstance(v, str) and set(v).issubset({'0', '1'}):
+        return int(v, 2)
+    return v
+
+
 StateTimer = Annotated[
     float,
     Field(
@@ -173,7 +180,7 @@ GlobalTimerOnsetDelay = Annotated[
 
 GlobalTimerChannel = Annotated[
     str,
-    msgspec.Meta(
+    Field(
         title='Channel',
         description='The channel affected by the global timer',
         min_length=1,
@@ -204,7 +211,10 @@ GlobalTimerLoop = Annotated[
     int,
     Field(
         title='Loop Mode',
-        description='Whether the global timer is looping or not',
+        description=(
+            '0 = off, 1 = loop until canceled or trial end, >1 = fixed number '
+            'of iterations (max 255)'
+        ),
         default=0,
         ge=0,
         le=255,
@@ -215,7 +225,10 @@ GlobalTimerLoopInterval = Annotated[
     float,
     Field(
         title='Loop Interval',
-        description='The interval in seconds that the global timer is looping',
+        description=(
+            'Delay in seconds between the end of a loop iteration and the start of the '
+            'next'
+        ),
         default=0.0,
         ge=0.0,
     ),
@@ -230,6 +243,7 @@ GlobalTimerOnsetTrigger = Annotated[
         default=0,
         ge=0,
     ),
+    BeforeValidator(_validate_binary_string),
 ]
 
 GlobalCounterThreshold = Annotated[
@@ -343,8 +357,10 @@ class Transitions(
         ) -> None: ...
 
 
-class State(BaseModel, validate_assignment=True, title='State'):
+class State(BaseModel, title='State'):
     """A state in the state machine."""
+
+    model_config = ConfigDict(validate_assignment=True, extra='forbid')
 
     timer: StateTimer = StateTimer()
     transitions: Transitions = Transitions()
@@ -357,8 +373,10 @@ class State(BaseModel, validate_assignment=True, title='State'):
         return f'{self.__class__.__name__}({values})'
 
 
-class GlobalTimer(BaseModel, validate_assignment=True, title='Global Timer'):
+class GlobalTimer(BaseModel, title='Global Timer'):
     """A global timer in the state machine."""
+
+    model_config = ConfigDict(validate_assignment=True, extra='forbid')
 
     duration: GlobalTimerDuration
     onset_delay: GlobalTimerOnsetDelay = 0.0
@@ -376,8 +394,10 @@ class GlobalTimer(BaseModel, validate_assignment=True, title='Global Timer'):
         return f'{self.__class__.__name__}({values})'
 
 
-class GlobalCounter(BaseModel, validate_assignment=True, title='Global Counter'):
+class GlobalCounter(BaseModel, title='Global Counter'):
     """A global counter in the state machine."""
+
+    model_config = ConfigDict(validate_assignment=True, extra='forbid')
 
     event: Event
     threshold: GlobalCounterThreshold
@@ -388,8 +408,10 @@ class GlobalCounter(BaseModel, validate_assignment=True, title='Global Counter')
         return f'{self.__class__.__name__}({values})'
 
 
-class Condition(BaseModel, validate_assignment=True, title='Condition'):
+class Condition(BaseModel, title='Condition'):
     """A condition in the state machine."""
+
+    model_config = ConfigDict(validate_assignment=True, extra='forbid')
 
     channel: ConditionChannel
     value: ConditionValue
@@ -402,6 +424,8 @@ class Condition(BaseModel, validate_assignment=True, title='Condition'):
 
 class States(ValidatedDict[StateName, State], title='States'):
     """A collection of states."""
+
+    model_config = ConfigDict(json_schema_extra={'additionalProperties': False})
 
     @property
     def transition_targets(self) -> set[str]:
@@ -422,21 +446,29 @@ Index = Annotated[
 class GlobalTimers(ValidatedDict[Index, GlobalTimer], title='Global Timers'):
     """A collection of global timers."""
 
+    model_config = ConfigDict(json_schema_extra={'additionalProperties': False})
+
 
 class GlobalCounters(ValidatedDict[Index, GlobalCounter], title='Global Counters'):
     """A collection of global counters."""
+
+    model_config = ConfigDict(json_schema_extra={'additionalProperties': False})
 
 
 class Conditions(ValidatedDict[Index, Condition], title='Conditions'):
     """A collection of conditions."""
 
+    model_config = ConfigDict(json_schema_extra={'additionalProperties': False})
 
-class StateMachine(BaseModel, validate_assignment=True, title='State Machine'):
+
+class StateMachine(BaseModel, title='State Machine'):
     """Definition of a Bpod finite-state machine."""
 
     model_config = ConfigDict(
+        validate_assignment=True,
+        extra='forbid',
         json_schema_extra={
-            '$id': 'https://github.com/int-brain-lab/bpod-core/blob/main/.schema/statemachine.json',
+            '$id': 'https://raw.githubusercontent.com/int-brain-lab/bpod-core/main/.schema/statemachine.json',
             '$schema': 'https://json-schema.org/draft/2020-12/schema',
         },
     )

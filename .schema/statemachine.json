@@ -16,6 +16,7 @@
       "type": "object"
     },
     "Condition": {
+      "additionalProperties": false,
       "description": "A condition in the state machine.",
       "properties": {
         "channel": {
@@ -38,6 +39,7 @@
       "type": "object"
     },
     "Conditions": {
+      "additionalProperties": false,
       "description": "A collection of conditions.",
       "patternProperties": {
         "^\\d+$": {
@@ -48,6 +50,7 @@
       "type": "object"
     },
     "GlobalCounter": {
+      "additionalProperties": false,
       "description": "A global counter in the state machine.",
       "properties": {
         "event": {
@@ -72,6 +75,7 @@
       "type": "object"
     },
     "GlobalCounters": {
+      "additionalProperties": false,
       "description": "A collection of global counters.",
       "patternProperties": {
         "^\\d+$": {
@@ -82,6 +86,7 @@
       "type": "object"
     },
     "GlobalTimer": {
+      "additionalProperties": false,
       "description": "A global timer in the state machine.",
       "properties": {
         "duration": {
@@ -100,6 +105,9 @@
         "channel": {
           "anyOf": [
             {
+              "description": "The channel affected by the global timer",
+              "minLength": 1,
+              "title": "Channel",
               "type": "string"
             },
             {
@@ -133,7 +141,7 @@
         },
         "loop": {
           "default": 0,
-          "description": "Whether the global timer is looping or not",
+          "description": "0 = off, 1 = loop until canceled or trial end, >1 = fixed number of iterations (max 255)",
           "maximum": 255,
           "minimum": 0,
           "title": "Loop Mode",
@@ -141,7 +149,7 @@
         },
         "loop_interval": {
           "default": 0.0,
-          "description": "The interval in seconds that the global timer is looping",
+          "description": "Delay in seconds between the end of a loop iteration and the start of the next",
           "minimum": 0.0,
           "title": "Loop Interval",
           "type": "number"
@@ -161,6 +169,7 @@
       "type": "object"
     },
     "GlobalTimers": {
+      "additionalProperties": false,
       "description": "A collection of global timers.",
       "patternProperties": {
         "^\\d+$": {
@@ -171,6 +180,7 @@
       "type": "object"
     },
     "State": {
+      "additionalProperties": false,
       "description": "A state in the state machine.",
       "properties": {
         "timer": {
@@ -207,6 +217,7 @@
       "type": "object"
     },
     "States": {
+      "additionalProperties": false,
       "description": "A collection of states.",
       "patternProperties": {
         "^(?!>)(?!exit$)(?!back$).+$": {
@@ -254,6 +265,7 @@
   },
   "$id": "https://raw.githubusercontent.com/int-brain-lab/bpod-core/main/.schema/statemachine.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
   "description": "Definition of a Bpod finite-state machine.",
   "properties": {
     "name": {

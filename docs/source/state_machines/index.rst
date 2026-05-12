@@ -232,8 +232,8 @@ turning on an output channel:
    :group: hello_world
    :filename: hello_world_04.svg
 
-   fsm.states['Hello'].actions = {'BNC1': 1}
-   fsm.states['World'].actions = {'BNC2': 1}
+   fsm.states['Hello'].actions = {'TTLOut0': 1}
+   fsm.states['World'].actions = {'TTLOut1': 1}
 
 And with that, our `Hello, World!` example is complete:
 
@@ -260,8 +260,8 @@ transitions, and actions) directly in the call to
    from bpod_core.fsm import StateMachine
 
    fsm = StateMachine()
-   fsm.add_state(name='Hello', timer=1.5, transitions={'Tup': 'World'}, actions={'BNC1': 1})
-   fsm.add_state(name='World', timer=1.0, transitions={'Tup': '>exit'}, actions={'BNC2': 1})
+   fsm.add_state(name='Hello', timer=1.5, transitions={'Tup': 'World'}, actions={'TTLOut0': 1})
+   fsm.add_state(name='World', timer=1.0, transitions={'Tup': '>exit'}, actions={'TTLOut1': 1})
 
 .. testcode:: hello_world
    :hide:

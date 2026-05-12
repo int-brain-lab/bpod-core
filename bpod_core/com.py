@@ -516,7 +516,7 @@ def find_ports(**filters: FilterValue) -> list[ListPortInfo]:
 
     return [
         port
-        for port in comports()
+        for port in sorted(comports())
         if all(matches(getattr(port, k, None), v) for k, v in filters.items())
     ]
 

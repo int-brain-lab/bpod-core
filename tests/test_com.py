@@ -1,11 +1,13 @@
 import logging
 import re
 import struct
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
 import numpy as np
 import pytest
 from serial import SerialException
+from serial.tools.list_ports_common import numsplit
 
 from bpod_core import com
 from bpod_core.constants import STRUCT_UINT64_LE
@@ -322,29 +324,30 @@ class TestChunkedSerialReader:
         assert reader._buffer == bytearray(b'\x05')
 
 
+class _Port(SimpleNamespace):
+    """Minimal port stub that supports ordering by device name."""
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, _Port):
+            return NotImplemented
+        return bool(numsplit(self.device) < numsplit(other.device))
+
+
 class TestFindPorts:
     """Tests for find_ports() filtering functionality."""
 
     @pytest.fixture
     def mock_ports(self, mocker):
         """Fixture providing mock serial ports."""
-        port1 = MagicMock()
-        port1.device = '/dev/ttyACM0'
-        port1.vid = 0x16C0
-        port1.pid = 0x0483
-        port1.serial_number = 'ABC123'
-
-        port2 = MagicMock()
-        port2.device = '/dev/ttyUSB0'
-        port2.vid = 0x0403
-        port2.pid = 0x6001
-        port2.serial_number = 'DEF456'
-
-        port3 = MagicMock()
-        port3.device = '/dev/ttyACM1'
-        port3.vid = 0x16C0
-        port3.pid = 0x048B
-        port3.serial_number = 'GHI789'
+        port1 = _Port(
+            device='/dev/ttyACM0', vid=0x16C0, pid=0x0483, serial_number='ABC123'
+        )
+        port2 = _Port(
+            device='/dev/ttyUSB0', vid=0x0403, pid=0x6001, serial_number='DEF456'
+        )
+        port3 = _Port(
+            device='/dev/ttyACM1', vid=0x16C0, pid=0x048B, serial_number='GHI789'
+        )
 
         ports = [port1, port2, port3]
         mocker.patch('bpod_core.com.comports', return_value=ports)
@@ -353,7 +356,7 @@ class TestFindPorts:
     def test_no_filters(self, mock_ports):
         """Returns all ports when no filters specified."""
         result = com.find_ports()
-        assert result == mock_ports
+        assert result == sorted(mock_ports, key=lambda p: numsplit(p.device))
 
     def test_scalar_filter(self, mock_ports):
         """Exact match on single attribute returns matching ports."""
