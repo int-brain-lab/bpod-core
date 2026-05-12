@@ -15,7 +15,7 @@ from serial import Serial, SerialException
 from serial.threaded import Protocol, ReaderThread
 from serial.tools.list_ports import comports
 from serial.tools.list_ports_common import ListPortInfo
-from typing_extensions import Buffer, Self
+from typing_extensions import Buffer, Self, override
 
 from bpod_core.constants import (
     STRUCT_INT8,
@@ -393,7 +393,7 @@ class ChunkedSerialReader(Protocol):
     def __init__(
         self,
         chunk_size: int,
-        callback: Callable[[bytes], None],
+        callback: Callable[[bytearray], None],
         buffer: bytearray | None = None,
     ) -> None:
         """
@@ -421,6 +421,7 @@ class ChunkedSerialReader(Protocol):
         """Allow the instance to be used as a protocol factory for ReaderThread."""
         return self
 
+    @override
     def connection_made(self, transport: 'ReaderThread[Self]') -> None:
         """
         Called when a connection is made.
@@ -433,6 +434,7 @@ class ChunkedSerialReader(Protocol):
         self._port = transport.serial.portstr
         logger.debug('Starting serial reader thread for %s', self._port)
 
+    @override
     def connection_lost(self, exc: BaseException | None) -> None:
         """
         Called when the serial port is closed or the reader loop terminated otherwise.
@@ -445,6 +447,7 @@ class ChunkedSerialReader(Protocol):
         super().connection_lost(exc)
         logger.debug('Stopping serial reader thread for %s', self._port)
 
+    @override
     def data_received(self, data: bytes) -> None:
         """
         Called with snippets received from the serial port.

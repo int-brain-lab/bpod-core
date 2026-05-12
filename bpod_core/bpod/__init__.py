@@ -109,7 +109,7 @@ class Bpod(SerialDevice, AbstractBpod):
         FIFOCache(maxsize=1024)
     )
     _compilation_cache: ClassVar[
-        FIFOCache[tuple[bytes, bytes, bool], tuple[bytes, StateMachineLookup]]
+        FIFOCache[tuple[bytes, bytes, bool], tuple[bytearray, StateMachineLookup]]
     ] = FIFOCache(maxsize=1024)
 
     _softcode_thread: SoftcodeThread
@@ -1086,7 +1086,7 @@ class Bpod(SerialDevice, AbstractBpod):
         known_hash: bytes | None = None,
         validate: bool = True,
         debugging: bool = False,
-    ) -> tuple[bytes, StateMachineLookup, bool]:
+    ) -> tuple[bytearray, StateMachineLookup, bool]:
         """Compile a state machine into its binary wire format and annotation data.
 
         Builds the state transition matrix, encodes states, transitions, actions,
