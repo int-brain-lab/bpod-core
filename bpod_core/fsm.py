@@ -12,13 +12,13 @@ from cachetools import FIFOCache
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     TypeAdapter,
     ValidationError,
     WrapValidator,
     validate_call,
-    BeforeValidator,
 )
 from pydantic_core import PydanticCustomError
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
