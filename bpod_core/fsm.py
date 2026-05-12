@@ -18,6 +18,7 @@ from pydantic import (
     ValidationError,
     WrapValidator,
     validate_call,
+    BeforeValidator,
 )
 from pydantic_core import PydanticCustomError
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
@@ -125,6 +126,12 @@ def _validate_operator(v: Any, h: ValidatorFunctionWrapHandler) -> 'Operator':
             detail = f"Invalid State Machine Operator '{v}' - {detail}"
             raise PydanticCustomError(error_type, detail, error.get('ctx', {})) from e
         raise
+
+
+def _validate_binary_string(v: Any) -> Any:
+    if isinstance(v, str) and set(v).issubset({'0', '1'}):
+        return int(v, 2)
+    return v
 
 
 StateTimer = Annotated[
@@ -236,6 +243,7 @@ GlobalTimerOnsetTrigger = Annotated[
         default=0,
         ge=0,
     ),
+    BeforeValidator(_validate_binary_string),
 ]
 
 GlobalCounterThreshold = Annotated[
