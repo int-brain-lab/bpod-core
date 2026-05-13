@@ -21,6 +21,7 @@ from uuid import UUID, uuid4
 import msgspec
 import platformdirs
 import zmq
+from filelock import FileLock
 from platformdirs import user_runtime_path
 from psutil import pid_exists
 from pydantic import validate_call
@@ -162,11 +163,17 @@ class LocalServiceInfo(msgspec.Struct):
     """Information about a locally advertised service."""
 
     service_name: str
+    """The name of the service being advertised."""
     service_type: str
+    """The type of service being advertised."""
     address: str
+    """The address where the service can be reached."""
     pid: int
+    """Process ID of the service."""
     uuid: UUID
+    """Unique identifier for the service instance."""
     properties: dict[str, str | None]
+    """Additional key-value properties to advertise with the service."""
 
 
 class LocalServiceAdvertisement(contextlib.AbstractContextManager):
@@ -180,13 +187,45 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
 
     The advertisement is automatically removed when the instance is garbage collected
     or when `stop()` is called explicitly.
+
+    Parameters
+    ----------
+    service_name : str
+        The name of the service being advertised (e.g., 'Bpod 3').
+    service_type : str
+        The type of service being advertised (e.g., 'bpod').
+    address : str
+        The address where the service can be reached (e.g., 'ipc:///tmp/foo.ipc').
+    properties : dict, optional
+        Additional key-value properties to advertise with the service.
+    pid : int, optional
+        Process ID of the service. Used to detect stale advertisements.
+    uuid : UUID, optional
+        Unique identifier for this service instance. Generated if not provided.
+
+    Notes
+    -----
+    Importing this class suppresses debug-level log messages from the ``filelock``
+    logger, as the per-file lock/unlock events it emits are too noisy for routine use.
+    To re-enable them::
+
+        logging.getLogger('filelock').setLevel(logging.DEBUG)
+
+    Examples
+    --------
+    Advertise a service and discover it::
+
+        >>> with LocalServiceAdvertisement('Bpod1', 'bpod', 'tcp://127.0.0.1:5555'):
+        ...    services = list(LocalServiceAdvertisement.discover('bpod'))
     """
 
-    runtime_directory = user_runtime_path('LocalServiceAdvertisements')
-    """Directory where service advertisement files are stored."""
+    logging.getLogger('filelock').setLevel(logging.WARNING)
 
     service_file: Path
     """Path to the advertisement file."""
+
+    _runtime_directory: Path = user_runtime_path('LocalServiceAdvertisements')
+    """Directory where service advertisement files are stored."""
 
     _closed = False
     """Flag to prevent double-finalization."""
@@ -202,24 +241,6 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
         pid: int | None = None,
         uuid: UUID | None = None,
     ) -> None:
-        """
-        Create a local service advertisement.
-
-        Parameters
-        ----------
-        service_name
-            The name of the service being advertised (e.g., 'Bpod 3').
-        service_type : str
-            The type of service being advertised (e.g., 'bpod').
-        address : str
-            The address where the service can be reached (e.g., 'ipc:///tmp/foo.ipc').
-        properties : dict, optional
-            Additional key-value properties to advertise with the service.
-        pid : int, optional
-            Process ID of the service. Used to detect stale advertisements.
-        uuid : UUID, optional
-            Unique identifier for this service instance. Generated if not provided.
-        """
         uuid = uuid or uuid4()
         info = LocalServiceInfo(
             service_name=service_name,
@@ -259,20 +280,23 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
 
     @staticmethod
     def _close(service_file: Path) -> None:
-        with contextlib.suppress(Exception):
+        lock_file = service_file.with_suffix('.lock')
+        with contextlib.suppress(Exception), FileLock(lock_file):
             logger.debug("Removing local service advertisement at '%s'", service_file)
             service_file.unlink(missing_ok=True)
         with contextlib.suppress(Exception):
+            lock_file.unlink(missing_ok=True)
+        with contextlib.suppress(Exception):
             prune_empty_parent_directories(
                 service_file.parent,
-                LocalServiceAdvertisement.runtime_directory,
+                LocalServiceAdvertisement._runtime_directory,
                 remove_root=True,
             )
 
     @staticmethod
     def _get_service_directory(service_type: str) -> Path:
         """Get the directory for a service type."""
-        runtime_directory = LocalServiceAdvertisement.runtime_directory
+        runtime_directory = LocalServiceAdvertisement._runtime_directory
         sanitized = _RE_NON_ALPHANUMERIC.sub('_', service_type)
         return runtime_directory / sanitized
 
@@ -306,8 +330,10 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
 
         if service_dir.exists():
             for service_file in service_dir.glob('*.json'):
+                lock_file = service_file.with_suffix('.lock')
                 try:
-                    data = service_file.read_bytes()
+                    with FileLock(lock_file):
+                        data = service_file.read_bytes()
                     info = msgspec.json.decode(data, type=LocalServiceInfo)
                 except (msgspec.DecodeError, OSError):
                     continue

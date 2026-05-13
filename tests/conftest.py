@@ -119,7 +119,7 @@ def mock_zeroconf(mocker):
 @pytest.fixture
 def mock_local_discovery_dir(tmp_path, mocker):
     """Mock runtime directory for local advertisements."""
-    mocker.patch.object(ipc.LocalServiceAdvertisement, 'runtime_directory', tmp_path)
+    mocker.patch.object(ipc.LocalServiceAdvertisement, '_runtime_directory', tmp_path)
     return tmp_path
 
 
