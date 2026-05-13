@@ -205,7 +205,8 @@ allowed-confusables = ["–"]
 ]
 "docs/**.py" = [
   "S102", # Use of `exec` detected
-  "SLF001"   # private-member-access
+  "SLF001", # private-member-access
+  "PLR0911", # Too many return statements
 ]
 
 [tool.ruff.lint.pydocstyle]
