@@ -102,6 +102,7 @@ intersphinx_mapping = {
     'zmq': ('https://pyzmq.readthedocs.io/en/latest', None),
     'zeroconf': ('https://python-zeroconf.readthedocs.io/en/latest/', None),
     'typing_extensions': ('https://typing-extensions.readthedocs.io/en/latest', None),
+    'filelock': ('https://py-filelock.readthedocs.io/en/latest/', None),
 }
 
 # -- HTML output ---------------------------------------------------------------
