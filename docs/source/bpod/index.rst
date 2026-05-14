@@ -163,6 +163,12 @@ yet ready to accept a transfer) and the individual state machines will run conti
 as long as preparing and uploading a state machine's successor takes less time than the
 current state machine takes to execute.
 
+:class:`~bpod_core.fsm.StateMachine` objects are mutable: state timers, actions, and
+transitions can all be reassigned between trials without rebuilding the full state
+machine from scratch. In the following example we construct an initial
+:class:`~bpod_core.fsm.StateMachine` instance that we continue to modify from trial to
+trial:
+
 .. testcode-code-block:: python3
    :name: on_the_fly_fsm
    :caption: Generating state machines on the fly.
