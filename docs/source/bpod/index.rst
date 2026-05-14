@@ -167,7 +167,7 @@ current state machine takes to execute.
 transitions can all be reassigned between trials without rebuilding the full state
 machine from scratch. In the following example we construct an initial
 :class:`~bpod_core.fsm.StateMachine` instance that we continue to modify from trial to
-trial:
+trial, yielding randomized state timers and action values:
 
 .. testcode-code-block:: python3
    :name: on_the_fly_fsm
@@ -175,6 +175,7 @@ trial:
    :group: bpod-context-manager
 
    from random import random, randint
+
    from bpod_core.fsm import StateMachine
    from bpod_core.bpod import Bpod
 
@@ -184,8 +185,8 @@ trial:
 
    with Bpod() as bpod:
        for trial in range(100):
-           fsm.states['s1'].timer = random() / 10  # random duration between 0 and 100 ms
-           fsm.states['s1'].actions['PWM1'] = randint(0, 255)  # random PWM value between 0 and 255
+           fsm.states['s1'].timer = random() / 10
+           fsm.states['s1'].actions['PWM1'] = randint(0, 255)
            bpod.run(fsm)
 
    data = bpod.get_data()
