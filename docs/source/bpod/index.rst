@@ -145,6 +145,9 @@ following example, a single state machine is executed 100 times:
    :caption: Running several trials of the same state machine in immediate succession.
    :group: bpod-context-manager
 
+   from bpod_core.bpod import Bpod
+   from bpod_core.fsm import StateMachine
+
    with Bpod() as bpod:
        for trial in range(100):
            bpod.run(fsm)
@@ -166,14 +169,17 @@ current state machine takes to execute.
    :group: bpod-context-manager
 
    from random import random, randint
+   from bpod_core.fsm import StateMachine
+   from bpod_core.bpod import Bpod
+
+   fsm = StateMachine()
+   fsm.add_state('s1', transitions={'Tup': 's2'})
+   fsm.add_state('s2', timer=0.1, transitions={'Tup': '>exit'})
 
    with Bpod() as bpod:
        for trial in range(100):
-           fsm = StateMachine()
-           d = random() / 10  # random duration between 0 and 100 ms
-           i = randint(0, 255)  # random PWM value between 0 and 255
-           fsm.add_state('s1', timer=d, transitions={'Tup': 's2'}, actions={'PWM1': i})
-           fsm.add_state('s2', timer=0.1, transitions={'Tup': '>exit'})
+           fsm.states['s1'].timer = random() / 10  # random duration between 0 and 100 ms
+           fsm.states['s1'].actions['PWM1'] = randint(0, 255)  # random PWM value between 0 and 255
            bpod.run(fsm)
 
    data = bpod.get_data()
