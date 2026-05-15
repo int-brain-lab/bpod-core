@@ -7,6 +7,7 @@
    :maxdepth: 3
    :hidden:
 
+   installation
    state_machines/index
    bpod/index
    data_format
