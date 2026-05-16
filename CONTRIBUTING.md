@@ -138,14 +138,10 @@ string is a combination of three fields, separated by dots:
 Use `uv version` to increment bpod-core's version prior to release:
 
 ```console
-$ uv version --bump patch  # 1.2.3 -> 1.2.4
-$ uv version --bump minor  # 1.2.3 -> 1.3.0
 $ uv version --bump major  # 1.2.3 -> 2.0.0
-$ uv version --bump alpha  # 1.2.3a1 -> 1.2.3a2  (or 1.2.3a1 -> 1.2.3a2)
+$ uv version --bump minor  # 1.2.3 -> 1.3.0
+$ uv version --bump patch  # 1.2.3 -> 1.2.4
 ```
-
-The same pattern applies to `beta` and `rc`. To start an alpha on a minor or major bump,
-combine flags: `--bump minor --bump alpha` → `1.3.0a1`.
 
 Then tag the commit accordingly and push the tag:
 
