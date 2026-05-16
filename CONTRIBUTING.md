@@ -1,31 +1,45 @@
 # Contributing
 
-## Setting Up the Development Environment
+Contributions to bpod-core's codebase are very welcome! Whether you're fixing a bug,
+adding a feature, or improving the documentation, we appreciate your help.
 
-This project uses [UV](https://github.com/astral-sh/uv) as its package manager for
-managing dependencies and ensuring consistent and reproducible environments. To install
-UV:
+Before starting work on a non-trivial contribution, please check the
+[issue tracker](https://github.com/int-brain-lab/bpod-core/issues) to see if the topic
+is already being discussed or worked on. If not, open a new issue to describe what you
+have in mind. This helps avoid duplicate effort and ensures your contribution is aligned
+with the project's direction before you invest significant time.
 
-**Linux and macOS:**
+## Development Environment
 
-```console
-$ curl -LsSf https://astral.sh/uv/install.sh | sh
-```
+This project uses [uv](https://github.com/astral-sh/uv) as its package manager for
+managing dependencies and ensuring consistent and reproducible environments. See
+[uv's documentation](https://docs.astral.sh/uv/getting-started/installation/) for
+installation instructions.
 
-**Windows (PowerShell):**
-
-```pwsh-session
-PS> powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-See [UV's documentation](https://docs.astral.sh/uv/) for details.
-
-Once UV is installed, synchronize your environment with the dependencies specified in
-the `pyproject.toml` file, including development dependencies:
+Once uv is installed, clone the repository and check out the `develop` branch:
 
 ```console
+$ git clone -b develop https://github.com/int-brain-lab/bpod-core.git
+```
+
+Then synchronize your environment with the project's dependencies:
+
+```console
+$ cd bpod-core
 $ uv sync
 ```
+
+## Making Changes
+
+All development work should be based on the `develop` branch. Create a new branch for
+your contribution:
+
+```console
+$ git checkout develop
+$ git checkout -b your-branch-name
+```
+
+Keep each branch focused on a single topic (feature, bugfix, refactor, etc.).
 
 ## Testing and Code Quality
 
@@ -72,27 +86,17 @@ $ uv run coverage html
 You'll find the HTML report in the folder `htmlcov`, where you can open `index.html`
 in a web browser to view detailed coverage statistics.
 
-## Pull Requests
+## Opening a Pull Request
 
-All development work should be based on the `develop` branch. To contribute:
+Before opening a pull request, ensure that all tests pass and the code is properly
+formatted (see [Testing and Code Quality](#testing-and-code-quality)).
 
-1. Create a new branch from `develop`:
+Open your pull request against the `develop` branch. The `main` branch only receives
+merges from `develop` as part of the release process.
 
-   ```console
-   $ git checkout develop
-   $ git checkout -b your-branch-name
-   ```
+## For Maintainers
 
-2. Make your changes, keeping each pull request focused on a single topic (feature,
-   bugfix, refactor, etc.).
-
-3. Before opening a pull request, ensure that all tests pass and the code is properly
-   formatted (see [Testing and Code Quality](#testing-and-code-quality)).
-
-4. Open your pull request against the `develop` branch. The `main` branch only
-   receives merges from `develop` as part of the release process.
-
-## Building the Documentation
+### Building the Documentation
 
 We use [Sphinx](https://www.sphinx-doc.org/) to build our documentation and
 API reference. To build the documentation, run the following command:
@@ -104,7 +108,7 @@ $ uv run sphinx-build docs/source docs/build
 After running this command, you can view the generated documentation in your
 web browser by opening `docs/build/index.html`.
 
-## Building the Package
+### Building the Package
 
 To build bpod-core as a distributable Python package, execute the following command:
 
@@ -116,7 +120,7 @@ This command will create a distributable package of bpod-core, in the form of a 
 distribution (sdist) and a wheel (bdist_wheel). The generated package files will be
 located in the `dist` directory.
 
-## Versioning Scheme
+### Versioning Scheme
 
 bpod-core uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Its version
 string is a combination of three fields, separated by dots:
@@ -131,13 +135,21 @@ string is a combination of three fields, separated by dots:
 - Optionally appended letters can be used to indicate an alpha release (`a`), a beta
   release (`b`) or a release candidate (`rc`).
 
-On the developer side, these fields are controlled by both
+Use `uv version` to increment bpod-core's version prior to release:
 
-1. adjusting the `version` field in `pyproject.toml`, and
-2. adding the corresponding version string to a commit as a
-   [git tag](https://git-scm.com/book/en/v2/Git-Basics-Tagging), for instance:
+```console
+$ uv version --bump patch  # 1.2.3 -> 1.2.4
+$ uv version --bump minor  # 1.2.3 -> 1.3.0
+$ uv version --bump major  # 1.2.3 -> 2.0.0
+$ uv version --bump alpha  # 1.2.3 -> 1.2.4a1  (or 1.2.4a1 -> 1.2.4a2)
+```
 
-   ```console
-   $ git tag 1.2.3
-   $ git push origin --tags
-   ```
+The same pattern applies to `beta` and `rc`. To start an alpha on a minor or major bump,
+combine flags: `--bump minor --bump alpha` → `1.3.0a1`.
+
+Then tag the commit accordingly and push the tag:
+
+```console
+$ git tag 1.2.4
+$ git push origin --tags
+```

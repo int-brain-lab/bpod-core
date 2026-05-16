@@ -14,7 +14,7 @@ While optional, we recommend installing bpod-core into a dedicated virtual envir
 isolating bpod-core and its dependencies from other Python projects, preventing version
 conflicts and keeping your system Python clean. We recommend using
 `uv <https://docs.astral.sh/uv/>`__ to manage Python environments. See
-`UV's documentation <https://docs.astral.sh/uv/getting-started/installation/>`_ for
+`uv's documentation <https://docs.astral.sh/uv/getting-started/installation/>`_ for
 installation instructions.
 
 Creation
