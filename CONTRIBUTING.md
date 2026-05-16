@@ -19,14 +19,14 @@ installation instructions.
 Once uv is installed, clone the repository and check out the `develop` branch:
 
 ```console
-$ git clone -b develop https://github.com/int-brain-lab/bpod-core.git
+git clone -b develop https://github.com/int-brain-lab/bpod-core.git
 ```
 
 Then synchronize your environment with the project's dependencies:
 
 ```console
-$ cd bpod-core
-$ uv sync
+cd bpod-core
+uv sync
 ```
 
 ## Making Changes
@@ -35,8 +35,8 @@ All development work should be based on the `develop` branch. Create a new branc
 your contribution:
 
 ```console
-$ git checkout develop
-$ git checkout -b your-branch-name
+git checkout develop
+git checkout -b your-branch-name
 ```
 
 Keep each branch focused on a single topic (feature, bugfix, refactor, etc.).
@@ -53,7 +53,7 @@ Running tox will execute the full suite of checks across several Python versions
 To run all checks, execute:
 
 ```console
-$ uv run tox -p
+uv run tox -p
 ```
 
 Tox will create isolated environments for each check and Python version. The terminal
@@ -62,10 +62,10 @@ output will indicate whether the checks passed or failed.
 To run individual tools against your current environment:
 
 ```console
-$ uv run pytest          # run unit-tests
-$ uv run mypy            # run type checking
-$ uv run ruff check      # check for linting issues
-$ uv run ruff format     # auto-format code
+uv run pytest          # run unit-tests
+uv run mypy            # run type checking
+uv run ruff check      # check for linting issues
+uv run ruff format     # auto-format code
 ```
 
 Adding `--fix` to `ruff check` will automatically correct fixable issues.
@@ -74,13 +74,13 @@ After running `tox` or `pytest`, you can generate a coverage report to assess ho
 much of the code is covered by the unit-tests:
 
 ```console
-$ uv run coverage report
+uv run coverage report
 ```
 
 For a more detailed representation, generate an HTML report:
 
 ```console
-$ uv run coverage html
+uv run coverage html
 ```
 
 You'll find the HTML report in the folder `htmlcov`, where you can open `index.html`
@@ -92,7 +92,7 @@ We use [Sphinx](https://www.sphinx-doc.org/) to build our documentation and
 API reference. To build the documentation, run the following command:
 
 ```console
-$ uv run sphinx-build docs/source docs/build
+uv run sphinx-build docs/source docs/build
 ```
 
 After running this command, you can view the generated documentation in your
@@ -113,7 +113,7 @@ merges from `develop` as part of the release process.
 To build bpod-core as a distributable Python package, execute the following command:
 
 ```console
-$ uv build
+uv build
 ```
 
 This command will create a distributable package of bpod-core, in the form of a source
@@ -138,14 +138,14 @@ string is a combination of three fields, separated by dots:
 Use `uv version` to increment bpod-core's version prior to release:
 
 ```console
-$ uv version --bump major  # 1.2.3 -> 2.0.0
-$ uv version --bump minor  # 1.2.3 -> 1.3.0
-$ uv version --bump patch  # 1.2.3 -> 1.2.4
+uv version --bump major  # 1.2.3 -> 2.0.0
+uv version --bump minor  # 1.2.3 -> 1.3.0
+uv version --bump patch  # 1.2.3 -> 1.2.4
 ```
 
 Then tag the commit accordingly and push the tag:
 
 ```console
-$ git tag 1.2.4
-$ git push origin --tags
+git tag 1.2.4
+git push origin --tags
 ```
