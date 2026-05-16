@@ -86,17 +86,7 @@ $ uv run coverage html
 You'll find the HTML report in the folder `htmlcov`, where you can open `index.html`
 in a web browser to view detailed coverage statistics.
 
-## Opening a Pull Request
-
-Before opening a pull request, ensure that all tests pass and the code is properly
-formatted (see [Testing and Code Quality](#testing-and-code-quality)).
-
-Open your pull request against the `develop` branch. The `main` branch only receives
-merges from `develop` as part of the release process.
-
-## For Maintainers
-
-### Building the Documentation
+## Building the Documentation
 
 We use [Sphinx](https://www.sphinx-doc.org/) to build our documentation and
 API reference. To build the documentation, run the following command:
@@ -107,6 +97,16 @@ $ uv run sphinx-build docs/source docs/build
 
 After running this command, you can view the generated documentation in your
 web browser by opening `docs/build/index.html`.
+
+## Opening a Pull Request
+
+Before opening a pull request, ensure that all tests pass and the code is properly
+formatted (see [Testing and Code Quality](#testing-and-code-quality)).
+
+Open your pull request against the `develop` branch. The `main` branch only receives
+merges from `develop` as part of the release process.
+
+## For Maintainers
 
 ### Building the Package
 
