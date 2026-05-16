@@ -141,7 +141,7 @@ Use `uv version` to increment bpod-core's version prior to release:
 $ uv version --bump patch  # 1.2.3 -> 1.2.4
 $ uv version --bump minor  # 1.2.3 -> 1.3.0
 $ uv version --bump major  # 1.2.3 -> 2.0.0
-$ uv version --bump alpha  # 1.2.3 -> 1.2.4a1  (or 1.2.4a1 -> 1.2.4a2)
+$ uv version --bump alpha  # 1.2.3a1 -> 1.2.3a2  (or 1.2.3a1 -> 1.2.3a2)
 ```
 
 The same pattern applies to `beta` and `rc`. To start an alpha on a minor or major bump,
