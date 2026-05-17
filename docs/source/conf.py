@@ -118,6 +118,7 @@ html_theme_options = {
     'color_mode': 'auto',
     'light_logo': '_static/bpod-core.svg',
     'dark_logo': '_static/bpod-core__dark.svg',
+    'og_image_url': '_static/open_graph_card.png',
 }
 html_context = {
     'display_github': False,
