@@ -23,7 +23,7 @@ def mock_serial(mocker):
     return mock_serial
 
 
-class TestEnhancedSerial:
+class TestExtendedSerial:
     """Tests for ExtendedSerial helpers and semantics."""
 
     def test_write(self, mock_serial):
@@ -44,6 +44,16 @@ class TestEnhancedSerial:
         assert b == 2
         assert c == 3
 
+    def test_read_struct_precompiled(self, mock_serial):
+        """Pre-compiled Struct yields the same result as a format string."""
+        mock_serial.super_read.return_value = b'\x01\x02\x00\x03\x00\x00\x00'
+        s = struct.Struct('<BHI')
+        a, b, c = mock_serial.read_struct(s)
+        assert a == 1
+        assert b == 2
+        assert c == 3
+        mock_serial.super_read.assert_called_with(s.size)
+
     def test_query(self, mock_serial):
         """Write request then read exact number of bytes for reply."""
         mock_serial.query(b'x', size=4)
@@ -57,6 +67,17 @@ class TestEnhancedSerial:
         assert a == 1
         assert b == 2
         assert c == 3
+
+    def test_query_struct_precompiled(self, mock_serial):
+        """Pre-compiled Struct yields the same result as a format string."""
+        mock_serial.super_read.return_value = b'\x01\x02\x00\x03\x00\x00\x00'
+        s = struct.Struct('<BHI')
+        a, b, c = mock_serial.query_struct(b'x', s)
+        assert a == 1
+        assert b == 2
+        assert c == 3
+        mock_serial.super_write.assert_called_with(b'x')
+        mock_serial.super_read.assert_called_with(s.size)
 
     def test_verify(self, mock_serial):
         """Verify compares read bytes against expected pattern."""
@@ -90,6 +111,8 @@ class TestEnhancedSerial:
             expected = value.to_bytes(length, 'little', signed=signed)
             getattr(mock_serial, fcn)(value)
             mock_serial.super_write.assert_called_with(expected)
+            with pytest.raises(struct.error):
+                getattr(mock_serial, fcn)(value + (1 if value_type == 'max' else -1))
 
     @pytest.mark.parametrize(
         'fcn',
@@ -496,7 +519,7 @@ class TestSerialDevice:
     def test_init_port_not_found(self, mock_comports):
         """Raises SerialException when port does not exist."""
         mock_comports.return_value = []
-        with pytest.raises(SerialException, match='Serial port not found'):
+        with pytest.raises(SerialException, match='serial port not found'):
             com.SerialDevice('/dev/ttyACM0')
 
     def test_context_manager_enter(self, mock_comports, mock_extended_serial):

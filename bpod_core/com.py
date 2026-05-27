@@ -35,75 +35,286 @@ class ExtendedSerial(Serial):
     """Enhances :class:`serial.Serial` with additional functionality."""
 
     def write_int8(self, value: int) -> int | None:
-        """Write an 8-bit signed integer to the serial port."""
+        """
+        Write an 8-bit signed integer to the serial port.
+
+        Parameters
+        ----------
+        value : int
+            An integer in the range [-128, 127].
+
+        Returns
+        -------
+        int or None
+            Number of bytes written, or None if the write fails.
+
+        Raises
+        ------
+        struct.error
+            If `value` is out of range.
+        """
         return self.write(STRUCT_INT8.pack(value))
 
     def write_int16(self, value: int) -> int | None:
-        """Write a 16-bit signed integer to the serial port (little-endian)."""
+        """
+        Write a 16-bit signed integer to the serial port (little-endian).
+
+        Parameters
+        ----------
+        value : int
+            An integer in the range [-32768, 32767].
+
+        Returns
+        -------
+        int or None
+            Number of bytes written, or None if the write fails.
+
+        Raises
+        ------
+        struct.error
+            If `value` is out of range.
+        """
         return self.write(STRUCT_INT16_LE.pack(value))
 
     def write_int32(self, value: int) -> int | None:
-        """Write a 32-bit signed integer to the serial port (little-endian)."""
+        """
+        Write a 32-bit signed integer to the serial port (little-endian).
+
+        Parameters
+        ----------
+        value : int
+            An integer in the range [-2147483648, 2147483647].
+
+        Returns
+        -------
+        int or None
+            Number of bytes written, or None if the write fails.
+
+        Raises
+        ------
+        struct.error
+            If `value` is out of range.
+        """
         return self.write(STRUCT_INT32_LE.pack(value))
 
     def write_int64(self, value: int) -> int | None:
-        """Write a 64-bit signed integer to the serial port (little-endian)."""
+        """
+        Write a 64-bit signed integer to the serial port (little-endian).
+
+        Parameters
+        ----------
+        value : int
+            An integer in the range [-9223372036854775808, 9223372036854775807].
+
+        Returns
+        -------
+        int or None
+            Number of bytes written, or None if the write fails.
+
+        Raises
+        ------
+        struct.error
+            If `value` is out of range.
+        """
         return self.write(STRUCT_INT64_LE.pack(value))
 
     def write_uint8(self, value: int) -> int | None:
-        """Write an 8-bit unsigned integer to the serial port."""
+        """
+        Write an 8-bit unsigned integer to the serial port.
+
+        Parameters
+        ----------
+        value : int
+            An integer in the range [0, 255].
+
+        Returns
+        -------
+        int or None
+            Number of bytes written, or None if the write fails.
+
+        Raises
+        ------
+        struct.error
+            If `value` is out of range.
+        """
         return self.write(STRUCT_UINT8.pack(value))
 
     def write_uint16(self, value: int) -> int | None:
-        """Write a 16-bit unsigned integer to the serial port (little-endian)."""
+        """
+        Write a 16-bit unsigned integer to the serial port (little-endian).
+
+        Parameters
+        ----------
+        value : int
+            An integer in the range [0, 65535].
+
+        Returns
+        -------
+        int or None
+            Number of bytes written, or None if the write fails.
+
+        Raises
+        ------
+        struct.error
+            If `value` is out of range.
+        """
         return self.write(STRUCT_UINT16_LE.pack(value))
 
     def write_uint32(self, value: int) -> int | None:
-        """Write a 32-bit unsigned integer to the serial port (little-endian)."""
+        """
+        Write a 32-bit unsigned integer to the serial port (little-endian).
+
+        Parameters
+        ----------
+        value : int
+            An integer in the range [0, 4294967295].
+
+        Returns
+        -------
+        int or None
+            Number of bytes written, or None if the write fails.
+
+        Raises
+        ------
+        struct.error
+            If `value` is out of range.
+        """
         return self.write(STRUCT_UINT32_LE.pack(value))
 
     def write_uint64(self, value: int) -> int | None:
-        """Write a 64-bit unsigned integer to the serial port (little-endian)."""
+        """
+        Write a 64-bit unsigned integer to the serial port (little-endian).
+
+        Parameters
+        ----------
+        value : int
+            An integer in the range [0, 18446744073709551615].
+
+        Returns
+        -------
+        int or None
+            Number of bytes written, or None if the write fails.
+
+        Raises
+        ------
+        struct.error
+            If `value` is out of range.
+        """
         return self.write(STRUCT_UINT64_LE.pack(value))
 
     def write_bool(self, value: bool) -> int | None:  # noqa: FBT001
-        """Write a boolean value to the serial port."""
+        """
+        Write a boolean value to the serial port.
+
+        Parameters
+        ----------
+        value : bool
+            The boolean value to write (``True`` → ``0x01``, ``False`` → ``0x00``).
+
+        Returns
+        -------
+        int or None
+            Number of bytes written, or None if the write fails.
+        """
         return self.write(b'\x01' if value else b'\x00')
 
     def read_int8(self) -> int:
-        """Read an 8-bit signed integer from the serial port."""
+        """
+        Read an 8-bit signed integer from the serial port.
+
+        Returns
+        -------
+        int
+            The 8-bit signed integer read from the port.
+        """
         return STRUCT_INT8.unpack(self.read(1))[0]  # type: ignore[no-any-return]
 
     def read_int16(self) -> int:
-        """Read a 16-bit signed integer from the serial port (little-endian)."""
+        """
+        Read a 16-bit signed integer from the serial port (little-endian).
+
+        Returns
+        -------
+        int
+            The 16-bit signed integer read from the port.
+        """
         return STRUCT_INT16_LE.unpack(self.read(2))[0]  # type: ignore[no-any-return]
 
     def read_int32(self) -> int:
-        """Read a 32-bit signed integer from the serial port (little-endian)."""
+        """
+        Read a 32-bit signed integer from the serial port (little-endian).
+
+        Returns
+        -------
+        int
+            The 32-bit signed integer read from the port.
+        """
         return STRUCT_INT32_LE.unpack(self.read(4))[0]  # type: ignore[no-any-return]
 
     def read_int64(self) -> int:
-        """Read a 64-bit signed integer from the serial port (little-endian)."""
+        """
+        Read a 64-bit signed integer from the serial port (little-endian).
+
+        Returns
+        -------
+        int
+            The 64-bit signed integer read from the port.
+        """
         return STRUCT_INT64_LE.unpack(self.read(8))[0]  # type: ignore[no-any-return]
 
     def read_uint8(self) -> int:
-        """Read an 8-bit unsigned integer from the serial port."""
+        """
+        Read an 8-bit unsigned integer from the serial port.
+
+        Returns
+        -------
+        int
+            The 8-bit unsigned integer read from the port.
+        """
         return self.read(1)[0]  # type: ignore[no-any-return]
 
     def read_uint16(self) -> int:
-        """Read a 16-bit unsigned integer from the serial port (little-endian)."""
+        """
+        Read a 16-bit unsigned integer from the serial port (little-endian).
+
+        Returns
+        -------
+        int
+            The 16-bit unsigned integer read from the port.
+        """
         return STRUCT_UINT16_LE.unpack(self.read(2))[0]  # type: ignore[no-any-return]
 
     def read_uint32(self) -> int:
-        """Read a 32-bit unsigned integer from the serial port (little-endian)."""
+        """
+        Read a 32-bit unsigned integer from the serial port (little-endian).
+
+        Returns
+        -------
+        int
+            The 32-bit unsigned integer read from the port.
+        """
         return STRUCT_UINT32_LE.unpack(self.read(4))[0]  # type: ignore[no-any-return]
 
     def read_uint64(self) -> int:
-        """Read a 64-bit unsigned integer from the serial port (little-endian)."""
+        """
+        Read a 64-bit unsigned integer from the serial port (little-endian).
+
+        Returns
+        -------
+        int
+            The 64-bit unsigned integer read from the port.
+        """
         return STRUCT_UINT64_LE.unpack(self.read(8))[0]  # type: ignore[no-any-return]
 
     def read_bool(self) -> bool:
-        """Read a boolean value from the serial port."""
+        """
+        Read a boolean value from the serial port.
+
+        Returns
+        -------
+        bool
+            ``True`` if the byte read is non-zero, ``False`` otherwise.
+        """
         return self.read(1) != b'\x00'
 
     def write_struct(self, format_string: str, *data: Any) -> int | None:
@@ -132,7 +343,7 @@ class ExtendedSerial(Serial):
         Raises
         ------
         struct.error
-            Error occurred during packing of the data into binary format.
+            If `data` cannot be packed with the given `format_string`.
         SerialTimeoutException
             In case a write timeout is configured for the port and the time is exceeded.
 
@@ -145,35 +356,46 @@ class ExtendedSerial(Serial):
         buffer = struct.pack(format_string, *data)
         return self.write(buffer)
 
-    def read_struct(self, format_string: str) -> tuple[Any, ...]:
+    def read_struct(self, fmt: str | Struct) -> tuple[Any, ...]:
         """
         Read structured data from the serial port.
 
         This method reads a specified number of bytes from the serial port and
-        unpacks it into a tuple according to the provided format string.
+        unpacks it into a tuple according to the provided format.
 
         Parameters
         ----------
-        format_string : str
-            A format string that specifies the layout of the data to be read. It should
-            be compatible with the :mod:`struct` module's `format specifications
+        fmt : str or struct.Struct
+            A pre-compiled struct or a format string compatible with the :mod:`struct`
+            module's `format specifications
             <https://docs.python.org/3/library/struct.html#format-characters>`__.
 
         Returns
         -------
         tuple
             A tuple containing the unpacked data read from the serial port. The
-            structure of the tuple corresponds to the format specified in
-            `format_string`.
+            structure of the tuple corresponds to the format specified in `fmt`.
+
+        Raises
+        ------
+        struct.error
+            If `fmt` is invalid or the data cannot be unpacked.
 
         Examples
         --------
         Read one unsigned 16-bit integer followed by two unsigned 8-bit integers::
 
             major, minor, patch = serial_port.read_struct('<HBB')
+
+        Pass a pre-compiled :class:`struct.Struct` to avoid re-parsing the format string
+        on every call::
+
+            fmt = struct.Struct('<HBB')
+            while acquiring:
+                major, minor, patch = serial_port.read_struct(fmt)
         """
-        n_bytes = struct.calcsize(format_string)
-        return struct.unpack(format_string, super().read(n_bytes))
+        s = fmt if isinstance(fmt, Struct) else Struct(fmt)
+        return s.unpack(super().read(s.size))
 
     @overload
     def read_struct_iter(
@@ -192,7 +414,8 @@ class ExtendedSerial(Serial):
         *,
         flatten: bool = False,
     ) -> Iterator[tuple[Any, ...]] | Iterator[Any]:
-        """Read structured data from the serial port as an iterator.
+        """
+        Read structured data from the serial port as an iterator.
 
         Parameters
         ----------
@@ -250,7 +473,8 @@ class ExtendedSerial(Serial):
         *,
         flatten: bool = True,
     ) -> Iterator[Any] | Iterator[tuple[Any, ...]]:
-        """Stream structured data from the serial port, yielding one record at a time.
+        """
+        Stream structured data from the serial port, yielding one record at a time.
 
         Parameters
         ----------
@@ -326,38 +550,44 @@ class ExtendedSerial(Serial):
     def query_struct(
         self,
         query: Buffer,
-        format_string: str,
+        fmt: str | Struct,
     ) -> tuple[Any, ...]:
         r"""
         Query structured data from the serial port.
 
         This method queries a specified number of bytes from the serial port and
-        unpacks it into a tuple according to the provided format string.
+        unpacks it into a tuple according to the provided format.
 
         Parameters
         ----------
         query : Buffer
             Query to be sent to the serial port.
-        format_string : str
-            A format string that specifies the layout of the data to be read. It should
-            be compatible with the :mod:`struct` module's `format specifications
+        fmt : str or struct.Struct
+            A pre-compiled struct or a format string compatible with the :mod:`struct`
+            module's `format specifications
             <https://docs.python.org/3/library/struct.html#format-characters>`__.
 
         Returns
         -------
         tuple
             A tuple containing the unpacked data read from the serial port. The
-            structure of the tuple corresponds to the format specified in
-            `format_string`.
+            structure of the tuple corresponds to the format specified in `fmt`.
 
         Examples
         --------
         Send a command and unpack the response as two unsigned 8-bit integers::
 
             major, minor = serial_port.query_struct(b'\x4a', 'BB')
+
+        Pass a pre-compiled :class:`struct.Struct` to avoid re-parsing the format string
+        on every call::
+
+            fmt = struct.Struct('<2H')
+            while acquiring:
+                value, flag = serial_port.query_struct(b'\x4a', fmt)
         """
-        self.write(query)
-        return self.read_struct(format_string)
+        s = fmt if isinstance(fmt, Struct) else Struct(fmt)
+        return s.unpack(self.query(query, s.size))
 
     def verify(self, query: Buffer = b'', expected_response: bytes = b'\x01') -> bool:
         r"""
@@ -376,7 +606,14 @@ class ExtendedSerial(Serial):
         Returns
         -------
         bool
-            True if the response matches the expected response, False otherwise.
+            ``True`` if the response matches the expected response, ``False`` otherwise.
+
+        Examples
+        --------
+        Send a handshake byte and check for acknowledgement::
+
+            if not serial_port.verify(b'\x48'):
+                raise RuntimeError('Device did not acknowledge handshake')
         """
         return self.query(query) == expected_response
 
@@ -386,6 +623,17 @@ class ChunkedSerialReader(Protocol):
     A protocol for reading chunked data from a serial port.
 
     This class provides methods to buffer incoming data and retrieve it in chunks.
+
+    Parameters
+    ----------
+    chunk_size : int
+        The fixed size of chunks to emit to the callback function when enough data
+        has accumulated in the buffer.
+    callback : Callable
+        A function to call with each chunk of data.
+    buffer : bytearray, optional
+        Pre-allocated buffer to use for accumulation. If `None`, a new bytearray
+        is created.
     """
 
     _port: str | None = None
@@ -396,20 +644,6 @@ class ChunkedSerialReader(Protocol):
         callback: Callable[[bytearray], None],
         buffer: bytearray | None = None,
     ) -> None:
-        """
-        Initialize the protocol.
-
-        Parameters
-        ----------
-        chunk_size : int
-            The fixed size of chunks to emit to the callback function when enough data
-            has accumulated in the buffer.
-        callback : Callable
-            A function to call with each chunk of data.
-        buffer : bytearray, optional
-            Pre-allocated buffer to use for accumulation. If `None`, a new bytearray
-            is created.
-        """
         self._chunk_size = chunk_size
         self._callback = callback
         if buffer is None:
@@ -564,7 +798,46 @@ def verify_serial_discovery(
 
 
 class SerialDevice(AbstractContextManager):
-    """Class that interfaces with a USB serial device."""
+    r"""Base class for implementing drivers for USB serial devices.
+
+    Handles connection lifecycle — opening, closing, and cleanup on garbage collection —
+    and provides subclasses with an :class:`ExtendedSerial` connection and port
+    metadata. Derive from this class instead of using :class:`serial.Serial` directly to
+    get automatic resource management and consistent error handling.
+
+    Subclasses have access to the following private attributes:
+
+    - ``_serial``: the underlying :class:`ExtendedSerial` connection.
+    - ``_port_info``: a :class:`~serial.tools.list_ports.ListPortInfo` instance with
+      metadata about the serial port (vendor ID, serial number, etc.).
+    - ``_serial_device_name``: the name of the serial device (defaults to
+      'serial device'). Used in log messages and exception text.
+
+    Parameters
+    ----------
+    port : str
+        The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3').
+    open_connection : bool, default: True
+        Whether to open the connection immediately.
+
+    Raises
+    ------
+    serial.SerialException
+        If the specified port does not exist.
+
+    Examples
+    --------
+    Subclass :class:`SerialDevice` and use ``_serial`` to communicate::
+
+        class MyDevice(SerialDevice):
+            _serial_device_name = 'My Device'
+
+            def ping(self) -> bool:
+                return self._serial.verify(b'\x48')
+
+        with MyDevice('/dev/ttyACM0') as dev:
+            assert dev.ping()
+    """
 
     _serial: ExtendedSerial
     """The serial connection to the device."""
@@ -581,25 +854,14 @@ class SerialDevice(AbstractContextManager):
         *,
         open_connection: bool = True,
     ) -> None:
-        """Initialize the serial device.
-
-        Parameters
-        ----------
-        port : str
-            The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3').
-        open_connection : bool, default: True
-            Whether to open the connection immediately.
-
-        Raises
-        ------
-        serial.SerialException
-            If the specified port does not exist.
-        """
         # obtain ListPortInfo for device on specified port
         try:
             self._port_info = next(p for p in comports() if p.device == port)
         except StopIteration as e:
-            raise SerialException(f'Serial port not found: {port}') from e
+            raise SerialException(
+                f'Failed to connect to {self._serial_device_name} - '
+                f'serial port not found: {port}'
+            ) from e
 
         # instantiate ExtendedSerial
         self._serial = ExtendedSerial()
