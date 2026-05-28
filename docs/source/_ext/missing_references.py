@@ -32,6 +32,11 @@ def _resolve(app, env, node, contnode):
         node['reftarget'] = 'serial.Serial'
         return None
 
+    # Python 3.13 exposes pathlib internals; remap to the public name
+    if target == 'pathlib._local.Path':
+        node['reftarget'] = 'pathlib.Path'
+        return None
+
     # Remap fully-parameterized ValidatedDict generics
     if re.match(r'^bpod_core\.misc\.ValidatedDict\[', target):
         contnode[0] = nodes.Text('ValidatedDict')
