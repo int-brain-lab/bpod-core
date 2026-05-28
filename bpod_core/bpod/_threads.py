@@ -180,6 +180,21 @@ class ReadThread(threading.Thread):
     :attr:`~_EventID.END_FSM_CYCLES` and :attr:`~_EventID.END_FSM_MICROS`.
     A :attr:`~_EventID.STOP_SENTINEL` is always enqueued in ``finally`` so
     :class:`EventThread` can detect termination regardless of how the trial ended.
+
+    Parameters
+    ----------
+    serial : ExtendedSerial
+        The serial connection to the Bpod device.
+    state_machine_hash : bytes
+        The hash of the state machine.
+    trial : int
+        Zero-based trial index.
+    cycle_period_us : int
+        The cycle period of the Bpod device in microseconds.
+    queue_events : SimpleQueue[RawEvent]
+        Queue for storing events.
+    queue_softcodes : SimpleQueue[RawSoftcode]
+        Queue for storing softcodes.
     """
 
     _struct_exit = struct.Struct('<IQ')
@@ -194,24 +209,6 @@ class ReadThread(threading.Thread):
         queue_events: SimpleQueue[RawEvent],
         queue_softcodes: SimpleQueue[RawSoftcode],
     ) -> None:
-        """
-        Initialize the ReadThread.
-
-        Parameters
-        ----------
-        serial : ExtendedSerial
-            The serial connection to the Bpod device.
-        state_machine_hash : bytes
-            The hash of the state machine.
-        trial : int
-            Zero-based trial index.
-        cycle_period_us : int
-            The cycle period of the Bpod device in microseconds.
-        queue_events : SimpleQueue[RawEvent]
-            Queue for storing events.
-        queue_softcodes : SimpleQueue[RawSoftcode]
-            Queue for storing softcodes.
-        """
         super().__init__(name='ReadThread', daemon=True)
         self._serial = serial
         self._stop_event = threading.Event()
@@ -370,6 +367,21 @@ class EventThread(threading.Thread):
     **Thread safety**: :meth:`peek_data` may be called from another thread while the
     trial is running. It copies the buffer view before passing it to Polars, ensuring a
     consistent snapshot.
+
+    Parameters
+    ----------
+    trial : int
+        Zero-based trial index, used to populate the ``trial`` column.
+    fsm : StateMachineLookup
+        Compiled state machine data for this trial.
+    data_queue : SimpleQueue of LazyFrame
+        Queue to push the completed trial DataFrame into.
+    event_lookup : polars.DataFrame
+        Pre-built event metadata lookup, see :func:`_build_event_lookup`.
+    action_names : list of str
+        Names of all output channels, indexed by action ID.
+    time_reference : TimeReferences
+        Reference values for performance counters.
     """
 
     queue: SimpleQueue[RawEvent]
@@ -385,24 +397,6 @@ class EventThread(threading.Thread):
         action_names: list[str],
         time_reference: TimeReferences,
     ) -> None:
-        """
-        Initialize the EventThread.
-
-        Parameters
-        ----------
-        trial : int
-            Zero-based trial index, used to populate the ``trial`` column.
-        fsm : StateMachineLookup
-            Compiled state machine data for this trial.
-        data_queue : SimpleQueue of LazyFrame
-            Queue to push the completed trial DataFrame into.
-        event_lookup : polars.DataFrame
-            Pre-built event metadata lookup, see :func:`_build_event_lookup`.
-        action_names : list of str
-            Names of all output channels, indexed by action ID.
-        time_reference : TimeReferences
-            Reference values for performance counters.
-        """
         super().__init__(name='EventThread', daemon=True)
         self.queue: SimpleQueue[RawEvent] = SimpleQueue()
         self._trial = trial
