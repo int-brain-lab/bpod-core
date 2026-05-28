@@ -82,12 +82,7 @@ logger = logging.getLogger(__name__)
 
 
 class BpodError(Exception):
-    """
-    Exception class for Bpod-related errors.
-
-    This exception is raised when an error specific to the Bpod device or its
-    operations occurs.
-    """
+    """Raised for errors specific to Bpod device operations."""
 
 
 class BpodKeyError(BpodError, KeyError):
@@ -95,7 +90,35 @@ class BpodKeyError(BpodError, KeyError):
 
 
 class Bpod(SerialDevice, AbstractBpod):
-    """Class for interfacing with a Bpod Finite State Machine."""
+    """Interface to a Bpod Finite State Machine.
+
+    Connects to the Bpod hardware over USB. If neither `port` nor `serial_number` is
+    given, the first idle Bpod found on any USB port is used.
+
+    Parameters
+    ----------
+    port : str, optional
+        USB serial port of the device (e.g., '/dev/ttyACM0' or 'COM3'). Mutually
+        exclusive with `serial_number`.
+    serial_number : str, optional
+        Serial number of the device to connect to. Mutually exclusive with `port`.
+    remote : bool, default: False
+        Advertise the ZeroMQ service via Zeroconf so that other processes can
+        connect to this Bpod instance remotely.
+
+    Raises
+    ------
+    BpodError
+        If no idle Bpod is found, the indicated port does not exist, or the device
+        is not a supported Bpod model.
+
+    Examples
+    --------
+    Connect to a Bpod on ``COM3``::
+
+        with Bpod(port='COM3') as bpod:
+            # do things
+    """
 
     _settings: SettingsDict
     _read_thread: ReadThread | None = None
@@ -226,7 +249,11 @@ class Bpod(SerialDevice, AbstractBpod):
 
     def open(self) -> None:
         """
-        Open the connection to the Bpod.
+        Open the connection to the Bpod and perform a handshake.
+
+        .. note::
+            Prefer using :class:`Bpod` as a context manager, which opens and closes the
+            connection automatically.
 
         Raises
         ------
@@ -243,6 +270,10 @@ class Bpod(SerialDevice, AbstractBpod):
         Close the connection to the Bpod.
 
         Waits for any running trial to finish before closing the serial port.
+
+        .. note::
+            Prefer using :class:`Bpod` as a context manager, which opens and closes the
+            connection automatically.
 
         Raises
         ------
@@ -368,7 +399,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Parameters
         ----------
-        port : str | None, optional
+        port : str, optional
             The port of the device.
         serial_number : str, optional
             The serial number of the device.
@@ -1740,23 +1771,21 @@ class Bpod(SerialDevice, AbstractBpod):
 
 
 class Channel:
-    """Base class representing a channel on the Bpod device."""
+    """Base class representing a channel on the Bpod device.
+
+    Parameters
+    ----------
+    bpod : Bpod
+        The Bpod instance associated with the channel.
+    name : str
+        The name of the channel.
+    io_key : bytes
+        The I/O type of the channel (e.g., b'B', b'V', b'P').
+    index : int
+        The index of the channel.
+    """
 
     def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
-        """
-        Initialize a channel on the Bpod device.
-
-        Parameters
-        ----------
-        bpod : Bpod
-            The Bpod instance associated with the channel.
-        name : str
-            The name of the channel.
-        io_key : bytes
-            The I/O type of the channel (e.g., b'B', b'V', b'P').
-        index : int
-            The index of the channel.
-        """
         self.name = name
         self.io_type = io_key
         self.index = index
@@ -1952,7 +1981,11 @@ class Module:
 
     @property
     def relay(self) -> bool:
-        """The current state of the serial relay."""
+        """Whether the serial relay for this module is enabled.
+
+        When ``True``, the Bpod forwards bytes from the module to the host via
+        the Bpod's USB serial port.
+        """
         return self._relay_is_enabled
 
     @validate_call()
@@ -2011,7 +2044,35 @@ class Module:
 
 
 class RemoteBpod(AbstractBpod):
-    """Class representing a Bpod connected via zeroMQ."""
+    """Proxy for a :class:`Bpod` instance running in another process.
+
+    Use this when the Bpod hardware is managed by a separate process that was
+    started with ``remote=True``. :class:`RemoteBpod` discovers that process via
+    Zeroconf and forwards all method calls over ZeroMQ.
+
+    .. note::
+        This class is not yet fully functional. Some methods may be missing or
+        incomplete.
+
+    Parameters
+    ----------
+    address : str, optional
+        ZeroMQ address of the remote Bpod service. Discovered automatically if
+        not given.
+    name : str, optional
+        Zeroconf service name to filter by during discovery.
+    serial_number : str, optional
+        Serial number of the target Bpod to filter by during discovery.
+    location : str, optional
+        Zeroconf location string to filter by during discovery.
+    timeout : float, default: 10.0
+        Discovery timeout in seconds.
+
+    Raises
+    ------
+    TimeoutError
+        If no matching remote Bpod is found within `timeout` seconds.
+    """
 
     _name: str | None = None
     _location: str | None = None
