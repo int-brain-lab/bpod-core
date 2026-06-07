@@ -563,9 +563,11 @@ def extend_packed(
     >>> buffer.hex()
     '010000000200000003000000'
 
-    References
-    ----------
-    https://docs.python.org/3/library/struct.html#format-characters
+    See Also
+    --------
+    `Format characters
+    <https://docs.python.org/3/library/struct.html#format-characters>`__ used by the
+    :mod:`struct` module.
     """
     if values:
         byte_array.extend(struct.pack(f'<{len(values)}{fmt.lstrip("<>")}', *values))

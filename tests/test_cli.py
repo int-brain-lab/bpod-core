@@ -114,7 +114,7 @@ class TestBpodCli:
 
     def test_signal_handler_triggers_shutdown(self, mock_bpod_cls):
         """Registered signal handler sets the shutdown event."""
-        captured_handlers: dict[int, object] = {}
+        captured_handlers = {}
         mock_event = MagicMock(spec=threading.Event)
 
         with (

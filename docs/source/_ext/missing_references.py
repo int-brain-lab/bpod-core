@@ -3,8 +3,10 @@
 Handles three cases:
 
 - Platform-specific ``serial.Serial`` subclasses are remapped to the public API entry.
-- Generic subscripts (e.g. ``List[int]``) are stripped so intersphinx can resolve the
-  base type.
+- Malformed fragments from comma-split nested generics (unbalanced brackets) are
+  suppressed and rendered as plain text.
+- Pydantic internal paths (e.g. ``pydantic.root_model.RootModel``) are remapped to the
+  public API, stripping any generic parameters.
 - A small set of targets absent from all inventories are mapped directly to URLs.
 """
 
@@ -14,10 +16,11 @@ from docutils import nodes
 from sphinx.ext.intersphinx import InventoryAdapter
 
 _REFERENCE_URL_MAP = {
+    'polars.dataframe.frame.DataFrame': 'https://docs.pola.rs/py-polars/html/reference/dataframe',
+    'polars.lazyframe.frame.LazyFrame': 'https://docs.pola.rs/py-polars/html/reference/lazyframe',
     'polars.DataFrame': 'https://docs.pola.rs/py-polars/html/reference/dataframe',
     'polars.LazyFrame': 'https://docs.pola.rs/py-polars/html/reference/lazyframe',
-    'typing.Annotated': 'https://docs.python.org/3/library/typing.html#typing.Annotated',
-    'numpy.uint8': 'https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.uint8',
+    # 'typing.Annotated': 'https://docs.python.org/3/library/typing.html#typing.Annotated',
     'pydantic_extra_types.color.ColorType': 'https://pydantic.dev/docs/validation/latest/api/pydantic-extra-types/pydantic_extra_types_color/',
 }
 
@@ -27,14 +30,9 @@ def _resolve(app, env, node, contnode):
 
     target = node.get('reftarget', '')
 
-    # Remap platform-specific serial.Serial subclasses to the public API entry
-    if re.match(r'^serial\.serial\w+\.Serial$', target):
-        node['reftarget'] = 'serial.Serial'
-        return None
-
-    # Python 3.13 exposes pathlib internals; remap to the public name
-    if target == 'pathlib._local.Path':
-        node['reftarget'] = 'pathlib.Path'
+    # Remap serial.tools.list_ports_common.ListPortInfo
+    if target == 'serial.tools.list_ports_common.ListPortInfo':
+        node['reftarget'] = 'serial.tools.list_ports.ListPortInfo'
         return None
 
     # Remap fully-parameterized ValidatedDict generics
@@ -71,8 +69,7 @@ def _resolve(app, env, node, contnode):
             for alt in ('py:data', 'py:attribute'):
                 entry = inv.get(alt, {}).get(target)
                 if entry:
-                    _proj, _ver, location, _display = entry
-                    ref = nodes.reference('', '', internal=False, refuri=location)
+                    ref = nodes.reference('', '', internal=False, refuri=entry.uri)
                     ref += contnode
                     return ref
 

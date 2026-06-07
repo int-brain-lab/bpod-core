@@ -54,6 +54,7 @@ serial connection is closed and any running trial is allowed to finish on exit.
 .. testcode-code-block:: python3
    :caption: Using a context manager to connect to a Bpod.
    :group: bpod-context-manager
+   :linenos:
 
    from bpod_core.bpod import Bpod
 
@@ -92,6 +93,7 @@ collected data as a Polars :class:`~polars.DataFrame` (see :doc:`/data_format`).
 .. testcode-code-block:: python3
    :caption: Defining and running a state machine.
    :group: bpod-context-manager
+   :linenos:
 
    from bpod_core.bpod import Bpod
    from bpod_core.fsm import StateMachine
@@ -144,6 +146,7 @@ following example, a single state machine is executed 100 times:
 .. testcode-code-block:: python3
    :caption: Running several trials of the same state machine in immediate succession.
    :group: bpod-context-manager
+   :linenos:
 
    from bpod_core.bpod import Bpod
    from bpod_core.fsm import StateMachine
@@ -173,6 +176,7 @@ trial, yielding randomized state timers and action values:
    :name: on_the_fly_fsm
    :caption: Generating state machines on the fly.
    :group: bpod-context-manager
+   :linenos:
 
    from random import random, randint
 
@@ -211,6 +215,7 @@ before queuing it—with no idle time between the two runs. The final
    :name: peek_data_fsm
    :caption: Using the :meth:`~bpod_core.bpod.Bpod.peek_data` method
    :group: bpod-context-manager
+   :linenos:
 
    import polars as pl
 

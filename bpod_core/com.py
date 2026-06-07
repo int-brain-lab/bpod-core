@@ -3,7 +3,6 @@
 import contextlib
 import logging
 import re
-import struct
 import weakref
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager
@@ -32,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class ExtendedSerial(Serial):
-    """Enhances :class:`serial.Serial` with additional functionality."""
+    """Enhances pySerial's :class:`~serial.Serial` with additional functionality."""
 
     def write_int8(self, value: int) -> int | None:
         """
@@ -317,7 +316,7 @@ class ExtendedSerial(Serial):
         """
         return self.read(1) != b'\x00'
 
-    def write_struct(self, format_string: str, *data: Any) -> int | None:
+    def write_struct(self, fmt: str | Struct, *data: Any) -> int | None:
         """
         Write structured data to the serial port.
 
@@ -326,10 +325,10 @@ class ExtendedSerial(Serial):
 
         Parameters
         ----------
-        format_string : str
-            A format string that specifies the layout of the data. It should be
-            compatible with the :mod:`struct` module's `format specifications
-            <https://docs.python.org/3/library/struct.html#format-characters>`__.
+        fmt : str or struct.Struct
+            A pre-compiled struct or a format string compatible with the :mod:`struct`
+            module's `format specifications
+            <https://docs.python.org/3/library/struct.html#format-strings>`__.
         *data : Any
             Variable-length arguments representing the data to be packed and written,
             corresponding to the format specifiers in `format_string`.
@@ -352,8 +351,15 @@ class ExtendedSerial(Serial):
         Write a command byte followed by a 16-bit unsigned integer::
 
             serial_port.write_struct('<BH', 0x4A, 1000)
+
+        See Also
+        --------
+        `Format specifications
+        <https://docs.python.org/3/library/struct.html#format-strings>`__ used by the
+        :mod:`struct` module.
         """
-        buffer = struct.pack(format_string, *data)
+        s = fmt if isinstance(fmt, Struct) else Struct(fmt)
+        buffer = s.pack(*data)
         return self.write(buffer)
 
     def read_struct(self, fmt: str | Struct) -> tuple[Any, ...]:
@@ -368,7 +374,7 @@ class ExtendedSerial(Serial):
         fmt : str or struct.Struct
             A pre-compiled struct or a format string compatible with the :mod:`struct`
             module's `format specifications
-            <https://docs.python.org/3/library/struct.html#format-characters>`__.
+            <https://docs.python.org/3/library/struct.html#format-strings>`__.
 
         Returns
         -------
@@ -393,6 +399,12 @@ class ExtendedSerial(Serial):
             fmt = struct.Struct('<HBB')
             while acquiring:
                 major, minor, patch = serial_port.read_struct(fmt)
+
+        See Also
+        --------
+        `Format specifications
+        <https://docs.python.org/3/library/struct.html#format-strings>`__ used by the
+        :mod:`struct` module.
         """
         s = fmt if isinstance(fmt, Struct) else Struct(fmt)
         return s.unpack(super().read(s.size))
@@ -422,7 +434,7 @@ class ExtendedSerial(Serial):
         fmt : str or struct.Struct
             A pre-compiled struct or a format string compatible with the :mod:`struct`
             module's `format specifications
-            <https://docs.python.org/3/library/struct.html#format-characters>`__.
+            <https://docs.python.org/3/library/struct.html#format-strings>`__.
         n : int, default: 1
             Number of records to read.
         flatten : bool, default: False
@@ -448,6 +460,12 @@ class ExtendedSerial(Serial):
         Read two records as individual integers::
 
             v1, f1, v2, f2 = serial_port.read_struct_iter('<HB', 2, flatten=True)
+
+        See Also
+        --------
+        `Format specifications
+        <https://docs.python.org/3/library/struct.html#format-strings>`__ used by the
+        :mod:`struct` module.
         """
         s = fmt if isinstance(fmt, Struct) else Struct(fmt)
         data = self.read(n * s.size)
@@ -481,7 +499,7 @@ class ExtendedSerial(Serial):
         fmt : str or struct.Struct
             A pre-compiled struct or a format string compatible with the :mod:`struct`
             module's `format specifications
-            <https://docs.python.org/3/library/struct.html#format-characters>`__.
+            <https://docs.python.org/3/library/struct.html#format-strings>`__.
         n : int
             Number of records to read.
         flatten : bool, default: True
@@ -509,6 +527,12 @@ class ExtendedSerial(Serial):
 
             for x, y, z in serial_port.stream_struct('<3f', 10, flatten=False):
                 print(x, y, z)
+
+        See Also
+        --------
+        `Format specifications
+        <https://docs.python.org/3/library/struct.html#format-strings>`__ used by the
+        :mod:`struct` module.
         """
         s = fmt if isinstance(fmt, Struct) else Struct(fmt)
         buf = bytearray(s.size)
@@ -805,14 +829,6 @@ class SerialDevice(AbstractContextManager):
     metadata. Derive from this class instead of using :class:`serial.Serial` directly to
     get automatic resource management and consistent error handling.
 
-    Subclasses have access to the following private attributes:
-
-    - ``_serial``: the underlying :class:`ExtendedSerial` connection.
-    - ``_port_info``: a :class:`~serial.tools.list_ports.ListPortInfo` instance with
-      metadata about the serial port (vendor ID, serial number, etc.).
-    - ``_serial_device_name``: the name of the serial device (defaults to
-      'serial device'). Used in log messages and exception text.
-
     Parameters
     ----------
     port : str
@@ -875,6 +891,17 @@ class SerialDevice(AbstractContextManager):
             self.open()
 
     def _rename_serial_device(self, new_name: str) -> None:
+        """
+        Rename the serial device.
+
+        Use this method to change the name of the serial device after instantiation.
+        It will ensure that the finalizer is updated to reflect the new name.
+
+        Parameters
+        ----------
+        new_name : str
+            The new name of the serial device.
+        """
         self._serial_device_name = new_name
         if self._serial_device_finalizer is not None:
             self._serial_device_finalizer.detach()
