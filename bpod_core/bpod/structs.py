@@ -1,10 +1,12 @@
 """Data structures used by the bpod module."""
 
-from typing import NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import msgspec
 import numpy as np
 import numpy.typing as npt
+
+from bpod_core.misc import ByteEnum
 
 
 class _ValidationData(NamedTuple):
@@ -120,6 +122,78 @@ class BpodInfo(msgspec.Struct):
     """ZeroMQ PUB service address."""
     zmq_rep: str | None = None
     """ZeroMQ REP service address."""
+
+
+class _MessageKind(ByteEnum):
+    """The types of messages exchanged between ServiceHost and ServiceClient."""
+
+    HELLO = ord('H')
+    """A message sent by :class:`~bpod_core.bpod.RemoteBpod to initiate a handshake."""
+    WELCOME = ord('W')
+    """A message sent by :class:`~bpod_core.bpod.Bpod` to acknowledge the handshake."""
+    REQUEST = ord('Q')
+    """A request sent by :class:`~bpod_core.bpod.RemoteBpod`."""
+    REPLY = ord('R')
+    """A reply sent by :class:`~bpod_core.bpod.Bpod`."""
+
+
+class BpodMessage(msgspec.Struct, array_like=True):
+    """Base Envelope for a Bpod IPC message."""
+
+
+class BpodMessageGeneric(BpodMessage, tag='g'):
+    """Envelope for a generic message."""
+
+    data: Any = None
+    """The content of the reply."""
+
+
+class BpodMessageHello(BpodMessage, tag='h'):
+    """Envelope for a handshake request."""
+
+    bpod_core_version: str
+    """The version of bpod-core that the client is using."""
+    ip: str
+    """The client's IP address."""
+    pid: int
+    """The process ID of the client."""
+    local: bool
+    """Whether the client is running on the same machine as the host."""
+
+
+class BpodMessageBye(BpodMessageHello, tag='b'):
+    """Envelope for a disconnect notice."""
+
+
+class BpodMessageWelcome(BpodMessage, tag='w'):
+    """Envelope for a handshake reply."""
+
+    version: 'VersionInfo'
+    """Version information of the Bpod's firmware and hardware."""
+    serial_number: str
+    """The Bpod's unique serial number."""
+    name: str | None = None
+    """The Bpod's user-defined name."""
+    location: str | None = None
+    """The Bpod's user-defined location."""
+
+
+class BpodMessageCallRequest(BpodMessage, tag='c'):
+    """Envelope for a method call request."""
+
+    method_name: str
+    """The name of the method to be called."""
+    args: tuple = ()
+    """The arguments to be passed to the method."""
+    kwargs: dict[str, Any] = {}
+    """Keyword arguments to be passed to the method."""
+
+
+class BpodMessageDataRequest(BpodMessageCallRequest, tag='rd'):
+    """Envelope for a data request."""
+
+    compression: Literal['uncompressed', 'lz4', 'zstd'] = 'uncompressed'
+    """The compression method to be used for the data."""
 
 
 class VersionInfo(msgspec.Struct, frozen=True):

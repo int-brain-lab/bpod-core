@@ -1,11 +1,13 @@
 import logging
 import re
 import struct
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
 import numpy as np
 import pytest
 from serial import SerialException
+from serial.tools.list_ports_common import numsplit
 
 from bpod_core import com
 from bpod_core.constants import STRUCT_UINT64_LE
@@ -21,7 +23,7 @@ def mock_serial(mocker):
     return mock_serial
 
 
-class TestEnhancedSerial:
+class TestExtendedSerial:
     """Tests for ExtendedSerial helpers and semantics."""
 
     def test_write(self, mock_serial):
@@ -42,6 +44,16 @@ class TestEnhancedSerial:
         assert b == 2
         assert c == 3
 
+    def test_read_struct_precompiled(self, mock_serial):
+        """Pre-compiled Struct yields the same result as a format string."""
+        mock_serial.super_read.return_value = b'\x01\x02\x00\x03\x00\x00\x00'
+        s = struct.Struct('<BHI')
+        a, b, c = mock_serial.read_struct(s)
+        assert a == 1
+        assert b == 2
+        assert c == 3
+        mock_serial.super_read.assert_called_with(s.size)
+
     def test_query(self, mock_serial):
         """Write request then read exact number of bytes for reply."""
         mock_serial.query(b'x', size=4)
@@ -55,6 +67,17 @@ class TestEnhancedSerial:
         assert a == 1
         assert b == 2
         assert c == 3
+
+    def test_query_struct_precompiled(self, mock_serial):
+        """Pre-compiled Struct yields the same result as a format string."""
+        mock_serial.super_read.return_value = b'\x01\x02\x00\x03\x00\x00\x00'
+        s = struct.Struct('<BHI')
+        a, b, c = mock_serial.query_struct(b'x', s)
+        assert a == 1
+        assert b == 2
+        assert c == 3
+        mock_serial.super_write.assert_called_with(b'x')
+        mock_serial.super_read.assert_called_with(s.size)
 
     def test_verify(self, mock_serial):
         """Verify compares read bytes against expected pattern."""
@@ -88,6 +111,8 @@ class TestEnhancedSerial:
             expected = value.to_bytes(length, 'little', signed=signed)
             getattr(mock_serial, fcn)(value)
             mock_serial.super_write.assert_called_with(expected)
+            with pytest.raises(struct.error):
+                getattr(mock_serial, fcn)(value + (1 if value_type == 'max' else -1))
 
     @pytest.mark.parametrize(
         'fcn',
@@ -322,29 +347,30 @@ class TestChunkedSerialReader:
         assert reader._buffer == bytearray(b'\x05')
 
 
+class _Port(SimpleNamespace):
+    """Minimal port stub that supports ordering by device name."""
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, _Port):
+            return NotImplemented
+        return bool(numsplit(self.device) < numsplit(other.device))
+
+
 class TestFindPorts:
     """Tests for find_ports() filtering functionality."""
 
     @pytest.fixture
     def mock_ports(self, mocker):
         """Fixture providing mock serial ports."""
-        port1 = MagicMock()
-        port1.device = '/dev/ttyACM0'
-        port1.vid = 0x16C0
-        port1.pid = 0x0483
-        port1.serial_number = 'ABC123'
-
-        port2 = MagicMock()
-        port2.device = '/dev/ttyUSB0'
-        port2.vid = 0x0403
-        port2.pid = 0x6001
-        port2.serial_number = 'DEF456'
-
-        port3 = MagicMock()
-        port3.device = '/dev/ttyACM1'
-        port3.vid = 0x16C0
-        port3.pid = 0x048B
-        port3.serial_number = 'GHI789'
+        port1 = _Port(
+            device='/dev/ttyACM0', vid=0x16C0, pid=0x0483, serial_number='ABC123'
+        )
+        port2 = _Port(
+            device='/dev/ttyUSB0', vid=0x0403, pid=0x6001, serial_number='DEF456'
+        )
+        port3 = _Port(
+            device='/dev/ttyACM1', vid=0x16C0, pid=0x048B, serial_number='GHI789'
+        )
 
         ports = [port1, port2, port3]
         mocker.patch('bpod_core.com.comports', return_value=ports)
@@ -353,7 +379,7 @@ class TestFindPorts:
     def test_no_filters(self, mock_ports):
         """Returns all ports when no filters specified."""
         result = com.find_ports()
-        assert result == mock_ports
+        assert result == sorted(mock_ports, key=lambda p: numsplit(p.device))
 
     def test_scalar_filter(self, mock_ports):
         """Exact match on single attribute returns matching ports."""
@@ -493,7 +519,7 @@ class TestSerialDevice:
     def test_init_port_not_found(self, mock_comports):
         """Raises SerialException when port does not exist."""
         mock_comports.return_value = []
-        with pytest.raises(SerialException, match='Serial port not found'):
+        with pytest.raises(SerialException, match='serial port not found'):
             com.SerialDevice('/dev/ttyACM0')
 
     def test_context_manager_enter(self, mock_comports, mock_extended_serial):

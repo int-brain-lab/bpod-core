@@ -180,7 +180,7 @@ class TestClient:
             service_type='dualtest',
             address=host.rep_tcp_addr,
             discovery_timeout=0,
-            default_data_type=dict,
+            default_reply_type=dict,
         ) as client:
             yield client
 
@@ -237,7 +237,7 @@ class TestHost:
             assert host._local_advertisement.service_file.exists()
         host._zeroconf.close.assert_called_once()
         assert not host._local_advertisement.service_file.exists()
-        assert not host._local_advertisement.runtime_directory.exists()
+        assert not host._local_advertisement._runtime_directory.exists()
 
     def test_remote_false_creates_only_local(self, mock_advertisement):
         """remote=False creates only local advertisement, no zeroconf."""
@@ -247,7 +247,7 @@ class TestHost:
             assert host._local_advertisement is not None
             assert host._local_advertisement.service_file.exists()
         assert not host._local_advertisement.service_file.exists()
-        assert not host._local_advertisement.runtime_directory.exists()
+        assert not host._local_advertisement._runtime_directory.exists()
 
     def test_close_removes_local_advertisement(self, mock_advertisement):
         """close() removes the local advertisement file."""

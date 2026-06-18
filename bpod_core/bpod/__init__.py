@@ -2,9 +2,9 @@
 
 import contextlib
 import logging
+import os
 import re
 import struct
-import traceback
 import weakref
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, field
@@ -53,6 +53,13 @@ from bpod_core.bpod.constants import (
 )
 from bpod_core.bpod.structs import (
     BpodInfo,
+    BpodMessage,
+    BpodMessageBye,
+    BpodMessageCallRequest,
+    BpodMessageDataRequest,
+    BpodMessageGeneric,
+    BpodMessageHello,
+    BpodMessageWelcome,
     HardwareConfiguration,
     StateMachineLookup,
     TimeReferences,
@@ -75,19 +82,27 @@ from bpod_core.constants import (
     TeensyPID,
 )
 from bpod_core.fsm import StateMachine
-from bpod_core.ipc import ServiceClient, ServiceEvent, ServiceHost, iter_services
-from bpod_core.misc import SettingsDict, SuggestionDict, extend_packed, suggest_similar
+from bpod_core.ipc import (
+    RemoteError,
+    ServiceClient,
+    ServiceEvent,
+    ServiceHost,
+    iter_services,
+)
+from bpod_core.misc import (
+    SettingsDict,
+    SuggestionDict,
+    extend_packed,
+    get_local_ipv4,
+    suggest_similar,
+    suppress_logging,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class BpodError(Exception):
-    """
-    Exception class for Bpod-related errors.
-
-    This exception is raised when an error specific to the Bpod device or its
-    operations occurs.
-    """
+    """Raised for errors specific to Bpod device operations."""
 
 
 class BpodKeyError(BpodError, KeyError):
@@ -95,11 +110,39 @@ class BpodKeyError(BpodError, KeyError):
 
 
 class Bpod(SerialDevice, AbstractBpod):
-    """Class for interfacing with a Bpod Finite State Machine."""
+    """Interface to a Bpod Finite State Machine.
+
+    Connects to the Bpod hardware over USB. If neither `port` nor `serial_number` is
+    given, the first idle Bpod found on any USB port is used.
+
+    Parameters
+    ----------
+    port : str, optional
+        USB serial port of the device (e.g., '/dev/ttyACM0' or 'COM3'). Mutually
+        exclusive with `serial_number`.
+    serial_number : str, optional
+        Serial number of the device to connect to. Mutually exclusive with `port`.
+    remote : bool, default: False
+        Advertise the ZeroMQ service via Zeroconf so that other processes can
+        connect to this Bpod instance remotely.
+
+    Raises
+    ------
+    BpodError
+        If no idle Bpod is found, the indicated port does not exist, or the device
+        is not a supported Bpod model.
+
+    Examples
+    --------
+    Connect to a Bpod on ``COM3``::
+
+        with Bpod(port='COM3') as bpod:
+            # do things
+    """
 
     _settings: SettingsDict
     _read_thread: ReadThread | None = None
-    _zmq_service: ServiceHost
+    _zmq: ServiceHost
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
@@ -109,7 +152,7 @@ class Bpod(SerialDevice, AbstractBpod):
         FIFOCache(maxsize=1024)
     )
     _compilation_cache: ClassVar[
-        FIFOCache[tuple[bytes, bytes, bool], tuple[bytes, StateMachineLookup]]
+        FIFOCache[tuple[bytes, bytes, bool], tuple[bytearray, StateMachineLookup]]
     ] = FIFOCache(maxsize=1024)
 
     _softcode_thread: SoftcodeThread
@@ -226,7 +269,11 @@ class Bpod(SerialDevice, AbstractBpod):
 
     def open(self) -> None:
         """
-        Open the connection to the Bpod.
+        Open the connection to the Bpod and perform a handshake.
+
+        .. note::
+            Prefer using :class:`Bpod` as a context manager, which opens and closes the
+            connection automatically.
 
         Raises
         ------
@@ -243,6 +290,10 @@ class Bpod(SerialDevice, AbstractBpod):
         Close the connection to the Bpod.
 
         Waits for any running trial to finish before closing the serial port.
+
+        .. note::
+            Prefer using :class:`Bpod` as a context manager, which opens and closes the
+            connection automatically.
 
         Raises
         ------
@@ -281,43 +332,61 @@ class Bpod(SerialDevice, AbstractBpod):
         """Primary serial device for communication with the Bpod."""
         return self._serial
 
-    def _request_handler(self, message: dict[str, Any]) -> dict[str, Any]:
-        msg_type = message.get('type', 'unknown')
-        if msg_type == 'call':
-            method_name = message.get('method', '')
-            args = message.get('args', ())
-            kwargs = message.get('kwargs', {})
-            try:
-                method = getattr(self, method_name)
-                result = method(*args, **kwargs)
-                response = {'success': True, 'result': result}
-            except Exception as e:
-                response = {
-                    'success': False,
-                    'error': {
-                        'type': type(e).__name__,
-                        'message': str(e),
-                        'traceback': traceback.format_exc(),
-                    },
-                }
-        elif msg_type == 'handshake':
-            response = {
-                'version': self._version,
-                'serial_number': self._serial_number,
-                'name': self.name,
-                'location': self.location,
-            }
-        else:
-            response = {
-                'success': False,
-                'error': f'Unknown message type: {msg_type}',
-            }
-        return response
+    def _request_handler(self, request: BpodMessage) -> Any:
+        reply: Any
+        match request:
+            case BpodMessageBye():
+                # Handle disconnect notice
+                logger.info(
+                    'Client disconnected: PID %d on %s',
+                    request.pid,
+                    'localhost' if request.local else request.ip,
+                )
+                reply = 'ciao!'
+
+            case BpodMessageHello():
+                # Handle connection requests
+                if request.bpod_core_version != bpod_core_version:
+                    raise RuntimeError(
+                        f'Version mismatch. Host uses bpod-core {bpod_core_version}, '
+                        f'client uses bpod-core {request.bpod_core_version}. Please '
+                        f'ensure that both use the same version.'
+                    )
+                logger.info(
+                    'Client connected: PID %d on %s',
+                    request.pid,
+                    'localhost' if request.local else request.ip,
+                )
+                reply = BpodMessageWelcome(
+                    version=self._version,
+                    serial_number=self._serial_number,
+                    name=self.name,
+                    location=self.location,
+                )
+
+            case BpodMessageDataRequest():
+                method = getattr(self, request.method_name)
+                data: pl.DataFrame = method(*request.args, **request.kwargs)
+                reply = data.write_ipc(None, compression=request.compression).getvalue()
+
+            case BpodMessageCallRequest():
+                # Handle method call requests
+                method = getattr(self, request.method_name)
+                return_value = method(*request.args, **request.kwargs)
+                reply = BpodMessageGeneric(data=return_value)
+
+            case _:
+                # Handle unknown request types
+                raise BpodError(
+                    f'Unknown request type: {type(request).__name__}. Ensure that host '
+                    f'and client use the same version of bpod-core.'
+                )
+        return reply
 
     def _start_zmq(self, *, use_zeroconf: bool) -> None:
         port_pub = self._get_setting(['devices', self._serial_number, 'port_pub'])
         port_rep = self._get_setting(['devices', self._serial_number, 'port_rep'])
-        self._zmq_service = ServiceHost(
+        self._zmq = ServiceHost(
             service_name=self.name or f'bpod_{self._serial_number}',
             service_type='bpod',
             properties={
@@ -332,23 +401,27 @@ class Bpod(SerialDevice, AbstractBpod):
             event_handler=self._request_handler,
             port_pub=cast('int | None', port_pub),
             port_rep=cast('int | None', port_rep),
+            default_request_type=BpodMessageHello
+            | BpodMessageCallRequest
+            | BpodMessageDataRequest
+            | BpodMessageBye,
             remote=use_zeroconf,
         )
         self._set_setting(
-            ['devices', self._serial_number, 'port_pub'], self._zmq_service.pub_tcp_port
+            ['devices', self._serial_number, 'port_pub'], self._zmq.pub_tcp_port
         )
         self._set_setting(
-            ['devices', self._serial_number, 'port_rep'], self._zmq_service.rep_tcp_port
+            ['devices', self._serial_number, 'port_rep'], self._zmq.rep_tcp_port
         )
 
     def _stop_zmq(self) -> None:
         if hasattr(self, '_zmq_service'):
-            self._zmq_service.close()
+            self._zmq.close()
 
     @property
     def address(self) -> str:
         """The ZeroMQ address of the Bpod."""
-        return self._zmq_service.rep_tcp_addr
+        return self._zmq.rep_tcp_addr
 
     def _get_setting(self, keys: list[str], default: Any = None) -> Any:
         return self._settings.get_nested(keys, default)
@@ -368,7 +441,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Parameters
         ----------
-        port : str | None, optional
+        port : str, optional
             The port of the device.
         serial_number : str, optional
             The serial number of the device.
@@ -576,19 +649,8 @@ class Bpod(SerialDevice, AbstractBpod):
         self.serial0.write_struct(f'<c{self._hardware.n_inputs}?', b'E', *enable)
         return self.serial0.read(1) == b'\x01'
 
+    @override
     def reset_session_clock(self) -> bool:
-        """Reset the Bpod session clock.
-
-        Returns
-        -------
-        bool
-            True if the Bpod acknowledged the command.
-
-        Raises
-        ------
-        BpodError
-            When the method is called while a state machine is running.
-        """
         if self.is_running:
             raise BpodError(
                 'Cannot reset session clock while a state machine is running.'
@@ -783,8 +845,8 @@ class Bpod(SerialDevice, AbstractBpod):
         self.serial0.write_struct('<c?', b':', enable)
         return self.serial0.verify(b'')
 
+    @override
     def update_modules(self) -> None:
-        """Update the list of connected modules and their configurations."""
         # self._disable_all_module_relays()
         self.serial0.write(b'M')
         modules = []
@@ -867,17 +929,10 @@ class Bpod(SerialDevice, AbstractBpod):
         ValueError
             If the state machine is invalid or not compatible with the hardware.
         """
-        self._validate_state_machine(
-            state_machine=state_machine,
-            debugging=logger.isEnabledFor(logging.DEBUG),
-        )
+        self._validate_state_machine(state_machine=state_machine)
 
     def _validate_state_machine(
-        self,
-        state_machine: StateMachine,
-        *,
-        known_hash: bytes | None = None,
-        debugging: bool = False,
+        self, state_machine: StateMachine, *, known_hash: bytes | None = None
     ) -> _ValidationData:
         """
         Validate the provided state machine for compatibility with the hardware.
@@ -888,8 +943,6 @@ class Bpod(SerialDevice, AbstractBpod):
             The state machine to validate.
         known_hash : bytes | None, optional
             Known hash of the state machine. Hash will be computed if not provided.
-        debugging : bool, default: False
-            Whether to enable debug logging.
 
         Returns
         -------
@@ -901,6 +954,8 @@ class Bpod(SerialDevice, AbstractBpod):
         ValueError
             If the state machine is invalid or not compatible with the hardware.
         """
+        debugging = logger.isEnabledFor(logging.DEBUG)
+
         # get nanosecond count for benchmarking
         if debugging:
             t0 = perf_counter_ns()
@@ -1044,7 +1099,7 @@ class Bpod(SerialDevice, AbstractBpod):
         if debugging:
             logger.debug(
                 'Validated state machine %s (%d μs)',
-                fsm_hash.hex,
+                fsm_hash.hex(),
                 (perf_counter_ns() - t0) // 1000,
             )
 
@@ -1085,8 +1140,7 @@ class Bpod(SerialDevice, AbstractBpod):
         state_machine: StateMachine,
         known_hash: bytes | None = None,
         validate: bool = True,
-        debugging: bool = False,
-    ) -> tuple[bytes, StateMachineLookup, bool]:
+    ) -> tuple[bytearray, StateMachineLookup, bool]:
         """Compile a state machine into its binary wire format and annotation data.
 
         Builds the state transition matrix, encodes states, transitions, actions,
@@ -1102,8 +1156,6 @@ class Bpod(SerialDevice, AbstractBpod):
             Known hash of the state machine. Hash will be computed if not provided.
         validate : bool, default: True
             Whether to validate the state machine.
-        debugging : bool, default: False
-            Whether to enable debug logging.
 
         Returns
         -------
@@ -1114,6 +1166,8 @@ class Bpod(SerialDevice, AbstractBpod):
         bool
             Whether the state machine was validated
         """
+        debugging = logger.isEnabledFor(logging.DEBUG)
+
         # get nanosecond count for benchmarking
         if debugging:
             t0 = perf_counter_ns()
@@ -1136,9 +1190,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # validate the state machine,
         if validate:
             validation_data = self._validate_state_machine(
-                state_machine,
-                known_hash=state_machine_hash,
-                debugging=debugging,
+                state_machine, known_hash=state_machine_hash
             )
             use_back_op = validation_data.use_back_operator
             state_names = validation_data.state_names
@@ -1381,13 +1433,14 @@ class Bpod(SerialDevice, AbstractBpod):
         if debugging:
             logger.debug(
                 'Compiled state machine %s (%d μs)',
-                state_machine_hash,
+                state_machine_hash.hex(),
                 (perf_counter_ns() - t0) // 1000,
             )
 
         # Return the compiled state machine and annotations
         return fsm_bytes, annotations, validate
 
+    @override
     @validate_call(config=ConfigDict(arbitrary_types_allowed=True))
     def run(
         self,
@@ -1396,51 +1449,6 @@ class Bpod(SerialDevice, AbstractBpod):
         trial_number: int | None = None,
         validate: bool = True,
     ) -> None:
-        """
-        Run a state machine on the Bpod.
-
-        Validates, compiles, sends, and queues a state machine for immediate execution.
-        If the Bpod is currently running a state machine, the new one is queued to run
-        as soon as the current one finishes, with no inter-trial gap.
-
-        If called without an argument, the previously sent state machine is re-sent
-        from the compilation cache and queued for immediate back-to-back execution.
-
-        Parameters
-        ----------
-        state_machine : StateMachine, optional
-            The state machine to run. If not provided, the previously sent state machine
-            is repeated.
-        trial_number : int, optional
-            The trial number to assign to the state machine. If not provided, the trial
-            number is automatically incremented with each run.
-        validate : bool, default: True
-            If False, the state machine will not be validated prior to compilation. This
-            will speed up the process, but may result in errors or unexpected behavior
-            if the state machine is invalid. Use with caution.
-
-        Raises
-        ------
-        RuntimeError
-            If called without an argument and no state machine has been run yet.
-        ValueError
-            If the state machine is invalid or exceeds hardware limitations.
-        ValidationError
-            If function arguments don't match type hints.
-
-        Notes
-        -----
-        This method returns once the state machine has been queued on the Bpod. The Bpod
-        will then begin executing the state machine as soon as possible — immediately
-        if the device is idle or right after the current state machine finishes.
-        Subsequent calls of this method will result in continuous acquisition and zero
-        inter-trial downtime (as long as the Bpod's run queue stays filled).
-
-        See Also
-        --------
-        validate_state_machine : Validation of state machines.
-        wait : Block until the currently running state machine finishes.
-        """
         debugging = logger.isEnabledFor(logging.DEBUG)
         if trial_number is None:
             self._next_fsm_index += 1
@@ -1485,7 +1493,6 @@ class Bpod(SerialDevice, AbstractBpod):
                         state_machine=state_machine,
                         known_hash=fsm_hash,
                         validate=validate,
-                        debugging=debugging,
                     )
                 )
             except Exception as e1:
@@ -1493,10 +1500,11 @@ class Bpod(SerialDevice, AbstractBpod):
                 # to get a more informative error message
                 if not fsm_was_validated:
                     try:
-                        self._validate_state_machine(
-                            state_machine=state_machine,
-                            known_hash=fsm_hash,
-                        )
+                        with suppress_logging():
+                            self._validate_state_machine(
+                                state_machine=state_machine,
+                                known_hash=fsm_hash,
+                            )
                     except Exception as e2:
                         raise e2 from e1
                 raise
@@ -1635,45 +1643,8 @@ class Bpod(SerialDevice, AbstractBpod):
         self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[True]
     ) -> pl.LazyFrame: ...
 
+    @override
     def get_data(self, *, concat=True, rechunk=False, lazy=False):
-        """Return trial data from the data queue.
-
-        Parameters
-        ----------
-        concat : bool, default: True
-            If ``True``, pop and concatenate all DataFrames currently in the queue into
-            a single DataFrame, blocking until at least one is available.
-            If ``False``, pop and return one DataFrame, blocking until one is
-            available.
-        rechunk : bool, default: False
-            If ``True``, make sure that the result data is in contiguous memory. Only
-            applies when ``concat=True``.
-        lazy : bool, default: False
-            If ``True``, return a :class:`polars.LazyFrame`.
-            If ``False``, return a :class:`polars.DataFrame`.
-
-        Returns
-        -------
-        DataFrame or LazyFrame
-            One trial's data, or all available trials concatenated when ``concat=True``.
-
-            Columns:
-
-            - **time** (:class:`~polars.datatypes.Datetime`) – absolute Bpod timestamp.
-            - **trial** (:class:`~polars.datatypes.UInt16`) – zero-based trial index.
-            - **state machine** (:class:`~polars.datatypes.Categorical`) – state machine
-              hash, see :meth:`~bpod_core.fsm.StateMachine.hash`.
-            - **state** (:class:`~polars.datatypes.Categorical`) – state name.
-            - **type** (:class:`~polars.datatypes.Enum`) – event type.
-            - **event** (:class:`~polars.datatypes.Categorical`) – input event name.
-            - **channel** (:class:`~polars.datatypes.Categorical`) – channel name.
-            - **value** (:class:`~polars.datatypes.UInt8`) – channel value.
-
-        Raises
-        ------
-        BpodError
-            If the queue is empty and no state machine is currently running.
-        """
         if self._trial_data.empty() and not self.is_running:
             raise BpodError('No trial data available')
 
@@ -1691,8 +1662,8 @@ class Bpod(SerialDevice, AbstractBpod):
         # return data
         return data if lazy else data.collect()
 
+    @override
     def stop_state_machine(self) -> None:
-        """Stop the currently running state machine."""
         if not self.is_running:
             return
         logger.debug('Stopping state machine')
@@ -1740,23 +1711,21 @@ class Bpod(SerialDevice, AbstractBpod):
 
 
 class Channel:
-    """Base class representing a channel on the Bpod device."""
+    """Base class representing a channel on the Bpod device.
+
+    Parameters
+    ----------
+    bpod : Bpod
+        The Bpod instance associated with the channel.
+    name : str
+        The name of the channel.
+    io_key : bytes
+        The I/O type of the channel (e.g., b'B', b'V', b'P').
+    index : int
+        The index of the channel.
+    """
 
     def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
-        """
-        Initialize a channel on the Bpod device.
-
-        Parameters
-        ----------
-        bpod : Bpod
-            The Bpod instance associated with the channel.
-        name : str
-            The name of the channel.
-        io_key : bytes
-            The I/O type of the channel (e.g., b'B', b'V', b'P').
-        index : int
-            The index of the channel.
-        """
         self.name = name
         self.io_type = io_key
         self.index = index
@@ -1952,7 +1921,11 @@ class Module:
 
     @property
     def relay(self) -> bool:
-        """The current state of the serial relay."""
+        """Whether the serial relay for this module is enabled.
+
+        When ``True``, the Bpod forwards bytes from the module to the host via
+        the Bpod's USB serial port.
+        """
         return self._relay_is_enabled
 
     @validate_call()
@@ -2011,8 +1984,37 @@ class Module:
 
 
 class RemoteBpod(AbstractBpod):
-    """Class representing a Bpod connected via zeroMQ."""
+    """Proxy for a :class:`Bpod` instance running in another process.
 
+    Use this when the Bpod hardware is managed by a separate process that was
+    started with ``remote=True``. :class:`RemoteBpod` discovers that process via
+    Zeroconf and forwards all method calls over ZeroMQ.
+
+    .. note::
+        This class is not yet fully functional. Some methods may be missing or
+        incomplete.
+
+    Parameters
+    ----------
+    address : str, optional
+        ZeroMQ address of the remote Bpod service. Discovered automatically if
+        not given.
+    name : str, optional
+        Zeroconf service name to filter by during discovery.
+    serial_number : str, optional
+        Serial number of the target Bpod to filter by during discovery.
+    location : str, optional
+        Zeroconf location string to filter by during discovery.
+    timeout : float, default: 10.0
+        Discovery timeout in seconds.
+
+    Raises
+    ------
+    TimeoutError
+        If no matching remote Bpod is found within `timeout` seconds.
+    """
+
+    _zmq: ServiceClient[dict]
     _name: str | None = None
     _location: str | None = None
 
@@ -2030,16 +2032,14 @@ class RemoteBpod(AbstractBpod):
             'serial': serial_number,
             'location': location,
         }
-        properties = {k: v for k, v in properties.items() if v is not None}
-
         try:
             self._zmq = ServiceClient(
                 service_type='bpod',
                 address=address,
                 event_handler=self._event_handler,
                 discovery_timeout=timeout,
-                txt_properties=properties,
-                default_data_type=dict,
+                txt_properties={k: v for k, v in properties.items() if v is not None},
+                default_reply_type=dict,
             )
         except TimeoutError as e:
             raise TimeoutError('Failed to discover remote Bpod.') from e
@@ -2052,10 +2052,42 @@ class RemoteBpod(AbstractBpod):
             self._zmq.address_req,
         )
 
-    def _request(self, request_type: str, **kwargs: Any) -> dict:
-        return cast('dict', self._zmq.request({'type': request_type, **kwargs}))
+    @override
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        """Exit the context manager.
 
-    def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any | None:
+        Closes the connection to the remote Bpod.
+
+        Parameters
+        ----------
+        exc_type : type[BaseException] | None
+            The type of exception raised, if any.
+        exc_val : BaseException | None
+            The exception instance raised, if any.
+        exc_tb : TracebackType | None
+            The traceback object, if any.
+        """
+        self.close()
+
+    def close(self) -> None:
+        """Close the connection to the remote Bpod."""
+        self._zmq.request(
+            request_data=BpodMessageBye(
+                bpod_core_version=bpod_core_version,
+                local=self._zmq.is_local,
+                pid=os.getpid(),
+                ip=get_local_ipv4(),
+            ),
+            reply_type=str,
+        )
+        self._zmq.close()
+
+    def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         """
         Perform a remote procedure call.
 
@@ -2070,26 +2102,71 @@ class RemoteBpod(AbstractBpod):
 
         Returns
         -------
-        Any or None
+        Any
             The result returned from the remote method.
         """
-        reply = self._request('call', method=method, args=args, kwargs=kwargs)
-        if reply.get('success'):
-            return reply['result']
-        logger.error(
-            'Remote %s: %s, ', reply['error']['type'], reply['error']['message']
-        )
-        return None
+        try:
+            return self._zmq.request(
+                request_data=BpodMessageCallRequest(
+                    method_name=method, args=args, kwargs=kwargs
+                ),
+                reply_type=BpodMessageGeneric,
+            ).data
+        except RemoteError as e:
+            match e.original_error.name:
+                case 'RuntimeError':
+                    raise RuntimeError(e.original_error.message) from e
+                case 'ValueError':
+                    raise ValueError(e.original_error.message) from e
+            raise
 
     def _handshake(self) -> None:
-        reply = self._request('handshake')
-        self._version = VersionInfo(**reply['version'])
-        self._serial_number = reply['serial_number']
-        self._name = reply['name']
-        self._location = reply['location']
+        reply = self._zmq.request(
+            request_data=BpodMessageHello(
+                bpod_core_version=bpod_core_version,
+                local=self._zmq.is_local,
+                pid=os.getpid(),
+                ip=get_local_ipv4(),
+            ),
+            reply_type=BpodMessageWelcome,
+        )
+        self._version = reply.version
+        self._serial_number = reply.serial_number
+        self._name = reply.name
+        self._location = reply.location
 
     def _event_handler(self, message: dict) -> None:
         pass
+
+    @overload
+    def get_data(
+        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[False] = False
+    ) -> pl.DataFrame: ...
+
+    @overload
+    def get_data(
+        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[True]
+    ) -> pl.LazyFrame: ...
+
+    @override
+    def get_data(self, *, concat=True, rechunk=False, lazy=False):
+        try:
+            reply = self._zmq.request(
+                request_data=BpodMessageDataRequest(
+                    method_name='get_data',
+                    kwargs={'concat': concat},
+                    compression='uncompressed' if self._zmq.is_local else 'lz4',
+                ),
+                reply_type=bytes,
+            )
+        except RemoteError as e:
+            if e.original_error.name == 'BpodError':
+                raise BpodError(e.original_error.message) from e
+            raise
+
+        if lazy:
+            return pl.scan_ipc(reply, rechunk=rechunk)
+        return pl.read_ipc(reply, rechunk=rechunk)
 
     @override
     @property
@@ -2102,8 +2179,46 @@ class RemoteBpod(AbstractBpod):
         return self._location
 
     @override
+    def reset_session_clock(self) -> bool:
+        try:
+            return self._remote_call('reset_session_clock') is True
+        except RemoteError as e:
+            if e.original_error.name == 'BpodError':
+                raise BpodError(e.original_error.message) from e
+            raise
+
+    @override
+    @validate_call()
+    def run(
+        self,
+        state_machine: StateMachine | None = None,
+        *,
+        trial_number: int | None = None,
+        validate: bool = True,
+    ) -> None:
+        fsm = (
+            state_machine.to_dict(exclude_defaults=True)
+            if state_machine is not None
+            else None
+        )
+        self._remote_call(
+            'run',
+            state_machine=fsm,
+            trial_number=trial_number,
+            validate=validate,
+        )
+
+    @override
     def set_status_led(self, enable: bool) -> bool:
         return self._remote_call('set_status_led', enable) or False
+
+    @override
+    def stop_state_machine(self) -> None:
+        self._remote_call('stop_state_machine')
+
+    @override
+    def update_modules(self) -> None:
+        self._remote_call('update_modules')
 
 
 def discover_bpod(
