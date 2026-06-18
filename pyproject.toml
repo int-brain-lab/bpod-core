@@ -4,38 +4,43 @@ build-backend = "uv_build"
 
 [project]
 name = "bpod-core"
-version = '0.1.0a12'
+version = '0.1.0a13'
 description = "Python package for interfacing with the Bpod finite state machine"
 authors = [{ name = "Florian Rau", email = "bimac@users.noreply.github.com" }]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering",
   "Typing :: Typed",
 ]
 dependencies = [
-  "numpy",
-  "pydantic>=2.0.0",
-  "pydantic-extra-types>=2.0.0",
-  "pyserial>=3.5",
-  "graphviz>=0.20.0",
+  "numpy~=2.0",
+  "pydantic~=2.0",
+  "pydantic-extra-types~=2.0",
+  "pyserial>=3.5,<4.0",
+  "graphviz>=0.21.0",
   "pyzmq>=27.0.0",
-  "zeroconf>=0.147.0",
-  "msgspec>=0.19.0",
+  "zeroconf>=0.149.0",
+  "msgspec>=0.21.1",
   "packaging>=25.0",
   "pyyaml>=6.0.0",
-  "platformdirs>=4.4.0",
-  "filelock>=3.20.0",
+  "platformdirs>=4.4.0,<5.0.0",
+  "filelock>=3.20.0,<4.0.0",
   "psutil>=7.0.0",
-  "polars>=1.38.0",
+  "polars>=1.38.0,<2.0.0",
   "xxhash>=3.6.0",
   "cachetools>=7.0.0",
   "typing_extensions>=4.0",
 ]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.10"
 
@@ -50,20 +55,18 @@ dev = [
   { include-group = "typing" },
 ]
 doc = [
-  "myst-parser>=4.0.0",
+  "myst-parser>=5.1.0",
   "sphinx-autobuild>=2024.10.3",
-  "sphinx-autodoc-typehints>=3.0.0",
   "sphinx-copybutton>=0.5.2",
-  "sphinx-rtd-theme>=3.0.2",
-  "sphinx<9.0.0",
+  "sphinx>=9.1.0",
+  "sphinx-autodoc-typehints>=3.10.0",
   "sphinx-jsonschema>=1.19.1",
   "sphinx-design>=0.6.1",
-  "sphinx-toolbox>=4.2.0rc1",
   "sphinx-github-style>=1.2.2",
   "matplotlib>=3.10.8",
   "pyarrow>=23.0.1",
   "pandas>=2.3.3",
-  "shibuya>=2026.1.9",
+  "shibuya>=2026.5.19",
 ]
 lint = [
   "ruff>=0.9.2",
@@ -74,7 +77,7 @@ test = [
   "pytest-cov>=6.1.1",
   "pytest>=8.3.5",
   "ruff>=0.11.5",
-  "tox>=4.25.0",
+  "tox>=4.36.0",
   "tox-uv>=0.7.2",
   "packaging>=25.0",
   "pytest-mock>=3.14.1",
@@ -122,6 +125,9 @@ source-exclude = [
   "docs/source/state_machines/*.svg",
   "docs/source/state_machines/examples"
 ]
+
+[tool.uv.dependency-groups]
+doc = { requires-python = ">=3.14" }
 
 [tool.ruff]
 include = ["bpod_core/**/*.py", "tests/**/*.py", "examples/**/*.py", "docs/source/**/*.py"]
@@ -200,7 +206,8 @@ allowed-confusables = ["–"]
 ]
 "docs/**.py" = [
   "S102", # Use of `exec` detected
-  "SLF001"   # private-member-access
+  "SLF001", # private-member-access
+  "PLR0911", # Too many return statements
 ]
 
 [tool.ruff.lint.pydocstyle]

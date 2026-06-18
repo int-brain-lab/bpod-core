@@ -47,7 +47,7 @@ FMT_INT64_LE: str = '<q'
 """Format string for a signed 64-bit integer (little-endian)."""
 
 # pre-compiled structs for common data types
-STRUCT_UINT8 = Struct(FMT_UINT8)
+STRUCT_UINT8: Struct = Struct(FMT_UINT8)
 """Compiled struct representing an unsigned 8-bit integer."""
 STRUCT_UINT16_LE: Struct = Struct(FMT_UINT16_LE)
 """Compiled struct representing an unsigned 16-bit integer (little-endian)."""

@@ -78,3 +78,25 @@ img.graphviz, object.graphviz, img.plot-directive, img.invert {
 
 table.autosummary td:first-child { white-space: nowrap; }
 table.autosummary td:last-child  { width: 100%; }
+
+/*.localtoc li > ul {*/
+/*    display: block;*/
+/*}*/
+
+/*@supports selector(li:has(*)) {*/
+/*    .localtoc li > ul {*/
+/*        display: none;*/
+/*    }*/
+
+/*    .localtoc li:has(.active) > ul,*/
+/*    .localtoc li.active > ul {*/
+/*        display: block;*/
+/*    }*/
+
+
+/*    .localtoc > ul > li:has(.active) > ul,*/
+/*    .localtoc > ul > li.active > ul {*/
+/*        border-left: 1px solid #00a2c7;*/
+/*        margin-left: .2rem;*/
+/*    }*/
+/*}*/

@@ -54,6 +54,7 @@ serial connection is closed and any running trial is allowed to finish on exit.
 .. testcode-code-block:: python3
    :caption: Using a context manager to connect to a Bpod.
    :group: bpod-context-manager
+   :linenos:
 
    from bpod_core.bpod import Bpod
 
@@ -92,6 +93,7 @@ collected data as a Polars :class:`~polars.DataFrame` (see :doc:`/data_format`).
 .. testcode-code-block:: python3
    :caption: Defining and running a state machine.
    :group: bpod-context-manager
+   :linenos:
 
    from bpod_core.bpod import Bpod
    from bpod_core.fsm import StateMachine
@@ -144,6 +146,10 @@ following example, a single state machine is executed 100 times:
 .. testcode-code-block:: python3
    :caption: Running several trials of the same state machine in immediate succession.
    :group: bpod-context-manager
+   :linenos:
+
+   from bpod_core.bpod import Bpod
+   from bpod_core.fsm import StateMachine
 
    with Bpod() as bpod:
        for trial in range(100):
@@ -160,20 +166,31 @@ yet ready to accept a transfer) and the individual state machines will run conti
 as long as preparing and uploading a state machine's successor takes less time than the
 current state machine takes to execute.
 
+:class:`~bpod_core.fsm.StateMachine` objects are mutable: state timers, actions, and
+transitions can all be reassigned between trials without rebuilding the full state
+machine from scratch. In the following example we construct an initial
+:class:`~bpod_core.fsm.StateMachine` instance that we continue to modify from trial to
+trial, yielding randomized state timers and action values:
+
 .. testcode-code-block:: python3
    :name: on_the_fly_fsm
    :caption: Generating state machines on the fly.
    :group: bpod-context-manager
+   :linenos:
 
    from random import random, randint
 
+   from bpod_core.fsm import StateMachine
+   from bpod_core.bpod import Bpod
+
+   fsm = StateMachine()
+   fsm.add_state('s1', transitions={'Tup': 's2'})
+   fsm.add_state('s2', timer=0.1, transitions={'Tup': '>exit'})
+
    with Bpod() as bpod:
        for trial in range(100):
-           fsm = StateMachine()
-           d = random() / 10  # random duration between 0 and 100 ms
-           i = randint(0, 255)  # random PWM value between 0 and 255
-           fsm.add_state('s1', timer=d, transitions={'Tup': 's2'}, actions={'PWM1': i})
-           fsm.add_state('s2', timer=0.1, transitions={'Tup': '>exit'})
+           fsm.states['s1'].timer = random() / 10
+           fsm.states['s1'].actions['PWM1'] = randint(0, 255)
            bpod.run(fsm)
 
    data = bpod.get_data()
@@ -181,31 +198,39 @@ current state machine takes to execute.
 Retrieval of Partial Data
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Finally, it is possible to retrieve a partial copy of a state machine's data while it's
-still running. To do so, use the :meth:`~bpod_core.bpod.Bpod.peek_data` method. In the
-following example, we use two state machines per trial. The first measures the duration
-of an input event, while the second one returns an output action of identical duration.
-:meth:`~bpod_core.bpod.Bpod.peek_data` blocks until one of the ``trigger_states`` has
-been reached—in this case the ``pause`` state—and then returns the data collected up to
-that point. This way, you can use the results from one state machine to prepare the next
-without introducing idle time between state machine runs. The final call to
-:meth:`~bpod_core.bpod.Bpod.get_data` will collect data across all trials.
+:meth:`~bpod_core.bpod.Bpod.peek_data` retrieves data from a running state machine
+without waiting for it to finish. It blocks until one of the specified
+``trigger_states`` is reached, then returns a copy of all data collected up to that
+point.
+
+The example below uses two state machines per trial: the first measures the duration of
+an event on ``Port0``; the second plays back an output of that same duration on
+``PWM0``. After starting ``fsm1``, :meth:`~bpod_core.bpod.Bpod.peek_data` blocks until
+the ``pause`` state is reached, extracts the timing, and uses it to configure ``fsm2``
+before queuing it—with no idle time between the two runs. The final
+:meth:`~bpod_core.bpod.Bpod.get_data` call collects data across all trials.
+
 
 .. testcode-code-block:: python3
    :name: peek_data_fsm
    :caption: Using the :meth:`~bpod_core.bpod.Bpod.peek_data` method
    :group: bpod-context-manager
+   :linenos:
 
    import polars as pl
 
    from bpod_core.fsm import StateMachine
    from bpod_core.bpod import Bpod
 
-   # construct first state machine
+   # construct first state machine (identical across all trials)
    fsm1 = StateMachine()
-   fsm1.add_state('wait', transitions={'Port1_High': 'measure'})     # wait for 'Port1_High'
-   fsm1.add_state('measure', transitions={'Port1_Low': 'pause'})     # wait for 'Port1_Low'
-   fsm1.add_state('pause', timer=0.5, transitions={'Tup': '>exit'})  # pause, then exit
+   fsm1.add_state('wait', transitions={'Port0_High': 'measure'})
+   fsm1.add_state('measure', transitions={'Port0_Low': 'pause'})
+   fsm1.add_state('pause', timer=0.5, transitions={'Tup': '>exit'})
+
+   # construct second state machine (will be modified within each trial)
+   fsm2 = StateMachine()
+   fsm2.add_state('echo', transitions={'Tup': '>exit'}, actions={'PWM0': 255})
 
    with Bpod() as bpod:
        for i in range(10):
@@ -215,12 +240,17 @@ without introducing idle time between state machine runs. The final call to
            # peek at data once 'pause' state has been reached
            runtime_data = bpod.peek_data(trigger_states=['pause'])
 
-           # calculate duration of 'Port1_High'
-           duration = runtime_data.filter(pl.col("channel") == "Port1")['time'].diff().last()
+           # calculate duration of 'Port0_High'
+           d = runtime_data.filter(pl.col("channel") == "Port0")['time'].diff().last()
 
-           # construct and run second state machine on the fly
-           fsm2 = StateMachine()
-           fsm2.add_state('echo', timer=duration, transitions={'Tup': '>exit'}, actions={'PWM1': 255})
+           # set state timer and run second state machine
+           fsm2.states['echo'].timer = d
            bpod.run(fsm2, trial_number=i)
 
    data = bpod.get_data()  # collect data across all state machine runs
+
+.. note::
+
+   The trial number is normally incremented automatically with each call to
+   :meth:`~bpod_core.bpod.Bpod.run`. Here, two state machines share a single
+   trial, so ``trial_number`` is set explicitly to keep it aligned with the loop index.

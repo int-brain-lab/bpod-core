@@ -14,13 +14,14 @@ from abc import abstractmethod
 from collections import deque
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from types import ModuleType, TracebackType
+from types import ModuleType, TracebackType, UnionType
 from typing import Any, Generic, Literal, NamedTuple, TypeVar, cast, overload
 from uuid import UUID, uuid4
 
 import msgspec
 import platformdirs
 import zmq
+from filelock import FileLock
 from platformdirs import user_runtime_path
 from psutil import pid_exists
 from pydantic import validate_call
@@ -64,9 +65,15 @@ class RemoteError(ServiceError):
         self.original_error = error_data
         super().__init__(f'Remote {error_data.name}: {error_data.message}')
 
+    def __str__(self) -> str:
+        return (
+            f'A {self.original_error.name} has occurred on the remote side\n\n'
+            f'Remote {self.original_error.traceback}'
+        )
 
-class MessageKind(ByteEnum):
-    """The types of messages exchanged between host and clients."""
+
+class _MessageKind(ByteEnum):
+    """The types of messages exchanged between ServiceHost and ServiceClient."""
 
     HELLO = ord('H')
     """A message sent by the client to initiate the handshake."""
@@ -139,34 +146,53 @@ class ServiceEvent(NamedTuple):
     """The properties of the service."""
 
 
-class WelcomeData(msgspec.Struct, kw_only=True):
-    """Socket addresses returned by the host during the handshake."""
+class _WelcomeData(msgspec.Struct, kw_only=True):
+    """Socket addresses returned by :class:`ServiceHost` during the handshake."""
 
     tcp_pub_sub: str
+    """TCP address for the publish/subscribe socket."""
     tcp_req_rep: str
+    """TCP address for the request/reply socket."""
     ipc_pub_sub: str | None = None
+    """IPC address for the publish/subscribe socket, if available."""
     ipc_req_rep: str | None = None
+    """IPC address for the request/reply socket, if available."""
 
 
-class ClientInfo(msgspec.Struct):
+class _ClientInfo(msgspec.Struct):
     """Identifying information about a connected client."""
 
     name: str
+    """Human-readable name of the client."""
     type: Literal['IPC', 'RPC']
+    """Transport type: ``'IPC'`` for local, ``'RPC'`` for remote."""
     address: str
+    """Address the client connected from."""
     pid: int
+    """Process ID of the client."""
     uuid: UUID
+    """Unique identifier for this client connection."""
 
 
 class LocalServiceInfo(msgspec.Struct):
-    """Information about a locally advertised service."""
+    """
+    Information about a locally advertised service.
+
+    Yielded by :meth:`LocalServiceAdvertisement.discover`.
+    """
 
     service_name: str
+    """The name of the service being advertised."""
     service_type: str
+    """The type of service being advertised."""
     address: str
+    """The address where the service can be reached."""
     pid: int
+    """Process ID of the service."""
     uuid: UUID
+    """Unique identifier for the service instance."""
     properties: dict[str, str | None]
+    """Additional key-value properties to advertise with the service."""
 
 
 class LocalServiceAdvertisement(contextlib.AbstractContextManager):
@@ -179,14 +205,49 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
     cleaned up during discovery.
 
     The advertisement is automatically removed when the instance is garbage collected
-    or when `stop()` is called explicitly.
+    or when :meth:`close` is called explicitly.
+
+    Parameters
+    ----------
+    service_name : str
+        The name of the service being advertised (e.g., 'Bpod 3').
+    service_type : str
+        The type of service being advertised (e.g., 'bpod').
+    address : str
+        The address where the service can be reached (e.g., 'ipc:///tmp/foo.ipc').
+    properties : dict, optional
+        Additional key-value properties to advertise with the service.
+    pid : int, optional
+        Process ID of the service. Used to detect stale advertisements.
+    uuid : UUID, optional
+        Unique identifier for this service instance. Generated if not provided.
+
+    Examples
+    --------
+    Advertise a service::
+
+        >>> ad = LocalServiceAdvertisement('Bpod1', 'bpod', 'tcp://127.0.0.1:5555')
+
+    Discover advertised services::
+
+        >>> services = list(LocalServiceAdvertisement.discover('bpod'))
+
+    Notes
+    -----
+    Importing this class suppresses debug-level log messages from the ``filelock``
+    logger, as the per-file lock/unlock events it emits are too noisy for routine use.
+    To re-enable them::
+
+        logging.getLogger('filelock').setLevel(logging.DEBUG)
     """
 
-    runtime_directory = user_runtime_path('LocalServiceAdvertisements')
-    """Directory where service advertisement files are stored."""
+    logging.getLogger('filelock').setLevel(logging.WARNING)
 
     service_file: Path
     """Path to the advertisement file."""
+
+    _runtime_directory: Path = user_runtime_path('LocalServiceAdvertisements')
+    """Directory where service advertisement files are stored."""
 
     _closed = False
     """Flag to prevent double-finalization."""
@@ -202,24 +263,6 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
         pid: int | None = None,
         uuid: UUID | None = None,
     ) -> None:
-        """
-        Create a local service advertisement.
-
-        Parameters
-        ----------
-        service_name
-            The name of the service being advertised (e.g., 'Bpod 3').
-        service_type : str
-            The type of service being advertised (e.g., 'bpod').
-        address : str
-            The address where the service can be reached (e.g., 'ipc:///tmp/foo.ipc').
-        properties : dict, optional
-            Additional key-value properties to advertise with the service.
-        pid : int, optional
-            Process ID of the service. Used to detect stale advertisements.
-        uuid : UUID, optional
-            Unique identifier for this service instance. Generated if not provided.
-        """
         uuid = uuid or uuid4()
         info = LocalServiceInfo(
             service_name=service_name,
@@ -259,20 +302,23 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
 
     @staticmethod
     def _close(service_file: Path) -> None:
-        with contextlib.suppress(Exception):
+        lock_file = service_file.with_suffix('.lock')
+        with contextlib.suppress(Exception), FileLock(lock_file):
             logger.debug("Removing local service advertisement at '%s'", service_file)
             service_file.unlink(missing_ok=True)
         with contextlib.suppress(Exception):
+            lock_file.unlink(missing_ok=True)
+        with contextlib.suppress(Exception):
             prune_empty_parent_directories(
                 service_file.parent,
-                LocalServiceAdvertisement.runtime_directory,
+                LocalServiceAdvertisement._runtime_directory,
                 remove_root=True,
             )
 
     @staticmethod
     def _get_service_directory(service_type: str) -> Path:
         """Get the directory for a service type."""
-        runtime_directory = LocalServiceAdvertisement.runtime_directory
+        runtime_directory = LocalServiceAdvertisement._runtime_directory
         sanitized = _RE_NON_ALPHANUMERIC.sub('_', service_type)
         return runtime_directory / sanitized
 
@@ -306,8 +352,10 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
 
         if service_dir.exists():
             for service_file in service_dir.glob('*.json'):
+                lock_file = service_file.with_suffix('.lock')
                 try:
-                    data = service_file.read_bytes()
+                    with FileLock(lock_file):
+                        data = service_file.read_bytes()
                     info = msgspec.json.decode(data, type=LocalServiceInfo)
                 except (msgspec.DecodeError, OSError):
                     continue
@@ -323,7 +371,7 @@ class LocalServiceAdvertisement(contextlib.AbstractContextManager):
 
 
 class ServiceBase(contextlib.AbstractContextManager):
-    """Base class to :class:`ServiceHost` and :class:`ServiceClient`."""
+    """Abstract Base class to :class:`ServiceHost` and :class:`ServiceClient`."""
 
     _serialization: Literal['json', 'msgpack'] = 'msgpack'
     _encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
@@ -405,15 +453,39 @@ class ServiceHost(ServiceBase):
     subscribers. Incoming requests are dispatched to a user-provided ``event_handler``
     callback.
 
-    The service is automatically advertised for discovery by :class:`ServiceClient`. It
-    is advertised locally via a file in the user's runtime directory for inter-process
-    communication. When ``remote=True``, the service is additionally advertised via
-    Zeroconf (mDNS) for network-wide discovery and remote-process communication.
+    The service is automatically advertised for discovery by :class:`ServiceClient`.
+    Local advertisement uses the :class:`LocalServiceAdvertisement` class. When
+    ``remote=True``, the service is additionally advertised via Zeroconf (mDNS) for
+    network-wide discovery and remote-process communication.
+
+    Parameters
+    ----------
+    service_name : str
+        Service name to advertise.
+    service_type : str
+        Service type.
+    properties : dict, optional
+        Additional properties for service advertisement.
+    uuid : UUID, optional
+        UUID for local IPC. Will be generated if not provided.
+    event_handler : Callable, optional
+        Function to handle incoming requests.
+    port_pub : int, optional
+        TCP port to bind the PUB socket. If None, a random available port is chosen.
+    port_rep : int, optional
+        TCP port to bind the REP socket. If None, a random available port is chosen.
+    serialization : str, default='msgpack'
+        Serialization format for message encoding. Can be either 'msgpack' or 'json'.
+    default_request_type
+        The default data type for decoding incoming requests. Pass a tagged union
+        here to dispatch requests on a msgspec ``tag``.
+    remote : bool, default=True
+        If True, binds TCP sockets to '0.0.0.0'. Otherwise, binds to '127.0.0.1'.
     """
 
     _named_pipe_rep: Path | None = None
     _named_pipe_pub: Path | None = None
-    _clients: dict[int, ClientInfo]
+    _clients: dict[int, _ClientInfo]
 
     def __init__(
         self,
@@ -425,33 +497,10 @@ class ServiceHost(ServiceBase):
         port_pub: int | None = None,
         port_rep: int | None = None,
         serialization: Literal['json', 'msgpack'] = 'msgpack',
+        default_request_type: type | UnionType | None = None,
         *,
         remote: bool = True,
     ) -> None:
-        """
-        Initialize the ServiceHost.
-
-        Parameters
-        ----------
-        service_name : str
-            Service name to advertise.
-        service_type : str
-            Service type.
-        properties : dict, optional
-            Additional properties for service advertisement.
-        uuid : UUID, optional
-            UUID for local IPC. Will be generated if not provided.
-        event_handler : Callable, optional
-            Function to handle incoming requests.
-        port_pub : int, optional
-            TCP port to bind the PUB socket. If None, a random available port is chosen.
-        port_rep : int, optional
-            TCP port to bind the REP socket. If None, a random available port is chosen.
-        serialization : str, default='msgpack'
-            Serialization format for message encoding.
-        remote : bool, default=True
-            If True, binds TCP sockets to '0.0.0.0'. Otherwise, binds to '127.0.0.1'.
-        """
         # initialize base class
         super().__init__()
 
@@ -520,18 +569,19 @@ class ServiceHost(ServiceBase):
 
         # select serialization protocol / initialize encoders + decoders
         self._serialization = serialization
+        self._default_req_type = default_request_type or Any
         if serialization == 'msgpack':
             self._encoder = msgspec.msgpack.Encoder()
-            self._decoder = msgspec.msgpack.Decoder()
+            self._decoder = msgspec.msgpack.Decoder(type=self._default_req_type)
         elif serialization == 'json':
             self._encoder = msgspec.json.Encoder()
-            self._decoder = msgspec.json.Decoder()
+            self._decoder = msgspec.json.Decoder(type=self._default_req_type)
         else:
             raise ValueError(f'Unsupported serialization protocol: {serialization}')
 
         # start event loop for request handling
         self._event_handler_lock = threading.Lock()
-        handshake_data = WelcomeData(
+        handshake_data = _WelcomeData(
             ipc_pub_sub=pub_ipc_addr,
             ipc_req_rep=rep_ipc_addr,
             tcp_pub_sub=self.pub_tcp_addr,
@@ -545,6 +595,7 @@ class ServiceHost(ServiceBase):
                 self._decoder,
                 self._encoder,
                 self._serialization,
+                self._default_req_type,
                 event_handler or self._empty_event_handler,
                 self._event_handler_lock,
                 handshake_data,
@@ -663,26 +714,39 @@ class ServiceHost(ServiceBase):
         decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder,
         encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder,
         serialization_protocol: Literal['json', 'msgpack'],
+        default_req_type: type,
         event_handler: Callable[[Any], dict],
         event_handler_lock: threading.Lock,
-        handshake_data: WelcomeData,
+        handshake_data: _WelcomeData,
     ) -> None:
         # avoid overhead of attribute lookups
         send_multipart = req_rep_socket.send_multipart
         recv_multipart = req_rep_socket.recv_multipart
         decode = decoder.decode
         encode = encoder.encode
-        reply_kind: MessageKind
+        reply_kind: _MessageKind
         reply_data: Any
         serialize_exception = ErrorData.from_exception
 
-        def encode_and_send(kind: MessageKind, data: Any) -> None:
+        def encode_and_send(kind: _MessageKind, data: Any) -> None:
+            """Encode `data` and send it as a two-frame reply over `req_rep_socket`.
+
+            If encoding fails, sends an ERROR reply with the serialized exception
+            instead. ZMQ send errors are logged but otherwise suppressed.
+
+            Parameters
+            ----------
+            kind : _MessageKind
+                Message kind byte to use as the first reply frame.
+            data : Any
+                Payload to encode and send as the second reply frame.
+            """
             try:
                 reply_frames = [kind.byte_value, encode(data)]
             except Exception as e:
                 logger.exception('Error encoding reply to client')
                 reply_frames = [
-                    MessageKind.ERROR.byte_value,
+                    _MessageKind.ERROR.byte_value,
                     encode(serialize_exception(e)),
                 ]
             finally:
@@ -706,48 +770,53 @@ class ServiceHost(ServiceBase):
 
             # determine the kind of request
             try:
-                request_kind = MessageKind(request_frames[0].buffer[0])
+                request_kind = _MessageKind(request_frames[0].buffer[0])
             except ValueError as e:
                 logger.exception(
                     'Received unknown request type: %s', request_frames[0].bytes
                 )
-                encode_and_send(MessageKind.ERROR, serialize_exception(e))
+                encode_and_send(_MessageKind.ERROR, serialize_exception(e))
                 continue
-
-            # decode request
-            try:
-                request_data = decode(request_data_buffer)
-            except msgspec.DecodeError as e:
-                # try the other serialization as a fallback
-                try:
-                    if serialization_protocol == 'msgpack':
-                        request_data = msgspec.json.decode(request_data_buffer)
-                    else:
-                        request_data = msgspec.msgpack.decode(request_data_buffer)
-                except msgspec.DecodeError:
-                    logger.exception('Error decoding request from client', exc_info=e)
-                    encode_and_send(MessageKind.ERROR, serialize_exception(e))
-                    continue
 
             # handle request depending on the request type
             match request_kind:
-                case MessageKind.REQUEST:  # general request
-                    reply_kind = MessageKind.REPLY
+                case _MessageKind.REQUEST:  # general request
+                    # decode request
+                    try:
+                        request_data = decode(request_data_buffer)
+                    except msgspec.DecodeError as e:
+                        # try the other serialization as a fallback
+                        try:
+                            if serialization_protocol == 'msgpack':
+                                request_data = msgspec.json.decode(
+                                    request_data_buffer, type=default_req_type
+                                )
+                            else:
+                                request_data = msgspec.msgpack.decode(
+                                    request_data_buffer, type=default_req_type
+                                )
+                        except msgspec.DecodeError:
+                            logger.exception(
+                                'Error decoding request from client', exc_info=e
+                            )
+                            encode_and_send(_MessageKind.ERROR, serialize_exception(e))
+                            continue
+                    reply_kind = _MessageKind.REPLY
                     try:
                         with event_handler_lock:
                             reply_data = event_handler(request_data)
                     except Exception as e:
                         logger.exception('Error during event handler call')
-                        reply_kind = MessageKind.ERROR
+                        reply_kind = _MessageKind.ERROR
                         reply_data = serialize_exception(e)
 
-                case MessageKind.HELLO:
-                    reply_kind = MessageKind.WELCOME
+                case _MessageKind.HELLO:
+                    reply_kind = _MessageKind.WELCOME
                     reply_data = handshake_data
 
                 case _:  # unexpected request type
                     logger.error('Unexpected request type: %s', request_kind)
-                    reply_kind = MessageKind.ERROR
+                    reply_kind = _MessageKind.ERROR
                     reply_data = serialize_exception(
                         ValueError(f'Unexpected request type: {request_kind}')
                     )
@@ -755,6 +824,7 @@ class ServiceHost(ServiceBase):
             # encode and send reply
             encode_and_send(reply_kind, reply_data)
 
+    @override
     def close(self) -> None:
         """Close the host and clean up resources."""
         with self._lock_close:
@@ -777,7 +847,27 @@ class ServiceHost(ServiceBase):
 
 
 class ServiceClient(ServiceBase, Generic[U]):
-    """A client for communicating with :class:`ServiceHost`."""
+    """
+    A client for communicating with :class:`ServiceHost`.
+
+    Parameters
+    ----------
+    service_type : str
+        The service type to discover or connect to.
+    address : str, optional
+        The direct connection address for the REQ channel, by default None.
+    event_handler : Callable, optional
+        A callback to handle PUB messages, by default None.
+    discovery_timeout : float, default: 10.0
+        Timeout in seconds for service discovery.
+    txt_properties : dict, optional
+        Properties for service filtering during discovery, by default None.
+    default_reply_type
+        The default data type for incoming replies (``type[U]``); the client
+        is parameterized on this type.
+    remote : bool, default: True
+        Whether to use Zeroconf for discovering remote services, by default True.
+    """
 
     is_local: bool
     """Whether the client is connected to a service on localhost."""
@@ -791,30 +881,10 @@ class ServiceClient(ServiceBase, Generic[U]):
         event_handler: Callable[[dict], Any] | None = None,
         discovery_timeout: float = 10.0,
         txt_properties: dict | None = None,
-        default_data_type: type[U] | None = None,
+        default_reply_type: type[U] | None = None,
         *,
         remote: bool = True,
     ) -> None:
-        """
-        Initialize a ServiceClient instance.
-
-        Parameters
-        ----------
-        service_type : str
-            The service type to discover or connect to.
-        address : str, optional
-            The direct connection address for the REQ channel, by default None.
-        event_handler : Callable, optional
-            A callback to handle PUB messages, by default None.
-        discovery_timeout : float, default: 10.0
-            Timeout in seconds for service discovery.
-        txt_properties : dict, optional
-            Properties for service filtering during discovery, by default None.
-        default_data_type : type, optional
-            The default data type for incoming messages.
-        remote : bool, optional
-            Whether to use Zeroconf for discovering remote services, by default True.
-        """
         # initialize base class
         super().__init__()
 
@@ -825,8 +895,8 @@ class ServiceClient(ServiceBase, Generic[U]):
         # define msgspec encoder/decoder
         self._serialization_module = getattr(msgspec, self._serialization)
         self._encoder = self._serialization_module.Encoder()
-        self._default_data_type = default_data_type or Any
-        self._decoder = self._serialization_module.Decoder(type=self._default_data_type)
+        self._default_rep_type = default_reply_type or Any
+        self._decoder = self._serialization_module.Decoder(type=self._default_rep_type)
 
         # connect REQ channel
         if address is not None:
@@ -901,7 +971,9 @@ class ServiceClient(ServiceBase, Generic[U]):
 
     def _handshake(self) -> None:
         """Perform handshake with the host."""
-        _, reply_data = self._req(MessageKind.HELLO, reply_type=WelcomeData)
+        _, reply_data = self._req(_MessageKind.HELLO, reply_type=_WelcomeData)
+        if isinstance(reply_data, ErrorData):
+            raise RemoteError(reply_data)
         if (
             self.is_local
             and os.name == 'posix'
@@ -920,28 +992,28 @@ class ServiceClient(ServiceBase, Generic[U]):
     @overload
     def _req(
         self,
-        request_kind: MessageKind,
+        request_kind: _MessageKind,
         request_data: Any | None = None,
         *,
         reply_type: type[T],
-    ) -> tuple[MessageKind, T]: ...
+    ) -> tuple[_MessageKind, T]: ...
 
     @overload
     def _req(
         self,
-        request_kind: MessageKind,
+        request_kind: _MessageKind,
         request_data: Any | None = None,
         *,
         reply_type: None = None,
-    ) -> tuple[MessageKind, U]: ...
+    ) -> tuple[_MessageKind, U]: ...
 
     def _req(
         self,
-        request_kind: MessageKind,
+        request_kind: _MessageKind,
         request_data: Any | None = None,
         *,
         reply_type: type[T] | None = None,
-    ) -> tuple[MessageKind, Any]:
+    ) -> tuple[_MessageKind, Any]:
         with self._lock_req:  # acquire lock
             # encode request
             try:
@@ -961,9 +1033,9 @@ class ServiceClient(ServiceBase, Generic[U]):
 
             # decode reply
             try:
-                reply_kind = MessageKind(reply_frames[0].buffer[0])
+                reply_kind = _MessageKind(reply_frames[0].buffer[0])
                 reply_data_buffer = reply_frames[1].buffer
-                if reply_kind == MessageKind.ERROR:
+                if reply_kind == _MessageKind.ERROR:
                     reply_data = self._serialization_module.decode(
                         reply_data_buffer, type=ErrorData
                     )
@@ -980,7 +1052,7 @@ class ServiceClient(ServiceBase, Generic[U]):
                 )
                 new_serialization_module = getattr(msgspec, new_format)
                 try:
-                    if reply_kind == MessageKind.ERROR:
+                    if reply_kind == _MessageKind.ERROR:
                         reply_data = new_serialization_module.decode(
                             reply_data_buffer, type=ErrorData
                         )
@@ -996,7 +1068,7 @@ class ServiceClient(ServiceBase, Generic[U]):
                 self._serialization_module = new_serialization_module
                 self._encoder = new_serialization_module.Encoder()
                 self._decoder = new_serialization_module.Decoder(
-                    type=self._default_data_type
+                    type=self._default_rep_type
                 )
                 self._serialization = new_format
 
@@ -1007,7 +1079,7 @@ class ServiceClient(ServiceBase, Generic[U]):
     def request(self, request_data: Any, reply_type: type[T]) -> T: ...
 
     @overload
-    def request(self, request_data: Any) -> U: ...
+    def request(self, request_data: Any, reply_type: None = None) -> U: ...
 
     def request(self, request_data: Any, reply_type: type[T] | None = None) -> Any:
         """
@@ -1017,7 +1089,7 @@ class ServiceClient(ServiceBase, Generic[U]):
         ----------
         request_data : Any
             The request payload.
-        reply_type : type, optional
+        reply_type
             Override the expected reply type.
 
         Returns
@@ -1025,7 +1097,7 @@ class ServiceClient(ServiceBase, Generic[U]):
         Any
             The deserialized reply from the server. If ``reply_type`` is given, returns
             an instance of ``reply_type``; otherwise returns an instance of
-            ``default_data_type`` defined during instantiation of the class.
+            ``default_reply_type`` defined during instantiation of the class.
 
         Raises
         ------
@@ -1035,17 +1107,18 @@ class ServiceClient(ServiceBase, Generic[U]):
             If the host sent an unexpected reply kind.
         """
         reply_kind, reply_data = self._req(
-            request_kind=MessageKind.REQUEST,
+            request_kind=_MessageKind.REQUEST,
             request_data=request_data,
             reply_type=reply_type,
         )
-        if reply_kind == MessageKind.REPLY:
+        if reply_kind == _MessageKind.REPLY:
             return reply_data
-        if reply_kind == MessageKind.ERROR:
+        if reply_kind == _MessageKind.ERROR:
             error_data = cast('ErrorData', reply_data)
             raise RemoteError(error_data)
         raise ServiceError(f"Received unexpected reply type: '{reply_kind}'")
 
+    @override
     def close(self) -> None:
         """Close the client and clean up resources."""
         with self._lock_close:
@@ -1070,58 +1143,6 @@ class ServiceClient(ServiceBase, Generic[U]):
     def address_sub(self) -> str:
         """The address for the SUB channel."""
         return self._address_sub
-
-
-def discover(
-    service_type: str,
-    properties: dict[str, str | None] | None = None,
-    timeout: float = 10.0,
-    poll_interval: float = 1.0,
-    *,
-    local: bool = True,
-    remote: bool = True,
-) -> tuple[str, dict[str, str | None]]:
-    """
-    Discover a device/service on the local network matching given properties.
-
-    Parameters
-    ----------
-    service_type : str
-        The service type to discover, e.g., 'bpod'
-    properties : dict, optional
-        Dictionary of expected service properties to match.
-    timeout : float, default: 10.0
-        How many seconds to wait for a matching service before timing out.
-    poll_interval : float, default: 1.0
-        How often to poll for local service changes, in seconds.
-    local : bool, default: True
-        Whether to search for a matching service on the local machine.
-    remote : bool, default: True
-        Whether to search for a matching service on the network.
-
-    Returns
-    -------
-    str
-        The service address, e.g., 'tcp://192.168.1.10:1234'.
-    dict
-        A dictionary of service properties.
-
-    Raises
-    ------
-    TimeoutError
-        If no matching device/service is found within the timeout period.
-    """
-    with ServiceIterator(
-        service_type=service_type,
-        properties=properties,
-        timeout=timeout,
-        poll_interval=poll_interval,
-        local=local,
-        remote=remote,
-    ) as iterator:
-        for event in iterator:
-            return event.address, event.properties
-    raise TimeoutError('No matching service found')
 
 
 class _ServiceListenerIterator(ServiceListener):
@@ -1178,6 +1199,24 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
     always preferred — if a service is reachable both via IPC and TCP, only the IPC
     address is yielded.
 
+    Parameters
+    ----------
+    service_type : str
+        The service type to discover, e.g., ``'bpod'``.
+    properties : dict, optional
+        Dictionary of expected service properties to match.
+    timeout : float or None, default: 10.0
+        How many seconds to monitor.
+        Pass ``None`` to monitor indefinitely until the iterator is closed.
+    poll_interval : float, default: 1.0
+        How often to poll for local service changes, in seconds.
+    local : bool, default: True
+        Whether to search for services on the local machine.
+    remote : bool, default: True
+        Whether to also search for services on the network.
+
+    Notes
+    -----
     Prefer :func:`iter_services` over instantiating this class directly.
     """
 
@@ -1187,30 +1226,12 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
         self,
         service_type: str,
         properties: dict[str, str | None] | None = None,
+        *,
         timeout: float | None = 10.0,
         poll_interval: float = 1.0,
-        *,
         local: bool = True,
         remote: bool = True,
     ) -> None:
-        """Initialize the ServiceIterator.
-
-        Parameters
-        ----------
-        service_type : str
-            The service type to discover, e.g., ``'bpod'``.
-        properties : dict, optional
-            Dictionary of expected service properties to match.
-        timeout : float or None, default: 10.0
-            How many seconds to monitor.
-            Pass ``None`` to monitor indefinitely until the iterator is closed.
-        poll_interval : float, default: 1.0
-            How often to poll for local service changes, in seconds.
-        local : bool, default: True
-            Whether to search for services on the local machine.
-        remote : bool, default: True
-            Whether to also search for services on the network.
-        """
         if not local and not remote:
             raise ValueError('at least one of local or remote must be True')
 
@@ -1353,12 +1374,12 @@ class ServiceIterator(Iterator[ServiceEvent], contextlib.AbstractContextManager)
 def iter_services(
     service_type: str,
     properties: dict[str, str | None] | None = None,
+    *,
     timeout: float | None = 10.0,
     poll_interval: float = 1.0,
-    *,
     local: bool = True,
     remote: bool = True,
-) -> Iterator[ServiceEvent]:
+) -> ServiceIterator:
     """
     Discover all services matching the given type and properties.
 
@@ -1389,6 +1410,13 @@ def iter_services(
         - kind: str, either 'added' or 'removed'
         - address: str, the service address, e.g., 'tcp://192.168.1.10:1234'
         - properties: dict, the service properties, e.g., {'name': 'MyDevice'}
+
+    Examples
+    --------
+    Print events as services appear and disappear::
+
+        for event in iter_services('bpod', timeout=None):
+            print(event.kind, event.address)
     """
     return ServiceIterator(
         service_type=service_type,
@@ -1398,3 +1426,55 @@ def iter_services(
         local=local,
         remote=remote,
     )
+
+
+def discover(
+    service_type: str,
+    properties: dict[str, str | None] | None = None,
+    *,
+    timeout: float = 10.0,
+    poll_interval: float = 1.0,
+    local: bool = True,
+    remote: bool = True,
+) -> tuple[str, dict[str, str | None]]:
+    """
+    Discover a device/service on the local network matching given properties.
+
+    Parameters
+    ----------
+    service_type : str
+        The service type to discover, e.g., 'bpod'
+    properties : dict, optional
+        Dictionary of expected service properties to match.
+    timeout : float, default: 10.0
+        How many seconds to wait for a matching service before timing out.
+    poll_interval : float, default: 1.0
+        How often to poll for local service changes, in seconds.
+    local : bool, default: True
+        Whether to search for a matching service on the local machine.
+    remote : bool, default: True
+        Whether to search for a matching service on the network.
+
+    Returns
+    -------
+    str
+        The service address, e.g., 'tcp://192.168.1.10:1234'.
+    dict
+        A dictionary of service properties.
+
+    Raises
+    ------
+    TimeoutError
+        If no matching device/service is found within the timeout period.
+    """
+    with ServiceIterator(
+        service_type=service_type,
+        properties=properties,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        local=local,
+        remote=remote,
+    ) as iterator:
+        for event in iterator:
+            return event.address, event.properties
+    raise TimeoutError('No matching service found')

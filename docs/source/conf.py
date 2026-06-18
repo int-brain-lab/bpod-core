@@ -10,6 +10,7 @@ sys.path.insert(0, str(docs_source_path / '_ext'))
 
 from bpod_core import __version__  # noqa: E402
 from bpod_core.fsm import StateMachine  # noqa: E402
+from bpod_core.misc import ValidatedDict  # noqa: E402
 
 # -- Project information -------------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
@@ -36,25 +37,18 @@ with schema_root.joinpath('statemachine.json').open('w') as f:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
 extensions = [
-    'myst_parser',
-    'sphinx.ext.intersphinx',
     'sphinx.ext.autodoc',
     'sphinx.ext.napoleon',
-    'sphinx_autodoc_typehints',
+    'sphinx_autodoc_typehints',  # must be listed after napoleon
+    'myst_parser',
+    'sphinx.ext.intersphinx',
     'sphinx.ext.autosummary',
     'sphinx.ext.graphviz',
     'sphinx.ext.doctest',
-    'sphinx.ext.inheritance_diagram',
     'sphinx_github_style',
     'sphinx_copybutton',
     'sphinx_design',
     'sphinx-jsonschema',
-    'sphinx_toolbox.wikipedia',
-    # 'sphinx_toolbox.more_autodoc.autonamedtuple',
-    'sphinx_toolbox.more_autodoc.generic_bases',
-    'sphinx_toolbox.more_autodoc.typevars',
-    'sphinx_toolbox.more_autodoc.genericalias',
-    # 'sphinx_toolbox.more_autodoc.overloads',
     'dark_light_figure',
     'doctest_codeblock',
     'fsm_codeblock',
@@ -63,7 +57,7 @@ extensions = [
     'matplotlib.sphinxext.plot_directive',
 ]
 
-source_suffix = ['.rst', '.md']
+source_suffix = {'.rst': 'restructuredtext', '.md': 'myst'}
 templates_path = ['_templates']
 exclude_patterns = []
 
@@ -73,6 +67,7 @@ nitpicky = True
 # -- MyST ----------------------------------------------------------------------
 
 myst_heading_anchors = 2
+myst_enable_extensions = ['alert']
 
 # -- Code blocks ---------------------------------------------------------------
 
@@ -98,10 +93,11 @@ intersphinx_mapping = {
     'serial': ('https://pyserial.readthedocs.io/en/stable', None),
     'graphviz': ('https://graphviz.readthedocs.io/en/stable', None),
     'pydantic': ('https://pydantic.dev/docs/validation/latest', None),
-    'msgspec': ('https://jcristharif.com/msgspec/', None),
+    'msgspec': ('https://msgspec.dev/', None),
     'zmq': ('https://pyzmq.readthedocs.io/en/latest', None),
     'zeroconf': ('https://python-zeroconf.readthedocs.io/en/latest/', None),
     'typing_extensions': ('https://typing-extensions.readthedocs.io/en/latest', None),
+    'filelock': ('https://py-filelock.readthedocs.io/en/latest/', None),
 }
 
 # -- HTML output ---------------------------------------------------------------
@@ -117,6 +113,9 @@ html_theme_options = {
     'color_mode': 'auto',
     'light_logo': '_static/bpod-core.svg',
     'dark_logo': '_static/bpod-core__dark.svg',
+    'og_image_url': 'https://int-brain-lab.github.io/bpod-core/_static/open_graph_card.png',
+    'show_ai_links': False,
+    'accent_color': 'cyan',
 }
 html_context = {
     'display_github': False,
@@ -130,6 +129,8 @@ html_context = {
     # 'source_version': 'develop',
     # 'source_docs_path': '/docs/source/',
 }
+html_baseurl = 'https://int-brain-lab.github.io/bpod-core/'
+html_copy_source = False
 
 # -- Autodoc -------------------------------------------------------------------
 
@@ -137,28 +138,38 @@ autodoc_mock_imports = ['_typeshed', 'serial']
 autodoc_class_signature = 'separated'  # 'mixed', 'separated'
 autodoc_member_order = 'groupwise'  # 'alphabetical', 'groupwise', 'bysource'
 autodoc_inherit_docstrings = True
-autodoc_typehints = 'signature'  # 'description', 'signature', 'none', 'both'
-autodoc_typehints_description_target = 'all'  # 'all', 'documented', 'documented_params'
+autodoc_typehints = 'description'  # 'description', 'signature', 'none', 'both'
+autodoc_typehints_description_target = (
+    'documented_params'  # 'all', 'documented', 'documented_params'
+)
 autodoc_typehints_format = 'short'  # 'fully-qualified', 'short'
 autodoc_use_type_comments = False
 autodoc_default_options = {
     'member-order': 'groupwise',
     'show-inheritance': True,
-    'undoc-members': True,
     'exclude-members': '__new__, __init__, model_config',
     'class-doc-from': 'class',
 }
 autodoc_type_aliases = {
-    # Map internal module paths to public API names for intersphinx cross-references
     'polars.dataframe.frame.DataFrame': 'polars.DataFrame',
     'polars.lazyframe.frame.LazyFrame': 'polars.LazyFrame',
 }
 
+# -- Autosummary ---------------------------------------------------------------
 autosummary_generate = True
 autosummary_imported_members = False
 
+# -- Autodoc Typehints ---------------------------------------------------------
+typehints_defaults = 'comma'
+typehints_document_rtype_none = False
+typehints_document_overloads = False
+typehints_use_rtype = True
+always_use_bars_union = True
+always_document_param_types = False
+
 # -- Napoleon ------------------------------------------------------------------
 
+napoleon_attr_annotations = True
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True
 napoleon_include_init_with_doc = False
@@ -170,7 +181,7 @@ napoleon_use_admonition_for_references = True
 napoleon_use_ivar = True
 napoleon_use_param = True
 napoleon_use_rtype = True
-napoleon_use_keyword = True
+napoleon_use_keyword = False
 napoleon_preprocess_types = True
 napoleon_type_aliases = {
     'ndarray': '~numpy.ndarray',
@@ -200,16 +211,6 @@ napoleon_type_aliases = {
     'ValidatedDict': '~bpod_core.misc.ValidatedDict',
     'ColorType': '~pydantic_extra_types.color.ColorType',
 }
-napoleon_attr_annotations = True
-
-# -- Type hints ----------------------------------------------------------------
-
-always_use_bars_union = True
-typehints_defaults = 'comma'
-typehints_use_rtype = True
-typehints_use_signature = False
-typehints_use_signature_return = False
-typehints_document_overloads = True
 
 # -- FSM diagrams --------------------------------------------------------------
 
@@ -262,3 +263,22 @@ plot_rcparams = {
 linkcode_link_text = ' '
 pygments_style = 'default'
 highlight_language = 'python3'
+numpydoc_show_class_members = False
+
+# -- Autodoc hooks -------------------------------------------------------------
+
+
+def _skip_pydantic_parameterized(_app, _what, name, obj, skip, _options):
+    """Skip pydantic-generated parameterized subclasses of ValidatedDict."""
+    if skip:
+        return True
+    try:
+        if '[' in name and issubclass(obj, ValidatedDict):
+            return True
+    except TypeError:
+        pass
+    return None
+
+
+def setup(app):
+    app.connect('autodoc-skip-member', _skip_pydantic_parameterized)

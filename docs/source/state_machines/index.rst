@@ -6,12 +6,12 @@ create, validate, visualize, import, and export state machines with bpod-core.
 
 What is a Finite-State Machine?
 -------------------------------
-A :wikipedia:`finite-state machine` (FSM) is a model of computation made up of a finite
-number of *states* and *transitions* between those states. At any given moment, the
-machine is in exactly one state, and certain *events* cause it to move, or transition,
-to another state. Think of the :abbr:`FSM(Finite-State Machine)` as a flowchart with a
-list of named boxes (states) and arrows (transitions) between them—this type of
-flowchart is called a *state diagram*.
+A `Finite-State Machine <https://en.wikipedia.org/wiki/finite-state machine>`_ (FSM) is
+a model of computation made up of a finite number of *states* and *transitions* between
+those states. At any given moment, the machine is in exactly one state, and certain
+*events* cause it to move, or transition, to another state. Think of the
+:abbr:`FSM(Finite-State Machine)` as a flowchart with a list of named boxes (states) and
+arrows (transitions) between them—this type of flowchart is called a *state diagram*.
 
 .. graphviz::
    :caption: A state diagram.
@@ -136,9 +136,10 @@ the trial’s *End* state and, finally, to the trial’s exit.
 
 .. In behavioral experiments, FSMs can be used to specify trial structure, stimulus
 .. presentation, and response contingencies in a clear and reproducible way. The
-.. `Bpod Finite-State Machine`_ implements an FSM using an :wikipedia:`Arduino`-compatible
-.. :wikipedia:`microcontroller`, allowing for high temporal fidelity not typically
-.. achievable in software alone.
+.. `Bpod Finite-State Machine`_ implements an FSM using an
+.. `Arduino <https://en.wikipedia.org/wiki/Arduino>`_-compatible
+.. `microcontroller <https://en.wikipedia.org/wiki/microcontroller>`_, allowing for high
+.. temporal fidelity not typically achievable in software alone.
 
 .. _Bpod Finite-State Machine: https://sanworks.github.io/Bpod_Wiki/
 
@@ -159,8 +160,10 @@ A state machine is created by instantiating a :class:`~bpod_core.fsm.StateMachin
 object and adding states with its :meth:`~bpod_core.fsm.StateMachine.add_state` method:
 
 .. fsm_codeblock::
+   :caption: Let's create a state machine ...
    :group: hello_world
    :filename: hello_world_01.svg
+   :linenos:
 
    from bpod_core.fsm import StateMachine
 
@@ -186,10 +189,13 @@ demonstration, we’ll use a different approach by adding a new entry directly t
 our state machine's :attr:`~bpod_core.fsm.StateMachine.states` dictionary.
 
 .. fsm_codeblock::
+   :caption: Another way of adding a state.
    :group: hello_world
    :filename: hello_world_02.svg
+   :linenos:
+   :lineno-start: 5
 
-   fsm.states['World'] = {'timer': 1}
+   fsm.states['World'] = {'timer': 1.0}
 
 Now our state machine contains two states: `Hello` and `World`. However, they are not
 yet connected, which is obvious in the state diagram below:
@@ -206,8 +212,11 @@ state timer. While we're at it, we'll also change `Hello`'s state timer to 1.5 s
 Finally, we'll add a transition from `World` to the special exit state:
 
 .. fsm_codeblock::
+   :caption: Modifying existing states.
    :group: hello_world
    :filename: hello_world_03.svg
+   :linenos:
+   :lineno-start: 6
 
    fsm.states['Hello'].transitions = {'Tup': 'World'}
    fsm.states['Hello'].timer = 1.5
@@ -229,11 +238,14 @@ anything, because we haven’t defined any output actions yet. Let’s fix that 
 turning on an output channel:
 
 .. fsm_codeblock::
+   :caption: Adding actions to our states.
    :group: hello_world
    :filename: hello_world_04.svg
+   :linenos:
+   :lineno-start: 9
 
-   fsm.states['Hello'].actions = {'BNC1': 1}
-   fsm.states['World'].actions = {'BNC2': 1}
+   fsm.states['Hello'].actions = {'TTLOut0': 1}
+   fsm.states['World'].actions = {'TTLOut1': 1}
 
 And with that, our `Hello, World!` example is complete:
 
@@ -255,13 +267,21 @@ transitions, and actions) directly in the call to
    fsm_original = fsm.copy()
 
 .. fsm_codeblock::
+   :caption: Creating a simple state machine – the straightforward approach.
    :group: hello_world
+   :linenos:
 
    from bpod_core.fsm import StateMachine
 
    fsm = StateMachine()
-   fsm.add_state(name='Hello', timer=1.5, transitions={'Tup': 'World'}, actions={'BNC1': 1})
-   fsm.add_state(name='World', timer=1.0, transitions={'Tup': '>exit'}, actions={'BNC2': 1})
+   fsm.add_state(name='Hello',
+                 timer=1.5,
+                 transitions={'Tup': 'World'},
+                 actions={'TTLOut0': 1})
+   fsm.add_state(name='World',
+                 timer=1.0,
+                 transitions={'Tup': '>exit'},
+                 actions={'TTLOut1': 1})
 
 .. testcode:: hello_world
    :hide:
@@ -420,6 +440,7 @@ There are several convenient methods to serialize and visualize state machines:
 .. testcode-code-block:: python3
    :caption: A roundtrip from :class:`~bpod_core.fsm.StateMachine` to JSON and back to :class:`~bpod_core.fsm.StateMachine`
    :group: json-roundtrip
+   :linenos:
 
    from bpod_core.fsm import StateMachine
 
@@ -446,6 +467,7 @@ There are several convenient methods to serialize and visualize state machines:
 .. testcode-code-block:: python3
    :caption: Importing a :class:`~bpod_core.fsm.StateMachine` from a JSON file and exporting its state diagram as a PNG file.
    :group: file-roundtrip
+   :linenos:
 
    from bpod_core.fsm import StateMachine
 

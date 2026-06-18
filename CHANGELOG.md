@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0a13] - 2026-06-18
+
+### Changed
+
+- further work on bringing `RemoteBpod` to parity with `Bpod`.
+- `ExtendedSerial.read_struct` and `write_struct` methods accept precompiled structs.
+- reduced public interface of `bpod_core.ipc`.
+- improved documentation.
+
 ## [0.1.0a12] - 2026-04-30
 
 Just some minor improvements ...
@@ -207,6 +216,7 @@ Just a quick bugfix release ...
 
 First alpha release. Nothing works.
 
+[0.1.0a13]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a13
 
 [0.1.0a12]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a12
 
