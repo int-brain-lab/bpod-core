@@ -2,9 +2,7 @@
 
 import contextlib
 import logging
-import os
 import re
-import socket
 import struct
 import weakref
 from collections.abc import Callable, Collection, Iterator
@@ -19,7 +17,6 @@ from uuid import uuid5
 import msgspec
 import numpy as np
 import polars as pl
-import zmq
 from cachetools import FIFOCache
 from pydantic import ConfigDict, validate_call
 from serial import SerialException
@@ -95,7 +92,6 @@ from bpod_core.misc import (
     SettingsDict,
     SuggestionDict,
     extend_packed,
-    get_local_ipv4,
     suggest_similar,
     suppress_logging,
 )
@@ -345,14 +341,10 @@ class Bpod(SerialDevice, AbstractBpod):
                         f'client uses bpod-core {request.bpod_core_version}. Please '
                         f'ensure that both use the same version.'
                     )
-                if logger.isEnabledFor(logging.INFO) and (
-                    current_frame := self._zmq.current_frame()
-                ):
-                    logger.info(
-                        'Client connected: %s (%s)',
-                        current_frame.get('Peer-Address'),  # type: ignore[arg-type]
-                        current_frame.get('Identity'),  # type: ignore[arg-type]
-                    )
+                if logger.isEnabledFor(logging.INFO):
+                    address = self._zmq.get_metadata('Peer-Address', 'unknown address')
+                    hostname = self._zmq.get_metadata('X-Hostname', 'unknown hostname')
+                    logger.info('Client connected: %s (%s)', address, hostname)
                 reply = BpodMessageWelcome(
                     version=self._version,
                     serial_number=self._serial_number,
@@ -373,14 +365,10 @@ class Bpod(SerialDevice, AbstractBpod):
 
             case BpodMessageBye():
                 # Handle disconnect notice
-                if logger.isEnabledFor(logging.INFO) and (
-                    current_frame := self._zmq.current_frame()
-                ):
-                    logger.info(
-                        'Client disconnected: %s (%s)',
-                        current_frame.get('Peer-Address'),  # type: ignore[arg-type]
-                        current_frame.get('Identity'),  # type: ignore[arg-type]
-                    )
+                if logger.isEnabledFor(logging.INFO):
+                    address = self._zmq.get_metadata('Peer-Address', 'unknown address')
+                    hostname = self._zmq.get_metadata('X-Hostname', 'unknown hostname')
+                    logger.info('Client disconnected: %s (%s)', address, hostname)
                 reply = 'ciao!'
 
             case _:

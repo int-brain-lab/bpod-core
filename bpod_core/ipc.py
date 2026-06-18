@@ -51,6 +51,8 @@ T = TypeVar('T')
 """Per-call reply type for :class:`~ServiceClient`."""
 U = TypeVar('U')
 """Default reply type for :class:`ServiceClient`, set at construction."""
+_DefaultT = TypeVar('_DefaultT', bound=int | bytes | str | None)
+"""Type of the fallback value returned by :meth:`ServiceHost.get_metadata`."""
 
 _EVENT_LOOP_POLL_MS = 100
 
@@ -708,21 +710,49 @@ class ServiceHost(ServiceBase):
                 with contextlib.suppress(Exception):
                     pipe.unlink(missing_ok=True)
 
+    @overload
     @staticmethod
-    def current_frame() -> zmq.Frame | None:
-        """
-        Return the request frame of the request currently being handled.
+    def get_metadata(option: int | str) -> int | bytes | str | None: ...
 
-        Intended to be called from within an ``event_handler`` to access
-        per-request connection metadata (e.g. ``Peer-Address``).
+    @overload
+    @staticmethod
+    def get_metadata(
+        option: int | str, default: _DefaultT
+    ) -> int | bytes | str | _DefaultT: ...
+
+    @staticmethod
+    def get_metadata(
+        option: int | str, default: int | bytes | str | None = None
+    ) -> int | bytes | str | Any:
+        """
+        Read a metadata value from the request currently being handled.
+
+        Intended to be called from within an ``event_handler`` to access per-request
+        connection information, such as the client's address (``'Peer-Address'``) or
+        application metadata (e.g. ``'X-Hostname'``).
+
+        Parameters
+        ----------
+        option : int or str
+            An integer frame property (e.g. :data:`zmq.SRCFD`) or a string metadata
+            key (e.g. ``'Peer-Address'``).
+        default : int or bytes or str, optional
+            The value to return if no request is currently being handled or the
+            metadata option is unavailable. Defaults to ``None``.
 
         Returns
         -------
-        zmq.Frame or None
-            The frame of the request being handled, or ``None`` if called
-            outside of request handling.
+        int or bytes or str
+            The requested value, or `default` if no request is currently being
+            handled or the option is unavailable.
         """
-        return _current_frame.get()
+        frame = _current_frame.get()
+        if frame is None:
+            return default
+        try:
+            return frame.get(option)  # type: ignore[arg-type]
+        except zmq.ZMQError:
+            return default
 
     @staticmethod
     def _empty_event_handler(_: Any) -> dict:
@@ -914,9 +944,11 @@ class ServiceClient(ServiceBase, Generic[U]):
         super().__init__()
 
         # ZeroMQ sockets
-        self._zmq_context.setsockopt(zmq.IDENTITY, socket.gethostname().encode())
         self._socket_req_rep = self._zmq_context.socket(zmq.REQ)
         self._socket_pub_sub = self._zmq_context.socket(zmq.SUB)
+        self._socket_req_rep.setsockopt_string(
+            zmq.METADATA, f'X-Hostname:{socket.gethostname()}'
+        )
 
         # define msgspec encoder/decoder
         self._serialization_module = getattr(msgspec, self._serialization)
