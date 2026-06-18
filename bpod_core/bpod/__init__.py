@@ -4,6 +4,7 @@ import contextlib
 import logging
 import os
 import re
+import socket
 import struct
 import weakref
 from collections.abc import Callable, Collection, Iterator
@@ -338,9 +339,10 @@ class Bpod(SerialDevice, AbstractBpod):
             case BpodMessageBye():
                 # Handle disconnect notice
                 logger.info(
-                    'Client disconnected: PID %d on %s',
+                    'Client disconnected: PID %d on %s (%s)',
                     request.pid,
                     'localhost' if request.local else request.ip,
+                    request.hostname,
                 )
                 reply = 'ciao!'
 
@@ -353,9 +355,10 @@ class Bpod(SerialDevice, AbstractBpod):
                         f'ensure that both use the same version.'
                     )
                 logger.info(
-                    'Client connected: PID %d on %s',
+                    'Client connected: PID %d on %s (%s)',
                     request.pid,
                     'localhost' if request.local else request.ip,
+                    request.hostname,
                 )
                 reply = BpodMessageWelcome(
                     version=self._version,
@@ -2079,9 +2082,10 @@ class RemoteBpod(AbstractBpod):
         self._zmq.request(
             request_data=BpodMessageBye(
                 bpod_core_version=bpod_core_version,
-                local=self._zmq.is_local,
-                pid=os.getpid(),
                 ip=get_local_ipv4(),
+                hostname=socket.gethostname(),
+                pid=os.getpid(),
+                local=self._zmq.is_local,
             ),
             reply_type=str,
         )
@@ -2124,9 +2128,10 @@ class RemoteBpod(AbstractBpod):
         reply = self._zmq.request(
             request_data=BpodMessageHello(
                 bpod_core_version=bpod_core_version,
-                local=self._zmq.is_local,
-                pid=os.getpid(),
                 ip=get_local_ipv4(),
+                hostname=socket.gethostname(),
+                pid=os.getpid(),
+                local=self._zmq.is_local,
             ),
             reply_type=BpodMessageWelcome,
         )

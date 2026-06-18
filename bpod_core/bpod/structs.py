@@ -155,6 +155,8 @@ class BpodMessageHello(BpodMessage, tag='h'):
     """The version of bpod-core that the client is using."""
     ip: str
     """The client's IP address."""
+    hostname: str
+    """The client's hostname."""
     pid: int
     """The process ID of the client."""
     local: bool
