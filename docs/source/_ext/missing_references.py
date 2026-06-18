@@ -1,12 +1,16 @@
 """Sphinx extension that resolves cross-references not covered by intersphinx.
 
-Handles three cases:
+Handles the following cases:
 
 - Platform-specific ``serial.Serial`` subclasses are remapped to the public API entry.
 - Malformed fragments from comma-split nested generics (unbalanced brackets) are
   suppressed and rendered as plain text.
 - Pydantic internal paths (e.g. ``pydantic.root_model.RootModel``) are remapped to the
   public API, stripping any generic parameters.
+- Bare names (e.g. ``FieldInfo``, ``NoneType``) are remapped to their fully-qualified
+  intersphinx targets.
+- Artifacts from mocked modules (e.g. ``serial.threaded.ReaderThread.typing.Self``)
+  are remapped to their public API entry.
 - A small set of targets absent from all inventories are mapped directly to URLs.
 """
 
@@ -22,6 +26,12 @@ _REFERENCE_URL_MAP = {
     'polars.LazyFrame': 'https://docs.pola.rs/py-polars/html/reference/lazyframe',
     # 'typing.Annotated': 'https://docs.python.org/3/library/typing.html#typing.Annotated',
     'pydantic_extra_types.color.ColorType': 'https://pydantic.dev/docs/validation/latest/api/pydantic-extra-types/pydantic_extra_types_color/',
+    'MinLen': 'https://github.com/annotated-types/annotated-types',
+}
+
+_TARGET_REMAP = {
+    'FieldInfo': 'pydantic.fields.FieldInfo',
+    'NoneType': 'types.NoneType',
 }
 
 
@@ -33,6 +43,17 @@ def _resolve(app, env, node, contnode):
     # Remap serial.tools.list_ports_common.ListPortInfo
     if target == 'serial.tools.list_ports_common.ListPortInfo':
         node['reftarget'] = 'serial.tools.list_ports.ListPortInfo'
+        return None
+
+    # Remap bare names to their fully-qualified intersphinx targets
+    if target in _TARGET_REMAP:
+        node['reftarget'] = _TARGET_REMAP[target]
+        return None
+
+    # Fix artifact from the mocked serial module (ReaderThread[Self] annotation)
+    if target == 'serial.threaded.ReaderThread.typing.Self':
+        contnode[0] = nodes.Text('ReaderThread[Self]')
+        node['reftarget'] = 'serial.threaded.ReaderThread'
         return None
 
     # Remap fully-parameterized ValidatedDict generics

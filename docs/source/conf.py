@@ -39,6 +39,7 @@ with schema_root.joinpath('statemachine.json').open('w') as f:
 extensions = [
     'sphinx.ext.autodoc',
     'sphinx.ext.napoleon',
+    'sphinx_autodoc_typehints',  # must be listed after napoleon
     'myst_parser',
     'sphinx.ext.intersphinx',
     'sphinx.ext.autosummary',
@@ -48,7 +49,6 @@ extensions = [
     'sphinx_copybutton',
     'sphinx_design',
     'sphinx-jsonschema',
-    'sphinx_toolbox.wikipedia',
     'dark_light_figure',
     'doctest_codeblock',
     'fsm_codeblock',
@@ -155,12 +155,21 @@ autodoc_type_aliases = {
     'polars.lazyframe.frame.LazyFrame': 'polars.LazyFrame',
 }
 
+# -- Autosummary ---------------------------------------------------------------
 autosummary_generate = True
 autosummary_imported_members = False
 
+# -- Autodoc Typehints ---------------------------------------------------------
+typehints_defaults = 'comma'
+typehints_document_rtype_none = False
+typehints_document_overloads = False
+typehints_use_rtype = True
+always_use_bars_union = True
+always_document_param_types = False
+
 # -- Napoleon ------------------------------------------------------------------
 
-napoleon_attr_annotations = False
+napoleon_attr_annotations = True
 napoleon_google_docstring = False
 napoleon_numpy_docstring = True
 napoleon_include_init_with_doc = False
@@ -172,7 +181,7 @@ napoleon_use_admonition_for_references = True
 napoleon_use_ivar = True
 napoleon_use_param = True
 napoleon_use_rtype = True
-napoleon_use_keyword = True
+napoleon_use_keyword = False
 napoleon_preprocess_types = True
 napoleon_type_aliases = {
     'ndarray': '~numpy.ndarray',

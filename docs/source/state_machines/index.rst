@@ -6,12 +6,12 @@ create, validate, visualize, import, and export state machines with bpod-core.
 
 What is a Finite-State Machine?
 -------------------------------
-A :wikipedia:`finite-state machine` (FSM) is a model of computation made up of a finite
-number of *states* and *transitions* between those states. At any given moment, the
-machine is in exactly one state, and certain *events* cause it to move, or transition,
-to another state. Think of the :abbr:`FSM(Finite-State Machine)` as a flowchart with a
-list of named boxes (states) and arrows (transitions) between them—this type of
-flowchart is called a *state diagram*.
+A `Finite-State Machine <https://en.wikipedia.org/wiki/finite-state machine>`_ (FSM) is
+a model of computation made up of a finite number of *states* and *transitions* between
+those states. At any given moment, the machine is in exactly one state, and certain
+*events* cause it to move, or transition, to another state. Think of the
+:abbr:`FSM(Finite-State Machine)` as a flowchart with a list of named boxes (states) and
+arrows (transitions) between them—this type of flowchart is called a *state diagram*.
 
 .. graphviz::
    :caption: A state diagram.
@@ -136,9 +136,10 @@ the trial’s *End* state and, finally, to the trial’s exit.
 
 .. In behavioral experiments, FSMs can be used to specify trial structure, stimulus
 .. presentation, and response contingencies in a clear and reproducible way. The
-.. `Bpod Finite-State Machine`_ implements an FSM using an :wikipedia:`Arduino`-compatible
-.. :wikipedia:`microcontroller`, allowing for high temporal fidelity not typically
-.. achievable in software alone.
+.. `Bpod Finite-State Machine`_ implements an FSM using an
+.. `Arduino <https://en.wikipedia.org/wiki/Arduino>`_-compatible
+.. `microcontroller <https://en.wikipedia.org/wiki/microcontroller>`_, allowing for high
+.. temporal fidelity not typically achievable in software alone.
 
 .. _Bpod Finite-State Machine: https://sanworks.github.io/Bpod_Wiki/
 
