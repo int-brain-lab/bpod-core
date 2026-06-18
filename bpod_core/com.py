@@ -937,6 +937,7 @@ class SerialDevice(AbstractContextManager):
         """Enter the context manager."""
         return self
 
+    @override
     def __exit__(
         self,
         exc_type: type[BaseException] | None,

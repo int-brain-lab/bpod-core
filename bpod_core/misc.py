@@ -15,6 +15,7 @@ from collections.abc import (
     MutableMapping,
     Sequence,
 )
+from contextlib import contextmanager
 from enum import IntEnum
 from os import PathLike
 from pathlib import Path
@@ -637,3 +638,30 @@ def prune_empty_parent_directories(
             root_directory=root_directory,
             remove_root=remove_root,
         )
+
+
+@contextmanager
+def suppress_logging(level: int = logging.CRITICAL) -> Iterator[None]:
+    """
+    Temporarily suppress logging up to and including the specified level.
+
+    The previous global logging disable level is restored when exiting the
+    context, even if an exception is raised.
+
+    Parameters
+    ----------
+    level : int, default=logging.CRITICAL
+        Logging level to suppress. Messages at this level and below will be
+        ignored while the context is active. The default suppresses all
+        standard logging messages.
+
+    Yields
+    ------
+    None
+    """
+    previous = logging.root.manager.disable
+    logging.disable(level)
+    try:
+        yield
+    finally:
+        logging.disable(previous)

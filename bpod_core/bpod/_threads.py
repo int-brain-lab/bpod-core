@@ -434,7 +434,6 @@ class EventThread(threading.Thread):
         value: int = -1,
     ) -> None:
         """Append an event to the buffer, growing it if necessary."""
-        logger.debug('time %d: %s', time_bpod_us, event_index, stacklevel=2)
         if self._n_events == len(self._buffer):
             new_buf = np.empty(len(self._buffer) * 2, dtype=_EVENT_DTYPE)
             new_buf[: self._n_events] = self._buffer
