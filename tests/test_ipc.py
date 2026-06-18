@@ -180,7 +180,7 @@ class TestClient:
             service_type='dualtest',
             address=host.rep_tcp_addr,
             discovery_timeout=0,
-            default_data_type=dict,
+            default_reply_type=dict,
         ) as client:
             yield client
 

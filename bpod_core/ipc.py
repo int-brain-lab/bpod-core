@@ -14,7 +14,7 @@ from abc import abstractmethod
 from collections import deque
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from types import ModuleType, TracebackType
+from types import ModuleType, TracebackType, UnionType
 from typing import Any, Generic, Literal, NamedTuple, TypeVar, cast, overload
 from uuid import UUID, uuid4
 
@@ -61,9 +61,15 @@ class ServiceError(Exception):
 class RemoteError(ServiceError):
     """Exception representing an error on the remote side."""
 
-    def __init__(self, error_data: '_ErrorData') -> None:
+    def __init__(self, error_data: 'ErrorData') -> None:
         self.original_error = error_data
         super().__init__(f'Remote {error_data.name}: {error_data.message}')
+
+    def __str__(self) -> str:
+        return (
+            f'A {self.original_error.name} has occurred on the remote side\n\n'
+            f'Remote {self.original_error.traceback}'
+        )
 
 
 class _MessageKind(ByteEnum):
@@ -81,7 +87,7 @@ class _MessageKind(ByteEnum):
     """An error message."""
 
 
-class _ErrorData(msgspec.Struct):
+class ErrorData(msgspec.Struct):
     """A struct representing error data."""
 
     name: str
@@ -94,7 +100,7 @@ class _ErrorData(msgspec.Struct):
     """The formatted traceback of the exception."""
 
     @staticmethod
-    def from_exception(exception: BaseException | None = None) -> '_ErrorData':
+    def from_exception(exception: BaseException | None = None) -> 'ErrorData':
         """
         Serialize an exception to :class:`ErrorData`.
 
@@ -105,7 +111,7 @@ class _ErrorData(msgspec.Struct):
 
         Returns
         -------
-        _ErrorData
+        ErrorData
             An ErrorData struct containing the serialized exception data.
 
         Raises
@@ -117,7 +123,7 @@ class _ErrorData(msgspec.Struct):
             exception = sys.exc_info()[1]
             if exception is None:
                 raise ValueError('No exception provided and no active exception')
-        return _ErrorData(
+        return ErrorData(
             name=type(exception).__name__,
             message=str(exception),
             args=exception.args,
@@ -469,7 +475,10 @@ class ServiceHost(ServiceBase):
     port_rep : int, optional
         TCP port to bind the REP socket. If None, a random available port is chosen.
     serialization : str, default='msgpack'
-        Serialization format for message encoding.
+        Serialization format for message encoding. Can be either 'msgpack' or 'json'.
+    default_request_type
+        The default data type for decoding incoming requests. Pass a tagged union
+        here to dispatch requests on a msgspec ``tag``.
     remote : bool, default=True
         If True, binds TCP sockets to '0.0.0.0'. Otherwise, binds to '127.0.0.1'.
     """
@@ -488,6 +497,7 @@ class ServiceHost(ServiceBase):
         port_pub: int | None = None,
         port_rep: int | None = None,
         serialization: Literal['json', 'msgpack'] = 'msgpack',
+        default_request_type: type | UnionType | None = None,
         *,
         remote: bool = True,
     ) -> None:
@@ -559,12 +569,13 @@ class ServiceHost(ServiceBase):
 
         # select serialization protocol / initialize encoders + decoders
         self._serialization = serialization
+        self._default_req_type = default_request_type or Any
         if serialization == 'msgpack':
             self._encoder = msgspec.msgpack.Encoder()
-            self._decoder = msgspec.msgpack.Decoder()
+            self._decoder = msgspec.msgpack.Decoder(type=self._default_req_type)
         elif serialization == 'json':
             self._encoder = msgspec.json.Encoder()
-            self._decoder = msgspec.json.Decoder()
+            self._decoder = msgspec.json.Decoder(type=self._default_req_type)
         else:
             raise ValueError(f'Unsupported serialization protocol: {serialization}')
 
@@ -584,6 +595,7 @@ class ServiceHost(ServiceBase):
                 self._decoder,
                 self._encoder,
                 self._serialization,
+                self._default_req_type,
                 event_handler or self._empty_event_handler,
                 self._event_handler_lock,
                 handshake_data,
@@ -702,6 +714,7 @@ class ServiceHost(ServiceBase):
         decoder: msgspec.msgpack.Decoder | msgspec.json.Decoder,
         encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder,
         serialization_protocol: Literal['json', 'msgpack'],
+        default_req_type: type,
         event_handler: Callable[[Any], dict],
         event_handler_lock: threading.Lock,
         handshake_data: _WelcomeData,
@@ -713,9 +726,21 @@ class ServiceHost(ServiceBase):
         encode = encoder.encode
         reply_kind: _MessageKind
         reply_data: Any
-        serialize_exception = _ErrorData.from_exception
+        serialize_exception = ErrorData.from_exception
 
         def encode_and_send(kind: _MessageKind, data: Any) -> None:
+            """Encode `data` and send it as a two-frame reply over `req_rep_socket`.
+
+            If encoding fails, sends an ERROR reply with the serialized exception
+            instead. ZMQ send errors are logged but otherwise suppressed.
+
+            Parameters
+            ----------
+            kind : _MessageKind
+                Message kind byte to use as the first reply frame.
+            data : Any
+                Payload to encode and send as the second reply frame.
+            """
             try:
                 reply_frames = [kind.byte_value, encode(data)]
             except Exception as e:
@@ -753,24 +778,29 @@ class ServiceHost(ServiceBase):
                 encode_and_send(_MessageKind.ERROR, serialize_exception(e))
                 continue
 
-            # decode request
-            try:
-                request_data = decode(request_data_buffer)
-            except msgspec.DecodeError as e:
-                # try the other serialization as a fallback
-                try:
-                    if serialization_protocol == 'msgpack':
-                        request_data = msgspec.json.decode(request_data_buffer)
-                    else:
-                        request_data = msgspec.msgpack.decode(request_data_buffer)
-                except msgspec.DecodeError:
-                    logger.exception('Error decoding request from client', exc_info=e)
-                    encode_and_send(_MessageKind.ERROR, serialize_exception(e))
-                    continue
-
             # handle request depending on the request type
             match request_kind:
                 case _MessageKind.REQUEST:  # general request
+                    # decode request
+                    try:
+                        request_data = decode(request_data_buffer)
+                    except msgspec.DecodeError as e:
+                        # try the other serialization as a fallback
+                        try:
+                            if serialization_protocol == 'msgpack':
+                                request_data = msgspec.json.decode(
+                                    request_data_buffer, type=default_req_type
+                                )
+                            else:
+                                request_data = msgspec.msgpack.decode(
+                                    request_data_buffer, type=default_req_type
+                                )
+                        except msgspec.DecodeError:
+                            logger.exception(
+                                'Error decoding request from client', exc_info=e
+                            )
+                            encode_and_send(_MessageKind.ERROR, serialize_exception(e))
+                            continue
                     reply_kind = _MessageKind.REPLY
                     try:
                         with event_handler_lock:
@@ -832,9 +862,10 @@ class ServiceClient(ServiceBase, Generic[U]):
         Timeout in seconds for service discovery.
     txt_properties : dict, optional
         Properties for service filtering during discovery, by default None.
-    default_data_type : type, optional
-        The default data type for incoming messages.
-    remote : bool, optional
+    default_reply_type
+        The default data type for incoming replies (``type[U]``); the client
+        is parameterized on this type.
+    remote : bool, default: True
         Whether to use Zeroconf for discovering remote services, by default True.
     """
 
@@ -850,7 +881,7 @@ class ServiceClient(ServiceBase, Generic[U]):
         event_handler: Callable[[dict], Any] | None = None,
         discovery_timeout: float = 10.0,
         txt_properties: dict | None = None,
-        default_data_type: type[U] | None = None,
+        default_reply_type: type[U] | None = None,
         *,
         remote: bool = True,
     ) -> None:
@@ -864,8 +895,8 @@ class ServiceClient(ServiceBase, Generic[U]):
         # define msgspec encoder/decoder
         self._serialization_module = getattr(msgspec, self._serialization)
         self._encoder = self._serialization_module.Encoder()
-        self._default_data_type = default_data_type or Any
-        self._decoder = self._serialization_module.Decoder(type=self._default_data_type)
+        self._default_rep_type = default_reply_type or Any
+        self._decoder = self._serialization_module.Decoder(type=self._default_rep_type)
 
         # connect REQ channel
         if address is not None:
@@ -941,6 +972,8 @@ class ServiceClient(ServiceBase, Generic[U]):
     def _handshake(self) -> None:
         """Perform handshake with the host."""
         _, reply_data = self._req(_MessageKind.HELLO, reply_type=_WelcomeData)
+        if isinstance(reply_data, ErrorData):
+            raise RemoteError(reply_data)
         if (
             self.is_local
             and os.name == 'posix'
@@ -1004,7 +1037,7 @@ class ServiceClient(ServiceBase, Generic[U]):
                 reply_data_buffer = reply_frames[1].buffer
                 if reply_kind == _MessageKind.ERROR:
                     reply_data = self._serialization_module.decode(
-                        reply_data_buffer, type=_ErrorData
+                        reply_data_buffer, type=ErrorData
                     )
                 elif reply_type is None:
                     reply_data = self._decoder.decode(reply_data_buffer)
@@ -1021,7 +1054,7 @@ class ServiceClient(ServiceBase, Generic[U]):
                 try:
                     if reply_kind == _MessageKind.ERROR:
                         reply_data = new_serialization_module.decode(
-                            reply_data_buffer, type=_ErrorData
+                            reply_data_buffer, type=ErrorData
                         )
                     elif reply_type is None:
                         reply_data = new_serialization_module.decode(reply_data_buffer)
@@ -1035,7 +1068,7 @@ class ServiceClient(ServiceBase, Generic[U]):
                 self._serialization_module = new_serialization_module
                 self._encoder = new_serialization_module.Encoder()
                 self._decoder = new_serialization_module.Decoder(
-                    type=self._default_data_type
+                    type=self._default_rep_type
                 )
                 self._serialization = new_format
 
@@ -1046,7 +1079,7 @@ class ServiceClient(ServiceBase, Generic[U]):
     def request(self, request_data: Any, reply_type: type[T]) -> T: ...
 
     @overload
-    def request(self, request_data: Any) -> U: ...
+    def request(self, request_data: Any, reply_type: None = None) -> U: ...
 
     def request(self, request_data: Any, reply_type: type[T] | None = None) -> Any:
         """
@@ -1056,7 +1089,7 @@ class ServiceClient(ServiceBase, Generic[U]):
         ----------
         request_data : Any
             The request payload.
-        reply_type : type, optional
+        reply_type
             Override the expected reply type.
 
         Returns
@@ -1064,7 +1097,7 @@ class ServiceClient(ServiceBase, Generic[U]):
         Any
             The deserialized reply from the server. If ``reply_type`` is given, returns
             an instance of ``reply_type``; otherwise returns an instance of
-            ``default_data_type`` defined during instantiation of the class.
+            ``default_reply_type`` defined during instantiation of the class.
 
         Raises
         ------
@@ -1081,7 +1114,7 @@ class ServiceClient(ServiceBase, Generic[U]):
         if reply_kind == _MessageKind.REPLY:
             return reply_data
         if reply_kind == _MessageKind.ERROR:
-            error_data = cast('_ErrorData', reply_data)
+            error_data = cast('ErrorData', reply_data)
             raise RemoteError(error_data)
         raise ServiceError(f"Received unexpected reply type: '{reply_kind}'")
 
