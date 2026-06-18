@@ -13,6 +13,7 @@ import weakref
 from abc import abstractmethod
 from collections import deque
 from collections.abc import Callable, Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from types import ModuleType, TracebackType, UnionType
 from typing import Any, Generic, Literal, NamedTuple, TypeVar, cast, overload
@@ -52,6 +53,11 @@ U = TypeVar('U')
 """Default reply type for :class:`ServiceClient`, set at construction."""
 
 _EVENT_LOOP_POLL_MS = 100
+
+_current_frame: ContextVar[zmq.Frame | None] = ContextVar(
+    '_current_frame', default=None
+)
+"""The request frame currently being handled, scoped to the event thread."""
 
 
 class ServiceError(Exception):
@@ -703,6 +709,22 @@ class ServiceHost(ServiceBase):
                     pipe.unlink(missing_ok=True)
 
     @staticmethod
+    def current_frame() -> zmq.Frame | None:
+        """
+        Return the request frame of the request currently being handled.
+
+        Intended to be called from within an ``event_handler`` to access
+        per-request connection metadata (e.g. ``Peer-Address``).
+
+        Returns
+        -------
+        zmq.Frame or None
+            The frame of the request being handled, or ``None`` if called
+            outside of request handling.
+        """
+        return _current_frame.get()
+
+    @staticmethod
     def _empty_event_handler(_: Any) -> dict:
         """Default event handler that returns an empty dict."""
         return {}
@@ -802,6 +824,7 @@ class ServiceHost(ServiceBase):
                             encode_and_send(_MessageKind.ERROR, serialize_exception(e))
                             continue
                     reply_kind = _MessageKind.REPLY
+                    token = _current_frame.set(request_frames[1])
                     try:
                         with event_handler_lock:
                             reply_data = event_handler(request_data)
@@ -809,6 +832,8 @@ class ServiceHost(ServiceBase):
                         logger.exception('Error during event handler call')
                         reply_kind = _MessageKind.ERROR
                         reply_data = serialize_exception(e)
+                    finally:
+                        _current_frame.reset(token)
 
                 case _MessageKind.HELLO:
                     reply_kind = _MessageKind.WELCOME
@@ -889,6 +914,7 @@ class ServiceClient(ServiceBase, Generic[U]):
         super().__init__()
 
         # ZeroMQ sockets
+        self._zmq_context.setsockopt(zmq.IDENTITY, socket.gethostname().encode())
         self._socket_req_rep = self._zmq_context.socket(zmq.REQ)
         self._socket_pub_sub = self._zmq_context.socket(zmq.SUB)
 

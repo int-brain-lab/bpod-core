@@ -153,17 +153,9 @@ class BpodMessageHello(BpodMessage, tag='h'):
 
     bpod_core_version: str
     """The version of bpod-core that the client is using."""
-    ip: str
-    """The client's IP address."""
-    hostname: str
-    """The client's hostname."""
-    pid: int
-    """The process ID of the client."""
-    local: bool
-    """Whether the client is running on the same machine as the host."""
 
 
-class BpodMessageBye(BpodMessageHello, tag='b'):
+class BpodMessageBye(BpodMessage, tag='b'):
     """Envelope for a disconnect notice."""
 
 

@@ -19,6 +19,7 @@ from uuid import uuid5
 import msgspec
 import numpy as np
 import polars as pl
+import zmq
 from cachetools import FIFOCache
 from pydantic import ConfigDict, validate_call
 from serial import SerialException
@@ -336,16 +337,6 @@ class Bpod(SerialDevice, AbstractBpod):
     def _request_handler(self, request: BpodMessage) -> Any:
         reply: Any
         match request:
-            case BpodMessageBye():
-                # Handle disconnect notice
-                logger.info(
-                    'Client disconnected: PID %d on %s (%s)',
-                    request.pid,
-                    'localhost' if request.local else request.ip,
-                    request.hostname,
-                )
-                reply = 'ciao!'
-
             case BpodMessageHello():
                 # Handle connection requests
                 if request.bpod_core_version != bpod_core_version:
@@ -354,12 +345,14 @@ class Bpod(SerialDevice, AbstractBpod):
                         f'client uses bpod-core {request.bpod_core_version}. Please '
                         f'ensure that both use the same version.'
                     )
-                logger.info(
-                    'Client connected: PID %d on %s (%s)',
-                    request.pid,
-                    'localhost' if request.local else request.ip,
-                    request.hostname,
-                )
+                if logger.isEnabledFor(logging.INFO) and (
+                    current_frame := self._zmq.current_frame()
+                ):
+                    logger.info(
+                        'Client connected: %s (%s)',
+                        current_frame.get('Peer-Address'),  # type: ignore[arg-type]
+                        current_frame.get('Identity'),  # type: ignore[arg-type]
+                    )
                 reply = BpodMessageWelcome(
                     version=self._version,
                     serial_number=self._serial_number,
@@ -377,6 +370,18 @@ class Bpod(SerialDevice, AbstractBpod):
                 method = getattr(self, request.method_name)
                 return_value = method(*request.args, **request.kwargs)
                 reply = BpodMessageGeneric(data=return_value)
+
+            case BpodMessageBye():
+                # Handle disconnect notice
+                if logger.isEnabledFor(logging.INFO) and (
+                    current_frame := self._zmq.current_frame()
+                ):
+                    logger.info(
+                        'Client disconnected: %s (%s)',
+                        current_frame.get('Peer-Address'),  # type: ignore[arg-type]
+                        current_frame.get('Identity'),  # type: ignore[arg-type]
+                    )
+                reply = 'ciao!'
 
             case _:
                 # Handle unknown request types
@@ -2079,16 +2084,7 @@ class RemoteBpod(AbstractBpod):
 
     def close(self) -> None:
         """Close the connection to the remote Bpod."""
-        self._zmq.request(
-            request_data=BpodMessageBye(
-                bpod_core_version=bpod_core_version,
-                ip=get_local_ipv4(),
-                hostname=socket.gethostname(),
-                pid=os.getpid(),
-                local=self._zmq.is_local,
-            ),
-            reply_type=str,
-        )
+        self._zmq.request(request_data=BpodMessageBye(), reply_type=str)
         self._zmq.close()
 
     def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any:
@@ -2126,13 +2122,7 @@ class RemoteBpod(AbstractBpod):
 
     def _handshake(self) -> None:
         reply = self._zmq.request(
-            request_data=BpodMessageHello(
-                bpod_core_version=bpod_core_version,
-                ip=get_local_ipv4(),
-                hostname=socket.gethostname(),
-                pid=os.getpid(),
-                local=self._zmq.is_local,
-            ),
+            request_data=BpodMessageHello(bpod_core_version=bpod_core_version),
             reply_type=BpodMessageWelcome,
         )
         self._version = reply.version
