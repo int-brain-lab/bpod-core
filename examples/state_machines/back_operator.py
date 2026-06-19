@@ -1,6 +1,6 @@
 """Back Operator.
 
-In this example, when the ``>back`` operator is triggered by ``Port3In`` in the
+In this example, when the ``>back`` operator is triggered by ``Port3_High`` in the
 state `WaitForExit`, the state machine returns to the state that previously
 transitioned into `WaitForExit` - either `FlashPort1` or `FlashPort2`.
 """
