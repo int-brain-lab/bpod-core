@@ -215,7 +215,7 @@ class SuggestionDict(dict[str, V]):
             ) from e
 
 
-def set_nested(d: MutableMapping, keys: Sequence[Any], value: Any) -> None:
+def set_nested(d: MutableMapping, keys: Sequence[Hashable], value: Any) -> None:
     """
     Set a value in a nested dict, creating intermediate dicts as needed.
 
@@ -223,7 +223,7 @@ def set_nested(d: MutableMapping, keys: Sequence[Any], value: Any) -> None:
     ----------
     d : MutableMapping
         The dictionary in which to set the value.
-    keys : Sequence
+    keys : Sequence of Hashable
         A sequence of keys representing the nested path where the value should be set.
     value : Any
         The value to set at the specified path.
@@ -250,7 +250,7 @@ def set_nested(d: MutableMapping, keys: Sequence[Any], value: Any) -> None:
     current[keys[-1]] = value
 
 
-def get_nested(d: MutableMapping, keys: Sequence[Any], default: Any = None) -> Any:
+def get_nested(d: MutableMapping, keys: Sequence[Hashable], default: Any = None) -> Any:
     """
     Retrieve a value from a nested dict using a Sequence of keys.
 
@@ -258,7 +258,7 @@ def get_nested(d: MutableMapping, keys: Sequence[Any], default: Any = None) -> A
     ----------
     d : MutableMapping
         The dictionary from which to get a value.
-    keys : Sequence
+    keys : Sequence of Hashable
         A sequence of keys representing the path to the desired value.
     default : Any, default: None
         The value to return if the path does not exist.
