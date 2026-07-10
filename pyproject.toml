@@ -37,7 +37,7 @@ dependencies = [
   "polars>=1.38.0,<2.0.0",
   "xxhash>=3.6.0",
   "cachetools>=7.0.0",
-  "typing_extensions>=4.0",
+  "typing_extensions>=4.13",
 ]
 license = "MIT"
 license-files = ["LICENSE"]
@@ -85,7 +85,7 @@ test = [
 typing = [
   "appdirs-stubs>=0.1.0",
   "docutils-stubs>=0.0.22",
-  "mypy>=1.15.0",
+  "mypy>=2.2",
   "types-cachetools>=6.2.0.20260408",
   "types-docutils>=0.22.0",
   "types-psutil>=7.0.0",
