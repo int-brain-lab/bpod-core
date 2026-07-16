@@ -17,7 +17,7 @@ from collections.abc import (
 )
 from contextlib import contextmanager
 from enum import IntEnum
-from os import PathLike
+from os import PathLike, strerror
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -312,7 +312,13 @@ def get_local_ipv4() -> str:
             s.connect(('8.8.8.8', 80))  # Doesn't have to be reachable
             return str(s.getsockname()[0])
         except OSError as e:
-            if e.errno in {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL}:
+            if e.errno in {
+                errno.ENETUNREACH,  # network is unreachable
+                errno.EHOSTUNREACH,  # no route to host
+                errno.EADDRNOTAVAIL,  # cannot assign requested address
+                errno.ENETDOWN,  # network is down
+            }:
+                logger.warning('%s - using loopback', strerror(e.errno))
                 return '127.0.0.1'
             raise
 
