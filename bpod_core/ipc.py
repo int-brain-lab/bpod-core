@@ -77,6 +77,14 @@ a blocking :meth:`ServiceClient._req` notices close() or an expired deadline.
 _HANDSHAKE_TIMEOUT_S = 10.0
 """Timeout in seconds for the client's handshake with the host."""
 
+_HELLO_GRACE_S = 1.0
+"""Seconds after a HELLO request during which the host presumes a subscriber.
+
+A subscribing client sends HELLO before connecting its SUB socket, so the
+handshake serves as an early signal that a subscription may be imminent;
+see :attr:`ServiceHost.has_subscribers`.
+"""
+
 _current_frame: ContextVar[zmq.Frame | None] = ContextVar(
     '_current_frame', default=None
 )
@@ -201,14 +209,17 @@ class _WelcomeData(msgspec.Struct, kw_only=True):
     WELCOME messages are encoded with the host's serialization format. Since a struct
     only decodes with the matching format, clients can detect the format by trial and
     error; the ``serialization`` field states it authoritatively.
+
+    The PUB/SUB channel is communicated as a bare TCP port rather than a full
+    address: a multi-homed host cannot know which of its interfaces the client can
+    reach, but the client already knows a working host IP - the one it used to reach
+    the REQ/REP socket - and builds the PUB address from it.
     """
 
     serialization: Serialization
     """Serialization format used by the host on both channels."""
-    tcp_pub_sub: str
-    """TCP address for the publish/subscribe socket."""
-    tcp_req_rep: str
-    """TCP address for the request/reply socket."""
+    tcp_port_pub: int
+    """TCP port of the publish/subscribe socket."""
     ipc_pub_sub: str | None = None
     """IPC address for the publish/subscribe socket, if available."""
     ipc_req_rep: str | None = None
@@ -588,9 +599,12 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
         # dedicated encoder + lock for the PUB/SUB channel; a separate encoder is
         # required as msgspec encoders are not thread-safe. The lock guards the
-        # non-thread-safe PUB socket against concurrent publish() calls.
+        # non-thread-safe PUB socket against concurrent publish() calls and the
+        # event loop's subscription drains. The event flag mirrors the socket's
+        # subscription state (see has_subscribers).
         self._pub_encoder = serialization_module.Encoder()
         self._pub_lock = threading.Lock()
+        self._has_subscribers = threading.Event()
 
         # set UUID (generated if not provided by user)
         self._uuid = uuid or uuid4()
@@ -631,10 +645,9 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             # handshake_data, letting local clients upgrade from TCP to IPC addresses
             handshake_data = _WelcomeData(
                 serialization=serialization,
+                tcp_port_pub=self.pub_tcp_port,
                 ipc_pub_sub=pub_ipc_addr,
                 ipc_req_rep=rep_ipc_addr,
-                tcp_pub_sub=self.pub_tcp_addr,
-                tcp_req_rep=self.rep_tcp_addr,
             )
             self._start_event_loop(request_handler, handshake_data)
 
@@ -677,7 +690,10 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
     def _create_sockets(zmq_context: zmq.Context) -> tuple[zmq.Socket, zmq.Socket]:
         """Create the REP and PUB sockets and set their respective options."""
         socket_req_rep = zmq_context.socket(zmq.REP)
-        socket_pub_sub = zmq_context.socket(zmq.PUB)
+        # XPUB behaves like PUB towards subscribers, but additionally surfaces
+        # subscription state changes as readable frames - the basis for
+        # has_subscribers and for skipping encoding when nobody is listening
+        socket_pub_sub = zmq_context.socket(zmq.XPUB)
 
         # high-water marks cap the number of queued messages
         socket_req_rep.setsockopt(zmq.SNDHWM, 1000)
@@ -816,6 +832,9 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 request_handler,
                 self._request_handler_lock,
                 handshake_data,
+                self._pub_socket,
+                self._pub_lock,
+                self._has_subscribers,
             ),
             daemon=True,
         )
@@ -955,9 +974,25 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         except zmq.ZMQError:
             return default
 
+    @property
+    def has_subscribers(self) -> bool:
+        """
+        Whether anyone is subscribed to the PUB/SUB channel.
+
+        True while at least one subscriber is connected, or briefly after a client
+        handshake (a subscription typically follows within the grace period). The
+        flag is refreshed by the event loop and may lag actual subscription changes
+        by up to one poll interval. It signals "someone subscribed to something" -
+        there is no per-topic granularity.
+        """
+        return self._has_subscribers.is_set()
+
     def publish(self, data: E) -> None:
         """
         Broadcast a message to all subscribers over the PUB/SUB channel.
+
+        If no subscriber is connected (see :attr:`has_subscribers`), the message is
+        dropped without being encoded - mirroring what the socket would do with it.
 
         Parameters
         ----------
@@ -972,6 +1007,8 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         with self._pub_lock:
             if self._closed:
                 logger.warning('Cannot publish: the host has been closed')
+                return
+            if not self._has_subscribers.is_set():
                 return
             try:
                 payload = self._pub_encoder.encode(data)
@@ -991,6 +1028,9 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         request_handler: Callable[[Q], Any],
         request_handler_lock: threading.Lock,
         handshake_data: _WelcomeData,
+        pub_socket: zmq.Socket,
+        pub_lock: threading.Lock,
+        has_subscribers: threading.Event,
     ) -> None:
         # avoid overhead of attribute lookups
         send_multipart = req_rep_socket.send_multipart
@@ -1002,6 +1042,26 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
         # WELCOME replies are static, so they can be prepared once ahead of the loop
         welcome_frames = [_MessageKind.WELCOME.byte_value, encode(handshake_data)]
+
+        # subscription tracking: the XPUB socket surfaces subscription changes as frames
+        # (0x01 = first subscriber of a topic, 0x00 = last one gone, sent also on
+        # disconnect). These frames are balanced per topic, so a plain counter of
+        # subscribed topics - or a recent HELLO, which precedes a client's
+        # subscription - determines has_subscribers.
+        n_subscribed_topics = 0
+        hello_grace_until = 0.0
+
+        def update_has_subscribers() -> None:
+            """Drain pending subscription frames and refresh the subscriber flag."""
+            nonlocal n_subscribed_topics
+            with pub_lock:
+                while pub_socket.poll(0):
+                    frame = pub_socket.recv(zmq.NOBLOCK)
+                    n_subscribed_topics += 1 if frame[:1] == b'\x01' else -1
+            if n_subscribed_topics or time.monotonic() < hello_grace_until:
+                has_subscribers.set()
+            else:
+                has_subscribers.clear()
 
         def encode_and_send(kind: _MessageKind, data: Any) -> None:
             """Encode `data` and send it as a two-frame reply over `req_rep_socket`.
@@ -1034,6 +1094,10 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         req_rep_socket.setsockopt(zmq.RCVTIMEO, _EVENT_LOOP_POLL_MS)
 
         while not stop_event.is_set():
+            # refresh the subscriber flag once per iteration - i.e., at least once
+            # per poll interval when idle, and once per request when busy
+            update_has_subscribers()
+
             # receive request from client
             try:
                 request_frames = recv_multipart(copy=False)
@@ -1081,6 +1145,11 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                         _current_frame.reset(token)
 
                 case _MessageKind.HELLO:
+                    # a subscription may be imminent (it follows the handshake):
+                    # presume a subscriber right away rather than dropping messages
+                    # until the next drain notices the actual subscription
+                    hello_grace_until = time.monotonic() + _HELLO_GRACE_S
+                    has_subscribers.set()
                     try:
                         send_multipart(welcome_frames, copy=False)
                     except zmq.ZMQError:
@@ -1362,7 +1431,11 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
                 self._req_socket.connect(self._address_req)
             self._address_sub = reply_data.ipc_pub_sub
         else:
-            self._address_sub = reply_data.tcp_pub_sub
+            # build the PUB address from the host IP that already proved reachable:
+            # the one used to reach the REQ socket. When connected via IPC, the host
+            # is local and its TCP sockets are reachable via loopback.
+            host_ip = urlsplit(self._address_req).hostname or IPV4_LOOPBACK
+            self._address_sub = f'tcp://{host_ip}:{reply_data.tcp_port_pub}'
 
     @overload
     def _req(

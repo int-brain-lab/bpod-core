@@ -44,6 +44,16 @@ def _publish_until(host, message, predicate, timeout=2.0):
     raise AssertionError('published message was not received in time')
 
 
+def _wait_until(predicate, timeout=2.0):
+    """Poll `predicate` until it is true or `timeout` elapses."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
 @pytest.fixture(autouse=True)
 def fast_event_loop(mocker):
     mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 5)
@@ -290,6 +300,25 @@ class TestClient:
         assert client.address_sub.startswith(('tcp://', 'ipc://'))
         assert client._serialization == 'json', 'Serialization should be JSON'
 
+    def test_sub_address_built_from_req_ip(self, mock_advertisement, mocker):
+        """The SUB address combines the client's REQ IP with the handshake port."""
+        # skip the host's IPC binds so the handshake falls back to the TCP path
+        mocker.patch.object(ipc.ServiceHost, '_bind_ipc', return_value=(None, None))
+        with (
+            ipc.ServiceHost(
+                service_name='TestService',
+                service_type='dualtest',
+                request_handler=_noop_handler,
+                remote=False,
+            ) as host,
+            ipc.ServiceClient(
+                service_type='dualtest',
+                address=host.rep_tcp_addr,
+                discovery_timeout=0,
+            ) as client,
+        ):
+            assert client.address_sub == f'tcp://127.0.0.1:{host.pub_tcp_port}'
+
     def test_event_type_requires_handler(self):
         """event_type without event_handler raises ValueError."""
         with pytest.raises(ValueError, match='requires an event_handler'):
@@ -473,10 +502,50 @@ class TestPublish:
             host.publish({'x': 1})
         assert any('closed' in record.message for record in caplog.records)
 
-    def test_publish_encode_error_raises(self, host):
-        """A non-encodable payload raises ServiceError."""
+    def test_publish_encode_error_raises(self, host, client):
+        """A non-encodable payload raises ServiceError (given a subscriber)."""
         with pytest.raises(ipc.ServiceError, match='encoding'):
             host.publish(object())
+
+    def test_no_subscribers_skips_encoding(self, host, mocker):
+        """Without subscribers, publish() drops the message before encoding."""
+        assert host.has_subscribers is False
+        encoder = mocker.Mock()
+        host._pub_encoder = encoder
+        host.publish({'x': 1})
+        encoder.encode.assert_not_called()
+
+    def test_has_subscribers_lifecycle(self, host, mock_service_browser, mocker):
+        """Flag rises with a handshake, persists while subscribed, falls on close."""
+        mocker.patch('bpod_core.ipc._HELLO_GRACE_S', 0.05)
+        assert host.has_subscribers is False
+        with ipc.ServiceClient(
+            'pubtest',
+            address=host.rep_tcp_addr,
+            event_handler=lambda _: None,
+            discovery_timeout=0,
+        ):
+            # set synchronously with the handshake, before the client is done
+            assert host.has_subscribers is True
+            # outlives the HELLO grace period thanks to the actual subscription
+            time.sleep(0.2)
+            assert host.has_subscribers is True
+        assert _wait_until(lambda: not host.has_subscribers), (
+            'flag should clear after the subscriber disconnects'
+        )
+
+    def test_hello_grace_expires_without_subscription(
+        self, host, mock_service_browser, mocker
+    ):
+        """A handshake from a non-subscribing client raises the flag only briefly."""
+        mocker.patch('bpod_core.ipc._HELLO_GRACE_S', 0.05)
+        with ipc.ServiceClient(
+            'pubtest', address=host.rep_tcp_addr, discovery_timeout=0
+        ):
+            assert host.has_subscribers is True, 'HELLO grace should raise the flag'
+            assert _wait_until(lambda: not host.has_subscribers), (
+                'flag should clear once the grace period expires'
+            )
 
 
 class TestHost:
