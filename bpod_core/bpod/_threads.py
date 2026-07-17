@@ -73,7 +73,7 @@ _EVENT_TYPE_ENUM = pl.Enum(
 """Polars Enum dtype for the ``type`` column in trial DataFrames."""
 
 _TRIAL_DATA_SCHEMA = {
-    'time': pl.Datetime('us'),
+    'time': pl.Datetime('us', time_zone='UTC'),
     'trial': pl.UInt16,
     'state machine': pl.Categorical,
     'state': pl.Categorical,
@@ -562,6 +562,7 @@ class EventThread(threading.Thread):
                 .alias('state')
             )
             .with_columns(
+                pl.col('time').dt.replace_time_zone('UTC'),
                 pl.lit(self._trial).cast(pl.UInt16).alias('trial'),
                 pl.lit(self._fsm_hash_str).cast(pl.Categorical).alias('state machine'),
                 pl.coalesce(

@@ -284,7 +284,8 @@ class TestEventThread:
         df = self._collect(data_queue)
         ev = df.filter(pl.col('event') == 'Ev0')
         assert (
-            ev['time'][0] == pl.Series([5100], dtype=pl.Datetime('us'))[0]
+            ev['time'][0]
+            == pl.Series([5100], dtype=pl.Datetime('us', time_zone='UTC'))[0]
         )  # 5000 + 100 µs
 
     def test_state_transition_generates_state_events(self, make_thread):
