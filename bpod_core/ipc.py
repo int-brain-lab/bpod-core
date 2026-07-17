@@ -25,7 +25,6 @@ import msgspec
 import platformdirs
 import zmq
 from filelock import FileLock
-from platformdirs import user_runtime_path
 from psutil import pid_exists
 from pydantic import validate_call
 from typing_extensions import Self, TypeForm, TypeVar, override
@@ -298,7 +297,9 @@ class LocalServiceAdvertisement:
     service_file: Path
     """Path to the advertisement file."""
 
-    _runtime_directory: Path = user_runtime_path('LocalServiceAdvertisements')
+    _runtime_directory: Path = platformdirs.user_runtime_path(
+        'LocalServiceAdvertisements'
+    )
     """Directory where service advertisement files are stored."""
 
     @validate_call()
@@ -821,19 +822,17 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         self, request_handler: Callable[[Q], Any], handshake_data: _WelcomeData
     ) -> None:
         """Start the background thread processing incoming requests."""
-        self._request_handler_lock = threading.Lock()
         self._event_thread = threading.Thread(
             target=ServiceHost._event_loop,
             args=(
                 self._stop_event_loop,
                 self._rep_socket,
+                self._pub_socket,
+                self._pub_lock,
                 self._req_decoder,
                 self._rep_encoder,
                 request_handler,
-                self._request_handler_lock,
                 handshake_data,
-                self._pub_socket,
-                self._pub_lock,
                 self._has_subscribers,
             ),
             daemon=True,
@@ -1022,21 +1021,20 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
     @staticmethod
     def _event_loop(
         stop_event: threading.Event,
-        req_rep_socket: zmq.Socket,
-        decoder: msgspec.msgpack.Decoder[Q] | msgspec.json.Decoder[Q],
-        encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder,
-        request_handler: Callable[[Q], Any],
-        request_handler_lock: threading.Lock,
-        handshake_data: _WelcomeData,
+        rep_socket: zmq.Socket,
         pub_socket: zmq.Socket,
         pub_lock: threading.Lock,
+        req_decoder: msgspec.msgpack.Decoder[Q] | msgspec.json.Decoder[Q],
+        rep_encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder,
+        request_handler: Callable[[Q], Any],
+        handshake_data: _WelcomeData,
         has_subscribers: threading.Event,
     ) -> None:
-        # avoid overhead of attribute lookups
-        send_multipart = req_rep_socket.send_multipart
-        recv_multipart = req_rep_socket.recv_multipart
-        decode = decoder.decode
-        encode = encoder.encode
+        # avoid overhead of attribute lookups by storing them in local variables
+        send_multipart = rep_socket.send_multipart
+        recv_multipart = rep_socket.recv_multipart
+        decode = req_decoder.decode
+        encode = rep_encoder.encode
         reply_kind: _MessageKind
         reply_data: Any
 
@@ -1051,7 +1049,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         n_subscribed_topics = 0
         hello_grace_until = 0.0
 
-        def update_has_subscribers() -> None:
+        def update_subscriber_flag() -> None:
             """Drain pending subscription frames and refresh the subscriber flag."""
             nonlocal n_subscribed_topics
             with pub_lock:
@@ -1064,7 +1062,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 has_subscribers.clear()
 
         def encode_and_send(kind: _MessageKind, data: Any) -> None:
-            """Encode `data` and send it as a two-frame reply over `req_rep_socket`.
+            """Encode `data` and send it as a two-frame reply over `rep_socket`.
 
             If encoding fails, sends an ERROR reply with the serialized exception
             instead. ZMQ send errors are logged but otherwise suppressed.
@@ -1078,11 +1076,11 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             """
             try:
                 reply_frames = [kind.byte_value, encode(data)]
-            except Exception as e:
+            except Exception:
                 logger.exception('Error encoding reply to client')
                 reply_frames = [
                     _MessageKind.ERROR.byte_value,
-                    encode(ErrorData.from_exception(e)),
+                    encode(ErrorData.from_exception()),
                 ]
             try:
                 send_multipart(reply_frames, copy=False)
@@ -1091,12 +1089,12 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
         # receive with a timeout instead of poll + receive: this saves a syscall
         # per message, and the periodic timeouts allow checking stop_event
-        req_rep_socket.setsockopt(zmq.RCVTIMEO, _EVENT_LOOP_POLL_MS)
+        rep_socket.setsockopt(zmq.RCVTIMEO, _EVENT_LOOP_POLL_MS)
 
         while not stop_event.is_set():
             # refresh the subscriber flag once per iteration - i.e., at least once
             # per poll interval when idle, and once per request when busy
-            update_has_subscribers()
+            update_subscriber_flag()
 
             # receive request from client
             try:
@@ -1114,9 +1112,9 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             try:
                 request_kind = _MessageKind(request_frames[0].buffer[0])
                 request_data = request_frames[1].buffer
-            except (IndexError, ValueError) as e:
+            except (IndexError, ValueError):
                 logger.exception('Received malformed request from client')
-                encode_and_send(_MessageKind.ERROR, ErrorData.from_exception(e))
+                encode_and_send(_MessageKind.ERROR, ErrorData.from_exception())
                 continue
 
             # handle request depending on the request type
@@ -1125,9 +1123,9 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                     # decode request
                     try:
                         request_data = decode(request_data)
-                    except msgspec.DecodeError as e:
+                    except msgspec.DecodeError:
                         logger.exception('Error decoding request from client')
-                        encode_and_send(_MessageKind.ERROR, ErrorData.from_exception(e))
+                        encode_and_send(_MessageKind.ERROR, ErrorData.from_exception())
                         continue
                     reply_kind = _MessageKind.REPLY
 
@@ -1135,12 +1133,11 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                     # expose the request frame to get_metadata() during the call
                     token = _current_frame.set(request_frames[1])
                     try:
-                        with request_handler_lock:
-                            reply_data = request_handler(request_data)
-                    except Exception as e:
+                        reply_data = request_handler(request_data)
+                    except Exception:
                         logger.exception('Error during request handler call')
                         reply_kind = _MessageKind.ERROR
-                        reply_data = ErrorData.from_exception(e)
+                        reply_data = ErrorData.from_exception()
                     finally:
                         _current_frame.reset(token)
 
@@ -1631,7 +1628,9 @@ class _ServiceListenerIterator(ServiceListener):
     """A Zeroconf :class:`ServiceListener` used with :class:`ServiceIterator`."""
 
     def __init__(
-        self, q: queue.Queue[ServiceEvent], properties: Mapping[str, str | None]
+        self,
+        q: 'queue.Queue[ServiceEvent | None]',
+        properties: Mapping[str, str | None],
     ) -> None:
         self._queue = q
         self._properties = properties
@@ -1721,7 +1720,9 @@ class ServiceIterator(Iterator[ServiceEvent]):
         if not local and not remote:
             raise ValueError('at least one of local or remote must be True')
 
-        self._q: queue.Queue[ServiceEvent] = queue.Queue()
+        # a None on the queue is the close sentinel: it unblocks a consumer
+        # waiting in __next__ and marks the iterator as exhausted
+        self._q: queue.Queue[ServiceEvent | None] = queue.Queue()
         self._stop = threading.Event()
         self._deadline = None if timeout is None else time.monotonic() + timeout
         self._zc: Zeroconf | None = None
@@ -1766,6 +1767,7 @@ class ServiceIterator(Iterator[ServiceEvent]):
         self._finalizer = weakref.finalize(
             self,
             ServiceIterator._cleanup,
+            self._q,
             self._stop,
             self._watcher,
             self._zc,
@@ -1792,7 +1794,7 @@ class ServiceIterator(Iterator[ServiceEvent]):
             # Drain all immediately available events
             try:
                 while True:
-                    self._process(self._q.get_nowait())
+                    self._handle(self._q.get_nowait())
             except queue.Empty:
                 pass
 
@@ -1814,13 +1816,21 @@ class ServiceIterator(Iterator[ServiceEvent]):
                 raise StopIteration
 
             try:
-                self._process(self._q.get(timeout=remaining))
+                self._handle(self._q.get(timeout=remaining))
             except queue.Empty as e:
                 self.close()
                 raise StopIteration from e
 
+    def _handle(self, event: ServiceEvent | None) -> None:
+        """Feed a queued event to :meth:`_process`; end iteration on the sentinel."""
+        if event is None:  # close sentinel enqueued by _cleanup()
+            self._q.put(None)  # keep subsequent __next__ calls exhausted
+            raise StopIteration
+        self._process(event)
+
     @staticmethod
     def _cleanup(
+        q: 'queue.Queue[ServiceEvent | None]',
         stop: threading.Event,
         watcher: threading.Thread | None,
         zc: Zeroconf | None,
@@ -1836,6 +1846,8 @@ class ServiceIterator(Iterator[ServiceEvent]):
         if zc is not None:
             with contextlib.suppress(Exception):
                 zc.close()
+        # unblock a consumer waiting in __next__ and mark the iterator exhausted
+        q.put(None)
 
     def _process(self, event: ServiceEvent) -> None:
         address = event.address

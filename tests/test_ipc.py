@@ -645,7 +645,9 @@ class TestHost:
             'test', 'test_service', _noop_handler, remote=True
         ) as host:
             assert host._zeroconf is not None
-            host._zeroconf.register_service.assert_called_once()
+            # registration runs on a background thread
+            register_service = host._zeroconf.register_service
+            assert _wait_until(lambda: register_service.call_count == 1)
             host._zeroconf.close.assert_not_called()
             assert host._local_advertisement is not None
             assert host._local_advertisement.service_file.exists()
@@ -1033,6 +1035,23 @@ class TestIterServices:
         """remote=False never instantiates Zeroconf."""
         list(ipc.iter_services('nonexistent', timeout=0, remote=False))
         mock_zeroconf.assert_not_called()
+
+    def test_close_ends_blocking_iteration(
+        self, mock_zeroconf, mock_local_discovery_dir
+    ):
+        """close() unblocks a consumer waiting in __next__ (timeout=None)."""
+        iterator = ipc.iter_services('nonexistent', timeout=None, remote=False)
+        received = []
+        consumer = threading.Thread(target=lambda: received.extend(iterator))
+        consumer.start()
+        time.sleep(0.05)  # let the consumer block in __next__
+        iterator.close()
+        consumer.join(timeout=2)
+        assert not consumer.is_alive(), 'close() should end a blocked iteration'
+        assert received == []
+        # the iterator stays exhausted on subsequent calls
+        with pytest.raises(StopIteration):
+            next(iterator)
 
     @pytest.mark.parametrize(
         ('kinds', 'expected_len', 'expected_event'),

@@ -130,6 +130,14 @@ def mock_advertisement(mock_zeroconf, mock_local_discovery_dir):
 
 
 @pytest.fixture
+def mock_ports_file(tmp_path, mocker):
+    """Mock the state file storing per-UUID TCP ports."""
+    ports_file = tmp_path / 'service_ports.json'
+    mocker.patch.object(ipc.ServiceHost, '_ports_file', ports_file)
+    return ports_file
+
+
+@pytest.fixture
 def mock_bpod(mocker, mock_ext_serial, mock_settings):
     mock_bpod = mocker.MagicMock(spec=Bpod)
     mock_bpod.is_running = False
