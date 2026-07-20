@@ -534,6 +534,17 @@ class TestPublish:
             'flag should clear after the subscriber disconnects'
         )
 
+    def test_wait_for_subscribers(self, host, mock_service_browser):
+        """wait_for_subscribers blocks until a subscription (or grace) registers."""
+        assert host.wait_for_subscribers(timeout=0.05) is False
+        with ipc.ServiceClient(
+            'pubtest',
+            address=host.rep_tcp_addr,
+            event_handler=lambda _: None,
+            discovery_timeout=0,
+        ):
+            assert host.wait_for_subscribers(timeout=2.0) is True
+
     def test_hello_grace_expires_without_subscription(
         self, host, mock_service_browser, mocker
     ):

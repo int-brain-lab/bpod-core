@@ -986,6 +986,26 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         """
         return self._has_subscribers.is_set()
 
+    def wait_for_subscribers(self, timeout: float) -> bool:
+        """
+        Block until someone subscribes to the PUB/SUB channel.
+
+        Returns as soon as :attr:`has_subscribers` becomes True - i.e., once a
+        subscription registers or a client handshake starts the grace period - or when
+        the timeout expires.
+
+        Parameters
+        ----------
+        timeout : float
+            Maximum time to wait, in seconds.
+
+        Returns
+        -------
+        bool
+            True if a subscriber registered within the timeout, False otherwise.
+        """
+        return self._has_subscribers.wait(timeout)
+
     def publish(self, data: E) -> None:
         """
         Broadcast a message to all subscribers over the PUB/SUB channel.
