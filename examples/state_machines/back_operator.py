@@ -1,8 +1,11 @@
 """Back Operator.
 
+The ``>back`` operator returns to the state that most recently transitioned into the
+current state. In state diagrams it is indicated by dashed edges.
+
 In this example, when the ``>back`` operator is triggered by ``Port3_High`` in the
-state `WaitForExit`, the state machine returns to the state that previously
-transitioned into `WaitForExit` - either `FlashPort1` or `FlashPort2`.
+state ``WaitForExit``, the state machine returns to the state that previously
+transitioned into ``WaitForExit`` - either ``FlashPort1`` or ``FlashPort2``.
 """
 
 from bpod_core.fsm import StateMachine

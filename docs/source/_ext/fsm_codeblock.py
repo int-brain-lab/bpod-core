@@ -15,6 +15,11 @@ from docutils.parsers.rst import directives
 from docutils.statemachine import StringList
 from sphinx.directives.code import CodeBlock
 
+# Namespaces shared between grouped code blocks. Kept at module level rather than
+# on the build environment: exec() namespaces contain __builtins__ and other
+# unpicklable objects, which would break pickling of the environment.
+_namespace_store: dict[str, dict] = {}
+
 
 class FSMCodeBlock(CodeBlock):
     option_spec = CodeBlock.option_spec.copy()
@@ -34,16 +39,12 @@ class FSMCodeBlock(CodeBlock):
         doctest_lines.extend(f'   {line}' for line in self.content)
         doctest_lines.append('')
 
-        # access Sphinx environment and create a per-build namespace store
         env = self.state.document.settings.env  # type: ignore[attr-defined]
-        if not hasattr(env, '_fsm_codeblock_namespaces'):
-            env._fsm_codeblock_namespaces = {}
-        name_space_store = env._fsm_codeblock_namespaces
 
         # execute code and render light/dark SVG diagrams
         is_doctest = getattr(env, 'app', None) and env.app.builder.name == 'doctest'
         if not is_doctest:
-            name_space = name_space_store.setdefault(group, {}) if group else {}
+            name_space = _namespace_store.setdefault(group, {}) if group else {}
             exec(textwrap.dedent('\n'.join(self.content)), name_space)
             fsm = name_space.get('fsm')
             if fsm and 'filename' in self.options:
@@ -72,9 +73,15 @@ class FSMCodeBlock(CodeBlock):
         return nodes_list
 
 
+def _clear_namespace_store(_app):
+    """Reset the namespace store at the start of each build."""
+    _namespace_store.clear()
+
+
 def setup(app):
     """Register the ``fsm_codeblock`` directive."""
     app.add_directive('fsm_codeblock', FSMCodeBlock)
+    app.connect('builder-inited', _clear_namespace_store)
     return {
         'version': '0.1',
         'parallel_read_safe': False,

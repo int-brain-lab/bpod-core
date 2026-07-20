@@ -1,7 +1,15 @@
 """Conditions.
 
-A condition (Port2 high) causes the state 'Port2Light' to be skipped without waiting
-for the timer to expire.
+Regular events fire only when a channel *changes* state. A condition, in contrast, is
+evaluated when a state is entered: if the configured channel (or global timer) is
+already in the specified state, the corresponding ``Condition{N}`` event fires
+immediately. This allows states to be skipped based on the current state of a channel
+rather than waiting for a change to occur.
+
+In this example, `Condition2` is met while ``Port2`` is high. If that is the case when
+the state `Port2Light` is entered, the ``Condition2`` event fires and the state
+machine advances to `Port3Light` without waiting for the one-second state timer to
+expire.
 """
 
 from bpod_core.fsm import StateMachine

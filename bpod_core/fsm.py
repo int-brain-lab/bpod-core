@@ -657,7 +657,7 @@ class StateMachine(BaseModel, title='State Machine'):
         color_stroke: ColorType = 'black',
         color_fill: ColorType = 'white',
         color_highlight: ColorType = 'lightblue',
-        color_back: ColorType = 'red',
+        color_back: ColorType = 'black',
     ) -> Digraph:
         """
         Return a graphviz Digraph instance representing the state machine.
@@ -670,7 +670,7 @@ class StateMachine(BaseModel, title='State Machine'):
             Background color of state nodes.
         color_highlight : ColorType, default: 'lightblue'
             Background color of state header and comment rows.
-        color_back : ColorType, default: 'red'
+        color_back : ColorType, default: 'black'
             Color for edges resulting from ``>back`` transitions.
 
         Returns
@@ -788,11 +788,18 @@ class StateMachine(BaseModel, title='State Machine'):
                         s.node(target)
 
         # Add edges for back transitions
-        # We label these in red to distinguish them from regular edges
+        # We label these with dashed lines to distinguish them from regular edges
         for source, label in back_ops:
             for target, state in self.states.items():
                 if source in state.transitions.values():
-                    dot.edge(source, target, label, color=c_back, fontcolor=c_back)
+                    dot.edge(
+                        source,
+                        target,
+                        label,
+                        color=c_back,
+                        fontcolor=c_back,
+                        style='dashed',
+                    )
 
         return dot
 

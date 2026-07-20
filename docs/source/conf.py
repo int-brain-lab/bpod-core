@@ -218,13 +218,13 @@ fsm_light_colors = {
     'color_stroke': 'black',
     'color_fill': 'white',
     'color_highlight': 'lightblue',
-    'color_back': 'red',
+    'color_back': 'black',
 }
 fsm_dark_colors = {
     'color_stroke': 'white',
     'color_fill': 'black',
     'color_highlight': 'darkred',
-    'color_back': 'red',
+    'color_back': 'white',
 }
 
 # -- Graphviz ------------------------------------------------------------------

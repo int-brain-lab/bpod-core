@@ -1,7 +1,12 @@
 """Two Choice.
 
-Wait for a choice between ports 1 and 2. Indicate the choice for 1 second with the
-chosen port LED at max intensity.
+A state can define multiple transitions, each attached to a different event. Whichever
+event occurs first determines the next state, allowing the state machine to branch —
+the basis of decision tasks.
+
+In this example, ``WaitForChoice`` waits for activity on either port 1 or port 2
+(``Port1_High`` or ``Port2_High``). The LED of the chosen port is then lit at maximum
+intensity for one second before the state machine exits.
 """
 
 from bpod_core.fsm import StateMachine
