@@ -50,6 +50,12 @@ def _resolve(app, env, node, contnode):
         node['reftarget'] = 'serial.tools.list_ports.ListPortInfo'
         return None
 
+    # Remap platform-specific Serial implementations to the public API entry
+    if re.fullmatch(r'serial\.serial(posix|win32|java|cli)\.Serial', target):
+        contnode[0] = nodes.Text('Serial')
+        node['reftarget'] = 'serial.Serial'
+        return None
+
     # Remap bare names to their fully-qualified intersphinx targets
     if target in _TARGET_REMAP:
         node['reftarget'] = _TARGET_REMAP[target]
