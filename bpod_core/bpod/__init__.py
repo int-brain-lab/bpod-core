@@ -1708,6 +1708,16 @@ class Bpod(SerialDevice, AbstractBpod):
     def location(self, location: str | None) -> None:
         self._set_setting(['devices', self._serial_number, 'location'], location)
 
+    @override
+    @property
+    def address_control(self) -> str:
+        return self._zmq.rep_tcp_addr
+
+    @override
+    @property
+    def address_events(self) -> str:
+        return self._zmq.pub_tcp_addr
+
     @validate_call()
     def set_softcode_handler(
         self, softcode_handler: Callable[[int], None] | None = None
@@ -2177,6 +2187,16 @@ class RemoteBpod(AbstractBpod):
     @property
     def location(self) -> str | None:
         return self._location
+
+    @override
+    @property
+    def address_control(self) -> str:
+        return self._zmq.address_req
+
+    @override
+    @property
+    def address_events(self) -> str:
+        return self._zmq.address_sub
 
     @override
     def reset_session_clock(self) -> bool:

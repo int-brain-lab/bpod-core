@@ -29,6 +29,16 @@ class AbstractBpod(AbstractContextManager):
         """The Bpod's user-defined location, or :obj:`None` if not set."""
 
     @property
+    @abstractmethod
+    def address_control(self) -> str:
+        """The ZeroMQ address of the control channel."""
+
+    @property
+    @abstractmethod
+    def address_events(self) -> str:
+        """The ZeroMQ address of the events channel."""
+
+    @property
     def version(self) -> VersionInfo:
         """Version information of the Bpod's firmware and hardware."""
         return self._version
