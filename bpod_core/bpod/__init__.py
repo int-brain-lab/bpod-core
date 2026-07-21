@@ -182,6 +182,14 @@ class Bpod(SerialDevice, AbstractBpod):
         logger.info('bpod-core %s', bpod_core_version)
         self._settings = SettingsDict(CONFIG_PATH / 'settings.json')
 
+        # environmental overrides
+        if 'BPOD_OVERRIDE_PORT' in os.environ:
+            port = os.getenv('BPOD_OVERRIDE_PORT')
+        if 'BPOD_OVERRIDE_SERIAL_NUMBER' in os.environ:
+            serial_number = os.getenv('BPOD_OVERRIDE_SERIAL_NUMBER')
+        if 'BPOD_OVERRIDE_REMOTE' in os.environ:
+            remote = os.getenv('BPOD_OVERRIDE_REMOTE') in ('True', 'true', '1')
+
         # initialize members
         self._input_events: _InputEvents = _InputEvents(
             names=[], channels=[], values=[]
@@ -240,6 +248,15 @@ class Bpod(SerialDevice, AbstractBpod):
         # start ZeroMQ service
         self._start_zmq(use_zeroconf=remote)
         logger.info('ZeroMQ service started on %s', self.address)
+
+        # when launched by a supervising process (e.g. QBpod), briefly wait for
+        # its subscription to register so the first trial's messages aren't lost
+        # to the PUB/SUB slow-joiner race
+        if 'BPOD_OVERRIDE_REMOTE' in os.environ:
+            if self._zmq.wait_for_subscribers(timeout=1.0):
+                logger.debug('Subscriber registered on the PUB/SUB channel')
+            else:
+                logger.debug('No subscriber registered within timeout')
 
         # register destructors
         self._bpod_finalizer = weakref.finalize(
