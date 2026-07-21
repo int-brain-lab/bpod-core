@@ -234,3 +234,10 @@ class HardwareConfiguration(msgspec.Struct, frozen=True):
     """Frequency of the state machine's refresh cycle during a trial in Hertz."""
     n_modules: int
     """Number of modules supported by the state machine."""
+
+
+class HardwareState(msgspec.Struct):
+    """Represents the Bpod's current hardware state."""
+
+    status_led: None | bool = None
+    """The current state of the Bpod's status LED. None if unknown."""

@@ -6,7 +6,7 @@ from typing import Literal, overload
 
 import polars as pl
 
-from bpod_core.bpod.structs import HardwareConfiguration, VersionInfo
+from bpod_core.bpod.structs import HardwareConfiguration, HardwareState, VersionInfo
 from bpod_core.fsm import StateMachine
 
 
@@ -15,6 +15,7 @@ class AbstractBpod(AbstractContextManager):
 
     _version: VersionInfo
     _hardware: HardwareConfiguration
+    _state: HardwareState
     _serial_number: str
 
     @property
