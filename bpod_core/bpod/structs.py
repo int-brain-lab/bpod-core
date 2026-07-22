@@ -1,5 +1,6 @@
 """Data structures used by the bpod module."""
 
+from enum import IntEnum
 from typing import Any, Literal, NamedTuple, TypeAlias
 
 import msgspec
@@ -138,18 +139,9 @@ class _MessageKind(ByteEnum):
 
 
 class BpodMessage(msgspec.Struct, array_like=True, tag_field='kind'):
-    """Base Envelope for a Bpod IPC message.
+    """Base class for all messages exchanged between ServiceHost and ServiceClient."""
 
-    The ``tag_field`` name is arbitrary — with ``array_like=True`` the tag is encoded
-    positionally — but must not collide with any subclass field (e.g. ``type``).
-    """
-
-
-class BpodMessageGeneric(BpodMessage, tag='g'):
-    """Envelope for a generic message."""
-
-    data: Any = None
-    """The content of the reply."""
+    """Base Envelope for a Bpod IPC message."""
 
 
 class RequestHello(BpodMessage, tag='h'):
@@ -161,19 +153,6 @@ class RequestHello(BpodMessage, tag='h'):
 
 class RequestBye(BpodMessage, tag='b'):
     """Envelope for a disconnect notice."""
-
-
-class ReplyWelcome(BpodMessage, tag='w'):
-    """Envelope for a handshake reply."""
-
-    version: 'VersionInfo'
-    """Version information of the Bpod's firmware and hardware."""
-    serial_number: str
-    """The Bpod's unique serial number."""
-    name: str | None = None
-    """The Bpod's user-defined name."""
-    location: str | None = None
-    """The Bpod's user-defined location."""
 
 
 class RequestCall(BpodMessage, tag='c'):
@@ -194,19 +173,56 @@ class RequestData(RequestCall, tag='rd'):
     """The compression method to be used for the data."""
 
 
+class ReplyGeneric(BpodMessage, tag='g'):
+    """Envelope for a generic reply."""
+
+    value: Any = None
+    """The content of the reply."""
+
+
+class ReplyWelcome(BpodMessage, tag='w'):
+    """Envelope for a handshake reply."""
+
+    version: 'VersionInfo'
+    """Version information of the Bpod's firmware and hardware."""
+    serial_number: str
+    """The Bpod's unique serial number."""
+    name: str | None = None
+    """The Bpod's user-defined name."""
+    location: str | None = None
+    """The Bpod's user-defined location."""
+
+
 BpodEventType: TypeAlias = Literal[
-    'InputEvent',
-    'OutputAction',
     'TrialStart',
-    'StateStart',
-    'StateEnd',
     'TrialEnd',
     'TrialEndControl',
+    'StateStart',
+    'StateEnd',
+    'InputEvent',
+    'OutputAction',
 ]
 """Vocabulary of the trial DataFrame's ``type`` column."""
 
 
-class EventTrialStart(BpodMessage, tag='ts'):
+class _EventTag(IntEnum):
+    """
+    Tags for identifying Bpod event via Tagged Unions.
+
+    Values need to be between -32 to 127 in order to allow for space efficient encoding
+    to a negative or positive MessagePack fixint.
+    """
+
+    TrialStart = 20
+    StateStart = 21
+    InputEvent = 22
+    OutputAction = 23
+    StateEnd = 24
+    TrialEnd = 25
+    TrialEndControl = 26
+
+
+class EventTrialStart(BpodMessage, tag=_EventTag.TrialStart.value):
     """
     Message marking the start of a trial.
 
@@ -226,7 +242,7 @@ class EventTrialStart(BpodMessage, tag='ts'):
     """Hex digest of the state machine's hash."""
 
 
-class EventStateStart(BpodMessage, tag='ss'):
+class EventStateStart(BpodMessage, tag=_EventTag.StateStart.value):
     """Message marking the start of a state."""
 
     time_us: int
@@ -236,7 +252,7 @@ class EventStateStart(BpodMessage, tag='ss'):
     """Name of the state."""
 
 
-class EventStateEnd(BpodMessage, tag='se'):
+class EventStateEnd(BpodMessage, tag=_EventTag.StateEnd.value):
     """Message marking the end of a state."""
 
     time_us: int
@@ -246,7 +262,7 @@ class EventStateEnd(BpodMessage, tag='se'):
     """Name of the state."""
 
 
-class EventInput(BpodMessage, tag='i'):
+class EventInput(BpodMessage, tag=_EventTag.InputEvent.value):
     """Message for a single input event."""
 
     time_us: int
@@ -262,7 +278,7 @@ class EventInput(BpodMessage, tag='i'):
     """The event's value, or ``None`` if not applicable."""
 
 
-class EventOutput(BpodMessage, tag='o'):
+class EventOutput(BpodMessage, tag=_EventTag.OutputAction.value):
     """Message for a single output action."""
 
     time_us: int
@@ -275,7 +291,7 @@ class EventOutput(BpodMessage, tag='o'):
     """The value set on the output channel."""
 
 
-class EventTrialEnd(BpodMessage, tag='te'):
+class EventTrialEnd(BpodMessage, tag=_EventTag.TrialEnd.value):
     """
     Message marking the end of a trial.
 
@@ -293,7 +309,7 @@ class EventTrialEnd(BpodMessage, tag='te'):
     """Zero-based trial index."""
 
 
-class EventTrialEndControl(BpodMessage, tag='tec'):
+class EventTrialEndControl(BpodMessage, tag=_EventTag.TrialEndControl.value):
     """
     Message terminating a trial's stream with timing-verification data.
 
@@ -310,10 +326,10 @@ class EventTrialEndControl(BpodMessage, tag='tec'):
     """Zero-based trial index."""
 
     n_events: int
-    """Number of event messages published for the trial (completeness check)."""
+    """Total number of messages published for the trial (completeness check)."""
 
 
-BpodReplyUnion: TypeAlias = BpodMessageGeneric | ReplyWelcome
+BpodReplyUnion: TypeAlias = ReplyGeneric | ReplyWelcome
 """Tagged union of all concrete :class:`BpodMessage` subclasses used for replies."""
 
 BpodRequestUnion: TypeAlias = RequestHello | RequestBye | RequestCall | RequestData
