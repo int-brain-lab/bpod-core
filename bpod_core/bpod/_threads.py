@@ -83,7 +83,7 @@ _EVENT_TYPE_ENUM = pl.Enum(get_args(BpodEventType))
 Built from :data:`~bpod_core.bpod.structs.BpodEventType`.
 """
 
-_TRIAL_DATA_SCHEMA = {
+_TRIAL_DATA_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
     'time': pl.Datetime('us', time_zone='UTC'),
     'trial': pl.UInt16,
     'state machine': pl.Categorical,
