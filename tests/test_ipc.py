@@ -773,9 +773,9 @@ class TestBindIpc:
         assert ipc.ServiceHost._bind_ipc(zmq_socket, 'ID') == (None, None)
         zmq_socket.bind.assert_not_called()
 
+    @pytest.mark.skipif(os.name != 'posix', reason='POSIX only')
     def test_abstract_socket_on_linux(self, mocker, caplog):
         """On linux, sockets bind to abstract IPC addresses without named pipes."""
-        mocker.patch.object(ipc.os, 'name', 'posix')
         mocker.patch.object(ipc.sys, 'platform', 'linux')
         zmq_socket = mocker.Mock()
         zmq_socket.type = zmq.REP
@@ -786,9 +786,9 @@ class TestBindIpc:
         zmq_socket.bind.assert_called_once_with('ipc://@ID')
         assert f"Bound REP socket to '{address}'" in caplog.text
 
+    @pytest.mark.skipif(os.name != 'posix', reason='POSIX only')
     def test_named_pipe_on_other_posix(self, mocker, tmp_path, caplog):
         """On non-linux POSIX platforms, sockets bind to filesystem named pipes."""
-        mocker.patch.object(ipc.os, 'name', 'posix')
         mocker.patch.object(ipc.sys, 'platform', 'darwin')
         mocker.patch.object(
             ipc.platformdirs, 'user_runtime_path', return_value=tmp_path
@@ -805,9 +805,9 @@ class TestBindIpc:
         zmq_socket.bind.assert_called_once_with(address)
         assert f"Bound REP socket to '{address}'" in caplog.text
 
+    @pytest.mark.skipif(os.name != 'posix', reason='POSIX only')
     def test_bind_failure_falls_back_to_tcp(self, mocker, tmp_path, caplog):
         """A failed bind is unwound, logged, and reported as (None, None)."""
-        mocker.patch.object(ipc.os, 'name', 'posix')
         mocker.patch.object(ipc.sys, 'platform', 'darwin')
         mocker.patch.object(
             ipc.platformdirs, 'user_runtime_path', return_value=tmp_path
