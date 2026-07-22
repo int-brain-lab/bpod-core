@@ -98,6 +98,7 @@ intersphinx_mapping = {
     'zeroconf': ('https://python-zeroconf.readthedocs.io/en/latest/', None),
     'typing_extensions': ('https://typing-extensions.readthedocs.io/en/latest', None),
     'filelock': ('https://py-filelock.readthedocs.io/en/latest/', None),
+    'PySide6': ('https://doc.qt.io/qtforpython-6', None),
 }
 
 # -- HTML output ---------------------------------------------------------------
@@ -134,7 +135,7 @@ html_copy_source = False
 
 # -- Autodoc -------------------------------------------------------------------
 
-autodoc_mock_imports = ['_typeshed', 'serial']
+autodoc_mock_imports = ['_typeshed']
 autodoc_class_signature = 'separated'  # 'mixed', 'separated'
 autodoc_member_order = 'groupwise'  # 'alphabetical', 'groupwise', 'bysource'
 autodoc_inherit_docstrings = True

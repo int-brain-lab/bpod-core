@@ -38,6 +38,7 @@ dependencies = [
   "xxhash>=3.6.0",
   "cachetools>=7.0.0",
   "typing_extensions>=4.13",
+  "qtpy>=2.4.3",
 ]
 license = "MIT"
 license-files = ["LICENSE"]
@@ -81,6 +82,8 @@ test = [
   "tox-uv>=0.7.2",
   "packaging>=25.0",
   "pytest-mock>=3.14.1",
+  "pytest-qt>=4.5.0",
+  "pyside6-essentials>=6.11.1",
 ]
 typing = [
   "appdirs-stubs>=0.1.0",
@@ -208,6 +211,10 @@ allowed-confusables = ["–"]
   "S102", # Use of `exec` detected
   "SLF001", # private-member-access
   "PLR0911", # Too many return statements
+]
+"bpod_core/**/qt.py" = [
+  "N802", # invalid function name
+  "N815", # mixedCase variable in class scope
 ]
 
 [tool.ruff.lint.pydocstyle]
