@@ -39,5 +39,6 @@ This project is maintained by the software development team at the
 [![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
 [![Coverage Status](https://coveralls.io/repos/github/int-brain-lab/bpod-core/badge.svg?branch=main)](https://coveralls.io/github/int-brain-lab/bpod-core?branch=main)
 [![License](https://img.shields.io/github/license/int-brain-lab/bpod-core)](https://github.com/int-brain-lab/bpod-core/blob/main/LICENSE)
-[![GitHub tag](https://img.shields.io/github/v/tag/int-brain-lab/bpod-core)](https://github.com/int-brain-lab/bpod-core/tags)
+[![GitHub Release](https://img.shields.io/github/v/release/int-brain-lab/bpod-core?include_prereleases)](https://github.com/int-brain-lab/bpod-core/releases/latest)
 [![PyPI](https://img.shields.io/pypi/v/bpod-core)](https://pypi.org/project/bpod-core/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21497456.svg)](https://doi.org/10.5281/zenodo.21497456)
