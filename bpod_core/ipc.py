@@ -726,7 +726,6 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         if os.name != 'posix':
             return None, None  # Return early if we're not on POSIX
 
-        address: str | None = None
         named_pipe: Path | None = None
         socket_type = zmq.SocketType(cast('int', zmq_socket.type)).name
         try:
@@ -735,7 +734,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
             else:  # Otherwise use filesystem Unix domain sockets
                 runtime_path = platformdirs.user_runtime_path(ensure_exists=True)
-                named_pipe: Path = runtime_path / f'{identifier}.ipc'
+                named_pipe = runtime_path / f'{identifier}.ipc'
                 named_pipe.unlink(missing_ok=True)  # pre-unlink to avoid collisions
                 address = 'ipc://' + named_pipe.as_posix()
             zmq_socket.bind(address)
