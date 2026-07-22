@@ -1,18 +1,13 @@
 cff-version: 1.2.0
 title: bpod-core
-message: >-
-  If you use this software, please cite it using the metadata from this file.
+message: "If you use this software, please cite it as below."
 type: software
 authors:
   - given-names: Florian
     family-names: Rau
     affiliation: International Brain Laboratory
     orcid: 'https://orcid.org/0000-0002-4685-9473'
-identifiers:
-  - type: doi
-    value: 10.5281/zenodo.21497456
-    description: Concept DOI
-repository-code: 'https://github.com/int-brain-lab/bpod-core'
+doi: 10.5281/zenodo.21497456
 url: 'https://int-brain-lab.github.io/bpod-core/'
 abstract: A modern Python interface for Bpod Finite State Machines.
 keywords:
