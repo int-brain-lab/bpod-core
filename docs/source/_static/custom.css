@@ -10,36 +10,34 @@ figure.align-default figcaption {
     text-align: center;
 }
 
+
+/* left-align signatures */
+dt.sig {
+    text-indent: -2.9rem;
+}
 .sig-object a.headerlink {
-    visibility: visible !important;
-    font-size: 0.8em;
-    opacity: 0.5 !important;
+    margin-left: 10px;
 }
 
-.sig-object a.headerlink:hover {
-    opacity: 1 !important;
-    border: none;
-}
 
-a:has(.linkcode-link) {
-    border: none;
-    margin-left: 4px;
-    baseline-shift: -0.1em;
-}
-
+/* visbility and opacity of code links */
 .linkcode-link {
-    margin-left: 0;
+    opacity: 0.5;
+}
+.linkcode-link:hover {
+    opacity: 1.0;
+}
+.sig-object:hover a.reference.external {
+    visibility: visible;
+}
+a.reference.external:has(.linkcode-link) {
+    visibility: hidden;
+    margin-left: 4px;
+    text-decoration: none;
 }
 
-.linkcode-link::after {
-    opacity: 0.5 !important;
-}
 
-.linkcode-link:hover::after {
-    opacity: 1.0 !important;
-}
-
-/* Center align graphviz objects */
+/* center align graphviz objects */
 .graphviz object {
   display: block;
   margin: 0 auto;
@@ -78,25 +76,3 @@ img.graphviz, object.graphviz, img.plot-directive, img.invert {
 
 table.autosummary td:first-child { white-space: nowrap; }
 table.autosummary td:last-child  { width: 100%; }
-
-/*.localtoc li > ul {*/
-/*    display: block;*/
-/*}*/
-
-/*@supports selector(li:has(*)) {*/
-/*    .localtoc li > ul {*/
-/*        display: none;*/
-/*    }*/
-
-/*    .localtoc li:has(.active) > ul,*/
-/*    .localtoc li.active > ul {*/
-/*        display: block;*/
-/*    }*/
-
-
-/*    .localtoc > ul > li:has(.active) > ul,*/
-/*    .localtoc > ul > li.active > ul {*/
-/*        border-left: 1px solid #00a2c7;*/
-/*        margin-left: .2rem;*/
-/*    }*/
-/*}*/

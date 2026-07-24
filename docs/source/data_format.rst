@@ -26,7 +26,7 @@ Polars :class:`~polars.DataFrame` with the following columns:
      - Description
    * - ``time``
      - :class:`~polars.datatypes.Datetime`
-     - absolute timestamp, see section `Timestamps`_ below.
+     - absolute UTC timestamp, see section `Timestamps`_ below.
    * - ``trial``
      - :class:`~polars.datatypes.UInt16`
      - zero-based trial index.
@@ -58,42 +58,68 @@ For the state machine in :numref:`on_the_fly_fsm` the returned
 
    >>> data
    shape: (1_100, 8)
-   ┌────────────────────────────┬───────┬──────────────────┬───────┬─────────────────┬───────┬─────────┬───────┐
-   │ time                       ┆ trial ┆ state machine    ┆ state ┆ type            ┆ event ┆ channel ┆ value │
-   │ ---                        ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
-   │ datetime[μs]               ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u8    │
-   ╞════════════════════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
-   │ 2026-04-16 20:29:12.948426 ┆ 0     ┆ d1af27e5c2b13891 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
-   │ 2026-04-16 20:29:12.948426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
-   │ 2026-04-16 20:29:12.948426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 235   │
-   │ 2026-04-16 20:29:13.022426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
-   │ 2026-04-16 20:29:13.022426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-   │ …                          ┆ …     ┆ …                ┆ …     ┆ …               ┆ …     ┆ …       ┆ …     │
-   │ 2026-04-16 20:29:19.121326 ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
-   │ 2026-04-16 20:29:19.131326 ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
-   │ 2026-04-16 20:29:19.131326 ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-   │ 2026-04-16 20:29:19.131426 ┆ 99    ┆ 1719d07df94acabf ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
-   │ 2026-04-16 20:29:19.131328 ┆ 99    ┆ 1719d07df94acabf ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
-   └────────────────────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
+   ┌────────────────────────────────┬───────┬──────────────────┬───────┬─────────────────┬───────┬─────────┬───────┐
+   │ time                           ┆ trial ┆ state machine    ┆ state ┆ type            ┆ event ┆ channel ┆ value │
+   │ ---                            ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
+   │ datetime[μs, UTC]              ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u8    │
+   ╞════════════════════════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
+   │ 2026-07-22 12:57:29.766633 UTC ┆ 0     ┆ 3725de06508951c9 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 12:57:29.766633 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 12:57:29.766633 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 153   │
+   │ 2026-07-22 12:57:29.844833 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+   │ 2026-07-22 12:57:29.844833 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+   │ …                              ┆ …     ┆ …                ┆ …     ┆ …               ┆ …     ┆ …       ┆ …     │
+   │ 2026-07-22 12:57:45.100633 UTC ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
+   │ 2026-07-22 12:57:45.200633 UTC ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+   │ 2026-07-22 12:57:45.200633 UTC ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 12:57:45.200733 UTC ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 12:57:45.200635 UTC ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
+   └────────────────────────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
 
 
 Timestamps
 ----------
 
-The data is stored using absolute timestamps rather than relative ones. This avoids
+The data is stored using absolute UTC timestamps rather than relative ones. This avoids
 ambiguity when combining data across trials, state machines, or external data sources,
-and preserves the original temporal ordering without requiring additional context.
+preserves the original temporal ordering without requiring additional context, and
+provides a consistent time reference independent of the system's local timezone.
 
 Absolute time is computed from the Bpod's hardware timer (microseconds since boot),
-offset by the host computer's system time at instantiation of the
-:class:`~bpod_core.bpod.Bpod` class. Because the two clocks are independent, they will
+offset by the host computer's system clock at instantiation of the
+:class:`~bpod_core.bpod.Bpod` class. Because the two clocks are independent, they may
 drift apart over time. You can call :meth:`~bpod_core.bpod.Bpod.reset_session_clock`
 outside of a state machine run to resynchronize them.
 
+Displaying the timestamps in a different timezone is a one-liner:
+
+.. doctest-code-block::
+   :group: polars
+
+   >>> data.with_columns(pl.col("time").dt.convert_time_zone("Europe/Berlin"))
+   shape: (1_100, 8)
+   ┌─────────────────────────────────┬───────┬──────────────────┬───────┬─────────────────┬───────┬─────────┬───────┐
+   │ time                            ┆ trial ┆ state machine    ┆ state ┆ type            ┆ event ┆ channel ┆ value │
+   │ ---                             ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
+   │ datetime[μs, Europe/Berlin]     ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u8    │
+   ╞═════════════════════════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
+   │ 2026-07-22 14:57:29.766633 CES… ┆ 0     ┆ 3725de06508951c9 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 14:57:29.766633 CES… ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 14:57:29.766633 CES… ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 153   │
+   │ 2026-07-22 14:57:29.844833 CES… ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+   │ 2026-07-22 14:57:29.844833 CES… ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+   │ …                               ┆ …     ┆ …                ┆ …     ┆ …               ┆ …     ┆ …       ┆ …     │
+   │ 2026-07-22 14:57:45.100633 CES… ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
+   │ 2026-07-22 14:57:45.200633 CES… ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+   │ 2026-07-22 14:57:45.200633 CES… ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 14:57:45.200733 CES… ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 14:57:45.200635 CES… ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
+   └─────────────────────────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
+
+
 Relative timestamps can be derived on demand by subtracting the first timestamp from the
-``time`` column. The inherent unit of the ``time`` column is preserved during this
-operation, and the result automatically takes on the :class:`~polars.datatypes.Duration`
-type:
+``time`` column. The unit of the ``time`` column is preserved during this operation, and
+the result automatically takes on the :class:`~polars.datatypes.Duration` type:
 
 .. doctest-code-block::
    :group: polars
@@ -105,17 +131,17 @@ type:
    │ ---          ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
    │ duration[μs] ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u8    │
    ╞══════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
-   │ 0µs          ┆ 0     ┆ d1af27e5c2b13891 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
-   │ 0µs          ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
-   │ 0µs          ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 235   │
-   │ 74ms         ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
-   │ 74ms         ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+   │ 0µs          ┆ 0     ┆ 3725de06508951c9 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
+   │ 0µs          ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
+   │ 0µs          ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 153   │
+   │ 78200µs      ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+   │ 78200µs      ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
    │ …            ┆ …     ┆ …                ┆ …     ┆ …               ┆ …     ┆ …       ┆ …     │
-   │ 6s 172900µs  ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
-   │ 6s 182900µs  ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
-   │ 6s 182900µs  ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-   │ 6s 183ms     ┆ 99    ┆ 1719d07df94acabf ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
-   │ 6s 182902µs  ┆ 99    ┆ 1719d07df94acabf ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
+   │ 15s 334ms    ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
+   │ 15s 434ms    ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+   │ 15s 434ms    ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+   │ 15s 434100µs ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+   │ 15s 434002µs ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
    └──────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
 
 
@@ -132,23 +158,23 @@ filter the table like so:
    >>> import polars as pl
    >>> data.filter(pl.col("channel") == "PWM1")
    shape: (200, 8)
-   ┌────────────────────────────┬───────┬──────────────────┬───────┬──────────────┬───────┬─────────┬───────┐
-   │ time                       ┆ trial ┆ state machine    ┆ state ┆ type         ┆ event ┆ channel ┆ value │
-   │ ---                        ┆ ---   ┆ ---              ┆ ---   ┆ ---          ┆ ---   ┆ ---     ┆ ---   │
-   │ datetime[μs]               ┆ u16   ┆ cat              ┆ cat   ┆ enum         ┆ cat   ┆ cat     ┆ u8    │
-   ╞════════════════════════════╪═══════╪══════════════════╪═══════╪══════════════╪═══════╪═════════╪═══════╡
-   │ 2026-04-16 20:29:12.948426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 235   │
-   │ 2026-04-16 20:29:13.022426 ┆ 0     ┆ d1af27e5c2b13891 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
-   │ 2026-04-16 20:29:13.032526 ┆ 1     ┆ 007c1ac779aa4864 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 154   │
-   │ 2026-04-16 20:29:13.074626 ┆ 1     ┆ 007c1ac779aa4864 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
-   │ 2026-04-16 20:29:13.084726 ┆ 2     ┆ 4c848e03a2b511e4 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 214   │
-   │ …                          ┆ …     ┆ …                ┆ …     ┆ …            ┆ …     ┆ …       ┆ …     │
-   │ 2026-04-16 20:29:18.998726 ┆ 97    ┆ 1257c55134308481 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
-   │ 2026-04-16 20:29:19.008826 ┆ 98    ┆ 7d51489ce6f844f8 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 27    │
-   │ 2026-04-16 20:29:19.057726 ┆ 98    ┆ 7d51489ce6f844f8 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
-   │ 2026-04-16 20:29:19.067826 ┆ 99    ┆ 1719d07df94acabf ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 11    │
-   │ 2026-04-16 20:29:19.121326 ┆ 99    ┆ 1719d07df94acabf ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
-   └────────────────────────────┴───────┴──────────────────┴───────┴──────────────┴───────┴─────────┴───────┘
+   ┌────────────────────────────────┬───────┬──────────────────┬───────┬──────────────┬───────┬─────────┬───────┐
+   │ time                           ┆ trial ┆ state machine    ┆ state ┆ type         ┆ event ┆ channel ┆ value │
+   │ ---                            ┆ ---   ┆ ---              ┆ ---   ┆ ---          ┆ ---   ┆ ---     ┆ ---   │
+   │ datetime[μs, UTC]              ┆ u16   ┆ cat              ┆ cat   ┆ enum         ┆ cat   ┆ cat     ┆ u8    │
+   ╞════════════════════════════════╪═══════╪══════════════════╪═══════╪══════════════╪═══════╪═════════╪═══════╡
+   │ 2026-07-22 12:57:29.766633 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 153   │
+   │ 2026-07-22 12:57:29.844833 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
+   │ 2026-07-22 12:57:29.944933 UTC ┆ 1     ┆ cd97a8704d870e0b ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 232   │
+   │ 2026-07-22 12:57:29.971433 UTC ┆ 1     ┆ cd97a8704d870e0b ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
+   │ 2026-07-22 12:57:30.071533 UTC ┆ 2     ┆ 0c1f231425c8a2eb ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 246   │
+   │ …                              ┆ …     ┆ …                ┆ …     ┆ …            ┆ …     ┆ …       ┆ …     │
+   │ 2026-07-22 12:57:44.717333 UTC ┆ 97    ┆ add60bcbf67382be ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
+   │ 2026-07-22 12:57:44.817433 UTC ┆ 98    ┆ 09da4c4059dd89cb ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 133   │
+   │ 2026-07-22 12:57:44.908433 UTC ┆ 98    ┆ 09da4c4059dd89cb ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
+   │ 2026-07-22 12:57:45.008533 UTC ┆ 99    ┆ 855928477a81a140 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 244   │
+   │ 2026-07-22 12:57:45.100633 UTC ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
+   └────────────────────────────────┴───────┴──────────────────┴───────┴──────────────┴───────┴─────────┴───────┘
 
 Plotting
 --------
@@ -235,18 +261,18 @@ If you prefer `Pandas <https://pandas.pydata.org/>`__ over
    :group: polars
 
    >>> data.to_pandas()
-                              time  trial     state machine state             type event channel  value
-   0    2026-04-16 20:29:12.948426      0  d1af27e5c2b13891   NaN       TrialStart   NaN     NaN    NaN
-   1    2026-04-16 20:29:12.948426      0  d1af27e5c2b13891    s1       StateStart   NaN     NaN    NaN
-   2    2026-04-16 20:29:12.948426      0  d1af27e5c2b13891    s1     OutputAction   NaN    PWM1  235.0
-   3    2026-04-16 20:29:13.022426      0  d1af27e5c2b13891    s1       InputEvent   Tup     NaN    NaN
-   4    2026-04-16 20:29:13.022426      0  d1af27e5c2b13891    s1         StateEnd   NaN     NaN    NaN
-   ...                         ...    ...               ...   ...              ...   ...     ...    ...
-   1095 2026-04-16 20:29:19.121326     99  1719d07df94acabf    s2     OutputAction   NaN    PWM1    0.0
-   1096 2026-04-16 20:29:19.131326     99  1719d07df94acabf    s2       InputEvent   Tup     NaN    NaN
-   1097 2026-04-16 20:29:19.131326     99  1719d07df94acabf    s2         StateEnd   NaN     NaN    NaN
-   1098 2026-04-16 20:29:19.131426     99  1719d07df94acabf   NaN         TrialEnd   NaN     NaN    NaN
-   1099 2026-04-16 20:29:19.131328     99  1719d07df94acabf   NaN  TrialEndControl   NaN     NaN    NaN
+                                    time  trial     state machine state             type event channel  value
+   0    2026-07-22 12:57:29.766633+00:00      0  3725de06508951c9   NaN       TrialStart   NaN     NaN    NaN
+   1    2026-07-22 12:57:29.766633+00:00      0  3725de06508951c9    s1       StateStart   NaN     NaN    NaN
+   2    2026-07-22 12:57:29.766633+00:00      0  3725de06508951c9    s1     OutputAction   NaN    PWM1  153.0
+   3    2026-07-22 12:57:29.844833+00:00      0  3725de06508951c9    s1       InputEvent   Tup     NaN    NaN
+   4    2026-07-22 12:57:29.844833+00:00      0  3725de06508951c9    s1         StateEnd   NaN     NaN    NaN
+   ...                               ...    ...               ...   ...              ...   ...     ...    ...
+   1095 2026-07-22 12:57:45.100633+00:00     99  855928477a81a140    s2     OutputAction   NaN    PWM1    0.0
+   1096 2026-07-22 12:57:45.200633+00:00     99  855928477a81a140    s2       InputEvent   Tup     NaN    NaN
+   1097 2026-07-22 12:57:45.200633+00:00     99  855928477a81a140    s2         StateEnd   NaN     NaN    NaN
+   1098 2026-07-22 12:57:45.200733+00:00     99  855928477a81a140   NaN         TrialEnd   NaN     NaN    NaN
+   1099 2026-07-22 12:57:45.200635+00:00     99  855928477a81a140   NaN  TrialEndControl   NaN     NaN    NaN
    <BLANKLINE>
    [1100 rows x 8 columns]
 

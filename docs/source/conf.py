@@ -16,7 +16,7 @@ from bpod_core.misc import ValidatedDict  # noqa: E402
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'bpod-core'
-copyright = f'{datetime.now().year}, International Brain Laboratory'  # noqa: A001
+copyright = f'{datetime.now().year}, International Brain Laboratory'  # noqa: A001, DTZ005
 author = 'International Brain Laboratory'
 release = '.'.join(__version__.split('.')[:3])
 version = '.'.join(__version__.split('.')[:3])
@@ -98,6 +98,7 @@ intersphinx_mapping = {
     'zeroconf': ('https://python-zeroconf.readthedocs.io/en/latest/', None),
     'typing_extensions': ('https://typing-extensions.readthedocs.io/en/latest', None),
     'filelock': ('https://py-filelock.readthedocs.io/en/latest/', None),
+    'PySide6': ('https://doc.qt.io/qtforpython-6', None),
 }
 
 # -- HTML output ---------------------------------------------------------------
@@ -134,7 +135,7 @@ html_copy_source = False
 
 # -- Autodoc -------------------------------------------------------------------
 
-autodoc_mock_imports = ['_typeshed', 'serial']
+autodoc_mock_imports = ['_typeshed']
 autodoc_class_signature = 'separated'  # 'mixed', 'separated'
 autodoc_member_order = 'groupwise'  # 'alphabetical', 'groupwise', 'bysource'
 autodoc_inherit_docstrings = True
@@ -218,13 +219,13 @@ fsm_light_colors = {
     'color_stroke': 'black',
     'color_fill': 'white',
     'color_highlight': 'lightblue',
-    'color_back': 'red',
+    'color_back': 'black',
 }
 fsm_dark_colors = {
     'color_stroke': 'white',
     'color_fill': 'black',
     'color_highlight': 'darkred',
-    'color_back': 'red',
+    'color_back': 'white',
 }
 
 # -- Graphviz ------------------------------------------------------------------

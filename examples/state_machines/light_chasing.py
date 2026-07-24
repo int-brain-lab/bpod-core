@@ -1,6 +1,12 @@
 """Light Chasing.
 
-Follow the LED to proceed to the next state.
+Each state can use actions to set output channels and transitions to react to input
+events. A state without a state timer transition waits indefinitely, so the state
+machine only advances when the expected input occurs.
+
+In this example, each state lights the LED of one port (actions ``PWM1`` to ``PWM3``
+at maximum intensity) and waits for that same port to go high before advancing. After
+the light has been chased across ports 1 to 3 twice, the state machine exits.
 """
 
 from bpod_core.fsm import StateMachine

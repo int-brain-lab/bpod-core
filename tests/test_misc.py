@@ -1,6 +1,8 @@
 """Tests for bpod_core.misc utilities and helpers."""
 
 import errno
+import logging
+import os
 import struct
 
 import pytest
@@ -262,34 +264,20 @@ class TestGetLocalIPv4:
         result = misc.get_local_ipv4()
         assert result == '192.168.1.10'
 
-    def test_network_unreachable(self, mock_socket):
-        # Mock the socket to raise an OSError for network unreachable
+    @pytest.mark.parametrize(
+        'error_number',
+        [errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL, errno.ENETDOWN],
+        ids=lambda e: errno.errorcode[e],
+    )
+    def test_offline_falls_back_to_loopback(self, mock_socket, error_number, caplog):
+        # Mock the socket to raise an OSError indicating an offline condition
         mock_instance = mock_socket.return_value.__enter__.return_value
         mock_instance.connect.side_effect = OSError(
-            errno.ENETUNREACH, 'Network is unreachable'
+            error_number, os.strerror(error_number)
         )
 
-        result = misc.get_local_ipv4()
-        assert result == '127.0.0.1'
-
-    def test_host_unreachable(self, mock_socket):
-        # Mock the socket to raise an OSError for host unreachable
-        mock_instance = mock_socket.return_value.__enter__.return_value
-        mock_instance.connect.side_effect = OSError(
-            errno.EHOSTUNREACH, 'Host is unreachable'
-        )
-
-        result = misc.get_local_ipv4()
-        assert result == '127.0.0.1'
-
-    def test_address_not_available(self, mock_socket):
-        # Mock the socket to raise an OSError for address not available
-        mock_instance = mock_socket.return_value.__enter__.return_value
-        mock_instance.connect.side_effect = OSError(
-            errno.EADDRNOTAVAIL, 'Address not available'
-        )
-
-        result = misc.get_local_ipv4()
+        with caplog.at_level(logging.WARNING):
+            result = misc.get_local_ipv4()
         assert result == '127.0.0.1'
 
     def test_unexpected_os_error(self, mock_socket):

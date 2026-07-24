@@ -54,3 +54,18 @@ VALID_OPERATORS = {'>exit', '>back'}
 MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
 CONFIG_PATH = platformdirs.user_config_path(appname='bpod-core', appauthor=False)
 DISCOVERY_TIMEOUT = 0.11
+
+
+_REMOTE_CALL_METHODS = frozenset(
+    {
+        'reset_session_clock',
+        'run',
+        'set_status_led',
+        'stop_state_machine',
+        'update_modules',
+    }
+)
+"""Methods that remote clients may invoke."""
+
+_REMOTE_DATA_METHODS = frozenset({'get_data', 'peek_data'})
+"""DataFrame-returning methods that remote clients may invoke."""

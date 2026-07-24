@@ -34,6 +34,11 @@ _TARGET_REMAP = {
     'NoneType': 'types.NoneType',
 }
 
+_DATA_TARGET_REMAP = {
+    'numpy._typing._array_like.NDArray': 'numpy.typing.NDArray',
+}
+"""Private aliases remapped to public ``py:data`` targets in the fallback below."""
+
 
 def _resolve(app, env, node, contnode):
     """Resolve missing cross-references not covered by intersphinx inventories."""
@@ -43,6 +48,12 @@ def _resolve(app, env, node, contnode):
     # Remap serial.tools.list_ports_common.ListPortInfo
     if target == 'serial.tools.list_ports_common.ListPortInfo':
         node['reftarget'] = 'serial.tools.list_ports.ListPortInfo'
+        return None
+
+    # Remap platform-specific Serial implementations to the public API entry
+    if re.fullmatch(r'serial\.serial(posix|win32|java|cli)\.Serial', target):
+        contnode[0] = nodes.Text('Serial')
+        node['reftarget'] = 'serial.Serial'
         return None
 
     # Remap bare names to their fully-qualified intersphinx targets
@@ -84,15 +95,23 @@ def _resolve(app, env, node, contnode):
         ref += contnode
         return ref
 
-    # For failed py:class lookups, retry as py:data or py:attribute
+    # For failed py:class lookups, retry as py:data or py:attribute. Targets
+    # rendered as typing.* but absent from the stdlib docs (e.g. backported
+    # special forms like TypeForm) are also retried as typing_extensions.*
     if node.get('refdomain') == 'py' and node.get('reftype') == 'class':
+        candidates = [target]
+        if target.startswith('typing.'):
+            candidates.append('typing_extensions.' + target.removeprefix('typing.'))
+        if target in _DATA_TARGET_REMAP:
+            candidates.append(_DATA_TARGET_REMAP[target])
         for inv in InventoryAdapter(env).named_inventory.values():
             for alt in ('py:data', 'py:attribute'):
-                entry = inv.get(alt, {}).get(target)
-                if entry:
-                    ref = nodes.reference('', '', internal=False, refuri=entry.uri)
-                    ref += contnode
-                    return ref
+                for candidate in candidates:
+                    entry = inv.get(alt, {}).get(candidate)
+                    if entry:
+                        ref = nodes.reference('', '', internal=False, refuri=entry.uri)
+                        ref += contnode
+                        return ref
 
     return None
 

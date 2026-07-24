@@ -1,6 +1,7 @@
 """Data structures used by the bpod module."""
 
-from typing import Any, Literal, NamedTuple
+from enum import IntEnum
+from typing import Any, Literal, NamedTuple, TypeAlias
 
 import msgspec
 import numpy as np
@@ -137,35 +138,49 @@ class _MessageKind(ByteEnum):
     """A reply sent by :class:`~bpod_core.bpod.Bpod`."""
 
 
-class BpodMessage(msgspec.Struct, array_like=True):
+class BpodMessage(msgspec.Struct, array_like=True, tag_field='kind'):
+    """Base class for all messages exchanged between ServiceHost and ServiceClient."""
+
     """Base Envelope for a Bpod IPC message."""
 
 
-class BpodMessageGeneric(BpodMessage, tag='g'):
-    """Envelope for a generic message."""
-
-    data: Any = None
-    """The content of the reply."""
-
-
-class BpodMessageHello(BpodMessage, tag='h'):
+class RequestHello(BpodMessage, tag='h'):
     """Envelope for a handshake request."""
 
     bpod_core_version: str
     """The version of bpod-core that the client is using."""
-    ip: str
-    """The client's IP address."""
-    pid: int
-    """The process ID of the client."""
-    local: bool
-    """Whether the client is running on the same machine as the host."""
 
 
-class BpodMessageBye(BpodMessageHello, tag='b'):
+class RequestBye(BpodMessage, tag='b'):
     """Envelope for a disconnect notice."""
 
 
-class BpodMessageWelcome(BpodMessage, tag='w'):
+class RequestCall(BpodMessage, tag='c'):
+    """Envelope for a method call request."""
+
+    method_name: str
+    """The name of the method to be called."""
+    args: tuple = ()
+    """The arguments to be passed to the method."""
+    kwargs: dict[str, Any] = {}
+    """Keyword arguments to be passed to the method."""
+
+
+class RequestData(RequestCall, tag='rd'):
+    """Envelope for a data request."""
+
+    compression: Literal['uncompressed', 'lz4', 'zstd'] = 'uncompressed'
+    """The compression method to be used for the data."""
+
+
+class ReplyGeneric(BpodMessage, tag='g'):
+    """Envelope for a generic reply."""
+
+    value: Any = None
+    """The content of the reply."""
+
+
+class ReplyWelcome(BpodMessage, tag='w'):
     """Envelope for a handshake reply."""
 
     version: 'VersionInfo'
@@ -178,22 +193,158 @@ class BpodMessageWelcome(BpodMessage, tag='w'):
     """The Bpod's user-defined location."""
 
 
-class BpodMessageCallRequest(BpodMessage, tag='c'):
-    """Envelope for a method call request."""
+BpodEventType: TypeAlias = Literal[
+    'TrialStart',
+    'TrialEnd',
+    'TrialEndControl',
+    'StateStart',
+    'StateEnd',
+    'InputEvent',
+    'OutputAction',
+]
+"""Vocabulary of the trial DataFrame's ``type`` column."""
 
-    method_name: str
-    """The name of the method to be called."""
-    args: tuple = ()
-    """The arguments to be passed to the method."""
-    kwargs: dict[str, Any] = {}
-    """Keyword arguments to be passed to the method."""
+
+class _EventTag(IntEnum):
+    """
+    Tags for identifying Bpod event via Tagged Unions.
+
+    Values need to be between -32 to 127 in order to allow for space efficient encoding
+    to a negative or positive MessagePack fixint.
+    """
+
+    TrialStart = 20
+    StateStart = 21
+    InputEvent = 22
+    OutputAction = 23
+    StateEnd = 24
+    TrialEnd = 25
+    TrialEndControl = 26
 
 
-class BpodMessageDataRequest(BpodMessageCallRequest, tag='rd'):
-    """Envelope for a data request."""
+class EventTrialStart(BpodMessage, tag=_EventTag.TrialStart.value):
+    """
+    Message marking the start of a trial.
 
-    compression: Literal['uncompressed', 'lz4', 'zstd'] = 'uncompressed'
-    """The compression method to be used for the data."""
+    Trial streams are strictly sequential: all messages between an
+    :class:`EventTrialStart` and the next :class:`EventTrialEnd` belong to the
+    trial identified by these markers, and a clean trial's stream is terminated
+    by a trailing :class:`EventTrialEndControl`.
+    """
+
+    time_us: int
+    """Absolute time of the trial start (microseconds since epoch, UTC)."""
+
+    trial: int
+    """Zero-based trial index."""
+
+    fsm_hash: str
+    """Hex digest of the state machine's hash."""
+
+
+class EventStateStart(BpodMessage, tag=_EventTag.StateStart.value):
+    """Message marking the start of a state."""
+
+    time_us: int
+    """Absolute time of the event (microseconds since epoch, UTC)."""
+
+    state: str
+    """Name of the state."""
+
+
+class EventStateEnd(BpodMessage, tag=_EventTag.StateEnd.value):
+    """Message marking the end of a state."""
+
+    time_us: int
+    """Absolute time of the event (microseconds since epoch, UTC)."""
+
+    state: str
+    """Name of the state."""
+
+
+class EventInput(BpodMessage, tag=_EventTag.InputEvent.value):
+    """Message for a single input event."""
+
+    time_us: int
+    """Absolute time of the event (microseconds since epoch, UTC)."""
+
+    event: str
+    """Name of the input event."""
+
+    channel: str | None
+    """Name of the input channel, or ``None`` for synthetic events."""
+
+    value: int | None
+    """The event's value, or ``None`` if not applicable."""
+
+
+class EventOutput(BpodMessage, tag=_EventTag.OutputAction.value):
+    """Message for a single output action."""
+
+    time_us: int
+    """Absolute time of the action (microseconds since epoch, UTC)."""
+
+    channel: str
+    """Name of the output channel."""
+
+    value: int
+    """The value set on the output channel."""
+
+
+class EventTrialEnd(BpodMessage, tag=_EventTag.TrialEnd.value):
+    """
+    Message marking the end of a trial.
+
+    Only published when the hardware exit packet is received: a trial aborted
+    without one publishes neither :class:`EventTrialEnd` nor
+    :class:`EventTrialEndControl` - its stream simply ends. See
+    :class:`EventTrialStart` for the ordering semantics.
+    """
+
+    time_us: int
+    """Absolute time of the trial end, derived from the hardware cycle count
+    (microseconds since epoch, UTC)."""
+
+    trial: int
+    """Zero-based trial index."""
+
+
+class EventTrialEndControl(BpodMessage, tag=_EventTag.TrialEndControl.value):
+    """
+    Message terminating a trial's stream with timing-verification data.
+
+    Trails :class:`EventTrialEnd` and carries the hardware's independent
+    end-of-trial microsecond count - the same clock pair compared by the
+    reader's timing-violation warning.
+    """
+
+    time_us: int
+    """Hardware microsecond count at the end of the trial
+    (microseconds since epoch, UTC)."""
+
+    trial: int
+    """Zero-based trial index."""
+
+    n_events: int
+    """Total number of messages published for the trial (completeness check)."""
+
+
+BpodReplyUnion: TypeAlias = ReplyGeneric | ReplyWelcome
+"""Tagged union of all concrete :class:`BpodMessage` subclasses used for replies."""
+
+BpodRequestUnion: TypeAlias = RequestHello | RequestBye | RequestCall | RequestData
+"""Tagged union of all concrete :class:`BpodMessage` subclasses used for requests."""
+
+BpodEventUnion: TypeAlias = (
+    EventTrialStart
+    | EventStateStart
+    | EventStateEnd
+    | EventInput
+    | EventOutput
+    | EventTrialEnd
+    | EventTrialEndControl
+)
+"""Tagged union of all concrete :class:`BpodMessage` subclasses used for events."""
 
 
 class VersionInfo(msgspec.Struct, frozen=True):
@@ -240,3 +391,10 @@ class HardwareConfiguration(msgspec.Struct, frozen=True):
     """Frequency of the state machine's refresh cycle during a trial in Hertz."""
     n_modules: int
     """Number of modules supported by the state machine."""
+
+
+class HardwareState(msgspec.Struct):
+    """Represents the Bpod's current hardware state."""
+
+    status_led: bool | None = None
+    """The current state of the Bpod's status LED. None if unknown."""

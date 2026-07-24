@@ -5,7 +5,14 @@ from unittest.mock import MagicMock
 import pytest
 from serial import SerialException
 
-from bpod_core.bpod import Bpod, BpodError
+from bpod_core.bpod import Bpod, BpodError, RemoteBpod
+from bpod_core.bpod.constants import _REMOTE_CALL_METHODS, _REMOTE_DATA_METHODS
+from bpod_core.bpod.structs import (
+    BpodEventUnion,
+    EventTrialStart,
+    RequestCall,
+    RequestData,
+)
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import STRUCT_INT16_LE, STRUCT_UINT8
 from bpod_core.fsm import StateMachine
@@ -386,3 +393,66 @@ class TestRun:
         """Calling run() without a prior run raises RuntimeError."""
         with pytest.raises(RuntimeError, match='No state machine has been run yet'):
             mock_bpod_25.run()
+
+
+class TestRemoteCall:
+    @pytest.mark.parametrize(
+        'req',
+        [
+            pytest.param(RequestCall('very_illegal'), id='illegal call request'),
+            pytest.param(RequestData('very_illegal'), id='illegal data request'),
+        ],
+    )
+    def test_disallowed_method_raises(self, mock_bpod, req):
+        """Method names outside the allowlist are rejected."""
+        with pytest.raises(BpodError, match='cannot be called remotely'):
+            Bpod._request_handler(mock_bpod, req)
+
+    def test_allowed_method_is_called(self, mock_bpod):
+        """Allowlisted method names resolve to the bound method."""
+        Bpod._request_handler(mock_bpod, RequestCall('set_status_led', (False,)))
+        mock_bpod.set_status_led.assert_called_once_with(False)
+
+    @pytest.mark.parametrize(
+        'method_set',
+        [
+            pytest.param(_REMOTE_CALL_METHODS, id='remote call'),
+            pytest.param(_REMOTE_DATA_METHODS, id='remote data'),
+        ],
+    )
+    def test_allowlist_names_are_methods(self, method_set):
+        """Every allowlisted name refers to an existing Bpod method."""
+        assert all(callable(getattr(Bpod, name)) for name in method_set)
+
+
+class TestBpodSubscriberWait:
+    def test_waits_for_subscribers_when_supervised(self, monkeypatch, request):
+        """With BPOD_OVERRIDE_REMOTE set, init waits for a PUB/SUB subscriber."""
+        monkeypatch.setenv('BPOD_OVERRIDE_REMOTE', '1')
+        bpod = request.getfixturevalue('mock_bpod_25')
+        bpod._zmq.wait_for_subscribers.assert_called_once_with(timeout=1.0)
+
+    def test_no_wait_without_override(self, monkeypatch, request):
+        """Without the environment override, init does not wait."""
+        monkeypatch.delenv('BPOD_OVERRIDE_REMOTE', raising=False)
+        bpod = request.getfixturevalue('mock_bpod_25')
+        bpod._zmq.wait_for_subscribers.assert_not_called()
+
+
+class TestRemoteBpodEventCallback:
+    @pytest.fixture
+    def mock_client(self, mocker):
+        """Mock the ServiceClient used by RemoteBpod."""
+        return mocker.patch('bpod_core.bpod.ServiceClient', autospec=True)
+
+    def test_callback_subscribes_and_forwards(self, mock_client):
+        """With an event_callback, the client subscribes and messages forward."""
+        received = []
+        remote = RemoteBpod(address='tcp://127.0.0.1:1', event_callback=received.append)
+        kwargs = mock_client.call_args.kwargs
+        assert kwargs['event_handler'] == remote._event_handler
+        assert kwargs['event_type'] is BpodEventUnion
+
+        message = EventTrialStart(time_us=0, trial=0, fsm_hash='00')
+        remote._event_handler(message)
+        assert received == [message]

@@ -37,6 +37,8 @@ from bpod_core.bpod.constants import (
     _CHANNEL_BASE_NAME_CONDITION,
     _CHANNEL_BASE_NAME_GLOBAL_COUNTER,
     _CHANNEL_BASE_NAME_GLOBAL_TIMER,
+    _REMOTE_CALL_METHODS,
+    _REMOTE_DATA_METHODS,
     BPOD_UUID_NAMESPACE,
     CHANNEL_TYPES_INPUT,
     CHANNEL_TYPES_OUTPUT,
@@ -52,15 +54,18 @@ from bpod_core.bpod.constants import (
     VIDS_BPOD,
 )
 from bpod_core.bpod.structs import (
+    BpodEventUnion,
     BpodInfo,
-    BpodMessage,
-    BpodMessageBye,
-    BpodMessageCallRequest,
-    BpodMessageDataRequest,
-    BpodMessageGeneric,
-    BpodMessageHello,
-    BpodMessageWelcome,
+    BpodReplyUnion,
+    BpodRequestUnion,
+    EventTrialStart,
     HardwareConfiguration,
+    ReplyGeneric,
+    ReplyWelcome,
+    RequestBye,
+    RequestCall,
+    RequestData,
+    RequestHello,
     StateMachineLookup,
     TimeReferences,
     VersionInfo,
@@ -93,7 +98,6 @@ from bpod_core.misc import (
     SettingsDict,
     SuggestionDict,
     extend_packed,
-    get_local_ipv4,
     suggest_similar,
     suppress_logging,
 )
@@ -142,7 +146,8 @@ class Bpod(SerialDevice, AbstractBpod):
 
     _settings: SettingsDict
     _read_thread: ReadThread | None = None
-    _zmq: ServiceHost
+    _event_thread: EventThread | None = None
+    _zmq: ServiceHost[BpodRequestUnion, BpodEventUnion]
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
@@ -183,6 +188,14 @@ class Bpod(SerialDevice, AbstractBpod):
     ) -> None:
         logger.info('bpod-core %s', bpod_core_version)
         self._settings = SettingsDict(CONFIG_PATH / 'settings.json')
+
+        # environmental overrides
+        if 'BPOD_OVERRIDE_PORT' in os.environ:
+            port = os.getenv('BPOD_OVERRIDE_PORT')
+        if 'BPOD_OVERRIDE_SERIAL_NUMBER' in os.environ:
+            serial_number = os.getenv('BPOD_OVERRIDE_SERIAL_NUMBER')
+        if 'BPOD_OVERRIDE_REMOTE' in os.environ:
+            remote = os.getenv('BPOD_OVERRIDE_REMOTE') in ('True', 'true', '1')
 
         # initialize members
         self._input_events: _InputEvents = _InputEvents(
@@ -242,6 +255,15 @@ class Bpod(SerialDevice, AbstractBpod):
         # start ZeroMQ service
         self._start_zmq(use_zeroconf=remote)
         logger.info('ZeroMQ service started on %s', self.address)
+
+        # when launched by a supervising process (e.g. QBpod), briefly wait for
+        # its subscription to register so the first trial's messages aren't lost
+        # to the PUB/SUB slow-joiner race
+        if 'BPOD_OVERRIDE_REMOTE' in os.environ:
+            if self._zmq.wait_for_subscribers(timeout=1.0):
+                logger.debug('Subscriber registered on the PUB/SUB channel')
+            else:
+                logger.debug('No subscriber registered within timeout')
 
         # register destructors
         self._bpod_finalizer = weakref.finalize(
@@ -332,19 +354,10 @@ class Bpod(SerialDevice, AbstractBpod):
         """Primary serial device for communication with the Bpod."""
         return self._serial
 
-    def _request_handler(self, request: BpodMessage) -> Any:
+    def _request_handler(self, request: BpodRequestUnion) -> Any:
         reply: Any
         match request:
-            case BpodMessageBye():
-                # Handle disconnect notice
-                logger.info(
-                    'Client disconnected: PID %d on %s',
-                    request.pid,
-                    'localhost' if request.local else request.ip,
-                )
-                reply = 'ciao!'
-
-            case BpodMessageHello():
+            case RequestHello():
                 # Handle connection requests
                 if request.bpod_core_version != bpod_core_version:
                     raise RuntimeError(
@@ -352,28 +365,44 @@ class Bpod(SerialDevice, AbstractBpod):
                         f'client uses bpod-core {request.bpod_core_version}. Please '
                         f'ensure that both use the same version.'
                     )
-                logger.info(
-                    'Client connected: PID %d on %s',
-                    request.pid,
-                    'localhost' if request.local else request.ip,
-                )
-                reply = BpodMessageWelcome(
+                if logger.isEnabledFor(logging.INFO):
+                    address = self._zmq.get_metadata('Peer-Address', 'unknown address')
+                    hostname = self._zmq.get_metadata('X-Hostname', 'unknown hostname')
+                    logger.info('Client connected: %s (%s)', address, hostname)
+                reply = ReplyWelcome(
                     version=self._version,
                     serial_number=self._serial_number,
                     name=self.name,
                     location=self.location,
                 )
 
-            case BpodMessageDataRequest():
+            case RequestData():
+                # Handle data requests
+                if request.method_name not in _REMOTE_DATA_METHODS:
+                    raise BpodError(
+                        f"Method '{request.method_name}' cannot be called remotely"
+                    )
                 method = getattr(self, request.method_name)
                 data: pl.DataFrame = method(*request.args, **request.kwargs)
                 reply = data.write_ipc(None, compression=request.compression).getvalue()
 
-            case BpodMessageCallRequest():
+            case RequestCall():
                 # Handle method call requests
+                if request.method_name not in _REMOTE_CALL_METHODS:
+                    raise BpodError(
+                        f"Method '{request.method_name}' cannot be called remotely"
+                    )
                 method = getattr(self, request.method_name)
                 return_value = method(*request.args, **request.kwargs)
-                reply = BpodMessageGeneric(data=return_value)
+                reply = ReplyGeneric(value=return_value)
+
+            case RequestBye():
+                # Handle disconnect notice
+                if logger.isEnabledFor(logging.INFO):
+                    address = self._zmq.get_metadata('Peer-Address', 'unknown address')
+                    hostname = self._zmq.get_metadata('X-Hostname', 'unknown hostname')
+                    logger.info('Client disconnected: %s (%s)', address, hostname)
+                reply = 'ciao!'
 
             case _:
                 # Handle unknown request types
@@ -384,34 +413,26 @@ class Bpod(SerialDevice, AbstractBpod):
         return reply
 
     def _start_zmq(self, *, use_zeroconf: bool) -> None:
-        port_pub = self._get_setting(['devices', self._serial_number, 'port_pub'])
-        port_rep = self._get_setting(['devices', self._serial_number, 'port_rep'])
+        # service properties used for advertising the Bpod via ZeroConf / locally
+        properties = {
+            'description': f'Bpod Finite State Machine {self.version.machine_str}',
+            'serial_number': self._serial_number,
+            'serial_port': self._port_info.device,
+            'firmware': '.'.join([str(x) for x in self.version.firmware]),
+            'core': bpod_core_version,
+        }
+        if self.name is not None:
+            properties['name'] = self.name
+        if self.location is not None:
+            properties['location'] = self.location
         self._zmq = ServiceHost(
             service_name=self.name or f'bpod_{self._serial_number}',
             service_type='bpod',
-            properties={
-                'description': f'Bpod Finite State Machine {self.version.machine_str}',
-                'serial': self._serial_number,
-                'name': self.name or '',
-                'location': self.location or '',
-                'firmware': '.'.join([str(x) for x in self.version.firmware]),
-                'core': bpod_core_version,
-            },
+            properties=properties,
             uuid=uuid5(BPOD_UUID_NAMESPACE, self._serial_number),
-            event_handler=self._request_handler,
-            port_pub=cast('int | None', port_pub),
-            port_rep=cast('int | None', port_rep),
-            default_request_type=BpodMessageHello
-            | BpodMessageCallRequest
-            | BpodMessageDataRequest
-            | BpodMessageBye,
+            request_handler=self._request_handler,
+            request_type=BpodRequestUnion,
             remote=use_zeroconf,
-        )
-        self._set_setting(
-            ['devices', self._serial_number, 'port_pub'], self._zmq.pub_tcp_port
-        )
-        self._set_setting(
-            ['devices', self._serial_number, 'port_rep'], self._zmq.rep_tcp_port
         )
 
     def _stop_zmq(self) -> None:
@@ -843,7 +864,7 @@ class Bpod(SerialDevice, AbstractBpod):
             True if the Bpod acknowledged the command.
         """
         self.serial0.write_struct('<c?', b':', enable)
-        return self.serial0.verify(b'')
+        return self.serial0.verify()
 
     @override
     def update_modules(self) -> None:
@@ -1539,6 +1560,8 @@ class Bpod(SerialDevice, AbstractBpod):
             event_lookup=self._event_lookup,
             action_names=self._actions,
             time_reference=self._time_reference,
+            publish=self._zmq.publish,
+            publish_gate=lambda: self._zmq.has_subscribers,
         )
         read_thread = ReadThread(
             serial=self.serial0,
@@ -1549,11 +1572,23 @@ class Bpod(SerialDevice, AbstractBpod):
             queue_softcodes=self._softcode_thread.queue,
         )
 
-        # wait for an already running state machine to finish
-        self.wait()
-
-        # start threads
+        # wait for the previous trial's reader to finish, then resume reading the serial
+        # stream without further delay (softcodes and raw events must not wait for the
+        # previous trial's event processing)
+        previous_read_thread = self._read_thread
+        if previous_read_thread is not None and previous_read_thread.is_alive():
+            logger.debug(
+                'Waiting for state machine #%d to finish ...',
+                previous_read_thread.trial_number,
+            )
+            previous_read_thread.join()
         read_thread.start()
+
+        # before the new event thread publishes anything, let the previous one drain its
+        # backlog - this keeps trial streams strictly sequential on the PUB/SUB channel.
+        previous_event_thread = self._event_thread
+        if previous_event_thread is not None and previous_event_thread.is_alive():
+            previous_event_thread.join()
         event_thread.start()
 
         # set private class attributes
@@ -1580,16 +1615,21 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         Wait for the currently running state machine to finish.
 
-        Blocks until the state machine thread completes. If no state machine is
-        currently running, this method returns immediately.
+        Blocks until the state machine's reader and event threads complete - i.e., until
+        all of the trial's events have been recorded and published. If no state machine
+        is currently running, this method returns immediately.
         """
-        read_thread = self._read_thread
+        read_thread = self._read_thread  # snapshot for thread-safety
         if read_thread is not None and read_thread.is_alive():
             logger.debug(
                 'Waiting for state machine #%d to finish ...',
                 read_thread.trial_number,
             )
             read_thread.join()
+
+        event_thread = self._event_thread  # snapshot for thread-safety
+        if event_thread is not None and event_thread.is_alive():
+            event_thread.join()
 
     @overload
     def peek_data(
@@ -1694,6 +1734,16 @@ class Bpod(SerialDevice, AbstractBpod):
     @location.setter
     def location(self, location: str | None) -> None:
         self._set_setting(['devices', self._serial_number, 'location'], location)
+
+    @override
+    @property
+    def address_control(self) -> str:
+        return self._zmq.rep_tcp_addr
+
+    @override
+    @property
+    def address_events(self) -> str:
+        return self._zmq.pub_tcp_addr
 
     @validate_call()
     def set_softcode_handler(
@@ -2007,6 +2057,10 @@ class RemoteBpod(AbstractBpod):
         Zeroconf location string to filter by during discovery.
     timeout : float, default: 10.0
         Discovery timeout in seconds.
+    event_callback : Callable, optional
+        Called with each live trial-event message received over the events channel;
+        return values are ignored. Runs on a background thread and should not block;
+        exceptions it raises are logged but not propagated.
 
     Raises
     ------
@@ -2014,32 +2068,42 @@ class RemoteBpod(AbstractBpod):
         If no matching remote Bpod is found within `timeout` seconds.
     """
 
-    _zmq: ServiceClient[dict]
+    _zmq: ServiceClient[BpodRequestUnion, BpodReplyUnion, BpodEventUnion]
     _name: str | None = None
     _location: str | None = None
+    _event_callback: Callable[[BpodEventUnion], object] | None = None
 
     def __init__(
         self,
         address: str | None = None,
+        *,
         name: str | None = None,
         serial_number: str | None = None,
         location: str | None = None,
         timeout: float = 10.0,
+        event_callback: Callable[[BpodEventUnion], object] | None = None,
     ) -> None:
         properties = {
             'address': address,
             'name': name,
-            'serial': serial_number,
+            'serial_number': serial_number,
             'location': location,
         }
+        # the event loop may deliver messages before this constructor returns, so the
+        # callback must be in place before the client exists
+        self._event_callback = event_callback
         try:
+            # without a callback there is no consumer for live events - skip the
+            # subscription entirely so the host bypasses publishing altogether
+            subscribe = event_callback is not None
             self._zmq = ServiceClient(
                 service_type='bpod',
                 address=address,
-                event_handler=self._event_handler,
+                event_handler=self._event_handler if subscribe else None,
                 discovery_timeout=timeout,
                 txt_properties={k: v for k, v in properties.items() if v is not None},
-                default_reply_type=dict,
+                default_reply_type=BpodReplyUnion,
+                event_type=BpodEventUnion if subscribe else Any,
             )
         except TimeoutError as e:
             raise TimeoutError('Failed to discover remote Bpod.') from e
@@ -2076,15 +2140,7 @@ class RemoteBpod(AbstractBpod):
 
     def close(self) -> None:
         """Close the connection to the remote Bpod."""
-        self._zmq.request(
-            request_data=BpodMessageBye(
-                bpod_core_version=bpod_core_version,
-                local=self._zmq.is_local,
-                pid=os.getpid(),
-                ip=get_local_ipv4(),
-            ),
-            reply_type=str,
-        )
+        self._zmq.request(request_data=RequestBye(), reply_type=str)
         self._zmq.close()
 
     def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any:
@@ -2107,11 +2163,9 @@ class RemoteBpod(AbstractBpod):
         """
         try:
             return self._zmq.request(
-                request_data=BpodMessageCallRequest(
-                    method_name=method, args=args, kwargs=kwargs
-                ),
-                reply_type=BpodMessageGeneric,
-            ).data
+                request_data=RequestCall(method_name=method, args=args, kwargs=kwargs),
+                reply_type=ReplyGeneric,
+            ).value
         except RemoteError as e:
             match e.original_error.name:
                 case 'RuntimeError':
@@ -2122,21 +2176,31 @@ class RemoteBpod(AbstractBpod):
 
     def _handshake(self) -> None:
         reply = self._zmq.request(
-            request_data=BpodMessageHello(
-                bpod_core_version=bpod_core_version,
-                local=self._zmq.is_local,
-                pid=os.getpid(),
-                ip=get_local_ipv4(),
-            ),
-            reply_type=BpodMessageWelcome,
+            request_data=RequestHello(bpod_core_version=bpod_core_version),
+            reply_type=ReplyWelcome,
         )
         self._version = reply.version
         self._serial_number = reply.serial_number
         self._name = reply.name
         self._location = reply.location
 
-    def _event_handler(self, message: dict) -> None:
-        pass
+    def _event_handler(self, message: BpodEventUnion) -> None:
+        """Handle a message received on the PUB/SUB channel.
+
+        Logs selected messages, then forwards each message to the ``event_callback``
+        given at construction.
+
+        Parameters
+        ----------
+        message : BpodEventUnion
+            The decoded message.
+        """
+        if logger.isEnabledFor(logging.INFO):
+            match message:
+                case EventTrialStart(trial=trial, fsm_hash=fsm_hash):
+                    logger.info('Starting state machine %s / trial %s', fsm_hash, trial)
+        if self._event_callback is not None:
+            self._event_callback(message)
 
     @overload
     def get_data(
@@ -2152,7 +2216,7 @@ class RemoteBpod(AbstractBpod):
     def get_data(self, *, concat=True, rechunk=False, lazy=False):
         try:
             reply = self._zmq.request(
-                request_data=BpodMessageDataRequest(
+                request_data=RequestData(
                     method_name='get_data',
                     kwargs={'concat': concat},
                     compression='uncompressed' if self._zmq.is_local else 'lz4',
@@ -2177,6 +2241,16 @@ class RemoteBpod(AbstractBpod):
     @property
     def location(self) -> str | None:
         return self._location
+
+    @override
+    @property
+    def address_control(self) -> str:
+        return self._zmq.address_req
+
+    @override
+    @property
+    def address_events(self) -> str:
+        return self._zmq.address_sub
 
     @override
     def reset_session_clock(self) -> bool:
@@ -2303,13 +2377,13 @@ def discover_remote_bpod(
     ~bpod_core.ipc.ServiceEvent
         A named tuple with the following fields:
 
-        - kind: str, either 'added' or 'removed'
-        - address: str, the service address, e.g., 'tcp://192.168.1.10:1234'
-        - properties: dict, the service properties, e.g., {'name': 'MyDevice'}
+        - kind: str, either ``'added'`` or ``'removed'``
+        - address: str, the service address, e.g., ``'tcp://192.168.1.10:1234'``
+        - properties: dict, the service properties, e.g., ``{'name': 'MyDevice'}``
     """
     properties = {
         'name': name,
-        'serial': serial_number,
+        'serial_number': serial_number,
         'location': location,
     }
     properties = {k: v for k, v in properties.items() if v is not None}

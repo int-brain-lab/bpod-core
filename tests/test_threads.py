@@ -7,6 +7,7 @@ import struct
 import threading
 import time
 from queue import SimpleQueue
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
@@ -21,6 +22,14 @@ from bpod_core.bpod._threads import (
     _EventID,
 )
 from bpod_core.bpod.structs import (
+    BpodEventUnion,
+    EventInput,
+    EventOutput,
+    EventStateEnd,
+    EventStateStart,
+    EventTrialEnd,
+    EventTrialEndControl,
+    EventTrialStart,
     RawEvent,
     RawSoftcode,
     StateMachineLookup,
@@ -28,6 +37,9 @@ from bpod_core.bpod.structs import (
     _InputEvents,
 )
 from bpod_core.constants import STRUCT_UINT32_LE, STRUCT_UINT64_LE
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _CONFIRM_OK = b'\x01'
 _CONFIRM_FAIL = b'\x00'
@@ -207,10 +219,13 @@ class TestEventThread:
         threads = []
 
         def _make(
+            *,
             fsm: StateMachineLookup | None = None,
             action_names: list[str] | None = None,
             event_names: list[str] | None = None,
             time_reference: TimeReferences | None = None,
+            publish: Callable[[BpodEventUnion], object] | None = None,
+            should_publish: Callable[[], bool] | None = None,
         ) -> tuple[EventThread, SimpleQueue[pl.LazyFrame]]:
             action_names = action_names or []
             event_names = event_names or ['Ev0', 'Tup']
@@ -227,6 +242,10 @@ class TestEventThread:
                 event_lookup=_build_event_lookup(input_events, action_names),
                 action_names=action_names,
                 time_reference=time_reference or TimeReferences(0, 0, 0),
+                publish=publish if publish is not None else lambda _: None,
+                publish_gate=should_publish
+                if should_publish is not None
+                else (lambda: True),
             )
             thread.start()
             threads.append(thread)
@@ -263,6 +282,122 @@ class TestEventThread:
         thread.join(timeout=2)
         assert not data_queue.empty()
 
+    @staticmethod
+    def _put_full_trial(thread: EventThread) -> None:
+        """Enqueue a complete trial: start, one state transition, hardware exit."""
+        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_FSM))
+        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
+        thread.queue.put(RawEvent(micros_us=10, event_id=0))
+        thread.queue.put(RawEvent(micros_us=20, event_id=_EventID.END_FSM_CYCLES))
+        thread.queue.put(RawEvent(micros_us=25, event_id=_EventID.END_FSM_MICROS))
+
+    def test_published_events_match_dataframe(self, make_thread):
+        """Published messages mirror the trial DataFrame's event rows in order."""
+        published: list[BpodEventUnion] = []
+        fsm = _make_fsm(transitions={(0, 0): 1})
+        thread, data_queue = make_thread(fsm=fsm, publish=published.append)
+        self._put_full_trial(thread)
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+
+        # the stream is framed by TrialStart / TrialEnd, terminated by the
+        # trailing TrialEndControl record
+        start, *events, end, end_control = published
+        assert isinstance(start, EventTrialStart)
+        assert isinstance(end, EventTrialEnd)
+        assert isinstance(end_control, EventTrialEndControl)
+        assert start.trial == end.trial == end_control.trial == 0
+        assert start.fsm_hash == ''
+        assert end.time_us == 20
+        assert end_control.time_us == 25
+        # n_events counts TrialStart + content events + TrialEnd + itself
+        assert end_control.n_events == len(events) + 3
+
+        # published event messages correspond 1:1 to the DataFrame's event rows
+        struct_by_type = {
+            'StateStart': EventStateStart,
+            'StateEnd': EventStateEnd,
+            'InputEvent': EventInput,
+            'OutputAction': EventOutput,
+        }
+        rows = df.filter(pl.col('type').cast(pl.String).is_in(list(struct_by_type)))
+        types = rows['type'].cast(pl.String).to_list()
+        assert [type(m) for m in events] == [struct_by_type[t] for t in types]
+        times = rows['time'].dt.epoch(time_unit='us').to_list()
+        assert [m.time_us for m in events] == times
+
+    def test_should_publish_gates_all_messages(self, make_thread):
+        """should_publish=False skips publishing entirely; trial data remains."""
+        published: list[BpodEventUnion] = []
+        thread, data_queue = make_thread(
+            publish=published.append, should_publish=lambda: False
+        )
+        self._put_full_trial(thread)
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        assert df.height > 0, 'trial data must be unaffected by the gate'
+        assert published == []
+
+    def test_events_after_fsm_exit_trigger_no_transitions(self, make_thread, caplog):
+        """Events arriving after an exit without successor are recorded but inert."""
+        published: list[BpodEventUnion] = []
+        # event 0 in S0 exits without a successor (target == n_states)
+        fsm = _make_fsm(transitions={(0, 0): 2})
+        with caplog.at_level(logging.ERROR, logger='bpod_core.bpod._threads'):
+            thread, data_queue = make_thread(fsm=fsm, publish=published.append)
+            thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
+            thread.queue.put(RawEvent(micros_us=10, event_id=0))  # S0 -> exit
+            thread.queue.put(RawEvent(micros_us=20, event_id=0))  # after exit
+            thread.stop()
+            thread.join(timeout=2)
+        df = self._collect(data_queue)
+
+        # the post-exit event is published but triggers no phantom transition
+        state_messages = [
+            m for m in published if isinstance(m, (EventStateStart, EventStateEnd))
+        ]
+        assert [type(m) for m in state_messages] == [EventStateStart, EventStateEnd]
+        assert [m.time_us for m in published if isinstance(m, EventInput)] == [10, 20]
+        assert not any('publish' in record.message for record in caplog.records)
+
+        # the DataFrame records the post-exit event without an active state
+        assert df.filter(pl.col('type') == 'StateStart').height == 1
+        assert df.filter(pl.col('type') == 'StateEnd').height == 1
+        post_exit = df.filter(pl.col('time').dt.epoch(time_unit='us') == 20)
+        assert post_exit['state'].to_list() == [None]
+
+    def test_aborted_trial_publishes_no_trial_end(self, make_thread):
+        """Without a hardware exit packet, no end messages are published."""
+        published: list[BpodEventUnion] = []
+        thread, data_queue = make_thread(publish=published.append)
+        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_FSM))
+        thread.queue.put(RawEvent(micros_us=0, event_id=0))
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        assert df.height > 0
+        assert isinstance(published[0], EventTrialStart)
+        assert not any(
+            isinstance(m, (EventTrialEnd, EventTrialEndControl)) for m in published
+        )
+
+    def test_publish_failure_does_not_interrupt_recording(self, make_thread, caplog):
+        """A raising publish callable is logged but does not affect the trial data."""
+
+        def broken_publish(_: BpodEventUnion) -> None:
+            raise RuntimeError('boom')
+
+        with caplog.at_level(logging.ERROR, logger='bpod_core.bpod._threads'):
+            thread, data_queue = make_thread(publish=broken_publish)
+            thread.queue.put(RawEvent(micros_us=0, event_id=0))
+            thread.stop()
+            thread.join(timeout=2)
+        df = self._collect(data_queue)
+        assert df.height > 0
+        assert any('publish' in record.message for record in caplog.records)
+
     def test_hardware_event_recorded(self, make_thread):
         """Hardware event appears in output with correct event name."""
         thread, data_queue = make_thread(event_names=['Ev0', 'Tup'])
@@ -284,7 +419,8 @@ class TestEventThread:
         df = self._collect(data_queue)
         ev = df.filter(pl.col('event') == 'Ev0')
         assert (
-            ev['time'][0] == pl.Series([5100], dtype=pl.Datetime('us'))[0]
+            ev['time'][0]
+            == pl.Series([5100], dtype=pl.Datetime('us', time_zone='UTC'))[0]
         )  # 5000 + 100 µs
 
     def test_state_transition_generates_state_events(self, make_thread):

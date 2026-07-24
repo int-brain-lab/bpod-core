@@ -6,6 +6,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0a14] - 2026-07-24
+
+### Added
+
+- `Bpod` publishes live trial events over the PUB/SUB channel as a tagged union of
+  typed messages.
+- `RemoteBpod` accepts an `event_callback` that receives each live trial-event
+  message.
+- `ServiceHost.get_metadata` for accessing per-request connection metadata from within
+  a request handler.
+- `ServiceHost.publish` for broadcasting events over the PUB/SUB channel;
+  `ServiceClient` decodes them per its new `event_type` parameter.
+- `ServiceHost` remembers the TCP ports last bound for a caller-supplied `uuid`
+  (stored in the user state directory) and reuses them on restart; explicit
+  `port_rep` / `port_pub` arguments take precedence.
+`ServiceHost.has_subscribers`: the host tracks PUB/SUB subscriptions and
+  `publish` drops messages before encoding while nobody is listening.
+- `ServiceClient.request` accepts an optional `timeout`; the client recovers cleanly
+  after a timed-out request.
+
+### Changed
+
+- Add UTC timezone to trial DataFrame timestamps.
+- `ServiceClient` adopts the host's serialization format during the
+  handshake, replacing the per-request trial-and-error fallback.
+- the WELCOME handshake carries the PUB channel's TCP port instead of full TCP
+  addresses.
+- errors raised by `bpod_core.ipc` are now uniformly `ServiceError` subclasses
+- remote method calls (`BpodRequestCall` / `BpodRequestData`) are validated against
+  an explicit allowlist instead of dispatching to arbitrary attributes.
+
+### Fixed
+
+- `ServiceClient` no longer blocks indefinitely when the host dies mid-request.
+- exceptions with non-serializable attributes no longer break error replies from
+  `ServiceHost`.
+- resolved several shutdown races between `close()` and the event threads / `publish()`.
+- `ServiceIterator.close()` now terminates an iteration blocked in `__next__`
+  (e.g., with `timeout=None`) instead of leaving the consumer waiting forever.
+
 ## [0.1.0a13] - 2026-06-18
 
 ### Changed
@@ -215,6 +255,8 @@ Just a quick bugfix release ...
 ## [0.1.0a0] - 2025-04-17
 
 First alpha release. Nothing works.
+
+[0.1.0a14]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a14
 
 [0.1.0a13]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a13
 

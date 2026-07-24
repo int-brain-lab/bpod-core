@@ -1,7 +1,15 @@
 """Global Counters.
 
-A global counter ends an infinite loop when 5 `Port1In` events occur.
-`Port1In` events acquired in the first state are deliberately not counted.
+A global counter counts occurrences of a specified event across all states. Once the
+count reaches the configured threshold, the counter emits a ``GlobalCounter{N}_End``
+event that any state can respond to with a transition. The count can be reset to zero
+using the ``GlobalCounterReset`` action.
+
+In this example, ``GlobalCounter0`` counts ``Port1High`` events with a threshold of 5.
+The states ``Port1Light`` and ``Port3Light`` alternate in an infinite loop until the
+``GlobalCounter0_End`` event exits the state machine. Events occurring during
+``InitialDelay`` are deliberately discarded by the ``GlobalCounterReset`` action in
+``ResetGlobalCounter``.
 """
 
 from bpod_core.fsm import StateMachine

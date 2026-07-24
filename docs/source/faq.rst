@@ -1,6 +1,14 @@
 Frequently Asked Questions
 ==========================
 
+How do I cite bpod-core?
+------------------------
+bpod-core is archived on `Zenodo <https://zenodo.org>`_. Please cite it using the DOI
+`10.5281/zenodo.21497456 <https://doi.org/10.5281/zenodo.21497456>`_, which links to
+citation details and export formats (BibTeX, APA, etc.) for the latest release of
+bpod-core. To cite a specific version, use the version-specific DOI listed on that
+release's Zenodo page.
+
 I can't connect to a Bpod on Linux
 ----------------------------------
 If you're experiencing "Permission denied" errors, slow or unreliable connections,

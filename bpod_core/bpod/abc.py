@@ -6,7 +6,7 @@ from typing import Literal, overload
 
 import polars as pl
 
-from bpod_core.bpod.structs import HardwareConfiguration, VersionInfo
+from bpod_core.bpod.structs import HardwareConfiguration, HardwareState, VersionInfo
 from bpod_core.fsm import StateMachine
 
 
@@ -15,6 +15,7 @@ class AbstractBpod(AbstractContextManager):
 
     _version: VersionInfo
     _hardware: HardwareConfiguration
+    _state: HardwareState
     _serial_number: str
 
     @property
@@ -26,6 +27,16 @@ class AbstractBpod(AbstractContextManager):
     @abstractmethod
     def location(self) -> str | None:
         """The Bpod's user-defined location, or :obj:`None` if not set."""
+
+    @property
+    @abstractmethod
+    def address_control(self) -> str:
+        """The ZeroMQ address of the control channel."""
+
+    @property
+    @abstractmethod
+    def address_events(self) -> str:
+        """The ZeroMQ address of the events channel."""
 
     @property
     def version(self) -> VersionInfo:
