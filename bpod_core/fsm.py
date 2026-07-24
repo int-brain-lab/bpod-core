@@ -819,7 +819,7 @@ class StateMachine(BaseModel, title='State Machine'):
         return self.model_dump(exclude_defaults=exclude_defaults)
 
     def to_json(
-        self, indent: None | int = None, *, exclude_defaults: bool = True
+        self, indent: int | None = None, *, exclude_defaults: bool = True
     ) -> str:
         """Return the state machine as a JSON string.
 
