@@ -219,6 +219,7 @@ class TestEventThread:
         threads = []
 
         def _make(
+            *,
             fsm: StateMachineLookup | None = None,
             action_names: list[str] | None = None,
             event_names: list[str] | None = None,

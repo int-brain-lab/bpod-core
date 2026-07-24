@@ -353,7 +353,7 @@ class TestClient:
 
         with (
             ipc.ServiceHost('Test', 'service', request_handler=bad_handler) as host,
-            ipc.ServiceClient('service', host.rep_tcp_addr) as client,
+            ipc.ServiceClient('service', address=host.rep_tcp_addr) as client,
             pytest.raises(ipc.RemoteError, match='boom'),
         ):
             client.request({'foo': 'bar'})
@@ -366,7 +366,7 @@ class TestClient:
 
         with (
             ipc.ServiceHost('Test', 'service', handler, remote=False) as host,
-            ipc.ServiceClient('service', host.rep_tcp_addr) as client,
+            ipc.ServiceClient('service', address=host.rep_tcp_addr) as client,
         ):
             with pytest.raises(ipc.RemoteError, match='unsupported'):
                 client.request('bad')
@@ -380,7 +380,7 @@ class TestClient:
 
         with (
             ipc.ServiceHost('Test', 'service', handler, remote=False) as host,
-            ipc.ServiceClient('service', host.rep_tcp_addr) as client,
+            ipc.ServiceClient('service', address=host.rep_tcp_addr) as client,
             pytest.raises(ipc.RemoteError, match='boom'),
         ):
             client.request({'foo': 'bar'})
@@ -397,7 +397,7 @@ class TestClient:
 
         with (
             ipc.ServiceHost('Test', 'service', handler, remote=False) as host,
-            ipc.ServiceClient('service', host.rep_tcp_addr) as client,
+            ipc.ServiceClient('service', address=host.rep_tcp_addr) as client,
         ):
             with pytest.raises(TimeoutError):
                 client.request('slow', timeout=0.05)
@@ -407,7 +407,7 @@ class TestClient:
         """Requests on a closed client raise ServiceError."""
         with (
             ipc.ServiceHost('Test', 'service', _noop_handler, remote=False) as host,
-            ipc.ServiceClient('service', host.rep_tcp_addr) as client,
+            ipc.ServiceClient('service', address=host.rep_tcp_addr) as client,
         ):
             client.close()
             with pytest.raises(ipc.ServiceError, match='closed'):
@@ -714,7 +714,7 @@ class TestHost:
                 request_type=_EventA,
                 remote=False,
             ) as host,
-            ipc.ServiceClient('test_service', host.rep_tcp_addr) as client,
+            ipc.ServiceClient('test_service', address=host.rep_tcp_addr) as client,
         ):
             with pytest.raises(ipc.RemoteError) as exc_info:
                 client.request({'not': 'an event'})
@@ -732,7 +732,7 @@ class TestHost:
 
         with (
             ipc.ServiceHost('test', 'test_service', handler, remote=False) as host,
-            ipc.ServiceClient('test_service', host.rep_tcp_addr) as client,
+            ipc.ServiceClient('test_service', address=host.rep_tcp_addr) as client,
         ):
             reply = client.request(None)
         assert reply['hostname'] == socket.gethostname()
@@ -870,7 +870,7 @@ class TestLocalDiscovery:
         """Client discovers host via local advertisement without zeroconf."""
         with (
             ipc.ServiceHost('test', 'service', request_handler=lambda d: {'req': d}),
-            ipc.ServiceClient(service_type='service', remote=False) as client,
+            ipc.ServiceClient('service', remote=False) as client,
         ):
             assert client._address_req.startswith(('tcp://', 'ipc://'))
             reply = client.request({'test': 'value'})
@@ -906,16 +906,14 @@ class TestLocalDiscovery:
         """Client with remote=False only uses local discovery."""
         with (
             ipc.ServiceHost('test', 'localonly', _noop_handler, remote=False),
-            ipc.ServiceClient(service_type='localonly', remote=False),
+            ipc.ServiceClient('localonly', remote=False),
         ):
             mock_advertisement['zeroconf'].assert_not_called()
 
     def test_client_remote_false_raises_if_no_local(self, mock_advertisement):
         """Client with remote=False raises if no local service found."""
         with pytest.raises(TimeoutError):
-            ipc.ServiceClient(
-                service_type='nonexistent', discovery_timeout=0, remote=False
-            )
+            ipc.ServiceClient('nonexistent', discovery_timeout=0, remote=False)
 
     def test_discover_timeout(self, mock_advertisement, mock_service_browser):
         """Timeout when no matching service is discovered within deadline."""

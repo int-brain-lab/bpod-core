@@ -16,7 +16,7 @@ from bpod_core.misc import ValidatedDict  # noqa: E402
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'bpod-core'
-copyright = f'{datetime.now().year}, International Brain Laboratory'  # noqa: A001
+copyright = f'{datetime.now().year}, International Brain Laboratory'  # noqa: A001, DTZ005
 author = 'International Brain Laboratory'
 release = '.'.join(__version__.split('.')[:3])
 version = '.'.join(__version__.split('.')[:3])

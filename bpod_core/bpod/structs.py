@@ -396,5 +396,5 @@ class HardwareConfiguration(msgspec.Struct, frozen=True):
 class HardwareState(msgspec.Struct):
     """Represents the Bpod's current hardware state."""
 
-    status_led: None | bool = None
+    status_led: bool | None = None
     """The current state of the Bpod's status LED. None if unknown."""

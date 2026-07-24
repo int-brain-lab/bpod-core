@@ -2076,6 +2076,7 @@ class RemoteBpod(AbstractBpod):
     def __init__(
         self,
         address: str | None = None,
+        *,
         name: str | None = None,
         serial_number: str | None = None,
         location: str | None = None,

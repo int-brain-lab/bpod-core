@@ -129,7 +129,7 @@ def _safe_str(obj: Any) -> str:
     """Convert an object to a string, tolerating broken ``__str__`` methods."""
     try:
         return str(obj)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return f'<unprintable {type(obj).__name__} object>'
 
 
@@ -175,7 +175,7 @@ class ErrorData(msgspec.Struct):
                     type(exception), exception, exception.__traceback__
                 )
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             formatted_traceback = None
         return cls(
             name=type(exception).__name__,
@@ -579,12 +579,12 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         service_type: str,
         request_handler: Callable[[Q], Any],
         properties: Mapping[str, str | None] | None = None,
+        *,
         uuid: UUID | None = None,
         port_pub: int | None = None,
         port_rep: int | None = None,
         serialization: Serialization = 'msgpack',
         request_type: TypeForm[Q] = Any,
-        *,
         remote: bool = True,
     ) -> None:
         # serialization
@@ -666,24 +666,24 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             self._finalizer = weakref.finalize(
                 self,
                 ServiceHost._finalize,
-                self._event_thread,
-                self._stop_event_loop,
-                [self._rep_socket, self._pub_socket],
-                self._zmq_context,
-                self._local_advertisement,
-                self._zeroconf,
-                [self._named_pipe_rep, self._named_pipe_pub],
+                event_thread=self._event_thread,
+                stop_event=self._stop_event_loop,
+                sockets=[self._rep_socket, self._pub_socket],
+                zmq_context=self._zmq_context,
+                local_advertisement=self._local_advertisement,
+                zeroconf=self._zeroconf,
+                named_pipes=[self._named_pipe_rep, self._named_pipe_pub],
             )
         except BaseException:
             # unwind partially-acquired resources when construction fails
             ServiceHost._finalize(
-                self._event_thread,
-                self._stop_event_loop,
-                [self._rep_socket, self._pub_socket],
-                self._zmq_context,
-                self._local_advertisement,
-                self._zeroconf,
-                [self._named_pipe_rep, self._named_pipe_pub],
+                event_thread=self._event_thread,
+                stop_event=self._stop_event_loop,
+                sockets=[self._rep_socket, self._pub_socket],
+                zmq_context=self._zmq_context,
+                local_advertisement=self._local_advertisement,
+                zeroconf=self._zeroconf,
+                named_pipes=[self._named_pipe_rep, self._named_pipe_pub],
             )
             raise
 
@@ -823,17 +823,17 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         """Start the background thread processing incoming requests."""
         self._event_thread = threading.Thread(
             target=ServiceHost._event_loop,
-            args=(
-                self._stop_event_loop,
-                self._rep_socket,
-                self._pub_socket,
-                self._pub_lock,
-                self._req_decoder,
-                self._rep_encoder,
-                request_handler,
-                handshake_data,
-                self._has_subscribers,
-            ),
+            kwargs={
+                'stop_event': self._stop_event_loop,
+                'rep_socket': self._rep_socket,
+                'pub_socket': self._pub_socket,
+                'pub_lock': self._pub_lock,
+                'req_decoder': self._req_decoder,
+                'rep_encoder': self._rep_encoder,
+                'request_handler': request_handler,
+                'handshake_data': handshake_data,
+                'has_subscribers': self._has_subscribers,
+            },
             daemon=True,
         )
         self._event_thread.start()
@@ -893,6 +893,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
     @staticmethod
     def _finalize(
+        *,
         event_thread: threading.Thread | None,
         stop_event: threading.Event,
         sockets: Iterable[zmq.Socket],
@@ -1039,6 +1040,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
     @staticmethod
     def _event_loop(
+        *,
         stop_event: threading.Event,
         rep_socket: zmq.Socket,
         pub_socket: zmq.Socket,
@@ -1277,13 +1279,13 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
     def __init__(
         self,
         service_type: str,
+        *,
         address: str | None = None,
         event_handler: Callable[[E], object] | None = None,
         discovery_timeout: float = 10.0,
         txt_properties: Mapping[str, str | None] | None = None,
         default_reply_type: TypeForm[R] = Any,
         event_type: TypeForm[E] = Any,
-        *,
         remote: bool = True,
     ) -> None:
         # without an event handler the SUB socket never connects, so an event
