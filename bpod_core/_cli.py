@@ -92,7 +92,7 @@ def _bpod_cli() -> int:
             finally:
                 bpod.set_status_led(True)  # Always restore LED state on exit
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         # Report error without traceback for cleaner CLI UX
         logger.error(str(e))  # noqa: TRY400
         return 1
