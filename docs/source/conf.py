@@ -130,7 +130,6 @@ html_context = {
     'github_repo': 'bpod-core',
     'github_version': 'master',
     'conf_py_path': '/docs/source/',
-    'umami_site_id': os.getenv('UMAMI_SITE_ID', ''),
     # 'source_type': 'github',
     # 'source_user': 'int-brain-lab',
     # 'source_repo': 'bpod-core',
@@ -140,6 +139,21 @@ html_context = {
 html_baseurl = 'https://int-brain-lab.github.io/bpod-core/'
 html_copy_source = False
 html_extra_path = ['robots.txt']
+
+# -- Analytics -----------------------------------------------------------------
+
+# Umami is loaded only when UMAMI_SITE_ID is set, so local builds stay untracked.
+# Injected via html_js_files rather than a template override: shibuya renders
+# page.html -> layout/<page_layout>.html -> base.html, a chain that never passes
+# through layout.html.
+umami_site_id = os.getenv('UMAMI_SITE_ID', '')
+if umami_site_id:
+    html_js_files = [
+        (
+            'https://cloud.umami.is/script.js',
+            {'defer': 'defer', 'data-website-id': umami_site_id},
+        ),
+    ]
 
 # -- Open Graph ----------------------------------------------------------------
 
