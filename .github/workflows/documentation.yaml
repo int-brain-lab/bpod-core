@@ -31,6 +31,8 @@ jobs:
       - name: sync dependencies
         run: uv sync --no-default-groups --group doc
       - name: build documentation
+        env:
+          UMAMI_SITE_ID: ${{ vars.UMAMI_SITE_ID }}
         run: uv run sphinx-build docs/source docs/build
       - uses: actions/upload-pages-artifact@v5
         with:
