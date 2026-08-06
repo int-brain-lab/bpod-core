@@ -1,5 +1,5 @@
 .. meta::
-   :description: A Python library for communicating with Bpod finite state machines.
+   :description: A modern Python interface for Bpod Finite State Machines.
 
 .. include:: ../../README.md
    :parser: myst_parser.sphinx_
