@@ -287,9 +287,7 @@ linkcode_link_text = ' '
 pygments_style = 'default'
 highlight_language = 'python3'
 numpydoc_show_class_members = False
-llms_txt_description = (
-    'A Python package for interfacing with Bpod finite state machines.'
-)
+llms_txt_description = 'A modern Python interface for Bpod Finite State Machines.'
 
 # -- Hooks ---------------------------------------------------------------------
 
