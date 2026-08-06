@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "bpod-core"
 version = '0.1.0a14'
-description = "Python package for interfacing with the Bpod finite state machine"
+description = "A modern Python interface for Bpod Finite State Machines."
 authors = [{ name = "Florian Rau", email = "bimac@users.noreply.github.com" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
