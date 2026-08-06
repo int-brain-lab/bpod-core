@@ -55,6 +55,7 @@ extensions = [
     'fsm_examples',
     'missing_references',
     'matplotlib.sphinxext.plot_directive',
+    'sphinx_llm.txt',
 ]
 
 source_suffix = {'.rst': 'restructuredtext', '.md': 'myst'}
@@ -265,6 +266,9 @@ linkcode_link_text = ' '
 pygments_style = 'default'
 highlight_language = 'python3'
 numpydoc_show_class_members = False
+llms_txt_description = (
+    'A Python package for interfacing with Bpod finite state machines.'
+)
 
 # -- Autodoc hooks -------------------------------------------------------------
 
