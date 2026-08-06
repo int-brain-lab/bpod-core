@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v7
       - name: Verify tag matches package version
         if: github.event_name != 'workflow_dispatch'
         run: |
@@ -41,7 +41,7 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v7
       - run: uv build
       - run: uv publish
 
@@ -56,7 +56,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v7
       - run: |
           # Define variables
           PRERELEASE_FLAG=$([[ "${GITHUB_REF_NAME}" =~ (a|b|rc) ]] && echo "--prerelease")
