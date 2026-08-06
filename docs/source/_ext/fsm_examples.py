@@ -57,6 +57,9 @@ def _generate(app):
 
         page_path = examples_target_path.joinpath(f'{fn.stem}.rst')
         page_lines = [
+            '.. meta::',
+            f'   :description: Exemplary Finite-State Machine: {page_title}',
+            '',
             page_title,
             '-' * len(page_title),
             '',

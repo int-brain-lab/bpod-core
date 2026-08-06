@@ -1,3 +1,6 @@
+.. meta::
+   :description: Frequently asked questions about bpod-core.
+
 Frequently Asked Questions
 ==========================
 

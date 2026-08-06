@@ -1,3 +1,6 @@
+.. meta::
+   :description: How to install, verify and update bpod-core.
+
 Installation
 ============
 
