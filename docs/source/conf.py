@@ -3,6 +3,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from docutils import nodes
+
 project_root = Path(__file__).parents[2].resolve()
 docs_source_path = Path(__file__).parent.resolve()
 sys.path.insert(0, str(project_root))
@@ -58,6 +60,7 @@ extensions = [
     'matplotlib.sphinxext.plot_directive',
     'sphinx_llm.txt',
     'sphinx_sitemap',
+    'sphinxext.opengraph',
 ]
 
 source_suffix = {'.rst': 'restructuredtext', '.md': 'myst'}
@@ -117,7 +120,6 @@ html_theme_options = {
     'color_mode': 'auto',
     'light_logo': '_static/bpod-core.svg',
     'dark_logo': '_static/bpod-core__dark.svg',
-    'og_image_url': 'https://int-brain-lab.github.io/bpod-core/_static/open_graph_card.png',
     'show_ai_links': False,
     'accent_color': 'cyan',
 }
@@ -136,6 +138,15 @@ html_context = {
 html_baseurl = 'https://int-brain-lab.github.io/bpod-core/'
 html_copy_source = False
 html_extra_path = ['robots.txt']
+
+# -- Open Graph ----------------------------------------------------------------
+
+# with this extension enabled, shibuya delegates the description, Open Graph and
+# Twitter tags to it, so the theme's own 'og_image_url' option no longer applies
+ogp_site_url = html_baseurl
+ogp_image = f'{html_baseurl}_static/open_graph_card.png'
+ogp_social_cards = {'enable': False}  # use the static card above instead
+ogp_custom_meta_tags = ['<meta name="twitter:card" content="summary"/>']
 
 # -- Sitemap -------------------------------------------------------------------
 
@@ -280,7 +291,26 @@ llms_txt_description = (
     'A Python package for interfacing with Bpod finite state machines.'
 )
 
-# -- Autodoc hooks -------------------------------------------------------------
+# -- Hooks ---------------------------------------------------------------------
+
+
+def _og_description_from_meta(_app, _pagename, _templatename, context, doctree):
+    """Reuse a page's meta description as its Open Graph description.
+
+    sphinxext-opengraph derives ``og:description`` from the page's body text, but
+    picks up per-page overrides from the ``meta`` context. Copying the description
+    of the ``meta`` directive there keeps both tags in sync.
+    """
+    if doctree is None:
+        return
+    for node in doctree.findall(nodes.meta):
+        if node.get('name') == 'description' and node.get('content'):
+            # replace rather than mutate: context['meta'] is env.metadata[docname]
+            context['meta'] = {
+                **(context['meta'] or {}),
+                'og:description': node['content'],
+            }
+            return
 
 
 def _skip_pydantic_parameterized(_app, _what, name, obj, skip, _options):
@@ -297,3 +327,6 @@ def _skip_pydantic_parameterized(_app, _what, name, obj, skip, _options):
 
 def setup(app):
     app.connect('autodoc-skip-member', _skip_pydantic_parameterized)
+
+    # priority < 500 so this runs before sphinxext-opengraph builds its tags
+    app.connect('html-page-context', _og_description_from_meta, priority=400)
