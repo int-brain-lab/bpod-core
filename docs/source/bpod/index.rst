@@ -1,3 +1,6 @@
+.. meta::
+   :description: Using the Bpod class to connect to a device and run state machines.
+
 Using the Bpod Class
 ====================
 

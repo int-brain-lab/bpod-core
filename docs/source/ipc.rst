@@ -1,3 +1,6 @@
+.. meta::
+   :description: Sharing a single Bpod device between processes over ZeroMQ.
+
 Inter-Process Communication
 ===========================
 
