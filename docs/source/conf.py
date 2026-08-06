@@ -166,9 +166,10 @@ ogp_custom_meta_tags = ['<meta name="twitter:card" content="summary"/>']
 # -- Sitemap -------------------------------------------------------------------
 
 sitemap_url_scheme = '{link}'
-sitemap_show_lastmod = True
+sitemap_excludes = ['search/', 'genindex/', 'py-modindex/']
+sitemap_show_lastmod = False
 sitemap_indent = 2
-sitemap_locales = ['en']
+sitemap_locales = [None]
 
 # -- Autodoc -------------------------------------------------------------------
 
@@ -296,13 +297,18 @@ plot_rcparams = {
     'figure.facecolor': 'none',
 }
 
+# -- sphinx-llm ----------------------------------------------------------------
+
+llms_txt_description = 'A modern Python interface for Bpod Finite State Machines.'
+llms_txt_build_parallel = False
+llms_txt_suffix_mode = 'url-suffix'  # faq.md rather than faq/index.html.md
+
 # -- Miscellaneous -------------------------------------------------------------
 
 linkcode_link_text = ' '
 pygments_style = 'default'
 highlight_language = 'python3'
 numpydoc_show_class_members = False
-llms_txt_description = 'A modern Python interface for Bpod Finite State Machines.'
 
 # -- Hooks ---------------------------------------------------------------------
 

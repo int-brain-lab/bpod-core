@@ -92,11 +92,14 @@ We use [Sphinx](https://www.sphinx-doc.org/) to build our documentation and
 API reference. To build the documentation, run the following command:
 
 ```console
-uv run sphinx-build docs/source docs/build
+uv run sphinx-build -b dirhtml docs/source docs/build
 ```
 
 After running this command, you can view the generated documentation in your
 web browser by opening `docs/build/index.html`.
+
+The `dirhtml` builder is used to match the URL scheme of the deployed
+documentation, where each page is served from its own directory.
 
 ## Opening a Pull Request
 
