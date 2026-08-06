@@ -70,6 +70,7 @@ doc = [
   "pandas>=2.3",
   "shibuya>=2026.7.12",
   "sphinx-llm>=0.4.1",
+  "sphinx-sitemap>=2.9.0",
 ]
 lint = [
   "ruff>=0.9",

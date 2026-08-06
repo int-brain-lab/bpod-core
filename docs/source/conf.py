@@ -5,7 +5,7 @@ from pathlib import Path
 
 project_root = Path(__file__).parents[2].resolve()
 docs_source_path = Path(__file__).parent.resolve()
-sys.path.insert(0, project_root)
+sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(docs_source_path / '_ext'))
 
 from bpod_core import __version__  # noqa: E402
@@ -18,6 +18,7 @@ from bpod_core.misc import ValidatedDict  # noqa: E402
 project = 'bpod-core'
 copyright = f'{datetime.now().year}, International Brain Laboratory'  # noqa: A001, DTZ005
 author = 'International Brain Laboratory'
+language = 'en'
 release = '.'.join(__version__.split('.')[:3])
 version = '.'.join(__version__.split('.')[:3])
 rst_prolog = f"""
@@ -56,6 +57,7 @@ extensions = [
     'missing_references',
     'matplotlib.sphinxext.plot_directive',
     'sphinx_llm.txt',
+    'sphinx_sitemap',
 ]
 
 source_suffix = {'.rst': 'restructuredtext', '.md': 'myst'}
@@ -133,6 +135,14 @@ html_context = {
 }
 html_baseurl = 'https://int-brain-lab.github.io/bpod-core/'
 html_copy_source = False
+html_extra_path = ['robots.txt']
+
+# -- Sitemap -------------------------------------------------------------------
+
+sitemap_url_scheme = '{link}'
+sitemap_show_lastmod = True
+sitemap_indent = 2
+sitemap_locales = ['en']
 
 # -- Autodoc -------------------------------------------------------------------
 
