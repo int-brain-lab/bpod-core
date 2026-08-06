@@ -152,7 +152,6 @@ if umami_script_url and umami_site_id:
             umami_script_url,
             {'defer': 'defer', 'data-website-id': umami_site_id},
         ),
-        'umami-search.js',  # reports search queries; only useful alongside Umami
     ]
 
 # -- Open Graph ----------------------------------------------------------------
