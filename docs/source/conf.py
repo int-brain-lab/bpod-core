@@ -142,15 +142,14 @@ html_extra_path = ['robots.txt']
 
 # -- Analytics -----------------------------------------------------------------
 
-# Umami is loaded only when UMAMI_SITE_ID is set, so local builds stay untracked.
-# Injected via html_js_files rather than a template override: shibuya renders
-# page.html -> layout/<page_layout>.html -> base.html, a chain that never passes
-# through layout.html.
+# Umami is loaded only when UMAMI_SCRIPT_URL and UMAMI_SITE_ID are set, so local builds
+# stay untracked.
+umami_script_url = os.getenv('UMAMI_SCRIPT_URL', '')
 umami_site_id = os.getenv('UMAMI_SITE_ID', '')
-if umami_site_id:
+if umami_script_url and umami_site_id:
     html_js_files = [
         (
-            'https://cloud.umami.is/script.js',
+            umami_script_url,
             {'defer': 'defer', 'data-website-id': umami_site_id},
         ),
     ]

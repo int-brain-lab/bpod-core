@@ -28,12 +28,11 @@ jobs:
         with:
           python-version: 3.14
       - uses: ts-graphviz/setup-graphviz@v2
-      - name: sync dependencies
-        run: uv sync --no-default-groups --group doc
       - name: build documentation
         env:
+          UMAMI_SCRIPT_URL: ${{ vars.UMAMI_SCRIPT_URL }}
           UMAMI_SITE_ID: ${{ vars.UMAMI_SITE_ID }}
-        run: uv run sphinx-build docs/source docs/build
+        run: uv run --no-default-groups --group doc sphinx-build docs/source docs/build
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/build/
