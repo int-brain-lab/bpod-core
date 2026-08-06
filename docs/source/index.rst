@@ -19,6 +19,7 @@
    :hidden:
 
    contributing
+   ipc
    schema
    api
 
