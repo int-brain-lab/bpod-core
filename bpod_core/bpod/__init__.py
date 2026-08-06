@@ -9,6 +9,7 @@ import weakref
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, field
 from datetime import timedelta
+from enum import IntEnum
 from queue import Empty, SimpleQueue
 from time import perf_counter_ns, time_ns
 from types import TracebackType
@@ -105,12 +106,35 @@ from bpod_core.misc import (
 logger = logging.getLogger(__name__)
 
 
+class BpodErrorCode(IntEnum):
+    """Error codes used in :class:`BpodError`."""
+
+    UNKNOWN = 0
+    KEY_ERROR = 1000
+
+
 class BpodError(Exception):
     """Raised for errors specific to Bpod device operations."""
+
+    code = BpodErrorCode.UNKNOWN
+
+    def __init__(
+        self,
+        message: str | None = None,
+        code: BpodErrorCode | None = None,
+    ) -> None:
+        if code is not None:
+            self.code = code
+        super().__init__(message or 'Unknown Bpod error')
 
 
 class BpodKeyError(BpodError, KeyError):
     """Exception class for Bpod-related key errors."""
+
+    code = BpodErrorCode.KEY_ERROR
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(message or 'Key not found', BpodErrorCode.KEY_ERROR)
 
 
 class Bpod(SerialDevice, AbstractBpod):
