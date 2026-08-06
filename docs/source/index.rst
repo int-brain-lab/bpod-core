@@ -12,7 +12,7 @@
 
    installation
    state_machines/index
-   bpod/index
+   bpod_class
    data_format
    faq
    changelog
