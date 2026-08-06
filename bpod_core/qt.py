@@ -25,6 +25,7 @@ from qtpy.QtCore import (
     Signal,
     Slot,
 )
+from serial.tools.list_ports import comports
 
 from bpod_core.bpod import (
     Bpod,
@@ -41,6 +42,7 @@ from bpod_core.bpod.structs import (
     EventTrialEndControl,
     EventTrialStart,
 )
+from bpod_core.com import find_ports
 
 logger = logging.getLogger(__name__)
 
@@ -219,8 +221,14 @@ class QBpod(QObject):
         The action's value.
     """
 
-    _bpod: Bpod | None = None
-    _serial_number: str
+    _is_connected: bool = None
+    _local_bpod: Bpod | None = None
+    _remote_bpod: RemoteBpod
+
+    _serial_number: str | None = None
+    _port: str | None = None
+    _control_address: str
+    _events_address: str
 
     process: QProcess
     """Used to launch python scripts."""
@@ -230,16 +238,16 @@ class QBpod(QObject):
 
         # First, try to connect to the Bpod directly via USB
         try:
-            self._bpod = Bpod(serial_number=serial_number)
+            self._local_bpod = Bpod(serial_number=serial_number)
         except BpodError:
-            self._bpod = None
+            self._local_bpod = None
         else:
-            self._serial_number = self._bpod.serial_number
+            self._serial_number = self._local_bpod.serial_number
             self.serialNumberChanged.emit(self._serial_number)
             self._remote_bpod = RemoteBpod(
                 serial_number=self._serial_number, event_callback=self._on_bpod_event
             )
-            self._bpod._zmq.close()  # noqa: SLF001
+            self._local_bpod._zmq.close()  # noqa: SLF001
 
         # discover_remote_bpod(serial_number=serial_number, remote=False)
         #
@@ -266,45 +274,47 @@ class QBpod(QObject):
         if app is not None:
             app.aboutToQuit.connect(self.close)
 
-    def open(self, identifier: str | None = None, address: str | None = None
-    ) -> None:
+    def open(self, identifier: str) -> None:
         """
-        Open a Bpod with the given serial number or control address.
+        Open a Bpod with a given serial port, serial number or control address.
 
         Parameters
         ----------
-        serial_number : str, optional
-            The serial number of the Bpod to open.
-        address : str, optional
-            The control address of the Bpod to open.
-
-        Raises
-        ------
-        ValueError
-            If neither `serial_number` nor `address` is provided.
+        identifier : str
+            port, serial number, or control address of the Bpod device to open.
         """
-        if not serial_number and not address:
-            raise ValueError('Either serial_number or address must be provided.')
+        # first check if the identifier corresponds to a device connected via USB
+        port_info = next(
+            iter(p for p in comports() if identifier in (p.device, p.serial_number)),
+            None,
+        )
 
-        # elif not serial_number:
-        #     self._remote_bpod.get_serial_number(address)
+        # if so, try to connect to it directly
+        if port_info is not None:
+            self._serial_number = port_info.serial_number
+            self._port = port_info.device
+            self.close()
+            try:
+                local_bpod = Bpod(port=port_info.device)
+            except BpodError:
+                self._local_bpod = None
+            else:
+                self._local_bpod = local_bpod
+                control_address = local_bpod.address_control
+                events_address = local_bpod.address_events
 
+        self._control_address = control_address
+        self._events_address = events_address
 
-        # First, close any existing Bpod instance
-        self.close()
+        # connect to the remote Bpod
+        self._remote_bpod = RemoteBpod(
+            address=self._control_address, event_callback=self._on_bpod_event
+        )
 
-        # Then, try to connect to the Bpod directly via USB
-        try:
-            self._bpod = Bpod(serial_number=serial_number)
-        except BpodError:
-            self._bpod = None
-        else:
-            self._serial_number = self._bpod.serial_number
-            self.serialNumberChanged.emit(self._serial_number)
-            self._remote_bpod = RemoteBpod(
-                serial_number=self._serial_number, event_callback=self._on_bpod_event
-            )
-            self._bpod._zmq.close()  # noqa: SLF001
+        self.serialNumberChanged.emit(self._serial_number)
+        self.portChanged.emit(self._port)
+        self.controlAddressChanged.emit(self._remote_bpod.address_control)
+        self.eventsAddressChanged.emit(self._remote_bpod.address_events)
 
     def close(self) -> None:
         """Disconnect from the Bpod and close the QProcess instance."""
@@ -315,10 +325,10 @@ class QBpod(QObject):
             self.process.terminate()
             self.process.waitForFinished(1000)
             self.process.close()
-        if self._bpod is not None:
-            self._bpod.stop_state_machine()
-            self._bpod.close()
-            self._bpod = None
+        if self._local_bpod is not None:
+            self._local_bpod.stop_state_machine()
+            self._local_bpod.close()
+            self._local_bpod = None
 
     @Slot(str)
     def launchProcess(self, python_script: PathLike | str) -> None:
@@ -350,7 +360,7 @@ class QBpod(QObject):
             device. Trying to launch a Python script with a remote-controlled Bpod will
             result in a :class:`RuntimeError`.
         """
-        if self._bpod is None:
+        if self._local_bpod is None:
             raise RuntimeError(
                 'This function can only be called from a local Bpod instance.'
             )
@@ -360,7 +370,8 @@ class QBpod(QObject):
         if script_path.suffix != '.py':
             raise ValueError(f'Invalid file type: {script_path}')
 
-        self._bpod.close()
+        self._local_bpod.close()
+        self._local_bpod._zmq.close()  # noqa: SLF001
         self.process.start(sys.executable, [str(script_path)])
         if not self.process.waitForStarted():
             raise RuntimeError(self.process.errorString())
@@ -372,8 +383,8 @@ class QBpod(QObject):
     def _on_subprocess_finished(
         self, _exit_code: int, _exit_status: QProcess.ExitStatus
     ) -> None:
-        if self._bpod is not None:
-            self._bpod.open()
+        if self._local_bpod is not None:
+            self._local_bpod.open()
 
     def _on_bpod_event(self, message: BpodEventUnion) -> None:
         """Translate a live trial-event message into the corresponding Qt signal.
@@ -407,7 +418,7 @@ class QBpod(QObject):
     @Property(str, notify=portChanged)
     def port(self) -> str:
         """The serial number of the Bpod."""
-        return self._serial_number
+        return self._port
 
     @Property(str, notify=controlAddressChanged)
     def controlAddress(self) -> str:
