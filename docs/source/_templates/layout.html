@@ -1,0 +1,11 @@
+<!-- docs/_templates/layout.html -->
+{% extends "!layout.html" %}
+
+{% block extrahead %}
+  {{ super() }}
+
+  {# Umami analytics #}
+  {% if umami_site_id %}
+    <script defer src="https://cloud.umami.is/script.js" data-website-id="{{ umami_site_id }}"></script>
+  {% endif %}
+{% endblock %}

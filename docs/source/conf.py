@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -129,6 +130,7 @@ html_context = {
     'github_repo': 'bpod-core',
     'github_version': 'master',
     'conf_py_path': '/docs/source/',
+    'umami_site_id': os.getenv('UMAMI_SITE_ID', ''),
     # 'source_type': 'github',
     # 'source_user': 'int-brain-lab',
     # 'source_repo': 'bpod-core',
