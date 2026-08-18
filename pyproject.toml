@@ -10,7 +10,7 @@ authors = [{ name = "Florian Rau", email = "bimac@users.noreply.github.com" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
-  "Operating System :: OS Independent",
+  "Operating System :: bpod-coreOS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -72,6 +72,7 @@ doc = [
   "sphinx-llm>=0.4.1",
   "sphinx-sitemap>=2.9.0",
   "sphinxext-opengraph>=0.13",
+  "sphinx-notfound-page>=1.1.0",
 ]
 lint = [
   "ruff>=0.9",

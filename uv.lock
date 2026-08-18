@@ -209,6 +209,7 @@ dev = [
     { name = "sphinx-github-style", marker = "python_full_version >= '3.14'" },
     { name = "sphinx-jsonschema", marker = "python_full_version >= '3.14'" },
     { name = "sphinx-llm", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.14'" },
     { name = "sphinx-sitemap", marker = "python_full_version >= '3.14'" },
     { name = "sphinxext-opengraph", marker = "python_full_version >= '3.14'" },
     { name = "tox" },
@@ -233,6 +234,7 @@ doc = [
     { name = "sphinx-github-style", marker = "python_full_version >= '3.14'" },
     { name = "sphinx-jsonschema", marker = "python_full_version >= '3.14'" },
     { name = "sphinx-llm", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.14'" },
     { name = "sphinx-sitemap", marker = "python_full_version >= '3.14'" },
     { name = "sphinxext-opengraph", marker = "python_full_version >= '3.14'" },
 ]
@@ -324,6 +326,7 @@ dev = [
     { name = "sphinx-github-style", marker = "python_full_version >= '3.14'", specifier = ">=1.2" },
     { name = "sphinx-jsonschema", marker = "python_full_version >= '3.14'", specifier = ">=1.19" },
     { name = "sphinx-llm", marker = "python_full_version >= '3.14'", specifier = ">=0.4.1" },
+    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.14'", specifier = ">=1.1.0" },
     { name = "sphinx-sitemap", marker = "python_full_version >= '3.14'", specifier = ">=2.9.0" },
     { name = "sphinxext-opengraph", marker = "python_full_version >= '3.14'", specifier = ">=0.13" },
     { name = "tox", specifier = ">=4.36" },
@@ -348,6 +351,7 @@ doc = [
     { name = "sphinx-github-style", marker = "python_full_version >= '3.14'", specifier = ">=1.2" },
     { name = "sphinx-jsonschema", marker = "python_full_version >= '3.14'", specifier = ">=1.19" },
     { name = "sphinx-llm", marker = "python_full_version >= '3.14'", specifier = ">=0.4.1" },
+    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.14'", specifier = ">=1.1.0" },
     { name = "sphinx-sitemap", marker = "python_full_version >= '3.14'", specifier = ">=2.9.0" },
     { name = "sphinxext-opengraph", marker = "python_full_version >= '3.14'", specifier = ">=0.13" },
 ]
@@ -2962,6 +2966,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ad/13/102d7134743120db25e636ffb57a30818e95a416583dca83aadac9c5dd87/sphinx_markdown_builder-0.6.11.tar.gz", hash = "sha256:ba3bf33e0e42ff30ae686ac73957a95e6d045790dcfbaca012dd8ae01794e577", size = 24020, upload-time = "2026-08-16T06:51:38.158Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c9/71/06b415631c2e494c80546073b46013d1715dceb3abe30bd63b34b4e7d9ca/sphinx_markdown_builder-0.6.11-py3-none-any.whl", hash = "sha256:acfb94d6ee66c7a47da0ca0420578fa16f115812af25b8fd21755d5909aacf51", size = 18088, upload-time = "2026-08-16T06:51:36.81Z" },
+]
+
+[[package]]
+name = "sphinx-notfound-page"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sphinx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6a/b2/67603444a8ee97b4a8ea71b0a9d6bab1727ed65e362c87e02f818ee57b8a/sphinx_notfound_page-1.1.0.tar.gz", hash = "sha256:913e1754370bb3db201d9300d458a8b8b5fb22e9246a816643a819a9ea2b8067", size = 7392, upload-time = "2025-01-28T18:45:02.871Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/d4/019fe439c840a7966012bbb95ccbdd81c5c10271749706793b43beb05145/sphinx_notfound_page-1.1.0-py3-none-any.whl", hash = "sha256:835dc76ff7914577a1f58d80a2c8418fb6138c0932c8da8adce4d9096fbcd389", size = 8167, upload-time = "2025-01-28T18:45:00.465Z" },
 ]
 
 [[package]]
