@@ -29,6 +29,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: 3.14
+          enable-cache: true
       - run: sudo apt-get install -y graphviz
       - name: build documentation
         env:
