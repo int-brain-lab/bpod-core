@@ -299,7 +299,12 @@ plot_rcparams = {
 
 # -- sphinx-llm ----------------------------------------------------------------
 
-llms_txt_description = 'A modern Python interface for Bpod Finite State Machines.'
+llms_txt_description = ('A modern Python interface for Bpod Finite State Machines.\n\n'
+                        f'Current version: {__version__}\n\n'
+                        '* [source code](https://github.com/int-brain-lab/bpod-core)\n'
+                        '* [PyPI](https://pypi.org/project/bpod-core)\n'
+                        '* [DOI](https://doi.org/10.5281/zenodo.21497456)\n'
+                        '* [JSON schema](https://raw.githubusercontent.com/int-brain-lab/bpod-core/main/.schema/statemachine.json)')
 llms_txt_build_parallel = False
 llms_txt_exclude = ['schema']
 
