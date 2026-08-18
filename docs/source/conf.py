@@ -301,7 +301,7 @@ plot_rcparams = {
 
 llms_txt_description = 'A modern Python interface for Bpod Finite State Machines.'
 llms_txt_build_parallel = False
-llms_txt_suffix_mode = 'url-suffix'  # faq.md rather than faq/index.html.md
+llms_txt_exclude = ['schema']
 
 # -- Miscellaneous -------------------------------------------------------------
 
