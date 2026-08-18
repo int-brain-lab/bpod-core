@@ -33,6 +33,7 @@ jobs:
         with:
           packages: graphviz
           version: 1.0
+          execute_install_scripts: true
       - name: build documentation
         env:
           UMAMI_SCRIPT_URL: ${{ vars.UMAMI_SCRIPT_URL }}
