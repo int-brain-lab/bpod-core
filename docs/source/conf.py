@@ -62,6 +62,7 @@ extensions = [
     'sphinx_llm.txt',
     'sphinx_sitemap',
     'sphinxext.opengraph',
+    'notfound.extension',
 ]
 
 source_suffix = {'.rst': 'restructuredtext', '.md': 'myst'}
