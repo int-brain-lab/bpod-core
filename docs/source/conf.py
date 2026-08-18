@@ -315,6 +315,7 @@ linkcode_link_text = ' '
 pygments_style = 'default'
 highlight_language = 'python3'
 numpydoc_show_class_members = False
+notfound_urls_prefix = "/bpod-core/"
 
 # -- Hooks ---------------------------------------------------------------------
 
