@@ -29,7 +29,10 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: 3.14
-      - uses: ts-graphviz/setup-graphviz@v2
+      - uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: graphviz
+          version: 1.0
       - name: build documentation
         env:
           UMAMI_SCRIPT_URL: ${{ vars.UMAMI_SCRIPT_URL }}
