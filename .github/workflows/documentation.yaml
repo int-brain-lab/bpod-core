@@ -42,19 +42,6 @@ jobs:
           UMAMI_SCRIPT_URL: ${{ vars.UMAMI_SCRIPT_URL }}
           UMAMI_SITE_ID: ${{ vars.UMAMI_SITE_ID }}
         run: uv run --no-default-groups --group doc sphinx-build -b dirhtml docs/source docs/build
-      - name: add context7.json
-        env:
-          CONTEXT7_URL: ${{ vars.CONTEXT7_URL }}
-          CONTEXT7_PUBLIC_KEY: ${{ secrets.CONTEXT7_PUBLIC_KEY }}
-        run: |
-          if [ -z "$CONTEXT7_PUBLIC_KEY" ]; then
-            echo "::error::secret CONTEXT7_PUBLIC_KEY is not set"
-            exit 1
-          fi
-          jq -n \
-            --arg url "$CONTEXT7_URL" \
-            --arg public_key "$CONTEXT7_PUBLIC_KEY" \
-            '{url: $url, public_key: $public_key}' > docs/build/context7.json
       - uses: actions/upload-pages-artifact@v5
         with:
           path: docs/build/
@@ -68,3 +55,24 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v5
+
+  context7:
+    name: Trigger Context7 rescan
+    needs: deploy
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      CONTEXT7_LIBRARY_NAME: ${{ vars.CONTEXT7_LIBRARY_NAME }}
+      CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+    steps:
+      - name: Request documentation refresh
+        run: |
+          if [ -z "$CONTEXT7_LIBRARY_NAME" ] || [ -z "$CONTEXT7_API_KEY" ]; then
+            echo "::error::variable CONTEXT7_LIBRARY_NAME or secret CONTEXT7_API_KEY is not set"
+            exit 1
+          fi
+          curl -sS --fail-with-body -X POST https://context7.com/api/v1/refresh \
+            -H "Authorization: Bearer $CONTEXT7_API_KEY" \
+            -H 'Content-Type: application/json' \
+            -d "{\"libraryName\": \"$CONTEXT7_LIBRARY_NAME\"}"
