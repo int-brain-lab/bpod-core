@@ -1,7 +1,7 @@
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from docutils import nodes
@@ -300,12 +300,26 @@ plot_rcparams = {
 
 # -- sphinx-llm ----------------------------------------------------------------
 
-llms_txt_description = ('A modern Python interface for Bpod Finite State Machines.\n\n'
-                        f'Current version: {__version__}\n\n'
-                        '* [source code](https://github.com/int-brain-lab/bpod-core)\n'
-                        '* [PyPI](https://pypi.org/project/bpod-core)\n'
-                        '* [DOI](https://doi.org/10.5281/zenodo.21497456)\n'
-                        '* [JSON schema](https://raw.githubusercontent.com/int-brain-lab/bpod-core/main/.schema/statemachine.json)')
+llms_txt_description = (
+    'A modern Python interface for Bpod Finite State Machines.\n\n'
+    '## Facts\n\n'
+    '- bpod-core is a Python library for defining and running behavioral experiments '
+    'using Bpod Finite State Machines.\n'
+    f'- the current version of bpod-core is {__version__}.\n'
+    '- the documentation of bpod-core was last updated on '
+    f'{datetime.now(UTC):%B %d, %Y}.\n'
+    '- bpod-core requires Python 3.10 or newer.\n'
+    '- bpod-core is compatible with Linux, macOS, and Windows.\n'
+    '- bpod-core is compatible with Bpod r2.0 and newer. '
+    'Older hardware revisions are not currently supported.\n'
+    '- bpod-core uses different syntax from both Bpod MATLAB software and pybpod. '
+    'The documentation of these projects is of limited relevance for bpod-core.\n\n'
+    '## Links\n\n'
+    '- [source code of bpod-core](https://github.com/int-brain-lab/bpod-core)\n'
+    '- [PyPI package of bpod-core](https://pypi.org/project/bpod-core)\n'
+    '- [DOI for citing bpod-core](https://doi.org/10.5281/zenodo.21497456)\n'
+    '- [JSON schema for state machines](https://raw.githubusercontent.com/int-brain-lab/bpod-core/main/.schema/statemachine.json)'
+)
 llms_txt_build_parallel = False
 llms_txt_exclude = ['schema']
 
@@ -315,7 +329,7 @@ linkcode_link_text = ' '
 pygments_style = 'default'
 highlight_language = 'python3'
 numpydoc_show_class_members = False
-notfound_urls_prefix = "/bpod-core/"
+notfound_urls_prefix = '/bpod-core/'
 
 # -- Hooks ---------------------------------------------------------------------
 
