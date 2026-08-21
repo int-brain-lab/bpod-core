@@ -29,7 +29,14 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: 3.14
-      - uses: ts-graphviz/setup-graphviz@v2
+          enable-cache: true
+      - run: sudo apt-get install -y graphviz
+      - uses: actions/cache@v5
+        with:
+          path: docs/build/.doctrees
+          key: sphinx-${{ runner.os }}-${{ hashFiles('uv.lock', 'docs/source/conf.py') }}
+          restore-keys: |
+            sphinx-${{ runner.os }}-
       - name: build documentation
         env:
           UMAMI_SCRIPT_URL: ${{ vars.UMAMI_SCRIPT_URL }}
@@ -48,3 +55,24 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v5
+
+  context7:
+    name: Trigger Context7 rescan
+    needs: deploy
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      CONTEXT7_LIBRARY_NAME: ${{ vars.CONTEXT7_LIBRARY_NAME }}
+      CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+    steps:
+      - name: Request documentation refresh
+        run: |
+          if [ -z "$CONTEXT7_LIBRARY_NAME" ] || [ -z "$CONTEXT7_API_KEY" ]; then
+            echo "::error::variable CONTEXT7_LIBRARY_NAME or secret CONTEXT7_API_KEY is not set"
+            exit 1
+          fi
+          curl -sS --fail-with-body -X POST https://context7.com/api/v1/refresh \
+            -H "Authorization: Bearer $CONTEXT7_API_KEY" \
+            -H 'Content-Type: application/json' \
+            -d "{\"libraryName\": \"$CONTEXT7_LIBRARY_NAME\"}"
