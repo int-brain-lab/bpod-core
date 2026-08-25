@@ -1,7 +1,7 @@
 # bpod-core
 
-A Python library for communicating with [*Bpod Finite State
-Machines*](https://sanworks.io/).
+A modern Python interface for [Bpod Finite State
+Machines](https://sanworks.io/).
 
 > [!WARNING]
 > bpod-core is under development and not yet ready for production use.
@@ -29,10 +29,10 @@ This project is maintained by the software development team at the
 
 ## Links
 
-* [Documentation and API reference](https://int-brain-lab.github.io/bpod-core)
-* [Bpod Wiki](https://sanworks.github.io/Bpod_Wiki) - maintained by [
+* [bpod-core documentation](https://int-brain-lab.github.io/bpod-core) – the official documentation of bpod-core
+* [Bpod Wiki](https://sanworks.github.io/Bpod_Wiki) – maintained by [
   *Sanworks*](https://sanworks.io/)
-* [PyBpod](https://pybpod.readthedocs.io) - another Python project for Bpod devices
+* [PyBpod](https://pybpod.readthedocs.io) – another Python project for Bpod devices
 
 ---
 [![CI](https://github.com/int-brain-lab/bpod-core/actions/workflows/main.yaml/badge.svg)](https://github.com/int-brain-lab/bpod-core/actions/workflows/main.yaml)

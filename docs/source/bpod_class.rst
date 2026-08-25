@@ -1,3 +1,6 @@
+.. meta::
+   :description: Using the Bpod class to connect to a device and run state machines.
+
 Using the Bpod Class
 ====================
 
@@ -120,7 +123,7 @@ collected data as a Polars :class:`~polars.DataFrame` (see :doc:`/data_format`).
 
 .. seealso::
 
-   Refer to :doc:`../state_machines/index` for the full reference of the
+   Refer to :doc:`/state_machines/index` for the full reference of the
    :class:`~bpod_core.fsm.StateMachine` object.
 
 

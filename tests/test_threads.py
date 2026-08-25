@@ -293,7 +293,7 @@ class TestEventThread:
 
     def test_published_events_match_dataframe(self, make_thread):
         """Published messages mirror the trial DataFrame's event rows in order."""
-        published: list[BpodEventUnion] = []
+        published = []
         fsm = _make_fsm(transitions={(0, 0): 1})
         thread, data_queue = make_thread(fsm=fsm, publish=published.append)
         self._put_full_trial(thread)
@@ -329,7 +329,7 @@ class TestEventThread:
 
     def test_should_publish_gates_all_messages(self, make_thread):
         """should_publish=False skips publishing entirely; trial data remains."""
-        published: list[BpodEventUnion] = []
+        published = []
         thread, data_queue = make_thread(
             publish=published.append, should_publish=lambda: False
         )
@@ -342,7 +342,7 @@ class TestEventThread:
 
     def test_events_after_fsm_exit_trigger_no_transitions(self, make_thread, caplog):
         """Events arriving after an exit without successor are recorded but inert."""
-        published: list[BpodEventUnion] = []
+        published = []
         # event 0 in S0 exits without a successor (target == n_states)
         fsm = _make_fsm(transitions={(0, 0): 2})
         with caplog.at_level(logging.ERROR, logger='bpod_core.bpod._threads'):
@@ -370,7 +370,7 @@ class TestEventThread:
 
     def test_aborted_trial_publishes_no_trial_end(self, make_thread):
         """Without a hardware exit packet, no end messages are published."""
-        published: list[BpodEventUnion] = []
+        published = []
         thread, data_queue = make_thread(publish=published.append)
         thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_FSM))
         thread.queue.put(RawEvent(micros_us=0, event_id=0))

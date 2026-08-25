@@ -1,11 +1,14 @@
 import json
+import os
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+
+from docutils import nodes
 
 project_root = Path(__file__).parents[2].resolve()
 docs_source_path = Path(__file__).parent.resolve()
-sys.path.insert(0, project_root)
+sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(docs_source_path / '_ext'))
 
 from bpod_core import __version__  # noqa: E402
@@ -18,6 +21,7 @@ from bpod_core.misc import ValidatedDict  # noqa: E402
 project = 'bpod-core'
 copyright = f'{datetime.now().year}, International Brain Laboratory'  # noqa: A001, DTZ005
 author = 'International Brain Laboratory'
+language = 'en'
 release = '.'.join(__version__.split('.')[:3])
 version = '.'.join(__version__.split('.')[:3])
 rst_prolog = f"""
@@ -55,6 +59,10 @@ extensions = [
     'fsm_examples',
     'missing_references',
     'matplotlib.sphinxext.plot_directive',
+    'sphinx_llm.txt',
+    'sphinx_sitemap',
+    'sphinxext.opengraph',
+    'notfound.extension',
 ]
 
 source_suffix = {'.rst': 'restructuredtext', '.md': 'myst'}
@@ -114,7 +122,6 @@ html_theme_options = {
     'color_mode': 'auto',
     'light_logo': '_static/bpod-core.svg',
     'dark_logo': '_static/bpod-core__dark.svg',
-    'og_image_url': 'https://int-brain-lab.github.io/bpod-core/_static/open_graph_card.png',
     'show_ai_links': False,
     'accent_color': 'cyan',
 }
@@ -132,6 +139,38 @@ html_context = {
 }
 html_baseurl = 'https://int-brain-lab.github.io/bpod-core/'
 html_copy_source = False
+html_extra_path = ['robots.txt']
+
+# -- Analytics -----------------------------------------------------------------
+
+# Umami is loaded only when UMAMI_SCRIPT_URL and UMAMI_SITE_ID are set, so local builds
+# stay untracked.
+umami_script_url = os.getenv('UMAMI_SCRIPT_URL', '')
+umami_site_id = os.getenv('UMAMI_SITE_ID', '')
+if umami_script_url and umami_site_id:
+    html_js_files = [
+        (
+            umami_script_url,
+            {'defer': 'defer', 'data-website-id': umami_site_id},
+        ),
+    ]
+
+# -- Open Graph ----------------------------------------------------------------
+
+# with this extension enabled, shibuya delegates the description, Open Graph and
+# Twitter tags to it, so the theme's own 'og_image_url' option no longer applies
+ogp_site_url = html_baseurl
+ogp_image = f'{html_baseurl}_static/open_graph_card.png'
+ogp_social_cards = {'enable': False}  # use the static card above instead
+ogp_custom_meta_tags = ['<meta name="twitter:card" content="summary"/>']
+
+# -- Sitemap -------------------------------------------------------------------
+
+sitemap_url_scheme = '{link}'
+sitemap_excludes = ['search/', 'genindex/', 'py-modindex/']
+sitemap_show_lastmod = False
+sitemap_indent = 2
+sitemap_locales = [None]
 
 # -- Autodoc -------------------------------------------------------------------
 
@@ -259,14 +298,59 @@ plot_rcparams = {
     'figure.facecolor': 'none',
 }
 
+# -- sphinx-llm ----------------------------------------------------------------
+
+llms_txt_description = (
+    'A modern Python interface for Bpod Finite State Machines.\n\n'
+    '## Facts\n\n'
+    '- bpod-core is a Python library for defining and running behavioral experiments '
+    'using Bpod Finite State Machines.\n'
+    f'- the current version of bpod-core is {__version__}.\n'
+    '- the documentation of bpod-core was last updated on '
+    f'{datetime.now(UTC):%B %d, %Y}.\n'
+    '- bpod-core requires Python 3.10 or newer.\n'
+    '- bpod-core is compatible with Linux, macOS, and Windows.\n'
+    '- bpod-core is compatible with Bpod r2.0 and newer. '
+    'Older hardware revisions are not currently supported.\n'
+    '- bpod-core uses different syntax from both Bpod MATLAB software and pybpod. '
+    'The documentation of these projects is of limited relevance for bpod-core.\n\n'
+    '## Links\n\n'
+    '- [source code of bpod-core](https://github.com/int-brain-lab/bpod-core)\n'
+    '- [PyPI package of bpod-core](https://pypi.org/project/bpod-core)\n'
+    '- [DOI for citing bpod-core](https://doi.org/10.5281/zenodo.21497456)\n'
+    '- [JSON schema for state machines](https://raw.githubusercontent.com/int-brain-lab/bpod-core/main/.schema/statemachine.json)'
+)
+llms_txt_build_parallel = False
+llms_txt_exclude = ['schema']
+
 # -- Miscellaneous -------------------------------------------------------------
 
 linkcode_link_text = ' '
 pygments_style = 'default'
 highlight_language = 'python3'
 numpydoc_show_class_members = False
+notfound_urls_prefix = '/bpod-core/'
 
-# -- Autodoc hooks -------------------------------------------------------------
+# -- Hooks ---------------------------------------------------------------------
+
+
+def _og_description_from_meta(_app, _pagename, _templatename, context, doctree):
+    """Reuse a page's meta description as its Open Graph description.
+
+    sphinxext-opengraph derives ``og:description`` from the page's body text, but
+    picks up per-page overrides from the ``meta`` context. Copying the description
+    of the ``meta`` directive there keeps both tags in sync.
+    """
+    if doctree is None:
+        return
+    for node in doctree.findall(nodes.meta):
+        if node.get('name') == 'description' and node.get('content'):
+            # replace rather than mutate: context['meta'] is env.metadata[docname]
+            context['meta'] = {
+                **(context['meta'] or {}),
+                'og:description': node['content'],
+            }
+            return
 
 
 def _skip_pydantic_parameterized(_app, _what, name, obj, skip, _options):
@@ -283,3 +367,6 @@ def _skip_pydantic_parameterized(_app, _what, name, obj, skip, _options):
 
 def setup(app):
     app.connect('autodoc-skip-member', _skip_pydantic_parameterized)
+
+    # priority < 500 so this runs before sphinxext-opengraph builds its tags
+    app.connect('html-page-context', _og_description_from_meta, priority=400)

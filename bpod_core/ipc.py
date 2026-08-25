@@ -1132,7 +1132,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             # stuck in its send state and the channel deadlocks.
             try:
                 request_kind = _MessageKind(request_frames[0].buffer[0])
-                request_data = request_frames[1].buffer
+                request_buffer = request_frames[1].buffer
             except (IndexError, ValueError):
                 logger.exception('Received malformed request from client')
                 encode_and_send(_MessageKind.ERROR, ErrorData.from_exception())
@@ -1143,7 +1143,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 case _MessageKind.REQUEST:  # general request
                     # decode request
                     try:
-                        request_data = decode(request_data)
+                        request_data = decode(request_buffer)
                     except msgspec.DecodeError:
                         logger.exception('Error decoding request from client')
                         encode_and_send(_MessageKind.ERROR, ErrorData.from_exception())
