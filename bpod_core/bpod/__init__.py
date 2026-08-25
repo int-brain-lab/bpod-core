@@ -636,12 +636,10 @@ class Bpod(SerialDevice, AbstractBpod):
             If the handshake fails.
         """
         try:
-            self.serial0.timeout = 0.2
-            if not self.serial0.verify(b'6', b'5'):
+            if not self.serial0.verify(b'6', b'5', timeout=0.2):
                 raise BpodError(
                     f'Handshake with {self._serial_device_name} on {self.port} failed'
                 )
-            self.serial0.timeout = None
         except SerialException as e:
             raise BpodError(
                 f'Handshake with {self._serial_device_name} on {self.port} failed'
