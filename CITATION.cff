@@ -5,9 +5,9 @@ message: >-
   metadata from this file.
 type: software
 authors:
-  - name: International Brain Laboratory
+  - name: "International Brain Laboratory"
     alias: IBL
-  - name: bpod-core contributors
+  - name: "bpod-core contributors"
 identifiers:
   - type: doi
     value: "10.5281/zenodo.21497456"
