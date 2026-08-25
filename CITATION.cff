@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 title: bpod-core
 message: >-
-  If you use this software, please cite it using the
-  metadata from this file.
+  If you use this software, please cite it using the metadata from this file.
+  For a full list of contributors, please refer to the Git repository.
 type: software
 authors:
   - name: "International Brain Laboratory"
