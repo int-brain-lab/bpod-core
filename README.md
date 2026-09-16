@@ -5,7 +5,7 @@ A modern Python interface for Bpod Finite State Machines.
 > [!WARNING]
 > bpod-core is under development and not yet ready for production use.
 
-The Bpod Finite State Machine is an open-source platform by
+Bpod Finite State Machines are an open-source platform by
 [*Sanworks*](https://sanworks.io/) for controlling behavioral experiments: a
 microcontroller-based finite state machine that runs a trial's logic in real time and
 talks to sensors, valves, and other peripherals with millisecond precision. Running the
@@ -14,7 +14,7 @@ computer, keeps trial timing deterministic and free of OS jitter. This makes Bpo
 particularly well-suited to closed-loop experiments, where state transitions must be
 triggered by sensor readings within a tight, predictable latency.
 
-bpod-core is a Python library for driving Bpod hardware. It grew out of the the need for
+bpod-core is a Python library for driving Bpod hardware. It grew out of the need for
 a modern, well-tested way to work with Bpod devices from Python, and is designed to fit
 naturally into everyday research workflows.
 
