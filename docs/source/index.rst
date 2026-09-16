@@ -32,3 +32,4 @@
 
    GitHub <https://github.com/int-brain-lab/bpod-core>
    PyPI <https://pypi.org/project/bpod-core/>
+   llms.txt <https://int-brain-lab.github.io/bpod-core/llms.txt>
