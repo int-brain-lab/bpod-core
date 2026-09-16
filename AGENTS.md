@@ -28,8 +28,8 @@ and `docs/source/api` aren't tracked in git, so build the docs (see "Commands")
 if missing or stale, e.g. at session start or right after editing `docs/source`.
 
 1. `docs/build/llms.txt` — index of all pages; use it to find the right one.
-2`docs/build/**/*.md` — per-page Markdown, incl. rendered API docstrings.
-3`docs/source/**/*.rst` — the authored sources; edit documentation here.
+2. `docs/build/**/*.md` — per-page Markdown, incl. rendered API docstrings.
+3. `docs/source/**/*.rst` — the authored sources; edit documentation here.
    Except `api/` and `state_machines/examples/`: generated, edit their generators.
 4. Docstrings in `bpod_core/` — the final authority if docs and code disagree;
    they also hold the doctests.
