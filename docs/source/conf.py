@@ -168,7 +168,7 @@ ogp_custom_meta_tags = ['<meta name="twitter:card" content="summary"/>']
 
 sitemap_url_scheme = '{link}'
 sitemap_excludes = ['search/', 'genindex/', 'py-modindex/', '404/']
-sitemap_show_lastmod = False
+sitemap_show_lastmod = True
 sitemap_indent = 2
 sitemap_locales = [None]
 
