@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ExtendedSerial.temporary_timeout`: context manager for temporarily setting a timeout
   for serial reads.
+- Optimizations for agentic development (`AGENTS.md`, `.mcp.json`, `llms.txt`, etc.)
 
 ## [0.1.0a14] - 2026-07-24
 
