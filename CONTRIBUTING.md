@@ -62,10 +62,12 @@ output will indicate whether the checks passed or failed.
 To run individual tools against your current environment:
 
 ```console
-uv run pytest          # run unit-tests
-uv run mypy            # run type checking
-uv run ruff check      # check for linting issues
-uv run ruff format     # auto-format code
+uv run tox -p -m pytest     # run unit-tests
+uv run tox -p -m mypy       # run type checking
+uv run ruff check           # check for linting issues
+uv run ruff check --fix     # auto-correct fixable linting issues
+uv run ruff format --check  # check for formatting issues
+uv run ruff format          # auto-format code
 ```
 
 Adding `--fix` to `ruff check` will automatically correct fixable issues.
