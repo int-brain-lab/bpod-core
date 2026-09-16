@@ -138,6 +138,9 @@ source-exclude = [
 [tool.uv.dependency-groups]
 doc = { requires-python = ">=3.14" }
 
+[tool.uv.sources]
+sphinx-llm = { git = "https://github.com/NVIDIA/sphinx-llm", branch = "main" }
+
 [tool.ruff]
 include = ["bpod_core/**/*.py", "tests/**/*.py", "examples/**/*.py", "docs/source/**/*.py"]
 target-version = "py310"
