@@ -69,6 +69,7 @@ extensions = [
 source_suffix = {'.rst': 'restructuredtext', '.md': 'myst'}
 templates_path = ['_templates']
 exclude_patterns = []
+smartquotes = False
 
 numfig = True
 nitpicky = True
@@ -324,6 +325,10 @@ llms_txt_description = (
 llms_txt_build_parallel = False
 llms_txt_exclude = ['schema']
 llms_txt_full_build = True
+
+# we only set `markdown_http_base` if we're running on GitHub
+if os.getenv("GITHUB_ACTIONS") == "true":
+    markdown_http_base = "https://int-brain-lab.github.io/bpod-core/"
 
 # -- Miscellaneous -------------------------------------------------------------
 
