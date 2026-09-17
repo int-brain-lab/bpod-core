@@ -58,6 +58,7 @@ extensions = [
     'fsm_codeblock',
     'fsm_examples',
     'missing_references',
+    'hide_doctest_comments',
     'matplotlib.sphinxext.plot_directive',
     'sphinx_llm.txt',
     'sphinx_sitemap',
