@@ -69,7 +69,7 @@ extensions = [
 source_suffix = {'.rst': 'restructuredtext', '.md': 'myst'}
 templates_path = ['_templates']
 exclude_patterns = []
-smartquotes = False
+smartquotes_action = 'De'
 
 numfig = True
 nitpicky = True
