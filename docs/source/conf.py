@@ -322,6 +322,7 @@ llms_txt_description = (
 )
 llms_txt_build_parallel = False
 llms_txt_exclude = ['schema']
+llms_txt_full_build = True
 
 # -- Miscellaneous -------------------------------------------------------------
 
