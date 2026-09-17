@@ -327,8 +327,8 @@ llms_txt_exclude = ['schema']
 llms_txt_full_build = True
 
 # we only set `markdown_http_base` if we're running on GitHub
-if os.getenv("GITHUB_ACTIONS") == "true":
-    markdown_http_base = "https://int-brain-lab.github.io/bpod-core/"
+if os.getenv('GITHUB_ACTIONS') == 'true':
+    markdown_http_base = 'https://int-brain-lab.github.io/bpod-core/'
 
 # -- Miscellaneous -------------------------------------------------------------
 
