@@ -19,7 +19,7 @@ jobs:
       contents: read
     if: (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.base_ref == 'main') || github.event_name == 'workflow_call'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - name: Verify lockfile
         run: |
@@ -54,7 +54,7 @@ jobs:
         with:
           packages: libegl1
           version: 1.0
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - name: sync dependencies
         run: uv sync --no-default-groups --group test --group ci
