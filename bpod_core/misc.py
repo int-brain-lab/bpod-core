@@ -215,6 +215,64 @@ class SuggestionDict(dict[str, V]):
             ) from e
 
 
+class SuggestionMapping(Mapping[str, V]):
+    """A read-only mapping that suggests similar keys on failed lookup.
+
+    Like :class:`SuggestionDict`, but read-only: implementing only the :class:`Mapping`
+    interface means there is no ``__setitem__``/``__delitem__``/``update``/etc. to
+    guard against, appropriate for a fixed set of keys (e.g. hardware channels
+    discovered once at connect time) that should never be mutated after construction.
+
+    Parameters
+    ----------
+    dictionary : Mapping
+        Initial key-value pairs.
+    name : str, default: 'key'
+        Human-readable label for the key type used in the error message.
+    error_class : type of Exception, default: KeyError
+        Exception class to raise on failed lookup. Must accept a single string argument.
+
+    Examples
+    --------
+    >>> d = SuggestionMapping({'Port1': 1, 'Port2': 2}, name='channel')
+    >>> d['Port1']
+    1
+    >>> d['Prot1']
+    Traceback (most recent call last):
+        ...
+    KeyError: "No such channel: 'Prot1' - did you mean 'Port1'?"
+    """
+
+    def __init__(
+        self,
+        dictionary: Mapping[str, V],
+        *,
+        name: str | None = None,
+        error_class: type[Exception] = KeyError,
+    ) -> None:
+        self._data = dict(dictionary)
+        self._name = name or 'key'
+        self._error_class = error_class
+
+    @override
+    def __getitem__(self, key: str) -> V:
+        try:
+            return self._data[key]
+        except KeyError as e:
+            raise self._error_class(
+                f"No such {self._name}: '{key}'"
+                + suggest_similar(key, self._data.keys())
+            ) from e
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    @override
+    def __len__(self) -> int:
+        return len(self._data)
+
+
 def set_nested(d: MutableMapping, keys: Sequence[Hashable], value: Any) -> None:
     """
     Set a value in a nested dict, creating intermediate dicts as needed.
