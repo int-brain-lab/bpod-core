@@ -58,6 +58,7 @@ extensions = [
     'fsm_codeblock',
     'fsm_examples',
     'missing_references',
+    'hide_doctest_comments',
     'matplotlib.sphinxext.plot_directive',
     'sphinx_llm.txt',
     'sphinx_sitemap',
@@ -68,6 +69,7 @@ extensions = [
 source_suffix = {'.rst': 'restructuredtext', '.md': 'myst'}
 templates_path = ['_templates']
 exclude_patterns = []
+smartquotes_action = 'De'
 
 numfig = True
 nitpicky = True
@@ -167,8 +169,8 @@ ogp_custom_meta_tags = ['<meta name="twitter:card" content="summary"/>']
 # -- Sitemap -------------------------------------------------------------------
 
 sitemap_url_scheme = '{link}'
-sitemap_excludes = ['search/', 'genindex/', 'py-modindex/']
-sitemap_show_lastmod = False
+sitemap_excludes = ['search/', 'genindex/', 'py-modindex/', '404/']
+sitemap_show_lastmod = True
 sitemap_indent = 2
 sitemap_locales = [None]
 
@@ -322,6 +324,11 @@ llms_txt_description = (
 )
 llms_txt_build_parallel = False
 llms_txt_exclude = ['schema']
+llms_txt_full_build = True
+
+# we only set `markdown_http_base` if we're running on GitHub
+if os.getenv('GITHUB_ACTIONS') == 'true':
+    markdown_http_base = 'https://int-brain-lab.github.io/bpod-core/'
 
 # -- Miscellaneous -------------------------------------------------------------
 
