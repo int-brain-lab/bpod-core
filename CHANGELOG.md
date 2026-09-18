@@ -13,6 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ExtendedSerial.temporary_timeout`: context manager for temporarily setting a timeout
   for serial reads.
 - Optimizations for agentic development (`AGENTS.md`, `.mcp.json`, `llms.txt`, etc.)
+- Validation rejects invalid state machine action values before compilation (non-integer
+  values for regular actions; out-of-range voltages for FlexIO analog-output actions).
+
+### Changed
+
+- FlexIO façade keys (`Bpod.flex_io[...]`) renamed from `FlexIO_N` to `FlexN`, matching
+  the naming already used for FlexIO input events and output actions.
+
+### Fixed
+
+- FlexIO analog-output (`Flex*`) action values are now scaled correctly (0-5V into
+  12-bit DAC counts) for whichever channel is configured as `ANALOG_OUTPUT`, instead of
+  a formula that always rounded to zero on a single hardcoded channel.
+- Trial-data action values now match what's actually sent to hardware (previously the
+  raw, unscaled value was recorded for FlexIO analog-output actions).
 
 ## [0.1.0a14] - 2026-07-24
 

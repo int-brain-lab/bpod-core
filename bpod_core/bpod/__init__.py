@@ -12,7 +12,13 @@ from datetime import timedelta
 from queue import Empty, SimpleQueue
 from time import perf_counter_ns, time_ns
 from types import TracebackType
-from typing import Any, ClassVar, Literal, cast, overload
+from typing import (
+    Any,
+    ClassVar,
+    Literal,
+    cast,
+    overload,
+)
 from uuid import uuid5
 
 import msgspec
@@ -52,7 +58,9 @@ from bpod_core.bpod.constants import (
     PIDS_BPOD,
     VALID_OPERATORS,
     VIDS_BPOD,
+    FlexIOChannelType,
 )
+from bpod_core.bpod.flexio import FlexIO
 from bpod_core.bpod.structs import (
     BpodEventUnion,
     BpodInfo,
@@ -83,6 +91,7 @@ from bpod_core.constants import (
     FMT_UINT8,
     FMT_UINT16_LE,
     FMT_UINT32_LE,
+    UINT12_MAX,
     UINT32_MAX,
     TeensyPID,
 )
@@ -201,6 +210,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._input_events: _InputEvents = _InputEvents(
             names=[], channels=[], values=[]
         )
+        self._non_bindable_input_events: frozenset[str] = frozenset()
         self._actions: list[str] = []
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._fsm_annotations: StateMachineLookup | None = None
@@ -256,9 +266,9 @@ class Bpod(SerialDevice, AbstractBpod):
         self._start_zmq(use_zeroconf=remote)
         logger.info('ZeroMQ service started on %s', self.address)
 
-        # when launched by a supervising process (e.g. QBpod), briefly wait for
-        # its subscription to register so the first trial's messages aren't lost
-        # to the PUB/SUB slow-joiner race
+        # when launched by a supervising process (e.g. QBpod), briefly wait for its
+        # subscription to register so the first trial's messages aren't lost to the
+        # PUB/SUB slow-joiner race
         if 'BPOD_OVERRIDE_REMOTE' in os.environ:
             if self._zmq.wait_for_subscribers(timeout=1.0):
                 logger.debug('Subscriber registered on the PUB/SUB channel')
@@ -346,8 +356,12 @@ class Bpod(SerialDevice, AbstractBpod):
 
     @property
     def input_event_names(self) -> list[str]:
-        """Names of all hardware input events."""
-        return self._input_events.names
+        """Names of all input events a state machine can transition on."""
+        return [
+            n
+            for n in self._input_events.names
+            if n not in self._non_bindable_input_events
+        ]
 
     @property
     def serial0(self) -> ExtendedSerial:
@@ -536,20 +550,24 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # retrieve hardware configuration from Bpod
         if self.version.firmware > (22, 0):
-            hardware_conf = list(self.serial0.query_struct(b'H', '<2H6B'))
+            hw_conf = list(self.serial0.query_struct(b'H', '<2H6B'))
         else:
-            hardware_conf = list(self.serial0.query_struct(b'H', '<2H5B'))
-            hardware_conf.insert(-4, 3)  # max bytes per serial msg always = 3
-        hardware_conf.extend(self.serial0.read_struct(f'<{hardware_conf[-1]}sB'))
-        hardware_conf.append(self.serial0.read(hardware_conf[-1]))
+            hw_conf = list(self.serial0.query_struct(b'H', '<2H5B'))
+            hw_conf.insert(-4, 3)  # max bytes per serial msg always = 3
+        hw_conf.extend(self.serial0.read_struct(f'<{hw_conf[-1]}sB'))
+        hw_conf.append(self.serial0.read(hw_conf[-1]))
 
-        # compute additional fields
-        cycle_frequency = 1_000_000 // hardware_conf[1]  # cycle_period_us is at index 1
-        n_modules = hardware_conf[-3].count(b'U')  # input_description is third to last
-        hardware_conf.extend([cycle_frequency, n_modules])
+        # create Struct for hardware configuration
+        input_description = hw_conf[-3]  # input_description is third to last
+        hw_conf.append(1_000_000 // hw_conf[1])  # cycle_frequency; cycle_period_us @ 1
+        hw_conf.append(input_description.count(b'U'))  # n_modules
+        hw_conf.append(input_description.count(b'F'))  # n_flexio
+        self._hardware = HardwareConfiguration(*hw_conf)
 
-        # create NamedTuple for hardware configuration
-        self._hardware = HardwareConfiguration(*hardware_conf)
+        # default FlexIO channel configuration (one entry per Flex channel)
+        # TODO: replace with the device query once the opcode is available
+        if self._hardware.n_flexio > 0:
+            self._flex_io = FlexIO(serial=self.serial0, n=self._hardware.n_flexio)
 
     def _configure_io(self) -> None:
         """Configure the input and output channels of the Bpod."""
@@ -713,6 +731,7 @@ class Bpod(SerialDevice, AbstractBpod):
         event_names: list[str] = []
         event_channels: list[str | None] = []
         event_values: list[int | None] = []
+        non_bindable_events: list[str] = []
 
         # physical input channel events
         counters = dict.fromkeys(CHANNEL_TYPES_INPUT, 0)
@@ -733,9 +752,21 @@ class Bpod(SerialDevice, AbstractBpod):
                 ev_values = list(range(n_app_softcodes))
             elif io_key == b'F':  # Flex
                 channel = f'{channel_name}{counters[io_key] + 1}'
-                ev_names = [f'{channel}_{i}' for i in range(2)]
+                match self.flex_io[channel].channel_type:
+                    case FlexIOChannelType.DIGITAL_INPUT:
+                        ev_names = [f'{channel}_{s}' for s in ('High', 'Low')]
+                        ev_values = [1, 0]
+                    case FlexIOChannelType.ANALOG_INPUT:
+                        ev_names = [f'{channel}_{s}' for s in ('Trig0', 'Trig1')]
+                        ev_values = [0, 1]
+                    case _:
+                        # every physical Flex channel reserves 2 event slots
+                        # unconditionally, matching firmware layout; channels not
+                        # configured as an input can never actually trigger them
+                        ev_names = [f'{channel}_{i}' for i in range(2)]
+                        ev_values = [0, 1]
+                        non_bindable_events.extend(ev_names)
                 ev_channels = [channel] * 2
-                ev_values = [0, 1]
             elif io_key in b'PBW':  # Port, TTL, Wire
                 channel = f'{channel_name}{counters[io_key] + 1}'
                 ev_names = [f'{channel}_{s}' for s in ('High', 'Low')]
@@ -792,6 +823,7 @@ class Bpod(SerialDevice, AbstractBpod):
             names=event_names, channels=event_channels, values=event_values
         )
         self._event_indices = {k: v for v, k in enumerate(event_names)}
+        self._non_bindable_input_events = frozenset(non_bindable_events)
         self._input_event_ranges = _InputEventRanges(
             input_channels=range_input,
             global_timer_starts=range_global_timer_starts,
@@ -1024,7 +1056,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 )
 
         # define valid input events and actions
-        valid_input_events = set(self._input_events.names)
+        valid_input_events = set(self.input_event_names)
         valid_actions = set(self._actions)
         if not global_timer_ids:
             # TODO: remove global timer events from valid_input_events
@@ -1079,6 +1111,25 @@ class Bpod(SerialDevice, AbstractBpod):
                 raise ValueError(
                     f"Invalid action '{bad_action}' in state '{state_name}' {detail}"
                 )
+
+            # validate action values
+            for action_name, action_value in state.actions.items():
+                flexio = self._flex_io.get(action_name) if self._flex_io else None
+                if (
+                    flexio is not None
+                    and flexio.channel_type == FlexIOChannelType.ANALOG_OUTPUT
+                ):
+                    if not 0 <= action_value <= 5:
+                        raise ValueError(
+                            f'Invalid value {action_value!r} for action '
+                            f"'{action_name}' in state '{state_name}' - FlexIO analog "
+                            f'output actions must be between 0 and 5 (V)'
+                        )
+                elif action_value != int(action_value):
+                    raise ValueError(
+                        f"Invalid value {action_value!r} for action '{action_name}' "
+                        f"in state '{state_name}' - must be an integer"
+                    )
 
         # validate global timers
         if global_timer_ids:
@@ -1260,12 +1311,32 @@ class Bpod(SerialDevice, AbstractBpod):
                     target_indices[target]
                 )
 
+        def _scale_action_value(action_name: str, value: float) -> int:
+            """Scale a FlexIO analog-output action value (0-5V) into 12-bit DAC counts.
+
+            Every other action value must already be an integer (enforced during
+            validation).
+            """
+            flexio_channel = self._flex_io.get(action_name) if self._flex_io else None
+            if (
+                flexio_channel is not None
+                and flexio_channel.channel_type == FlexIOChannelType.ANALOG_OUTPUT
+            ):
+                return round(value / 5 * UINT12_MAX)
+            return int(value)
+
+        # scale action values once, shared by the annotation data structure below and
+        # the ACTIONS wire-encoding section further down
+        state_actions = [
+            {k: _scale_action_value(k, v) for k, v in s.actions.items()} for s in states
+        ]
+
         # build annotation data structure for event decoding in EventThread
         annotations = StateMachineLookup(
             fsm_hash=state_machine_hash,
             state_names=state_names,
             state_transition_matrix=state_transition_matrix,
-            state_actions=[dict(s.actions) for s in states],
+            state_actions=state_actions,
             use_back_op=use_back_op,
             state_lookup=dict(enumerate(state_names)),
         )
@@ -1320,10 +1391,10 @@ class Bpod(SerialDevice, AbstractBpod):
         #   [count] [action_idx, value] ...  (8-bit on Bpod 0.5-1, 16-bit on Bpod 2+)
         i1 = action_indices['GlobalTimerTrig']
         tmp_list: list[int] = []
-        for state in states:
+        for actions in state_actions:
             counter_pos = len(tmp_list)
             tmp_list.append(0)
-            for action_name, action_value in state.actions.items():
+            for action_name, action_value in actions.items():
                 if (key_idx := action_indices[action_name]) < i1:
                     tmp_list[counter_pos] += 1
                     tmp_list.extend(
@@ -1379,20 +1450,26 @@ class Bpod(SerialDevice, AbstractBpod):
 
         if version.firmware < (23, 0):
             fsm_bytes.extend(
-                s.actions.get('GlobalCounterReset', -1) + 1 for s in states
+                actions.get('GlobalCounterReset', -1) + 1 for actions in state_actions
             )
         else:
             counter_idx = len(fsm_bytes)
             fsm_bytes.append(0)
-            for state_idx, state in enumerate(states):
-                if (value := state.actions.get('GlobalCounterReset', -1)) >= 0:
+            for state_idx, actions in enumerate(state_actions):
+                if (value := actions.get('GlobalCounterReset', -1)) >= 0:
                     fsm_bytes[counter_idx] += 1
                     fsm_bytes.extend([state_idx, value + 1])
 
-        # ANALOG THRESHOLDS
-        # TODO: this is just a placeholder for now
+        # ANALOG THRESHOLDS (variable length, per action):
+        #   [count] [state_idx, bitmask] ...  for states that arm/disarm thresholds
         if version.machine == 4:
-            fsm_bytes.extend([0, 0])
+            for key in ('AnalogThreshEnable', 'AnalogThreshDisable'):
+                count_pos = len(fsm_bytes)
+                fsm_bytes.append(0)
+                for state_idx, actions in enumerate(state_actions):
+                    if bitmask := actions.get(key, 0):
+                        fsm_bytes[count_pos] += 1
+                        fsm_bytes.extend([state_idx, bitmask])
 
         # Timer trigger/cancel bitmasks need enough bits to address all timers.
         # Use the smallest integer type that fits n_global_timers bits.
@@ -1405,7 +1482,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # GLOBAL TIMER TRIGGERS AND CANCELS
         for key in ('GlobalTimerTrig', 'GlobalTimerCancel'):
-            idx = [s.actions.get(key, -1) + 1 for s in states]
+            idx = [actions.get(key, -1) + 1 for actions in state_actions]
             extend_packed(fsm_bytes, idx, format_string)
 
         # GLOBAL TIMER ONSET TRIGGERS
