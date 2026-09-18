@@ -332,15 +332,21 @@ class FlexIOChannel:
 class AbstractFlexIO(Mapping[str, FlexIOChannel]):
     """Abstract base for FlexIO subsystems."""
 
-    __slots__ = ('_state', '_view')
+    __slots__ = ('_on_channel_types_changed', '_state', '_view')
 
     _view: dict[str, FlexIOChannel]
     _state: _FlexIOState
 
-    def __init__(self, n: int) -> None:
+    def __init__(
+        self,
+        n: int,
+        *,
+        on_channel_types_changed: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__()
 
         self._state = _FlexIOState.create_default(n_channels=n)
+        self._on_channel_types_changed = on_channel_types_changed
         self._view = {}
         for i in range(n):
             channel = FlexIOChannel(self._get_state, self._apply_settings, i)

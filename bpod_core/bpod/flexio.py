@@ -2,6 +2,7 @@
 
 import logging
 import struct
+from collections.abc import Callable
 
 from typing_extensions import override
 
@@ -22,8 +23,14 @@ class FlexIO(AbstractFlexIO):
 
     _serial: ExtendedSerial
 
-    def __init__(self, serial: ExtendedSerial, n: int) -> None:
-        super().__init__(n)
+    def __init__(
+        self,
+        serial: ExtendedSerial,
+        n: int,
+        *,
+        on_channel_types_changed: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__(n, on_channel_types_changed=on_channel_types_changed)
         self._serial = serial
 
     @override
@@ -33,7 +40,8 @@ class FlexIO(AbstractFlexIO):
         buffer = bytearray()
         n_confirmations = 0
 
-        if force or state.channel_types != old.channel_types:
+        channel_types_changed = force or state.channel_types != old.channel_types
+        if channel_types_changed:
             buffer.extend(struct.pack(f'<c{n}B', b'Q', *state.channel_types))
             n_confirmations += 1
         if force or state.threshold_modes != old.threshold_modes:
@@ -70,6 +78,8 @@ class FlexIO(AbstractFlexIO):
             raise RuntimeError('Failed to apply FlexIO settings')
 
         self._state = state
+        if channel_types_changed and self._on_channel_types_changed:
+            self._on_channel_types_changed()
 
     @override
     def reset(self) -> None:

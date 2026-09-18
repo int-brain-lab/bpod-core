@@ -567,7 +567,11 @@ class Bpod(SerialDevice, AbstractBpod):
         # default FlexIO channel configuration (one entry per Flex channel)
         # TODO: replace with the device query once the opcode is available
         if self._hardware.n_flexio > 0:
-            self._flex_io = FlexIO(serial=self.serial0, n=self._hardware.n_flexio)
+            self._flex_io = FlexIO(
+                serial=self.serial0,
+                n=self._hardware.n_flexio,
+                on_channel_types_changed=self._recompile_hardware_tables,
+            )
 
     def _configure_io(self) -> None:
         """Configure the input and output channels of the Bpod."""
@@ -950,12 +954,19 @@ class Bpod(SerialDevice, AbstractBpod):
             available_modules=[m.name for m in modules if m.is_connected],
         )
 
-        # update event names and output actions
+        self._recompile_hardware_tables()
+
+    def _recompile_hardware_tables(self) -> None:
+        """Recompile input events and output actions, and refresh the hardware hash.
+
+        Must be called whenever anything that affects event/action naming changes
+        after the initial connection (e.g. module discovery, FlexIO channel
+        reconfiguration), so that compiled state machines reflect the current
+        hardware configuration and stale cache entries aren't served.
+        """
         self._compile_input_events()
         self._compile_output_actions()
         self._event_lookup = _build_event_lookup(self._input_events, self._actions)
-
-        # compute hardware identity hash for cache keying
         self._hardware_hash = self._compute_hardware_hash()
 
     def _compute_hardware_hash(self) -> bytes:
