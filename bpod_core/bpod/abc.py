@@ -1,7 +1,7 @@
 """Abstract base classes used by the bpod module."""
 
 from abc import abstractmethod
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -10,7 +10,6 @@ from typing import Literal, overload
 import msgspec
 import polars as pl
 from pydantic import validate_call
-from typing_extensions import override
 
 from bpod_core.bpod.constants import (
     CHANNEL_TYPES_OUTPUT,
@@ -26,7 +25,7 @@ from bpod_core.bpod.structs import (
     _FlexIOState,
 )
 from bpod_core.fsm import StateMachine
-from bpod_core.misc import suggest_similar
+from bpod_core.misc import SuggestionMapping
 
 
 class AbstractBpod(AbstractContextManager):
@@ -329,12 +328,9 @@ class FlexIOChannel:
         return self._thresholds
 
 
-class AbstractFlexIO(Mapping[str, FlexIOChannel]):
+class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
     """Abstract base for FlexIO subsystems."""
 
-    __slots__ = ('_on_channel_types_changed', '_state', '_view')
-
-    _view: dict[str, FlexIOChannel]
     _state: _FlexIOState
 
     def __init__(
@@ -343,35 +339,16 @@ class AbstractFlexIO(Mapping[str, FlexIOChannel]):
         *,
         on_channel_types_changed: Callable[[], None] | None = None,
     ) -> None:
-        super().__init__()
-
         self._state = _FlexIOState.create_default(n_channels=n)
         self._on_channel_types_changed = on_channel_types_changed
-        self._view = {}
+        view = {}
         for i in range(n):
             channel = FlexIOChannel(self._get_state, self._apply_settings, i)
-            self._view[channel.name] = channel
+            view[channel.name] = channel
+        super().__init__(view, name='FlexIO channel', error_class=KeyError)
 
     def _get_state(self) -> _FlexIOState:
         return self._state
-
-    @override
-    def __getitem__(self, item: str) -> FlexIOChannel:
-        try:
-            return self._view[item]
-        except KeyError as e:
-            raise KeyError(
-                f"No such FlexIO channel: '{item}'"
-                + suggest_similar(item, self._view.keys())
-            ) from e
-
-    @override
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._view)
-
-    @override
-    def __len__(self) -> int:
-        return len(self._view)
 
     @abstractmethod
     def _apply_settings(self, state: _FlexIOState) -> None: ...

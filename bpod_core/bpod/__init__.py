@@ -6,7 +6,7 @@ import os
 import re
 import struct
 import weakref
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from queue import Empty, SimpleQueue
@@ -105,7 +105,7 @@ from bpod_core.ipc import (
 )
 from bpod_core.misc import (
     SettingsDict,
-    SuggestionDict,
+    SuggestionMapping,
     extend_packed,
     suggest_similar,
     suppress_logging,
@@ -178,11 +178,11 @@ class Bpod(SerialDevice, AbstractBpod):
     serial2: ExtendedSerial | None = None
     """Tertiary serial device for communication with the Bpod - used by Bpod 2+ only."""
 
-    inputs: dict[str, 'Input']
-    """Dictionary of available input channels, keyed by name."""
+    inputs: Mapping[str, 'Input']
+    """Read-only mapping of available input channels, keyed by name."""
 
-    outputs: dict[str, 'Output']
-    """Dictionary of available output channels, keyed by name."""
+    outputs: Mapping[str, 'Output']
+    """Read-only mapping of available output channels, keyed by name."""
 
     modules: dict[str, 'Module']
     """Dictionary of available modules, keyed by name."""
@@ -597,7 +597,7 @@ class Bpod(SerialDevice, AbstractBpod):
             setattr(
                 self,
                 io_class,
-                SuggestionDict(channels, name=name, error_class=BpodKeyError),
+                SuggestionMapping(channels, name=name, error_class=BpodKeyError),
             )
 
         # set the enabled state of the input channels

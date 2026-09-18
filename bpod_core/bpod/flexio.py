@@ -85,5 +85,5 @@ class FlexIO(AbstractFlexIO):
     def reset(self) -> None:
         """Reset the FlexIO subsystem to its default settings."""
         logger.debug('Resetting FlexIO subsystem')
-        default = _FlexIOState.create_default(n_channels=len(self._view))
+        default = _FlexIOState.create_default(n_channels=len(self))
         self._apply_settings(default, force=True)
