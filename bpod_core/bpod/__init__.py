@@ -210,8 +210,9 @@ class Bpod(SerialDevice, AbstractBpod):
         self._input_events: _InputEvents = _InputEvents(
             names=[], channels=[], values=[]
         )
-        self._non_bindable_input_events: frozenset[str] = frozenset()
+        self._input_event_names: tuple[str, ...] = ()
         self._actions: list[str] = []
+        self._action_names: tuple[str, ...] = ()
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._fsm_annotations: StateMachineLookup | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
@@ -355,13 +356,14 @@ class Bpod(SerialDevice, AbstractBpod):
             serial.verify(b'Z')
 
     @property
-    def input_event_names(self) -> list[str]:
+    def input_event_names(self) -> tuple[str, ...]:
         """Names of all input events a state machine can transition on."""
-        return [
-            n
-            for n in self._input_events.names
-            if n not in self._non_bindable_input_events
-        ]
+        return self._input_event_names
+
+    @property
+    def action_names(self) -> tuple[str, ...]:
+        """Names of all actions a state machine can set."""
+        return self._action_names
 
     @property
     def serial0(self) -> ExtendedSerial:
@@ -827,7 +829,9 @@ class Bpod(SerialDevice, AbstractBpod):
             names=event_names, channels=event_channels, values=event_values
         )
         self._event_indices = {k: v for v, k in enumerate(event_names)}
-        self._non_bindable_input_events = frozenset(non_bindable_events)
+        self._input_event_names = tuple(
+            n for n in event_names if n not in non_bindable_events
+        )
         self._input_event_ranges = _InputEventRanges(
             input_channels=range_input,
             global_timer_starts=range_global_timer_starts,
@@ -851,6 +855,7 @@ class Bpod(SerialDevice, AbstractBpod):
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""
         self._actions = []
+        non_bindable_actions: list[str] = []
 
         # compile actions for output channels
         counters = dict.fromkeys(CHANNEL_TYPES_OUTPUT, 0)
@@ -861,6 +866,11 @@ class Bpod(SerialDevice, AbstractBpod):
                 name = CHANNEL_TYPES_OUTPUT[io_key]
             elif io_key in b'FVPBW':  # Flex, Valve, PWM, TTL, Wire
                 name = f'{CHANNEL_TYPES_OUTPUT[io_key]}{counters[io_key] + 1}'
+                if io_key == b'F' and self.flex_io[name].channel_type not in (
+                    FlexIOChannelType.DIGITAL_OUTPUT,
+                    FlexIOChannelType.ANALOG_OUTPUT,
+                ):
+                    non_bindable_actions.append(name)
             else:
                 continue
             self._actions.append(name)
@@ -874,6 +884,9 @@ class Bpod(SerialDevice, AbstractBpod):
         if self.version.machine == 4:
             self._actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
 
+        self._action_names = tuple(
+            n for n in self._actions if n not in non_bindable_actions
+        )
         self._action_indices = {k: v for v, k in enumerate(self._actions)}
         self._physical_output_channels = list(self.modules) + [
             o.name for o in self.outputs.values() if o.io_type != b'U'
@@ -1067,7 +1080,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # define valid input events and actions
         valid_input_events = set(self.input_event_names)
-        valid_actions = set(self._actions)
+        valid_actions = set(self.action_names)
         if not global_timer_ids:
             # TODO: remove global timer events from valid_input_events
             valid_actions -= set(self._global_timer_actions)
@@ -1124,10 +1137,10 @@ class Bpod(SerialDevice, AbstractBpod):
 
             # validate action values
             for action_name, action_value in state.actions.items():
-                flexio = self._flex_io.get(action_name) if self._flex_io else None
+                flex_channel = self._flex_io.get(action_name) if self._flex_io else None
                 if (
-                    flexio is not None
-                    and flexio.channel_type == FlexIOChannelType.ANALOG_OUTPUT
+                    flex_channel is not None
+                    and flex_channel.channel_type == FlexIOChannelType.ANALOG_OUTPUT
                 ):
                     if not 0 <= action_value <= 5:
                         raise ValueError(

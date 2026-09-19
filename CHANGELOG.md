@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `misc.SuggestionMapping`: a read-only mapping that suggests similar keys on failed
   lookup, for fixed sets of keys (e.g. hardware channels) that should never be mutated
   after construction.
+- `Bpod.action_names`: names of all actions a state machine can currently set, mirroring
+  the existing `Bpod.input_event_names`.
 
 ### Changed
 
