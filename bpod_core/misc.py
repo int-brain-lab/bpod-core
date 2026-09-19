@@ -229,6 +229,9 @@ class SuggestionMapping(Mapping[str, V]):
     def __len__(self) -> int:
         return len(self._data)
 
+    def __repr__(self) -> str:
+        return f'{type(self).__name__}({dict(self._data)!r})'
+
 
 def set_nested(d: MutableMapping, keys: Sequence[Hashable], value: Any) -> None:
     """

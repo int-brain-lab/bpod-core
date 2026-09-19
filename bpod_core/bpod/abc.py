@@ -4,7 +4,6 @@ from abc import abstractmethod
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from functools import cached_property
 from typing import Literal, overload
 
 import msgspec
@@ -274,7 +273,7 @@ class FlexIOThreshold:
         self._state_setter(new_state)
 
 
-@dataclass()
+@dataclass(slots=True)
 class FlexIOChannel:
     """Class representing a single FlexIO channel."""
 
@@ -289,7 +288,10 @@ class FlexIOChannel:
             FlexIOThreshold(self._state_getter, self._state_setter, self._index, 1),
         )
 
-    @cached_property
+    def __repr__(self) -> str:
+        return f'{type(self).__name__}(channel_type={self.channel_type!r})'
+
+    @property
     def name(self) -> str:
         """Name of the FlexIO channel."""
         return f'{CHANNEL_TYPES_OUTPUT[b"F"]}{self._index + 1}'
