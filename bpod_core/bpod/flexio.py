@@ -19,7 +19,7 @@ _SERIAL_TIMEOUT = 0.2
 class FlexIO(AbstractFlexIO):
     """Local FlexIO implementation with direct hardware access."""
 
-    __slots__ = ('_serial',)
+    __slots__ = ('_cycle_frequency', '_serial')
 
     _serial: ExtendedSerial
 
@@ -28,10 +28,12 @@ class FlexIO(AbstractFlexIO):
         serial: ExtendedSerial,
         n: int,
         *,
+        cycle_frequency: int,
         on_channel_types_changed: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(n, on_channel_types_changed=on_channel_types_changed)
         self._serial = serial
+        self._cycle_frequency = cycle_frequency
 
     @override
     def _apply_settings(self, state: _FlexIOState, *, force: bool = False) -> None:
@@ -43,6 +45,13 @@ class FlexIO(AbstractFlexIO):
         channel_types_changed = force or state.channel_types != old.channel_types
         if channel_types_changed:
             buffer.extend(struct.pack(f'<c{n}B', b'Q', *state.channel_types))
+            n_confirmations += 1
+        if force or state.analog_sampling_rate != old.analog_sampling_rate:
+            n_cycles = round(self._cycle_frequency / state.analog_sampling_rate)
+            buffer.extend(struct.pack('<cI', b'^', n_cycles))
+            n_confirmations += 1
+        if force or state.n_reads_per_sample != old.n_reads_per_sample:
+            buffer.extend(struct.pack('<cB', b'o', state.n_reads_per_sample))
             n_confirmations += 1
         if force or state.threshold_modes != old.threshold_modes:
             buffer.extend(struct.pack(f'<c{n}B', b'm', *state.threshold_modes))

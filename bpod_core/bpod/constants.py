@@ -109,3 +109,9 @@ class FlexIOThresholdPolarity(IntEnum):
 
 FlexIOThresholdVoltage = Annotated[float, Field(ge=0.0, le=5.0, allow_inf_nan=False)]
 """Threshold voltage of an analog FlexIO input channel in volts"""
+
+FlexIOAnalogSamplingRate = Annotated[int, Field(ge=1, le=1000)]
+"""Sampling rate for FlexIO channels configured as analog input, in Hz."""
+
+FlexIONReadsPerSample = Annotated[int, Field(ge=1, le=4)]
+"""Number of ADC reads averaged per FlexIO analog sample."""

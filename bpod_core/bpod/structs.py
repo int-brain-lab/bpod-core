@@ -416,6 +416,8 @@ class _FlexIOState(msgspec.Struct):
     threshold_enabled: tuple[tuple[bool, ...], ...]
     threshold_voltages: tuple[tuple[float, ...], ...]
     threshold_polarities: tuple[tuple[FlexIOThresholdPolarity, ...], ...]
+    analog_sampling_rate: int
+    n_reads_per_sample: int
 
     @classmethod
     def create_default(cls, n_channels: int, n_thresholds: int = 2) -> Self:
@@ -436,4 +438,6 @@ class _FlexIOState(msgspec.Struct):
             threshold_voltages=n_channels * ((5.0,) * n_thresholds,),
             threshold_polarities=n_channels
             * ((FlexIOThresholdPolarity.RISING,) * n_thresholds,),
+            analog_sampling_rate=1000,
+            n_reads_per_sample=3,
         )

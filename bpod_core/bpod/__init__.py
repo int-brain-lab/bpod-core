@@ -572,6 +572,7 @@ class Bpod(SerialDevice, AbstractBpod):
             self._flex_io = FlexIO(
                 serial=self.serial0,
                 n=self._hardware.n_flexio,
+                cycle_frequency=self._hardware.cycle_frequency,
                 on_channel_types_changed=self._recompile_hardware_tables,
             )
 

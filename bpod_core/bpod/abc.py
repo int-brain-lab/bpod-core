@@ -12,7 +12,9 @@ from pydantic import validate_call
 
 from bpod_core.bpod.constants import (
     CHANNEL_TYPES_OUTPUT,
+    FlexIOAnalogSamplingRate,
     FlexIOChannelType,
+    FlexIONReadsPerSample,
     FlexIOThresholdMode,
     FlexIOThresholdPolarity,
     FlexIOThresholdVoltage,
@@ -361,3 +363,25 @@ class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
     def reset(self) -> None:
         """Reset the FlexIO subsystem to its default settings."""
         ...
+
+    @property
+    def analog_sampling_rate(self) -> FlexIOAnalogSamplingRate:
+        """Sampling rate for channels configured as analog input, in Hz."""
+        return self._get_state().analog_sampling_rate
+
+    @analog_sampling_rate.setter
+    @validate_call
+    def analog_sampling_rate(self, value: FlexIOAnalogSamplingRate) -> None:
+        state = self._get_state()
+        self._apply_settings(msgspec.structs.replace(state, analog_sampling_rate=value))
+
+    @property
+    def n_reads_per_sample(self) -> FlexIONReadsPerSample:
+        """Number of ADC reads averaged per analog sample."""
+        return self._get_state().n_reads_per_sample
+
+    @n_reads_per_sample.setter
+    @validate_call
+    def n_reads_per_sample(self, value: FlexIONReadsPerSample) -> None:
+        state = self._get_state()
+        self._apply_settings(msgspec.structs.replace(state, n_reads_per_sample=value))

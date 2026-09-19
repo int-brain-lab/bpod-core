@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after construction.
 - `Bpod.action_names`: names of all actions a state machine can currently set, mirroring
   the existing `Bpod.input_event_names`.
+- `Bpod.flex_io.analog_sampling_rate` and `Bpod.flex_io.n_reads_per_sample`: previously
+  unconfigurable FlexIO subsystem-wide settings controlling the sampling rate and
+  ADC averaging for channels configured as `ANALOG_INPUT`.
 
 ### Changed
 
