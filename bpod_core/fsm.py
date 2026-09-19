@@ -292,12 +292,9 @@ OutputActionName = Annotated[
 ]
 
 OutputActionValue = Annotated[
-    int,
+    int | float,
     Field(
-        title='Output Action Value',
-        description='The integer value of the output action',
-        ge=0,
-        le=255,
+        title='Output Action Value', description='The value of the output action', ge=0
     ),
 ]
 

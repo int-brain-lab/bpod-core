@@ -2,10 +2,16 @@
   "$defs": {
     "Actions": {
       "additionalProperties": {
-        "description": "The integer value of the output action",
-        "maximum": 255,
-        "minimum": 0,
-        "type": "integer"
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          }
+        ],
+        "description": "The value of the output action",
+        "ge": 0
       },
       "description": "A collection of actions.",
       "propertyNames": {

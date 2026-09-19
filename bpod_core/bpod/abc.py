@@ -1,13 +1,32 @@
 """Abstract base classes used by the bpod module."""
 
 from abc import abstractmethod
+from collections.abc import Callable
 from contextlib import AbstractContextManager
+from dataclasses import dataclass, field
 from typing import Literal, overload
 
+import msgspec
 import polars as pl
+from pydantic import validate_call
 
-from bpod_core.bpod.structs import HardwareConfiguration, HardwareState, VersionInfo
+from bpod_core.bpod.constants import (
+    CHANNEL_TYPES_OUTPUT,
+    FlexIOAnalogSamplingRate,
+    FlexIOChannelType,
+    FlexIONReadsPerSample,
+    FlexIOThresholdMode,
+    FlexIOThresholdPolarity,
+    FlexIOThresholdVoltage,
+)
+from bpod_core.bpod.structs import (
+    HardwareConfiguration,
+    HardwareState,
+    VersionInfo,
+    _FlexIOState,
+)
 from bpod_core.fsm import StateMachine
+from bpod_core.misc import SuggestionMapping
 
 
 class AbstractBpod(AbstractContextManager):
@@ -17,6 +36,18 @@ class AbstractBpod(AbstractContextManager):
     _hardware: HardwareConfiguration
     _state: HardwareState
     _serial_number: str
+    _flex_io: 'AbstractFlexIO | None' = None
+
+    @property
+    def flex_io(self) -> 'AbstractFlexIO':
+        """The FlexIO subsystem."""
+        if self._flex_io is None:
+            if self._hardware.n_flexio == 0:
+                raise RuntimeError(
+                    f'Bpod {self._version.machine_str} does not have FlexIO channels'
+                )
+            raise RuntimeError('FlexIO subsystem not available')
+        return self._flex_io
 
     @property
     @abstractmethod
@@ -187,3 +218,170 @@ class AbstractBpod(AbstractContextManager):
     @abstractmethod
     def update_modules(self) -> None:
         """Update the list of connected modules and their configurations."""
+
+
+@dataclass(slots=True)
+class FlexIOThreshold:
+    """Class representing a FlexIO analog threshold."""
+
+    _state_getter: Callable[[], _FlexIOState] = field(repr=False)
+    _state_setter: Callable[[_FlexIOState], None] = field(repr=False)
+    _channel_index: int = field(repr=False)
+    _threshold_index: int = field(repr=False)
+
+    @property
+    def voltage(self) -> FlexIOThresholdVoltage:
+        """The voltage of the threshold."""
+        state = self._state_getter()
+        return state.threshold_voltages[self._channel_index][self._threshold_index]
+
+    @voltage.setter
+    @validate_call
+    def voltage(self, value: FlexIOThresholdVoltage) -> None:
+        state = self._state_getter()
+        voltages = [list(v) for v in state.threshold_voltages]
+        voltages[self._channel_index][self._threshold_index] = value
+        new_state = msgspec.structs.replace(state, threshold_voltages=voltages)
+        self._state_setter(new_state)
+
+    @property
+    def polarity(self) -> FlexIOThresholdPolarity:
+        """The polarity of the threshold."""
+        state = self._state_getter()
+        return state.threshold_polarities[self._channel_index][self._threshold_index]
+
+    @polarity.setter
+    @validate_call
+    def polarity(self, value: FlexIOThresholdPolarity) -> None:
+        state = self._state_getter()
+        polarities = [list(p) for p in state.threshold_polarities]
+        polarities[self._channel_index][self._threshold_index] = value
+        new_state = msgspec.structs.replace(state, threshold_polarities=polarities)
+        self._state_setter(new_state)
+
+    @property
+    def enabled(self) -> bool:
+        """Whether the threshold is enabled."""
+        state = self._state_getter()
+        return state.threshold_enabled[self._channel_index][self._threshold_index]
+
+    @enabled.setter
+    @validate_call
+    def enabled(self, value: bool) -> None:
+        state = self._state_getter()
+        enabled = [list(e) for e in state.threshold_enabled]
+        enabled[self._channel_index][self._threshold_index] = value
+        new_state = msgspec.structs.replace(state, threshold_enabled=enabled)
+        self._state_setter(new_state)
+
+
+@dataclass(slots=True)
+class FlexIOChannel:
+    """Class representing a single FlexIO channel."""
+
+    _state_getter: Callable[[], _FlexIOState] = field(repr=False)
+    _state_setter: Callable[[_FlexIOState], None] = field(repr=False)
+    _index: int = field(repr=False)
+    _thresholds: tuple[FlexIOThreshold, FlexIOThreshold] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._thresholds = (
+            FlexIOThreshold(self._state_getter, self._state_setter, self._index, 0),
+            FlexIOThreshold(self._state_getter, self._state_setter, self._index, 1),
+        )
+
+    def __repr__(self) -> str:
+        return f'{type(self).__name__}(channel_type={self.channel_type!r})'
+
+    @property
+    def name(self) -> str:
+        """Name of the FlexIO channel."""
+        return f'{CHANNEL_TYPES_OUTPUT[b"F"]}{self._index + 1}'
+
+    @property
+    def channel_type(self) -> FlexIOChannelType:
+        """The type of the FlexIO channel."""
+        return self._state_getter().channel_types[self._index]
+
+    @channel_type.setter
+    @validate_call
+    def channel_type(self, value: FlexIOChannelType) -> None:
+        state = self._state_getter()
+        new_value = list(state.channel_types)
+        new_value[self._index] = value
+        new_state = msgspec.structs.replace(state, channel_types=new_value)
+        self._state_setter(new_state)
+
+    @property
+    def threshold_mode(self) -> FlexIOThresholdMode:
+        """The analog threshold mode of the FlexIO channel."""
+        return self._state_getter().threshold_modes[self._index]
+
+    @threshold_mode.setter
+    @validate_call
+    def threshold_mode(self, value: FlexIOThresholdMode) -> None:
+        state = self._state_getter()
+        new_value = list(state.threshold_modes)
+        new_value[self._index] = value
+        new_state = msgspec.structs.replace(state, threshold_modes=new_value)
+        self._state_setter(new_state)
+
+    @property
+    def thresholds(self) -> tuple[FlexIOThreshold, FlexIOThreshold]:
+        """The analog thresholds of the FlexIO channel."""
+        return self._thresholds
+
+
+class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
+    """Abstract base for FlexIO subsystems."""
+
+    __slots__ = ('_on_channel_types_changed', '_state')
+
+    _state: _FlexIOState
+
+    def __init__(
+        self,
+        n: int,
+        *,
+        on_channel_types_changed: Callable[[], None] | None = None,
+    ) -> None:
+        self._state = _FlexIOState.create_default(n_channels=n)
+        self._on_channel_types_changed = on_channel_types_changed
+        view = {}
+        for i in range(n):
+            channel = FlexIOChannel(self._get_state, self._apply_settings, i)
+            view[channel.name] = channel
+        super().__init__(view, name='FlexIO channel', error_class=KeyError)
+
+    def _get_state(self) -> _FlexIOState:
+        return self._state
+
+    @abstractmethod
+    def _apply_settings(self, state: _FlexIOState) -> None: ...
+
+    @abstractmethod
+    def reset(self) -> None:
+        """Reset the FlexIO subsystem to its default settings."""
+        ...
+
+    @property
+    def analog_sampling_rate(self) -> FlexIOAnalogSamplingRate:
+        """Sampling rate for channels configured as analog input, in Hz."""
+        return self._get_state().analog_sampling_rate
+
+    @analog_sampling_rate.setter
+    @validate_call
+    def analog_sampling_rate(self, value: FlexIOAnalogSamplingRate) -> None:
+        state = self._get_state()
+        self._apply_settings(msgspec.structs.replace(state, analog_sampling_rate=value))
+
+    @property
+    def n_reads_per_sample(self) -> FlexIONReadsPerSample:
+        """Number of ADC reads averaged per analog sample."""
+        return self._get_state().n_reads_per_sample
+
+    @n_reads_per_sample.setter
+    @validate_call
+    def n_reads_per_sample(self, value: FlexIONReadsPerSample) -> None:
+        state = self._get_state()
+        self._apply_settings(msgspec.structs.replace(state, n_reads_per_sample=value))

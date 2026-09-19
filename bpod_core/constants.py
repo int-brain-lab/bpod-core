@@ -22,6 +22,8 @@ INT64_MAX: int = 9223372036854775807
 """Maximum value for a signed 64-bit integer."""
 UINT8_MAX: int = 255
 """Maximum value for an unsigned 8-bit integer."""
+UINT12_MAX: int = 4095
+"""Maximum value for an unsigned 12-bit integer."""
 UINT16_MAX: int = 65535
 """Maximum value for an unsigned 16-bit integer."""
 UINT32_MAX: int = 4294967295

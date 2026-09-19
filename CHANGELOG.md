@@ -6,11 +6,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## UNRELEASED
+## UNPUBLISHED
 
 ### Added
 
+- `ExtendedSerial.temporary_timeout`: context manager for temporarily setting a timeout
+  for serial reads.
 - Optimizations for agentic development (`AGENTS.md`, `.mcp.json`, `llms.txt`, etc.)
+- Validation rejects invalid state machine action values before compilation (non-integer
+  values for regular actions; out-of-range voltages for FlexIO analog-output actions).
+- `misc.SuggestionMapping`: a read-only mapping that suggests similar keys on failed
+  lookup, for fixed sets of keys (e.g. hardware channels) that should never be mutated
+  after construction.
+- `Bpod.action_names`: names of all actions a state machine can currently set, mirroring
+  the existing `Bpod.input_event_names`.
+- `Bpod.flex_io.analog_sampling_rate` and `Bpod.flex_io.n_reads_per_sample`: previously
+  unconfigurable FlexIO subsystem-wide settings controlling the sampling rate and
+  ADC averaging for channels configured as `ANALOG_INPUT`.
+
+### Changed
+
+- `Bpod.inputs`/`Bpod.outputs`/`Bpod.modules` are now read-only `misc.SuggestionMapping`
+  instead of mutable dicts, preventing accidental corruption.
+- Module-not-found errors now suggest the closest matching module name, matching the
+  error style already used for input/output channels and FlexIO channels.
+- `Bpod.serial2` removed; the FlexIO analog serial connection is now owned internally
+  by `Bpod.flex_io` instead of being exposed as a public attribute.
+- FlexIO channels are now reset to their default settings on connect, guaranteeing
+  the hardware actually matches bpod-core's assumed baseline instead of trusting
+  leftover configuration from a previous session.
+
+### Removed
+
+- `misc.SuggestionDict`, superseded by `misc.SuggestionMapping` (no longer used anywhere
+  in the library).
+
+### Fixed
+
+- FlexIO analog-output (`Flex*`) action values are now scaled correctly (0-5V into
+  12-bit DAC counts) for whichever channel is configured as `ANALOG_OUTPUT`, instead of
+  a formula that always rounded to zero on a single hardcoded channel.
+- Trial-data action values now match what's actually sent to hardware (previously the
+  raw, unscaled value was recorded for FlexIO analog-output actions).
 
 ## [0.1.0a14] - 2026-07-24
 

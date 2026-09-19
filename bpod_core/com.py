@@ -613,7 +613,12 @@ class ExtendedSerial(Serial):
         s = fmt if isinstance(fmt, Struct) else Struct(fmt)
         return s.unpack(self.query(query, s.size))
 
-    def verify(self, query: Buffer = b'', expected_response: bytes = b'\x01') -> bool:
+    def verify(
+        self,
+        query: Buffer = b'',
+        expected_response: bytes = b'\x01',
+        timeout: float | None = None,
+    ) -> bool:
         r"""
         Verify the response of the serial port.
 
@@ -625,12 +630,18 @@ class ExtendedSerial(Serial):
         query : Buffer, default: b''
             The query to be sent to the serial port.
         expected_response : bytes, default: b'\x01'
-            The expected response from the serial port.
+            The expected response from the serial port. Its length determines the
+            number of bytes read from the serial port. An empty value reads no bytes
+            and always compares equal.
+        timeout : float or None, optional
+            Read timeout in seconds, applied to this call only. If ``None``, the
+            port's configured timeout is used.
 
         Returns
         -------
         bool
             ``True`` if the response matches the expected response, ``False`` otherwise.
+            A timeout yields a short response and hence returns ``False``.
 
         Examples
         --------
@@ -639,7 +650,33 @@ class ExtendedSerial(Serial):
             if not serial_port.verify(b'\x48'):
                 raise RuntimeError('Device did not acknowledge handshake')
         """
-        return self.query(query) == expected_response
+        with self.temporary_timeout(timeout):
+            return self.query(query, len(expected_response)) == expected_response
+
+    @contextlib.contextmanager
+    def temporary_timeout(self, timeout: float | None) -> Iterator[None]:
+        """
+        Temporarily override the port's read timeout.
+
+        Parameters
+        ----------
+        timeout : float or None
+            Read timeout in seconds to apply within the context. If ``None``, the
+            port's current timeout is left unchanged.
+
+        Yields
+        ------
+        None
+        """
+        if timeout is None:
+            yield
+            return
+        original_timeout = self.timeout
+        self.timeout = timeout
+        try:
+            yield
+        finally:
+            self.timeout = original_timeout
 
 
 class ChunkedSerialReader(Protocol):
