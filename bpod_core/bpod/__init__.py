@@ -175,9 +175,6 @@ class Bpod(SerialDevice, AbstractBpod):
     serial1: ExtendedSerial | None = None
     """Secondary serial device for communication with the Bpod."""
 
-    serial2: ExtendedSerial | None = None
-    """Tertiary serial device for communication with the Bpod - used by Bpod 2+ only."""
-
     inputs: Mapping[str, 'Input']
     """Read-only mapping of available input channels, keyed by name."""
 
@@ -241,14 +238,21 @@ class Bpod(SerialDevice, AbstractBpod):
         # get the Bpod's onboard hardware configuration
         self._get_hardware_configuration()
 
+        # detect additional serial ports
+        self.serial1, flex_io_serial = self._detect_additional_serial_ports()
+
         # configure input and output channels
         self._configure_io()
-
-        # detect additional serial ports
-        self._detect_additional_serial_ports()
+        self._configure_flex_io(flex_io_serial)
 
         # update modules
         self.update_modules()
+
+        # sync the FlexIO subsystem to its default settings; must run after
+        # _configure_io()/update_modules() since it recompiles the hardware tables,
+        # which depend on self.inputs/outputs/modules being set
+        if self._flex_io is not None:
+            self._flex_io.reset()
 
         # log hardware information
         logger.info(
@@ -256,6 +260,11 @@ class Bpod(SerialDevice, AbstractBpod):
             self.version.machine_str,
             self.port,
         )
+        if self.serial1 is not None:
+            logger.info(
+                'Secondary serial port available for connections on %s',
+                self.serial1.portstr,
+            )
         logger.info(
             'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
             *self.version.firmware,
@@ -335,6 +344,8 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         self.wait()
         self._softcode_thread.drain()
+        if isinstance(self._flex_io, FlexIO):
+            self._flex_io.close()
         if hasattr(self, 'serial0'):
             self._request_disconnect(self.serial0)
         super().close()
@@ -566,13 +577,23 @@ class Bpod(SerialDevice, AbstractBpod):
         hw_conf.append(input_description.count(b'F'))  # n_flexio
         self._hardware = HardwareConfiguration(*hw_conf)
 
+    def _configure_flex_io(self, flexio_serial: ExtendedSerial | None) -> None:
+        """
+        Construct the FlexIO subsystem, if the connected hardware has FlexIO channels.
+
+        Parameters
+        ----------
+        flexio_serial : ExtendedSerial, optional
+            The FlexIO subsystem's dedicated analog serial connection, if detected.
+        """
         # default FlexIO channel configuration (one entry per Flex channel)
         # TODO: replace with the device query once the opcode is available
         if self._hardware.n_flexio > 0:
             self._flex_io = FlexIO(
-                serial=self.serial0,
+                bpod_serial=self.serial0,
                 n=self._hardware.n_flexio,
                 cycle_frequency=self._hardware.cycle_frequency,
+                flexio_serial=flexio_serial,
                 on_channel_types_changed=self._recompile_hardware_tables,
             )
 
@@ -606,8 +627,18 @@ class Bpod(SerialDevice, AbstractBpod):
         # set the enabled state of the input channels
         self._set_enable_inputs()
 
-    def _detect_additional_serial_ports(self) -> None:
-        """Detect additional USB-serial ports."""
+    def _detect_additional_serial_ports(
+        self,
+    ) -> tuple[ExtendedSerial | None, ExtendedSerial | None]:
+        """
+        Detect additional USB-serial ports.
+
+        Returns
+        -------
+        tuple of (ExtendedSerial or None, ExtendedSerial or None)
+            The secondary "app" serial port and the tertiary FlexIO serial port.
+            Either is None if not applicable for this device.
+        """
         logger.debug('Detecting additional USB-serial ports')
 
         # First, assemble a list of candidate ports
@@ -619,6 +650,7 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
         # Then, try to find the secondary USB-serial port
+        serial1 = None
         if self._version.firmware >= (23, 0):
             for port in candidate_ports:
                 if verify_serial_discovery(
@@ -627,15 +659,16 @@ class Bpod(SerialDevice, AbstractBpod):
                     timeout=DISCOVERY_TIMEOUT,
                     trigger=lambda: self.serial0.write(b'{'),
                 ):
-                    self.serial1 = ExtendedSerial()
-                    self.serial1.port = port.device
+                    serial1 = ExtendedSerial()
+                    serial1.port = port.device
                     candidate_ports.remove(port)
-                    logger.debug('Detected secondary USB-serial port: %s', port.device)
+                    logger.debug('Detected secondary serial port: %s', port.device)
                     break
-            if self.serial1 is None:
+            if serial1 is None:
                 raise BpodError('Could not detect secondary serial port')
 
         # State Machine 2+ uses a third USB-serial port for FlexIO
+        flexio_serial = None
         if self.version.machine == 4:
             for port in candidate_ports:
                 if verify_serial_discovery(
@@ -644,12 +677,14 @@ class Bpod(SerialDevice, AbstractBpod):
                     timeout=DISCOVERY_TIMEOUT,
                     trigger=lambda: self.serial0.write(b'}'),
                 ):
-                    self.serial2 = ExtendedSerial()
-                    self.serial2.port = port.device
-                    logger.debug('Detected tertiary USB-serial port: %s', port.device)
+                    flexio_serial = ExtendedSerial()
+                    flexio_serial.port = port.device
+                    logger.debug('Detected FlexIO serial port: %s', port.device)
                     break
-            if self.serial2 is None:
-                raise BpodError('Could not detect tertiary serial port')
+            if flexio_serial is None:
+                raise BpodError('Could not detect FlexIO serial port')
+
+        return serial1, flexio_serial
 
     def _handshake(self) -> None:
         """

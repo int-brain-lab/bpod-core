@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of mutable dicts, preventing accidental corruption.
 - Module-not-found errors now suggest the closest matching module name, matching the
   error style already used for input/output channels and FlexIO channels.
+- `Bpod.serial2` removed; the FlexIO analog serial connection is now owned internally
+  by `Bpod.flex_io` instead of being exposed as a public attribute.
+- FlexIO channels are now reset to their default settings on connect, guaranteeing
+  the hardware actually matches bpod-core's assumed baseline instead of trusting
+  leftover configuration from a previous session.
 
 ### Removed
 

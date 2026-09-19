@@ -19,21 +19,23 @@ _SERIAL_TIMEOUT = 0.2
 class FlexIO(AbstractFlexIO):
     """Local FlexIO implementation with direct hardware access."""
 
-    __slots__ = ('_cycle_frequency', '_serial')
+    __slots__ = ('_bpod_serial', '_cycle_frequency', '_flexio_serial')
 
-    _serial: ExtendedSerial
+    _bpod_serial: ExtendedSerial
 
     def __init__(
         self,
-        serial: ExtendedSerial,
+        bpod_serial: ExtendedSerial,
         n: int,
         *,
         cycle_frequency: int,
+        flexio_serial: ExtendedSerial | None = None,
         on_channel_types_changed: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(n, on_channel_types_changed=on_channel_types_changed)
-        self._serial = serial
+        self._bpod_serial = bpod_serial
         self._cycle_frequency = cycle_frequency
+        self._flexio_serial = flexio_serial
 
     @override
     def _apply_settings(self, state: _FlexIOState, *, force: bool = False) -> None:
@@ -79,7 +81,7 @@ class FlexIO(AbstractFlexIO):
                     )
                     n_confirmations += 1
 
-        if len(buffer) > 0 and not self._serial.verify(
+        if len(buffer) > 0 and not self._bpod_serial.verify(
             query=bytes(buffer),
             expected_response=n_confirmations * b'\x01',
             timeout=_SERIAL_TIMEOUT,
@@ -93,6 +95,11 @@ class FlexIO(AbstractFlexIO):
     @override
     def reset(self) -> None:
         """Reset the FlexIO subsystem to its default settings."""
-        logger.debug('Resetting FlexIO subsystem')
+        logger.debug('Resetting FlexIO subsystem to default state')
         default = _FlexIOState.create_default(n_channels=len(self))
         self._apply_settings(default, force=True)
+
+    def close(self) -> None:
+        """Close the FlexIO subsystem's dedicated analog serial connection, if open."""
+        if self._flexio_serial is not None and self._flexio_serial.is_open:
+            self._flexio_serial.close()
