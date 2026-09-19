@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from enum import IntEnum
 from os import PathLike, strerror
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import msgspec
@@ -206,7 +207,7 @@ class SuggestionMapping(Mapping[str, V]):
         name: str | None = None,
         error_class: type[Exception] = KeyError,
     ) -> None:
-        self._data = dict(dictionary)
+        self._data = MappingProxyType(dict(dictionary))
         self._name = name or 'key'
         self._error_class = error_class
 
