@@ -167,61 +167,15 @@ def suggest_similar(
     return format_string.format(matches[0]) if len(matches) > 0 else ''
 
 
-class SuggestionDict(dict[str, V]):
-    """A dictionary that suggests similar keys on failed lookup.
-
-    On :class:`KeyError`, raises ``error_class`` with a message that includes the
-    closest match from the existing keys via :func:`suggest_similar`, making typos and
-    near-misses easier to diagnose.
-
-    Parameters
-    ----------
-    dictionary : MutableMapping
-        Initial key-value pairs.
-    name : str, default: 'key'
-        Human-readable label for the key type used in the error message.
-    error_class : type of Exception, default: KeyError
-        Exception class to raise on failed lookup. Must accept a single string argument.
-
-    Examples
-    --------
-    >>> d = SuggestionDict({'Port1': 1, 'Port2': 2}, name='channel')
-    >>> d['Port1']
-    1
-    >>> d['Prot1']
-    Traceback (most recent call last):
-        ...
-    KeyError: "No such channel: 'Prot1' - did you mean 'Port1'?"
-    """
-
-    def __init__(
-        self,
-        dictionary: MutableMapping[str, V],
-        *,
-        name: str | None = None,
-        error_class: type[Exception] = KeyError,
-    ) -> None:
-        super().__init__(dictionary)
-        self._name = name or 'key'
-        self._error_class = error_class
-
-    @override
-    def __getitem__(self, key: str) -> V:
-        try:
-            return super().__getitem__(key)
-        except KeyError as e:
-            raise self._error_class(
-                f"No such {self._name}: '{key}'" + suggest_similar(key, self.keys())
-            ) from e
-
-
 class SuggestionMapping(Mapping[str, V]):
     """A read-only mapping that suggests similar keys on failed lookup.
 
-    Like :class:`SuggestionDict`, but read-only: implementing only the :class:`Mapping`
-    interface means there is no ``__setitem__``/``__delitem__``/``update``/etc. to
-    guard against, appropriate for a fixed set of keys (e.g. hardware channels
-    discovered once at connect time) that should never be mutated after construction.
+    On :class:`KeyError`, raises ``error_class`` with a message that includes the
+    closest match from the existing keys via :func:`suggest_similar`, making typos and
+    near-misses easier to diagnose. Implementing only the :class:`Mapping` interface
+    means there is no ``__setitem__``/``__delitem__``/``update``/etc. to guard against,
+    appropriate for a fixed set of keys (e.g. hardware channels discovered once at
+    connect time) that should never be mutated after construction.
 
     Parameters
     ----------
@@ -242,6 +196,8 @@ class SuggestionMapping(Mapping[str, V]):
         ...
     KeyError: "No such channel: 'Prot1' - did you mean 'Port1'?"
     """
+
+    __slots__ = ('_data', '_error_class', '_name')
 
     def __init__(
         self,

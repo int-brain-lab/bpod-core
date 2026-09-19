@@ -331,6 +331,8 @@ class FlexIOChannel:
 class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
     """Abstract base for FlexIO subsystems."""
 
+    __slots__ = ('_on_channel_types_changed', '_state')
+
     _state: _FlexIOState
 
     def __init__(

@@ -184,7 +184,7 @@ class Bpod(SerialDevice, AbstractBpod):
     outputs: Mapping[str, 'Output']
     """Read-only mapping of available output channels, keyed by name."""
 
-    modules: dict[str, 'Module']
+    modules: Mapping[str, 'Module']
     """Dictionary of available modules, keyed by name."""
 
     @validate_call()
@@ -949,9 +949,8 @@ class Bpod(SerialDevice, AbstractBpod):
                 ),
             )
 
-        self.modules = _ModuleDict(
-            {m.name: m for m in modules},
-            available_modules=[m.name for m in modules if m.is_connected],
+        self.modules = SuggestionMapping(
+            {m.name: m for m in modules}, name='module', error_class=BpodKeyError
         )
 
         self._recompile_hardware_tables()
@@ -1965,26 +1964,6 @@ class Output(Channel):
         if isinstance(state, int) and self.io_type in (b'D', b'B', b'W'):
             state = state > 0
         self._serial0.write_struct('<c2B', b'O', self.index, state)
-
-
-class _ModuleDict(dict[str, 'Module']):
-    """A dict of :class:`Module` objects keyed by name."""
-
-    def __init__(
-        self, dictionary: dict[str, 'Module'], *, available_modules: list[str]
-    ) -> None:
-        super().__init__(dictionary)
-        self._available_modules = [f"'{x}'" for x in available_modules]
-
-    def __getitem__(self, key: str) -> 'Module':
-        try:
-            return super().__getitem__(key)
-        except KeyError as e:
-            if self._available_modules:
-                hint = f'connected modules: {", ".join(self._available_modules)}'
-            else:
-                hint = 'no modules connected to Bpod'
-            raise BpodKeyError(f"No such module: '{key}'; {hint}") from e
 
 
 @dataclass

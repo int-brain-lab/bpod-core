@@ -15,15 +15,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optimizations for agentic development (`AGENTS.md`, `.mcp.json`, `llms.txt`, etc.)
 - Validation rejects invalid state machine action values before compilation (non-integer
   values for regular actions; out-of-range voltages for FlexIO analog-output actions).
-- `misc.SuggestionMapping`: a read-only counterpart to `SuggestionDict` for fixed sets
-  of keys (e.g. hardware channels) that should never be mutated after construction. Used
-  by `Bpod.inputs`/`Bpod.outputs` and `Bpod.flex_io`.
+- `misc.SuggestionMapping`: a read-only mapping that suggests similar keys on failed
+  lookup, for fixed sets of keys (e.g. hardware channels) that should never be mutated
+  after construction.
 
 ### Changed
 
-- `Bpod.inputs`/`Bpod.outputs` are now read-only (`misc.SuggestionMapping`) instead of
-  mutable dicts, preventing accidental corruption of the input-enable bitmask sent to
-  hardware.
+- `Bpod.inputs`/`Bpod.outputs`/`Bpod.modules` are now read-only `misc.SuggestionMapping`
+  instead of mutable dicts, preventing accidental corruption.
+- Module-not-found errors now suggest the closest matching module name, matching the
+  error style already used for input/output channels and FlexIO channels.
+
+### Removed
+
+- `misc.SuggestionDict`, superseded by `misc.SuggestionMapping` (no longer used anywhere
+  in the library).
 
 ### Fixed
 
