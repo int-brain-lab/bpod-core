@@ -62,7 +62,7 @@ from bpod_core.bpod.constants import (
     FlexIOChannelType,
 )
 from bpod_core.bpod.errors import BpodError, BpodKeyError
-from bpod_core.bpod.flexio import FlexIO
+from bpod_core.bpod.flexio import FlexIO, is_flexio_threshold_ambiguous
 from bpod_core.bpod.structs import (
     BpodEventUnion,
     BpodInfo,
@@ -811,6 +811,11 @@ class Bpod(SerialDevice, AbstractBpod):
         event_channels: list[str | None] = []
         event_values: list[int | None] = []
         non_bindable_events: list[str] = []
+        flexio_types = (
+            tuple(c.channel_type for c in self._flex_io.values())
+            if self._flex_io is not None
+            else ()
+        )
 
         # physical input channel events
         counters = dict.fromkeys(CHANNEL_TYPES_INPUT, 0)
@@ -838,6 +843,10 @@ class Bpod(SerialDevice, AbstractBpod):
                     case FlexIOChannelType.ANALOG_INPUT:
                         ev_names = [f'{channel}_{s}' for s in ('Trig0', 'Trig1')]
                         ev_values = [0, 1]
+                        if is_flexio_threshold_ambiguous(
+                            flexio_types, counters[io_key]
+                        ):
+                            non_bindable_events.extend(ev_names)
                     case _:
                         # every physical Flex channel reserves 2 event slots
                         # unconditionally, matching firmware layout; channels not
@@ -1319,6 +1328,32 @@ class Bpod(SerialDevice, AbstractBpod):
                         f"Invalid value {action_value!r} for action '{action_name}' "
                         f"in state '{state_name}' - must be an integer"
                     )
+                elif (
+                    action_name in ('AnalogThreshEnable', 'AnalogThreshDisable')
+                    and self._flex_io is not None
+                ):
+                    channel_types = [c.channel_type for c in self._flex_io.values()]
+                    for bit, channel_type in enumerate(channel_types):
+                        if not int(action_value) & (1 << bit):
+                            continue
+                        if channel_type != FlexIOChannelType.ANALOG_INPUT:
+                            raise ValueError(
+                                f'Invalid value {action_value!r} for action '
+                                f"'{action_name}' in state '{state_name}' - "
+                                f'channel {bit + 1} is not configured as '
+                                'ANALOG_INPUT'
+                            )
+                        if (
+                            action_name == 'AnalogThreshEnable'
+                            and is_flexio_threshold_ambiguous(channel_types, bit)
+                        ):
+                            raise ValueError(
+                                f'Invalid value {action_value!r} for action '
+                                f"'{action_name}' in state '{state_name}' - arms "
+                                f"channel {bit + 1}'s threshold, whose "
+                                'analog-threshold events cannot be reliably '
+                                'attributed (upstream firmware quirk)'
+                            )
 
         # validate global timers
         if global_timer_ids:

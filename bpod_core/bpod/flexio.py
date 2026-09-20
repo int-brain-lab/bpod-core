@@ -2,12 +2,13 @@
 
 import logging
 import struct
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import msgspec
 from typing_extensions import override
 
 from bpod_core.bpod.abc import AbstractFlexIO
+from bpod_core.bpod.constants import CHANNEL_TYPES_INPUT, FlexIOChannelType
 from bpod_core.bpod.errors import BpodError
 from bpod_core.bpod.structs import _FlexIOState
 from bpod_core.com import ExtendedSerial
@@ -16,6 +17,22 @@ from bpod_core.constants import UINT12_MAX
 logger = logging.getLogger(__name__)
 
 _SERIAL_TIMEOUT = 0.2
+
+
+def is_flexio_threshold_ambiguous(
+    channel_types: Sequence[FlexIOChannelType], index: int
+) -> bool:
+    """Whether channel `index`'s analog-threshold event codes are ambiguous.
+
+    Firmware numbers analog-threshold events by rank among ``ANALOG_INPUT``
+    channels only, not by physical channel index, while every other FlexIO event
+    (digital transitions, etc.) is numbered by fixed physical position. The two
+    schemes only agree when channel `index` is preceded exclusively by other
+    ``ANALOG_INPUT`` channels; otherwise its Trig0/Trig1 codes collide with
+    another channel's fixed-position event codes, an upstream firmware quirk
+    also present in MATLAB.
+    """
+    return any(t != FlexIOChannelType.ANALOG_INPUT for t in channel_types[:index])
 
 
 class FlexIO(AbstractFlexIO):
@@ -132,6 +149,18 @@ class FlexIO(AbstractFlexIO):
             raise BpodError(
                 'Cannot re-arm an analog threshold while a state machine is running. '
                 "Use the 'AnalogThreshEnable'/'AnalogThreshDisable' actions instead."
+            )
+        channel_types = self._state.channel_types
+        if (
+            value
+            and channel_types[channel_index] == FlexIOChannelType.ANALOG_INPUT
+            and is_flexio_threshold_ambiguous(channel_types, channel_index)
+        ):
+            name = f'{CHANNEL_TYPES_INPUT[b"F"]}{channel_index + 1}'
+            raise BpodError(
+                f"Cannot arm '{name}' threshold: an earlier FlexIO channel isn't "
+                'configured as ANALOG_INPUT, so firmware cannot reliably attribute '
+                f"'{name}'s threshold-crossing events (upstream firmware quirk)."
             )
         if not self._bpod_serial.verify(
             query=struct.pack('<cBB?', b'e', channel_index, threshold_index, value),

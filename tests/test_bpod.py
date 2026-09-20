@@ -347,11 +347,11 @@ class TestRun:
     def fsm_flexio(self):
         fsm = StateMachine()
         fsm.add_state(
-            'a', 0, {'Flex1_High': 'b'}, {'Flex2': 1, 'AnalogThreshDisable': 3}
+            'a', 0, {'Flex3_High': 'b'}, {'Flex2': 1, 'AnalogThreshDisable': 1}
         )
-        fsm.add_state('b', 0, {'Flex1_Low': 'c'}, {'Flex4': 1, 'AnalogThreshEnable': 3})
-        fsm.add_state('c', 0, {'Flex3_Trig0': 'd'}, {'Flex4': 2.5})
-        fsm.add_state('d', 0, {'Flex3_Trig1': '>exit'}, {'Flex4': 4})
+        fsm.add_state('b', 0, {'Flex3_Low': 'c'}, {'Flex4': 1, 'AnalogThreshEnable': 1})
+        fsm.add_state('c', 0, {'Flex1_Trig0': 'd'}, {'Flex4': 2.5})
+        fsm.add_state('d', 0, {'Flex1_Trig1': '>exit'}, {'Flex4': 4})
         return fsm
 
     def test_run_basic_25(self, fsm_basic, mock_bpod_25):
@@ -449,18 +449,18 @@ class TestRun:
 
     def test_run_flexio_2p(self, fsm_flexio, mock_bpod_2p):
         """Test running a state machine with flexIO channels on Bpod 2+."""
-        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.DIGITAL_INPUT
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
         mock_bpod_2p.flex_io['Flex2'].channel_type = FlexIOChannelType.DIGITAL_OUTPUT
-        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.DIGITAL_INPUT
         mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.ANALOG_OUTPUT
         mock_bpod_2p.run(fsm_flexio)
         assert mock_bpod_2p.serial0.last_write == (
-            b'C\x01\x00d\x00\x04\x00\x00\x00\x00\x01\x02\x03\x01K\x01\x01L\x02\x01O\x03'
-            b'\x01P\x04\x01\x00\x06\x00\x01\x00\x01\x00\x08\x003\x03\x01\x00\x08\x00'
-            b'\x00\x08\x01\x00\x08\x00\xcc\x0c\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-            b'\x00\x00\x00\x00\x00\x00\x00\x01\x01\x03\x01\x00\x03\x00\x00\x00\x00\x00'
-            b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-            b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+            b'C\x01\x00d\x00\x04\x00\x00\x00\x00\x01\x02\x03\x01O\x01\x01P\x02\x01'
+            b'K\x03\x01L\x04\x01\x00\x06\x00\x01\x00\x01\x00\x08\x003\x03\x01\x00'
+            b'\x08\x00\x00\x08\x01\x00\x08\x00\xcc\x0c\x00\x00\x00\x00\x00\x00\x00'
+            b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01\x01\x01\x01\x00\x01\x00'
+            b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+            b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
         )
 
     def test_run_flexio_channel_type_change_invalidates_cache(self, mock_bpod_2p):
@@ -498,6 +498,65 @@ class TestFlexIOSettings:
         fsm.add_state('a', 0, {'Tup': '>exit'}, {'Flex1': 1})
         with pytest.raises(ValueError, match="Invalid action 'Flex1'"):
             mock_bpod_2p.run(fsm)
+
+    def test_flexio_threshold_event_rejected_on_mis_ranked_channel(self, mock_bpod_2p):
+        """A Trig event on a mis-ranked ANALOG_INPUT channel can't be bound.
+
+        Firmware numbers analog-threshold events by rank among ANALOG_INPUT
+        channels only; if an earlier physical Flex channel isn't also
+        ANALOG_INPUT, the resulting event code collides with a different
+        channel's event.
+        """
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.DIGITAL_INPUT
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Flex3_Trig0': '>exit'})
+        with pytest.raises(ValueError, match='Invalid transition condition'):
+            mock_bpod_2p.validate_state_machine(fsm)
+
+    def test_flexio_threshold_arming_rejected_on_mis_ranked_channel(self, mock_bpod_2p):
+        """Arming a mis-ranked ANALOG_INPUT channel's threshold is rejected."""
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.DIGITAL_INPUT
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        with pytest.raises(BpodError, match="Cannot arm 'Flex3'"):
+            mock_bpod_2p.flex_io['Flex3'].thresholds[0].enabled = True
+
+    def test_analog_thresh_enable_action_rejected_on_mis_ranked_channel(
+        self, mock_bpod_2p
+    ):
+        """AnalogThreshEnable can't arm a mis-ranked channel's threshold either.
+
+        This action bypasses the `.enabled` setter and sends a raw bitmask
+        straight to firmware, so it needs its own validation against the same
+        rank-ambiguity rule.
+        """
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.DIGITAL_INPUT
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'}, {'AnalogThreshEnable': 0b100})
+        with pytest.raises(ValueError, match="arms channel 3's threshold"):
+            mock_bpod_2p.validate_state_machine(fsm)
+
+    @pytest.mark.parametrize(
+        'action_name', ['AnalogThreshEnable', 'AnalogThreshDisable']
+    )
+    def test_analog_thresh_action_rejected_on_non_analog_input_channel(
+        self, mock_bpod_2p, action_name
+    ):
+        """AnalogThreshEnable/Disable can't reference a non-ANALOG_INPUT channel."""
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.DIGITAL_OUTPUT
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'}, {action_name: 0b1})
+        with pytest.raises(ValueError, match='channel 1 is not configured'):
+            mock_bpod_2p.validate_state_machine(fsm)
+
+    def test_flexio_threshold_allowed_on_rank_0_channel(self, mock_bpod_2p):
+        """A channel with no non-ANALOG_INPUT channels ahead of it stays usable."""
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Flex1_Trig0': '>exit'})
+        mock_bpod_2p.validate_state_machine(fsm)
+        mock_bpod_2p.flex_io['Flex1'].thresholds[0].enabled = True
 
     def test_flexio_analog_sampling_rate(self, mock_bpod_2p):
         """Setting the FlexIO analog sampling rate sends the '^' opcode."""
