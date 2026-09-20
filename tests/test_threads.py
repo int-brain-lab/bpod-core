@@ -476,6 +476,17 @@ class TestEventThread:
         output = df.filter(pl.col('type') == 'OutputAction')
         assert 'PWM1' in output['channel'].cast(pl.String).to_list()
 
+    def test_output_action_value_above_uint8_range(self, make_thread):
+        """Output values above 255 (e.g. scaled FlexIO analog-output counts) survive."""
+        fsm = _make_fsm(state_actions=[{'Flex4': 2048}, {}])
+        thread, data_queue = make_thread(fsm=fsm, action_names=['Flex4'])
+        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        output = df.filter(pl.col('channel') == 'Flex4')
+        assert output['value'].to_list() == [2048]
+
     def test_ttl_reset_on_state_transition(self, make_thread):
         """TTL output is reset to 0."""
         # S0 sets TTL1=1; S1 has no actions; event 0 triggers S0→S1

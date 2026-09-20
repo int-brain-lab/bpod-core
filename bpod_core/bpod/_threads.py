@@ -91,7 +91,7 @@ _TRIAL_DATA_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
     'type': _EVENT_TYPE_ENUM,
     'event': pl.Categorical,
     'channel': pl.Categorical,
-    'value': pl.UInt8,
+    'value': pl.UInt16,
 }
 """Column schema for trial DataFrames returned by :meth:`~bpod_core.bpod.Bpod.get_data`
 and :meth:`~bpod_core.bpod.Bpod.peek_data`."""
@@ -672,7 +672,7 @@ class EventThread(threading.Thread):
                     pl.col('value').replace(-1, None),
                     pl.col('default_value'),
                 )
-                .cast(pl.UInt8)
+                .cast(pl.UInt16)
                 .alias('value'),
             )
             .select(list(_TRIAL_DATA_SCHEMA))

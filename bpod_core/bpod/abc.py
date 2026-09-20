@@ -122,7 +122,7 @@ class AbstractBpod(AbstractContextManager):
             - **type** (:class:`~polars.datatypes.Enum`) – event type.
             - **event** (:class:`~polars.datatypes.Categorical`) – input event name.
             - **channel** (:class:`~polars.datatypes.Categorical`) – channel name.
-            - **value** (:class:`~polars.datatypes.UInt8`) – channel value.
+            - **value** (:class:`~polars.datatypes.UInt16`) – channel value.
 
         Raises
         ------
