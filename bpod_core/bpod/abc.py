@@ -362,8 +362,8 @@ class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
         self,
         n: int,
         *,
-        on_channel_types_changed: Callable[[], None] | None = None,
-        on_analog_sampling_rate_changed: Callable[[], None] | None = None,
+        on_channel_types_changed: Callable[[], None],
+        on_analog_sampling_rate_changed: Callable[[], None],
     ) -> None:
         self._state = _FlexIOState.create_default(n_channels=n)
         self._on_channel_types_changed = on_channel_types_changed

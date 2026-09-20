@@ -8,6 +8,7 @@ import msgspec
 from typing_extensions import override
 
 from bpod_core.bpod.abc import AbstractFlexIO
+from bpod_core.bpod.errors import BpodError
 from bpod_core.bpod.structs import _FlexIOState
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import UINT12_MAX
@@ -20,7 +21,7 @@ _SERIAL_TIMEOUT = 0.2
 class FlexIO(AbstractFlexIO):
     """Local FlexIO implementation with direct hardware access."""
 
-    __slots__ = ('_bpod_serial', '_cycle_frequency')
+    __slots__ = ('_bpod_serial', '_cycle_frequency', '_is_running')
 
     _bpod_serial: ExtendedSerial
 
@@ -30,8 +31,9 @@ class FlexIO(AbstractFlexIO):
         n: int,
         *,
         cycle_frequency: int,
-        on_channel_types_changed: Callable[[], None] | None = None,
-        on_analog_sampling_rate_changed: Callable[[], None] | None = None,
+        on_channel_types_changed: Callable[[], None],
+        on_analog_sampling_rate_changed: Callable[[], None],
+        is_running: Callable[[], bool],
     ) -> None:
         super().__init__(
             n,
@@ -40,9 +42,18 @@ class FlexIO(AbstractFlexIO):
         )
         self._bpod_serial = bpod_serial
         self._cycle_frequency = cycle_frequency
+        self._is_running = is_running
 
     @override
     def _apply_settings(self, state: _FlexIOState, *, force: bool = False) -> None:
+        # settings are written to and acknowledged over the same serial port a
+        # running trial's read thread owns; interleaving would corrupt the trial's
+        # event stream, since the ack byte (0x01) collides with an event-packet
+        # opcode
+        if self._is_running():
+            raise BpodError(
+                'Cannot change FlexIO settings while a state machine is running.'
+            )
         old = self._state
         n = len(state.channel_types)
         buffer = bytearray()
@@ -101,9 +112,9 @@ class FlexIO(AbstractFlexIO):
             raise RuntimeError('Failed to apply FlexIO settings')
 
         self._state = state
-        if channel_types_changed and self._on_channel_types_changed:
+        if channel_types_changed:
             self._on_channel_types_changed()
-        if analog_sampling_rate_changed and self._on_analog_sampling_rate_changed:
+        if analog_sampling_rate_changed:
             self._on_analog_sampling_rate_changed()
 
     @override
@@ -113,6 +124,15 @@ class FlexIO(AbstractFlexIO):
         threshold_index: int,
         value: bool,
     ) -> None:
+        # deliberately bypasses _apply_settings's diffing: firmware changes this
+        # flag on its own (disarms on trigger, flips it in LINKED mode, and via
+        # the AnalogThreshEnable/AnalogThreshDisable actions), so the cached state
+        # can't be trusted to detect a real change - always write it
+        if self._is_running():
+            raise BpodError(
+                'Cannot re-arm an analog threshold while a state machine is running. '
+                "Use the 'AnalogThreshEnable'/'AnalogThreshDisable' actions instead."
+            )
         if not self._bpod_serial.verify(
             query=struct.pack('<cBB?', b'e', channel_index, threshold_index, value),
             expected_response=b'\x01',

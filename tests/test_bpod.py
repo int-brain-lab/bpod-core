@@ -1,6 +1,6 @@
 import logging
 import struct
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock
 
 import pytest
 from serial import SerialException
@@ -527,6 +527,20 @@ class TestFlexIOSettings:
         """Setting the FlexIO reads-per-sample sends the 'o' opcode."""
         mock_bpod_2p.flex_io.n_reads_per_sample = 2
         assert mock_bpod_2p.serial0.last_write == struct.pack('<cB', b'o', 2)
+
+    def test_flexio_setters_raise_while_running(self, mock_bpod_2p, mocker):
+        """FlexIO setters refuse to write to serial0 while a trial is running.
+
+        A running trial's read thread also owns serial0; interleaving a FlexIO
+        settings write/ack with the live event stream would corrupt it.
+        """
+        mocker.patch.object(
+            Bpod, 'is_running', new_callable=PropertyMock
+        ).return_value = True
+        with pytest.raises(BpodError, match='Cannot change FlexIO settings'):
+            mock_bpod_2p.flex_io.n_reads_per_sample = 2
+        with pytest.raises(BpodError, match='Cannot re-arm an analog threshold'):
+            mock_bpod_2p.flex_io['Flex1'].thresholds[0].enabled = True
 
     def test_flexio_threshold_voltages_are_threshold_major(self, mock_bpod_2p):
         """The 't' opcode sends all channels' threshold-0 values, then threshold-1."""

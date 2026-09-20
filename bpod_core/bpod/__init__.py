@@ -61,6 +61,7 @@ from bpod_core.bpod.constants import (
     VIDS_BPOD,
     FlexIOChannelType,
 )
+from bpod_core.bpod.errors import BpodError, BpodKeyError
 from bpod_core.bpod.flexio import FlexIO
 from bpod_core.bpod.structs import (
     BpodEventUnion,
@@ -117,14 +118,6 @@ logger = logging.getLogger(__name__)
 
 _ANALOG_FLUSH_INTERVAL_NS = 100_000_000  # 100 ms
 _ANALOG_VOLTS_PER_COUNT = 5 / UINT12_MAX  # 12-bit ADC counts (0-4095) -> volts (0-5)
-
-
-class BpodError(Exception):
-    """Raised for errors specific to Bpod device operations."""
-
-
-class BpodKeyError(BpodError, KeyError):
-    """Exception class for Bpod-related key errors."""
 
 
 class Bpod(SerialDevice, AbstractBpod):
@@ -631,6 +624,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 cycle_frequency=self._hardware.cycle_frequency,
                 on_channel_types_changed=self._recompile_hardware_tables,
                 on_analog_sampling_rate_changed=self._sync_analog_reader,
+                is_running=lambda: self.is_running,
             )
 
     def _configure_io(self) -> None:
