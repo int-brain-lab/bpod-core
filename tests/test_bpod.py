@@ -463,6 +463,19 @@ class TestRun:
             b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
         )
 
+    def test_run_flexio_channel_type_change_invalidates_cache(self, mock_bpod_2p):
+        """Switching a Flex channel's type busts the compiled-FSM cache."""
+        mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.DIGITAL_OUTPUT
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'}, {'Flex4': 1})
+        mock_bpod_2p.run(fsm)
+        idx = mock_bpod_2p._actions.index('Flex4')
+        assert struct.pack('<HHH', 1, idx, 1) in mock_bpod_2p.serial0.last_write
+
+        mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.ANALOG_OUTPUT
+        mock_bpod_2p.run(fsm)
+        assert struct.pack('<HHH', 1, idx, 819) in mock_bpod_2p.serial0.last_write
+
     def test_run_repeat(self, fsm_basic, mock_bpod_25):
         """Calling run() without sma re-sends the same compiled bytes from cache."""
         mock_bpod_25.run(fsm_basic)

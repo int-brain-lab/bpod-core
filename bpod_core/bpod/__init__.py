@@ -1057,10 +1057,21 @@ class Bpod(SerialDevice, AbstractBpod):
 
     def _compute_hardware_hash(self) -> bytes:
         """Compute a hash for the current hardware configuration."""
+        flexio_channel_types = (
+            tuple(c.channel_type for c in self._flex_io.values())
+            if self._flex_io is not None
+            else ()
+        )
         return _xxh3_64(
-            msgspec.msgpack.encode(self._hardware, order='deterministic')
-            + msgspec.msgpack.encode(self._input_events.names, order='deterministic')
-            + msgspec.msgpack.encode(self._actions, order='deterministic')
+            msgspec.msgpack.encode(
+                (
+                    self._hardware,
+                    self._input_events.names,
+                    self._actions,
+                    flexio_channel_types,
+                ),
+                order='deterministic',
+            )
         ).digest()
 
     def _sync_analog_reader(self) -> None:
