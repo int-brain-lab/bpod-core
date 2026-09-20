@@ -401,6 +401,11 @@ class EventThread(threading.Thread):
         Zero-argument callable consulted before resolving and publishing each message;
         returning False skips that work entirely. Checked per message, so a subscriber
         appearing mid-trial picks up the stream from there.
+    on_trial_start : Callable, optional
+        Called once, with the trial's absolute start time (microseconds since epoch),
+        when the synthetic ``TrialStart`` event is recorded. Unlike ``publish``, this
+        always fires regardless of ``publish_gate`` - use it for bookkeeping that needs
+        the trial-start timestamp without going through the publish/IPC path.
     """
 
     queue: SimpleQueue[RawEvent]
@@ -417,6 +422,7 @@ class EventThread(threading.Thread):
         time_reference: TimeReferences,
         publish: Callable[[BpodEventUnion], object],
         publish_gate: Callable[[], bool],
+        on_trial_start: Callable[[int], None] | None = None,
     ) -> None:
         super().__init__(name='EventThread', daemon=True)
         self.queue: SimpleQueue[RawEvent] = SimpleQueue()
@@ -427,6 +433,7 @@ class EventThread(threading.Thread):
         self._time_reference = time_reference
         self._publish = publish
         self._publish_gate = publish_gate
+        self._on_trial_start = on_trial_start
         self._buffer: npt.NDArray = np.empty(_INITIAL_BUFFER_SIZE, dtype=_EVENT_DTYPE)
         self._n_events: int = 0
         self._check_trigger = threading.Event()
@@ -483,6 +490,9 @@ class EventThread(threading.Thread):
             value,
         )
         self._n_events += 1
+
+        if event_index == _EventID.START_FSM and self._on_trial_start is not None:
+            self._on_trial_start(time_bpod_us)
 
         # publish the event using ZeroMQ
         try:

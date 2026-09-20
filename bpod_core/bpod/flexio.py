@@ -19,7 +19,7 @@ _SERIAL_TIMEOUT = 0.2
 class FlexIO(AbstractFlexIO):
     """Local FlexIO implementation with direct hardware access."""
 
-    __slots__ = ('_bpod_serial', '_cycle_frequency', '_flexio_serial')
+    __slots__ = ('_bpod_serial', '_cycle_frequency')
 
     _bpod_serial: ExtendedSerial
 
@@ -29,13 +29,16 @@ class FlexIO(AbstractFlexIO):
         n: int,
         *,
         cycle_frequency: int,
-        flexio_serial: ExtendedSerial | None = None,
         on_channel_types_changed: Callable[[], None] | None = None,
+        on_analog_sampling_rate_changed: Callable[[], None] | None = None,
     ) -> None:
-        super().__init__(n, on_channel_types_changed=on_channel_types_changed)
+        super().__init__(
+            n,
+            on_channel_types_changed=on_channel_types_changed,
+            on_analog_sampling_rate_changed=on_analog_sampling_rate_changed,
+        )
         self._bpod_serial = bpod_serial
         self._cycle_frequency = cycle_frequency
-        self._flexio_serial = flexio_serial
 
     @override
     def _apply_settings(self, state: _FlexIOState, *, force: bool = False) -> None:
@@ -48,7 +51,10 @@ class FlexIO(AbstractFlexIO):
         if channel_types_changed:
             buffer.extend(struct.pack(f'<c{n}B', b'Q', *state.channel_types))
             n_confirmations += 1
-        if force or state.analog_sampling_rate != old.analog_sampling_rate:
+        analog_sampling_rate_changed = (
+            force or state.analog_sampling_rate != old.analog_sampling_rate
+        )
+        if analog_sampling_rate_changed:
             n_cycles = round(self._cycle_frequency / state.analog_sampling_rate)
             buffer.extend(struct.pack('<cI', b'^', n_cycles))
             n_confirmations += 1
@@ -91,6 +97,8 @@ class FlexIO(AbstractFlexIO):
         self._state = state
         if channel_types_changed and self._on_channel_types_changed:
             self._on_channel_types_changed()
+        if analog_sampling_rate_changed and self._on_analog_sampling_rate_changed:
+            self._on_analog_sampling_rate_changed()
 
     @override
     def reset(self) -> None:
@@ -98,8 +106,3 @@ class FlexIO(AbstractFlexIO):
         logger.debug('Resetting FlexIO subsystem to default state')
         default = _FlexIOState.create_default(n_channels=len(self))
         self._apply_settings(default, force=True)
-
-    def close(self) -> None:
-        """Close the FlexIO subsystem's dedicated analog serial connection, if open."""
-        if self._flexio_serial is not None and self._flexio_serial.is_open:
-            self._flexio_serial.close()

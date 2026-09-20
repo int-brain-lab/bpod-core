@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Bpod.flex_io.analog_sampling_rate` and `Bpod.flex_io.n_reads_per_sample`: previously
   unconfigurable FlexIO subsystem-wide settings controlling the sampling rate and
   ADC averaging for channels configured as `ANALOG_INPUT`.
+- `Bpod.get_analog_data`: retrieves continuously streamed FlexIO analog-input samples
+  (in volts) as a wide Polars DataFrame/LazyFrame with one column per channel currently
+  configured as `ANALOG_INPUT`, mirroring `Bpod.get_data`.
 
 ### Changed
 
@@ -30,8 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of mutable dicts, preventing accidental corruption.
 - Module-not-found errors now suggest the closest matching module name, matching the
   error style already used for input/output channels and FlexIO channels.
-- `Bpod.serial2` removed; the FlexIO analog serial connection is now owned internally
-  by `Bpod.flex_io` instead of being exposed as a public attribute.
+- `Bpod.serial2` removed; the FlexIO analog serial connection is now a private
+  attribute on `Bpod` instead of a public attribute.
 - FlexIO channels are now reset to their default settings on connect, guaranteeing
   the hardware actually matches bpod-core's assumed baseline instead of trusting
   leftover configuration from a previous session.
@@ -48,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a formula that always rounded to zero on a single hardcoded channel.
 - Trial-data action values now match what's actually sent to hardware (previously the
   raw, unscaled value was recorded for FlexIO analog-output actions).
+- `Bpod.get_analog_data` timestamps are now correct after changing
+  `Bpod.flex_io.analog_sampling_rate` on a live connection; the cached per-sample
+  time step is refreshed whenever the sampling rate changes, not only when a FlexIO
+  channel is reconfigured.
 
 ## [0.1.0a14] - 2026-07-24
 

@@ -27,6 +27,7 @@ import polars as pl
 from cachetools import FIFOCache
 from pydantic import ConfigDict, validate_call
 from serial import SerialException
+from serial.threaded import ReaderThread
 from typing_extensions import override
 from xxhash import xxh3_64 as _xxh3_64
 
@@ -82,6 +83,7 @@ from bpod_core.bpod.structs import (
     _ValidationData,
 )
 from bpod_core.com import (
+    ChunkedSerialReader,
     ExtendedSerial,
     SerialDevice,
     find_ports,
@@ -112,6 +114,9 @@ from bpod_core.misc import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ANALOG_FLUSH_INTERVAL_NS = 100_000_000  # 100 ms
+_ANALOG_VOLTS_PER_COUNT = 5 / UINT12_MAX  # 12-bit ADC counts (0-4095) -> volts (0-5)
 
 
 class BpodError(Exception):
@@ -175,6 +180,19 @@ class Bpod(SerialDevice, AbstractBpod):
     serial1: ExtendedSerial | None = None
     """Secondary serial device for communication with the Bpod."""
 
+    # FlexIO analog-input reader state; see _sync_analog_reader/_on_analog_chunk
+    _flexio_serial: ExtendedSerial | None = None
+    _analog_reader_thread: ReaderThread | None = None
+    _analog_channel_names: tuple[str, ...] = ()
+    _analog_struct: struct.Struct | None = None
+    _analog_sample_period_us: int = 0
+    _analog_data: SimpleQueue[pl.LazyFrame]
+    _analog_buffer: list[tuple[int, ...]]
+    _analog_first_trial_time_us: int | None = None
+    _analog_trial_number_by_sequence: list[int]
+    _analog_sample_index: int = 0
+    _analog_last_flush_ns: int = 0
+
     inputs: Mapping[str, 'Input']
     """Read-only mapping of available input channels, keyed by name."""
 
@@ -214,76 +232,98 @@ class Bpod(SerialDevice, AbstractBpod):
         self._fsm_annotations: StateMachineLookup | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
         self._hardware_hash: bytes = b''
+        self._analog_data = SimpleQueue()
+        self._analog_buffer = []
+        self._analog_trial_number_by_sequence = []
+        self._analog_sample_index = 0
+        self._analog_last_flush_ns = perf_counter_ns()
 
         self._n_softcodes = 0
         self._softcode_thread = SoftcodeThread(softcode_handler=self._softcode_handler)
         self._softcode_thread.start()
 
-        # identify Bpod by port or serial number, open connection
+        # identify Bpod by port or serial number
         bpod_port, _ = self._identify_bpod(port, serial_number)
-        super().__init__(port=bpod_port, open_connection=True)
-        self._serial_number = self._port_info.serial_number or 'unknown'
 
-        # record reference system time
-        self._time_reference = TimeReferences(
-            init_system_time_ns=time_ns(),
-            init_perf_counter_ns=perf_counter_ns(),
-            reset_system_time_ns=0,
-        )
-        self.reset_session_clock()
+        # from here on, opening the connection can leave the device in a
+        # connected-but-not-fully-configured state: super().__init__() with
+        # open_connection=True calls self.open(), which - via virtual dispatch to this
+        # class's override - also performs the handshake, so a handshake failure must
+        # be covered here too. If anything below fails, clean up (close serial
+        # connections, resume the discovery byte) before propagating the error, so the
+        # device doesn't end up stuck in a state that only a power cycle can recover
+        # from
+        try:
+            super().__init__(port=bpod_port, open_connection=True)
+            self._serial_number = self._port_info.serial_number or 'unknown'
 
-        # get firmware version and machine type; enforce version requirements
-        self._get_version_info()
-
-        # get the Bpod's onboard hardware configuration
-        self._get_hardware_configuration()
-
-        # detect additional serial ports
-        self.serial1, flex_io_serial = self._detect_additional_serial_ports()
-
-        # configure input and output channels
-        self._configure_io()
-        self._configure_flex_io(flex_io_serial)
-
-        # update modules
-        self.update_modules()
-
-        # sync the FlexIO subsystem to its default settings; must run after
-        # _configure_io()/update_modules() since it recompiles the hardware tables,
-        # which depend on self.inputs/outputs/modules being set
-        if self._flex_io is not None:
-            self._flex_io.reset()
-
-        # log hardware information
-        logger.info(
-            'Connected to Bpod Finite State Machine %s on %s',
-            self.version.machine_str,
-            self.port,
-        )
-        if self.serial1 is not None:
-            logger.info(
-                'Secondary serial port available for connections on %s',
-                self.serial1.portstr,
+            # record reference system time
+            self._time_reference = TimeReferences(
+                init_system_time_ns=time_ns(),
+                init_perf_counter_ns=perf_counter_ns(),
+                reset_system_time_ns=0,
             )
-        logger.info(
-            'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
-            *self.version.firmware,
-            self._serial_number,
-            self.version.pcb,
-        )
+            self.reset_session_clock()
 
-        # start ZeroMQ service
-        self._start_zmq(use_zeroconf=remote)
-        logger.info('ZeroMQ service started on %s', self.address)
+            # get firmware version and machine type; enforce version requirements
+            self._get_version_info()
 
-        # when launched by a supervising process (e.g. QBpod), briefly wait for its
-        # subscription to register so the first trial's messages aren't lost to the
-        # PUB/SUB slow-joiner race
-        if 'BPOD_OVERRIDE_REMOTE' in os.environ:
-            if self._zmq.wait_for_subscribers(timeout=1.0):
-                logger.debug('Subscriber registered on the PUB/SUB channel')
-            else:
-                logger.debug('No subscriber registered within timeout')
+            # get the Bpod's onboard hardware configuration
+            self._get_hardware_configuration()
+
+            # detect additional serial ports
+            self.serial1, self._flexio_serial = self._detect_additional_serial_ports()
+
+            # configure input and output channels
+            self._configure_io()
+            self._configure_flex_io()
+
+            # update modules
+            self.update_modules()
+
+            # sync the FlexIO subsystem to its default settings; must run after
+            # _configure_io()/update_modules() since it recompiles the hardware
+            # tables, which depend on self.inputs/outputs/modules being set
+            if self._flex_io is not None:
+                self._flex_io.reset()
+
+            # log hardware information
+            logger.info(
+                'Connected to Bpod Finite State Machine %s on %s',
+                self.version.machine_str,
+                self.port,
+            )
+            if self.serial1 is not None:
+                logger.info(
+                    'Secondary serial port available for connections on %s',
+                    self.serial1.portstr,
+                )
+            logger.info(
+                'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
+                *self.version.firmware,
+                self._serial_number,
+                self.version.pcb,
+            )
+
+            # start ZeroMQ service
+            self._start_zmq(use_zeroconf=remote)
+            logger.info('ZeroMQ service started on %s', self.address)
+
+            # when launched by a supervising process (e.g. QBpod), briefly wait for
+            # its subscription to register so the first trial's messages aren't lost
+            # to the PUB/SUB slow-joiner race
+            if 'BPOD_OVERRIDE_REMOTE' in os.environ:
+                if self._zmq.wait_for_subscribers(timeout=1.0):
+                    logger.debug('Subscriber registered on the PUB/SUB channel')
+                else:
+                    logger.debug('No subscriber registered within timeout')
+        except BaseException:
+            logger.exception('Connecting to the Bpod failed; cleaning up')
+            with contextlib.suppress(Exception):
+                self.close()
+            with contextlib.suppress(Exception):
+                self._stop_zmq()
+            raise
 
         # register destructors
         self._bpod_finalizer = weakref.finalize(
@@ -344,8 +384,11 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         self.wait()
         self._softcode_thread.drain()
-        if isinstance(self._flex_io, FlexIO):
-            self._flex_io.close()
+        if self._analog_reader_thread is not None:
+            self._analog_reader_thread.close()  # stops the thread + closes the serial
+            self._analog_reader_thread = None
+        elif self._flexio_serial is not None and self._flexio_serial.is_open:
+            self._flexio_serial.close()
         if hasattr(self, 'serial0'):
             self._request_disconnect(self.serial0)
         super().close()
@@ -577,15 +620,8 @@ class Bpod(SerialDevice, AbstractBpod):
         hw_conf.append(input_description.count(b'F'))  # n_flexio
         self._hardware = HardwareConfiguration(*hw_conf)
 
-    def _configure_flex_io(self, flexio_serial: ExtendedSerial | None) -> None:
-        """
-        Construct the FlexIO subsystem, if the connected hardware has FlexIO channels.
-
-        Parameters
-        ----------
-        flexio_serial : ExtendedSerial, optional
-            The FlexIO subsystem's dedicated analog serial connection, if detected.
-        """
+    def _configure_flex_io(self) -> None:
+        """Construct the FlexIO subsystem, if the hardware has FlexIO channels."""
         # default FlexIO channel configuration (one entry per Flex channel)
         # TODO: replace with the device query once the opcode is available
         if self._hardware.n_flexio > 0:
@@ -593,8 +629,8 @@ class Bpod(SerialDevice, AbstractBpod):
                 bpod_serial=self.serial0,
                 n=self._hardware.n_flexio,
                 cycle_frequency=self._hardware.cycle_frequency,
-                flexio_serial=flexio_serial,
                 on_channel_types_changed=self._recompile_hardware_tables,
+                on_analog_sampling_rate_changed=self._sync_analog_reader,
             )
 
     def _configure_io(self) -> None:
@@ -755,6 +791,13 @@ class Bpod(SerialDevice, AbstractBpod):
             reset_system_time_ns=reset_time_ns,
         )
         self._softcode_thread.set_time_reference(self._time_reference)
+
+        # firmware resets its trial counter alongside the session clock (same opcode);
+        # mirror that here so the analog data pipeline's bookkeeping stays in sync
+        self._flush_analog_buffer()
+        self._analog_first_trial_time_us = None
+        self._analog_trial_number_by_sequence = []
+        self._analog_sample_index = 0
         return True
 
     def _disable_all_module_relays(self) -> None:
@@ -1016,6 +1059,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._compile_output_actions()
         self._event_lookup = _build_event_lookup(self._input_events, self._actions)
         self._hardware_hash = self._compute_hardware_hash()
+        self._sync_analog_reader()
 
     def _compute_hardware_hash(self) -> bytes:
         """Compute a hash for the current hardware configuration."""
@@ -1024,6 +1068,87 @@ class Bpod(SerialDevice, AbstractBpod):
             + msgspec.msgpack.encode(self._input_events.names, order='deterministic')
             + msgspec.msgpack.encode(self._actions, order='deterministic')
         ).digest()
+
+    def _sync_analog_reader(self) -> None:
+        """(Re)start or stop the FlexIO analog reader to match the current channels."""
+        self._flush_analog_buffer()
+        if self._analog_reader_thread is not None:
+            self._analog_reader_thread.stop()  # keeps _flexio_serial open
+            self._analog_reader_thread = None
+            self._analog_struct = None
+        if self._flexio_serial is None or self._flex_io is None:
+            self._analog_channel_names = ()
+            return
+        self._analog_channel_names = tuple(
+            name
+            for name, channel in self._flex_io.items()
+            if channel.channel_type == FlexIOChannelType.ANALOG_INPUT
+        )
+        n = len(self._analog_channel_names)
+        if n == 0:
+            return  # firmware transmits nothing until >=1 channel is ANALOG_INPUT
+        if not self._flexio_serial.is_open:
+            self._flexio_serial.open()
+        self._analog_struct = struct.Struct(f'<{1 + n}H')  # trial_counter + n samples
+        n_cycles_per_sample = round(
+            self._hardware.cycle_frequency / self._flex_io.analog_sampling_rate
+        )
+        self._analog_sample_period_us = (
+            n_cycles_per_sample * self._hardware.cycle_period_us
+        )
+        chunk_size = self._analog_struct.size
+        self._analog_reader_thread = ReaderThread(
+            self._flexio_serial,
+            lambda: ChunkedSerialReader(chunk_size, callback=self._on_analog_chunk),
+        )
+        self._analog_reader_thread.start()
+
+    def _on_analog_chunk(self, chunk: bytearray) -> None:
+        """Decode one FlexIO analog sample block and buffer it for `get_analog_data`."""
+        if self._analog_first_trial_time_us is None or self._analog_struct is None:
+            return  # no time anchor yet, or the reader was stopped mid-flight
+        trial_counter, *raw_counts = self._analog_struct.unpack(chunk)
+        # firmware's trial_counter increments before first use, so the first trial of
+        # a session reports 1, not 0 - convert to a 0-based sequence-position index
+        sequence_index = trial_counter - 1
+        if 0 <= sequence_index < len(self._analog_trial_number_by_sequence):
+            trial_number = self._analog_trial_number_by_sequence[sequence_index]
+        else:
+            trial_number = trial_counter
+
+        # firmware fires its first sample after exactly one sample period, not at t=0
+        time_us = (
+            self._analog_first_trial_time_us
+            + (self._analog_sample_index + 1) * self._analog_sample_period_us
+        )
+        self._analog_sample_index += 1
+
+        self._analog_buffer.append((time_us, trial_number, *raw_counts))
+
+        now = perf_counter_ns()
+        if now - self._analog_last_flush_ns >= _ANALOG_FLUSH_INTERVAL_NS:
+            self._flush_analog_buffer()
+
+    def _flush_analog_buffer(self) -> None:
+        """Flush any buffered analog samples onto the analog data queue."""
+        self._analog_last_flush_ns = perf_counter_ns()
+        buffer, self._analog_buffer = self._analog_buffer, []
+        if not buffer or not self._analog_channel_names:
+            return
+        columns = ['time_us', 'trial', *self._analog_channel_names]
+        frame = (
+            pl.LazyFrame(buffer, schema=columns, orient='row')
+            .with_columns(
+                pl.from_epoch('time_us', time_unit='us')
+                .dt.replace_time_zone('UTC')
+                .alias('time'),
+                pl.col('trial').cast(pl.UInt16),
+                pl.col(self._analog_channel_names).cast(pl.Float32)
+                * _ANALOG_VOLTS_PER_COUNT,
+            )
+            .select('time', 'trial', *self._analog_channel_names)
+        )
+        self._analog_data.put(frame)
 
     def validate_state_machine(self, state_machine: StateMachine) -> None:
         """
@@ -1683,8 +1808,19 @@ class Bpod(SerialDevice, AbstractBpod):
         # Start threads
         self._run_state_machine()
 
+    def _capture_analog_anchor(self, time_us: int) -> None:
+        """Capture the first trial's start time as the FlexIO analog-sample anchor."""
+        if self._analog_first_trial_time_us is None:
+            self._analog_first_trial_time_us = time_us
+
     def _run_state_machine(self) -> None:
         state_machine_lookup = cast('StateMachineLookup', self._fsm_annotations)
+
+        # record the host-facing trial number for this run, keyed by its position in
+        # the sequence - firmware's own trial counter (embedded in FlexIO analog data)
+        # is strictly positional and may not match this number, e.g. if a caller
+        # overrides trial_number, so analog decoding looks it up by position instead
+        self._analog_trial_number_by_sequence.append(self._next_fsm_index)
 
         # initialize new threads
         event_thread = EventThread(
@@ -1696,6 +1832,7 @@ class Bpod(SerialDevice, AbstractBpod):
             time_reference=self._time_reference,
             publish=self._zmq.publish,
             publish_gate=lambda: self._zmq.has_subscribers,
+            on_trial_start=self._capture_analog_anchor,
         )
         read_thread = ReadThread(
             serial=self.serial0,
@@ -1821,20 +1958,84 @@ class Bpod(SerialDevice, AbstractBpod):
     def get_data(self, *, concat=True, rechunk=False, lazy=False):
         if self._trial_data.empty() and not self.is_running:
             raise BpodError('No trial data available')
+        return self._drain_queue(
+            self._trial_data, concat=concat, rechunk=rechunk, lazy=lazy
+        )
 
-        frames = [self._trial_data.get()]
+    @staticmethod
+    def _drain_queue(
+        queue: SimpleQueue[pl.LazyFrame],
+        *,
+        concat: bool,
+        rechunk: bool,
+        lazy: bool,
+        how: Literal['vertical', 'diagonal_relaxed'] = 'vertical',
+    ) -> pl.DataFrame | pl.LazyFrame:
+        """Pop one or more LazyFrames from a queue, optionally concatenating them."""
+        frames = [queue.get()]
         if concat:
             while True:
                 try:
-                    frames.append(self._trial_data.get(block=False))
+                    frames.append(queue.get(block=False))
                 except Empty:  # noqa: PERF203
                     break
-            data = pl.concat(frames, rechunk=rechunk)
+            data = pl.concat(frames, rechunk=rechunk, how=how)
         else:
             data = frames[0]
-
-        # return data
         return data if lazy else data.collect()
+
+    @overload
+    def get_analog_data(
+        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[False] = False
+    ) -> pl.DataFrame: ...
+
+    @overload
+    def get_analog_data(
+        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[True]
+    ) -> pl.LazyFrame: ...
+
+    def get_analog_data(self, *, concat=True, rechunk=False, lazy=False):
+        """
+        Return FlexIO analog-input data from the data queue.
+
+        Parameters
+        ----------
+        concat : bool, default: True
+            If ``True``, pop and concatenate all DataFrames currently in the queue into
+            a single DataFrame, blocking until at least one is available.
+            If ``False``, pop and return one DataFrame, blocking until one is
+            available.
+        rechunk : bool, default: False
+            If ``True``, make sure that the result data is in contiguous memory. Only
+            applies when ``concat=True``.
+        lazy : bool, default: False
+            If ``True``, return a :class:`polars.LazyFrame`.
+            If ``False``, return a :class:`polars.DataFrame`.
+
+        Returns
+        -------
+        DataFrame or LazyFrame
+            One ``Float32`` column of volts per FlexIO channel currently configured as
+            ``ANALOG_INPUT``, plus ``time`` and ``trial`` columns. The set of channel
+            columns reflects whatever configuration was active when the data was
+            recorded, and may differ across concatenated batches if channels were
+            reconfigured in between.
+
+        Raises
+        ------
+        BpodError
+            If no data is available and no FlexIO channel is currently configured as
+            ``ANALOG_INPUT``.
+        """
+        if self._analog_data.empty() and self._analog_reader_thread is None:
+            raise BpodError('No FlexIO analog-input data available')
+        return self._drain_queue(
+            self._analog_data,
+            concat=concat,
+            rechunk=rechunk,
+            lazy=lazy,
+            how='diagonal_relaxed',
+        )
 
     @override
     def stop_state_machine(self) -> None:
