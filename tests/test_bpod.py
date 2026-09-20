@@ -508,6 +508,21 @@ class TestFlexIOSettings:
         n_cycles = round(cycle_frequency / 100)
         assert mock_bpod_2p._analog_sample_period_us == n_cycles * cycle_period_us
 
+    def test_flexio_threshold_enabled_always_writes(self, mock_bpod_2p):
+        """Re-enabling a threshold sends 'e' even if the cached state looks unchanged.
+
+        Firmware disarms a threshold autonomously when it fires, so the host's cached
+        state can go stale; setting `.enabled = True` must not be a no-op just because
+        the host's own cache already claims it's enabled.
+        """
+        threshold = mock_bpod_2p.flex_io['Flex1'].thresholds[0]
+        threshold.enabled = True
+        first_write = mock_bpod_2p.serial0.last_write
+        assert first_write == struct.pack('<cBB?', b'e', 0, 0, True)
+        mock_bpod_2p.serial0.last_write = b''
+        threshold.enabled = True  # simulates re-arming after a firmware-side trigger
+        assert mock_bpod_2p.serial0.last_write == first_write
+
     def test_flexio_n_reads_per_sample(self, mock_bpod_2p):
         """Setting the FlexIO reads-per-sample sends the 'o' opcode."""
         mock_bpod_2p.flex_io.n_reads_per_sample = 2

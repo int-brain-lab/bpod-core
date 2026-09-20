@@ -4,6 +4,7 @@ import logging
 import struct
 from collections.abc import Callable
 
+import msgspec
 from typing_extensions import override
 
 from bpod_core.bpod.abc import AbstractFlexIO
@@ -77,14 +78,17 @@ class FlexIO(AbstractFlexIO):
             buffer.extend(struct.pack(f'<c{n * 2}H', b't', *voltages))
             n_confirmations += 1
 
-        for channel_index in range(n):
-            for threshold_index in (0, 1):
-                new_value = state.threshold_enabled[channel_index][threshold_index]
-                old_value = old.threshold_enabled[channel_index][threshold_index]
-                if force or new_value != old_value:
+        # threshold_enabled is excluded from the diff below: firmware disarms a
+        # threshold autonomously when it fires, so a diff against cached state
+        # would miss re-arming it (see _set_threshold_enabled). Only a full reset
+        # (force=True) resends it here, to put every threshold in a known state.
+        if force:
+            for channel_index in range(n):
+                for threshold_index in (0, 1):
+                    value = state.threshold_enabled[channel_index][threshold_index]
                     buffer.extend(
                         struct.pack(
-                            '<cBB?', b'e', channel_index, threshold_index, new_value
+                            '<cBB?', b'e', channel_index, threshold_index, value
                         )
                     )
                     n_confirmations += 1
@@ -101,6 +105,23 @@ class FlexIO(AbstractFlexIO):
             self._on_channel_types_changed()
         if analog_sampling_rate_changed and self._on_analog_sampling_rate_changed:
             self._on_analog_sampling_rate_changed()
+
+    @override
+    def _set_threshold_enabled(
+        self,
+        channel_index: int,
+        threshold_index: int,
+        value: bool,
+    ) -> None:
+        if not self._bpod_serial.verify(
+            query=struct.pack('<cBB?', b'e', channel_index, threshold_index, value),
+            expected_response=b'\x01',
+            timeout=_SERIAL_TIMEOUT,
+        ):
+            raise RuntimeError('Failed to apply FlexIO settings')
+        enabled = [list(e) for e in self._state.threshold_enabled]
+        enabled[channel_index][threshold_index] = value
+        self._state = msgspec.structs.replace(self._state, threshold_enabled=enabled)
 
     @override
     def reset(self) -> None:

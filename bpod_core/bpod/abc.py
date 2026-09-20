@@ -226,6 +226,7 @@ class FlexIOThreshold:
 
     _state_getter: Callable[[], _FlexIOState] = field(repr=False)
     _state_setter: Callable[[_FlexIOState], None] = field(repr=False)
+    _enabled_setter: Callable[[int, int, bool], None] = field(repr=False)
     _channel_index: int = field(repr=False)
     _threshold_index: int = field(repr=False)
 
@@ -268,11 +269,12 @@ class FlexIOThreshold:
     @enabled.setter
     @validate_call
     def enabled(self, value: bool) -> None:
-        state = self._state_getter()
-        enabled = [list(e) for e in state.threshold_enabled]
-        enabled[self._channel_index][self._threshold_index] = value
-        new_state = msgspec.structs.replace(state, threshold_enabled=enabled)
-        self._state_setter(new_state)
+        # unlike the other fields, this is not applied via the generic diff-based
+        # _state_setter: firmware disarms a threshold autonomously when it fires
+        # (and, in LINKED mode, arms the paired threshold), so the host's cached
+        # state can't be trusted to reflect the current hardware state, and the
+        # write must always be sent regardless of whether it appears unchanged
+        self._enabled_setter(self._channel_index, self._threshold_index, value)
 
 
 @dataclass(slots=True)
@@ -281,13 +283,26 @@ class FlexIOChannel:
 
     _state_getter: Callable[[], _FlexIOState] = field(repr=False)
     _state_setter: Callable[[_FlexIOState], None] = field(repr=False)
+    _enabled_setter: Callable[[int, int, bool], None] = field(repr=False)
     _index: int = field(repr=False)
     _thresholds: tuple[FlexIOThreshold, FlexIOThreshold] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._thresholds = (
-            FlexIOThreshold(self._state_getter, self._state_setter, self._index, 0),
-            FlexIOThreshold(self._state_getter, self._state_setter, self._index, 1),
+            FlexIOThreshold(
+                self._state_getter,
+                self._state_setter,
+                self._enabled_setter,
+                self._index,
+                0,
+            ),
+            FlexIOThreshold(
+                self._state_getter,
+                self._state_setter,
+                self._enabled_setter,
+                self._index,
+                1,
+            ),
         )
 
     def __repr__(self) -> str:
@@ -355,7 +370,9 @@ class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
         self._on_analog_sampling_rate_changed = on_analog_sampling_rate_changed
         view = {}
         for i in range(n):
-            channel = FlexIOChannel(self._get_state, self._apply_settings, i)
+            channel = FlexIOChannel(
+                self._get_state, self._apply_settings, self._set_threshold_enabled, i
+            )
             view[channel.name] = channel
         super().__init__(view, name='FlexIO channel', error_class=KeyError)
 
@@ -364,6 +381,16 @@ class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
 
     @abstractmethod
     def _apply_settings(self, state: _FlexIOState) -> None: ...
+
+    @abstractmethod
+    def _set_threshold_enabled(
+        self,
+        channel_index: int,
+        threshold_index: int,
+        value: bool,  # noqa: FBT001
+    ) -> None:
+        """Arm or disarm one analog threshold, always sending the write."""
+        ...
 
     @abstractmethod
     def reset(self) -> None:
