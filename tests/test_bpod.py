@@ -10,6 +10,7 @@ from bpod_core.bpod.constants import (
     _REMOTE_CALL_METHODS,
     _REMOTE_DATA_METHODS,
     FlexIOChannelType,
+    FlexIOThresholdPolarity,
 )
 from bpod_core.bpod.structs import (
     BpodEventUnion,
@@ -511,6 +512,34 @@ class TestFlexIOSettings:
         """Setting the FlexIO reads-per-sample sends the 'o' opcode."""
         mock_bpod_2p.flex_io.n_reads_per_sample = 2
         assert mock_bpod_2p.serial0.last_write == struct.pack('<cB', b'o', 2)
+
+    def test_flexio_threshold_voltages_are_threshold_major(self, mock_bpod_2p):
+        """The 't' opcode sends all channels' threshold-0 values, then threshold-1."""
+        voltages = {0: (1.0, 1.1), 1: (2.0, 2.1), 2: (3.0, 3.1), 3: (4.0, 4.1)}
+        for channel_index, (v0, v1) in voltages.items():
+            channel = mock_bpod_2p.flex_io[f'Flex{channel_index + 1}']
+            channel.thresholds[0].voltage = v0
+            channel.thresholds[1].voltage = v1
+        raw = [round(v0 / 5 * 4095) for v0, _ in voltages.values()]
+        raw += [round(v1 / 5 * 4095) for _, v1 in voltages.values()]
+        assert mock_bpod_2p.serial0.last_write == struct.pack('<c8H', b't', *raw)
+
+    def test_flexio_threshold_polarities_are_threshold_major(self, mock_bpod_2p):
+        """The 'p' opcode sends all channels' threshold-0 values, then threshold-1."""
+        polarities = {
+            0: (FlexIOThresholdPolarity.RISING, FlexIOThresholdPolarity.FALLING),
+            1: (FlexIOThresholdPolarity.FALLING, FlexIOThresholdPolarity.RISING),
+            2: (FlexIOThresholdPolarity.RISING, FlexIOThresholdPolarity.RISING),
+            3: (FlexIOThresholdPolarity.FALLING, FlexIOThresholdPolarity.FALLING),
+        }
+        for channel_index, (p0, p1) in polarities.items():
+            channel = mock_bpod_2p.flex_io[f'Flex{channel_index + 1}']
+            channel.thresholds[0].polarity = p0
+            channel.thresholds[1].polarity = p1
+        expected = [p0 for p0, _ in polarities.values()] + [
+            p1 for _, p1 in polarities.values()
+        ]
+        assert mock_bpod_2p.serial0.last_write == struct.pack('<c8B', b'p', *expected)
 
 
 class TestClose:

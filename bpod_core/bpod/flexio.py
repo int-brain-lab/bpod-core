@@ -65,12 +65,14 @@ class FlexIO(AbstractFlexIO):
             buffer.extend(struct.pack(f'<c{n}B', b'm', *state.threshold_modes))
             n_confirmations += 1
         if force or state.threshold_polarities != old.threshold_polarities:
-            polarities = (x for ch in state.threshold_polarities for x in ch)
+            polarities = (ch[k] for k in (0, 1) for ch in state.threshold_polarities)
             buffer.extend(struct.pack(f'<c{n * 2}B', b'p', *polarities))
             n_confirmations += 1
         if force or state.threshold_voltages != old.threshold_voltages:
             voltages = (
-                round(v / 5 * UINT12_MAX) for ch in state.threshold_voltages for v in ch
+                round(ch[k] / 5 * UINT12_MAX)
+                for k in (0, 1)
+                for ch in state.threshold_voltages
             )
             buffer.extend(struct.pack(f'<c{n * 2}H', b't', *voltages))
             n_confirmations += 1
