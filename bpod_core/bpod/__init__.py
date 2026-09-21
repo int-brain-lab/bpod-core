@@ -625,6 +625,9 @@ class Bpod(SerialDevice, AbstractBpod):
                 on_channel_types_changed=self._recompile_hardware_tables,
                 on_analog_sampling_rate_changed=self._sync_analog_reader,
                 is_running=lambda: self.is_running,
+                analog_recording_started=lambda: (
+                    self._analog_first_trial_time_us is not None
+                ),
             )
 
     def _configure_io(self) -> None:
@@ -1119,9 +1122,11 @@ class Bpod(SerialDevice, AbstractBpod):
 
     def _on_analog_chunk(self, chunk: bytearray) -> None:
         """Decode one FlexIO analog sample block and buffer it for `get_analog_data`."""
-        if self._analog_first_trial_time_us is None or self._analog_struct is None:
-            return  # no time anchor yet, or the reader was stopped mid-flight
+        if self._analog_struct is None:
+            return  # reader was stopped mid-flight
         trial_counter, *raw_counts = self._analog_struct.unpack(chunk)
+        if trial_counter < 1:
+            return  # firmware hasn't started sampling yet (pre-trial idle state)
         # firmware's trial_counter increments before first use, so the first trial of
         # a session reports 1, not 0 - convert to a 0-based sequence-position index
         sequence_index = trial_counter - 1
@@ -1130,14 +1135,14 @@ class Bpod(SerialDevice, AbstractBpod):
         else:
             trial_number = trial_counter
 
-        # firmware fires its first sample after exactly one sample period, not at t=0
-        time_us = (
-            self._analog_first_trial_time_us
-            + (self._analog_sample_index + 1) * self._analog_sample_period_us
+        # buffer the sample's ordinal index rather than a computed timestamp: the
+        # anchor may not be known yet (the analog reader thread and the EventThread
+        # that sets it run on independent serial ports), and counting must not be
+        # coupled to knowing it - see _flush_analog_buffer
+        self._analog_buffer.append(
+            (self._analog_sample_index, trial_number, *raw_counts)
         )
         self._analog_sample_index += 1
-
-        self._analog_buffer.append((time_us, trial_number, *raw_counts))
 
         now = perf_counter_ns()
         if now - self._analog_last_flush_ns >= _ANALOG_FLUSH_INTERVAL_NS:
@@ -1146,14 +1151,20 @@ class Bpod(SerialDevice, AbstractBpod):
     def _flush_analog_buffer(self) -> None:
         """Flush any buffered analog samples onto the analog data queue."""
         self._analog_last_flush_ns = perf_counter_ns()
+        if self._analog_first_trial_time_us is None:
+            return  # anchor not known yet; keep buffering until it is
         buffer, self._analog_buffer = self._analog_buffer, []
         if not buffer or not self._analog_channel_names:
             return
-        columns = ['time_us', 'trial', *self._analog_channel_names]
+        columns = ['k', 'trial', *self._analog_channel_names]
+        # firmware preloads its sample clock so the first sample fires one
+        # state-machine cycle after trial start, not a full sample period
+        anchor_us = self._analog_first_trial_time_us + self._hardware.cycle_period_us
+        period_us = self._analog_sample_period_us
         frame = (
             pl.LazyFrame(buffer, schema=columns, orient='row')
             .with_columns(
-                pl.from_epoch('time_us', time_unit='us')
+                pl.from_epoch(anchor_us + pl.col('k') * period_us, time_unit='us')
                 .dt.replace_time_zone('UTC')
                 .alias('time'),
                 pl.col('trial').cast(pl.UInt16),

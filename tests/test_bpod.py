@@ -10,6 +10,7 @@ from bpod_core.bpod.constants import (
     _REMOTE_CALL_METHODS,
     _REMOTE_DATA_METHODS,
     FlexIOChannelType,
+    FlexIOThresholdMode,
     FlexIOThresholdPolarity,
 )
 from bpod_core.bpod.structs import (
@@ -492,6 +493,36 @@ class TestRun:
 class TestFlexIOSettings:
     """Tests for Bpod.flex_io's configuration properties."""
 
+    def test_channel_type_change_rejected_after_recording_started(self, mock_bpod_2p):
+        """Channel type can't change once a trial has run this session."""
+        mock_bpod_2p._analog_first_trial_time_us = 1000
+        with pytest.raises(BpodError, match='Cannot change FlexIO channel types'):
+            mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
+
+    def test_sampling_rate_change_rejected_after_recording_started(self, mock_bpod_2p):
+        """Sampling rate can't change once a trial has run this session."""
+        mock_bpod_2p._analog_first_trial_time_us = 1000
+        with pytest.raises(BpodError, match='Cannot change FlexIO channel types'):
+            mock_bpod_2p.flex_io.analog_sampling_rate = 500
+
+    def test_threshold_settings_unaffected_by_recording_started(self, mock_bpod_2p):
+        """Threshold voltage/polarity/mode/enabled stay changeable regardless."""
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        mock_bpod_2p._analog_first_trial_time_us = 1000
+        mock_bpod_2p.flex_io['Flex1'].threshold_mode = FlexIOThresholdMode.LINKED
+        mock_bpod_2p.flex_io['Flex1'].thresholds[0].voltage = 2.5
+        mock_bpod_2p.flex_io['Flex1'].thresholds[
+            0
+        ].polarity = FlexIOThresholdPolarity.FALLING
+        mock_bpod_2p.flex_io['Flex1'].thresholds[0].enabled = True
+
+    def test_reconfiguration_allowed_after_session_clock_reset(self, mock_bpod_2p):
+        """A session-clock reset reopens the channel-type/rate config window."""
+        mock_bpod_2p._analog_first_trial_time_us = 1000
+        mock_bpod_2p.reset_session_clock()
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        mock_bpod_2p.flex_io.analog_sampling_rate = 500
+
     def test_run_flexio_action_on_non_output_channel(self, mock_bpod_2p):
         """Referencing a Flex action on a non-output-configured channel is rejected."""
         fsm = StateMachine()
@@ -664,27 +695,64 @@ class TestClose:
 class TestAnalogChunk:
     """Tests for Bpod._on_analog_chunk / _flush_analog_buffer / get_analog_data."""
 
-    def test_drops_samples_before_anchor(self, mock_bpod_2p):
-        """Samples are dropped until the first trial's start time is known."""
+    def test_trial_counter_zero_is_dropped(self, mock_bpod_2p):
+        """A trial_counter of 0 (pre-trial idle state) is dropped, uncounted."""
         mock_bpod_2p._analog_channel_names = ('Flex3',)
-        mock_bpod_2p._analog_first_trial_time_us = None
+        mock_bpod_2p._analog_struct = struct.Struct('<2H')
         mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 0, 2048)))
         assert mock_bpod_2p._analog_buffer == []
+        assert mock_bpod_2p._analog_sample_index == 0
+
+    def test_samples_are_counted_before_anchor_is_known(self, mock_bpod_2p):
+        """Samples are buffered/counted even before the anchor is known.
+
+        The analog reader thread and the EventThread that sets the anchor run on
+        independent serial ports, so a real sample can arrive before the anchor
+        is known; it must still be counted, or every later timestamp would shift
+        by however many samples raced ahead of the anchor.
+        """
+        mock_bpod_2p._analog_channel_names = ('Flex3',)
+        mock_bpod_2p._analog_struct = struct.Struct('<2H')
+        mock_bpod_2p._analog_first_trial_time_us = None
+        mock_bpod_2p._analog_last_flush_ns = 0  # force an immediate flush attempt
+        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 2048)))
+        assert mock_bpod_2p._analog_sample_index == 1
+        assert len(mock_bpod_2p._analog_buffer) == 1
+        mock_bpod_2p._flush_analog_buffer()  # anchor unknown - must be a no-op
+        assert len(mock_bpod_2p._analog_buffer) == 1
+
+        mock_bpod_2p._analog_first_trial_time_us = 1_000_000
+        mock_bpod_2p._analog_sample_period_us = 1000
+        mock_bpod_2p._flush_analog_buffer()
+        assert mock_bpod_2p._analog_buffer == []
+        frame = mock_bpod_2p.get_analog_data()
+        cycle_period_us = mock_bpod_2p._hardware.cycle_period_us
+        assert frame['time'].dt.epoch('us').to_list() == [1_000_000 + cycle_period_us]
 
     def test_buffers_and_flushes_decoded_samples(self, mock_bpod_2p):
-        """A decoded sample is buffered and flushed as a LazyFrame in volts."""
+        """Decoded samples are buffered and flushed as a LazyFrame with timing."""
         mock_bpod_2p._analog_channel_names = ('Flex3',)
         mock_bpod_2p._analog_struct = struct.Struct('<2H')
         mock_bpod_2p._analog_first_trial_time_us = 1_000_000
+        mock_bpod_2p._analog_sample_period_us = 1000
         mock_bpod_2p._analog_trial_number_by_sequence = [7]
         mock_bpod_2p._analog_last_flush_ns = 0  # force an immediate flush
         # firmware's trial_counter is 1-indexed (increments before first use), so the
         # first entry in _analog_trial_number_by_sequence corresponds to counter 1
         mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 2048)))
+        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 4095)))
+        mock_bpod_2p._flush_analog_buffer()  # flush the second sample too
         frame = mock_bpod_2p.get_analog_data()
         assert frame.columns == ['time', 'trial', 'Flex3']
-        assert frame['trial'][0] == 7
+        assert frame['trial'].to_list() == [7, 7]
         assert frame['Flex3'][0] == pytest.approx(2048 / 4095 * 5, abs=1e-3)
+        # firmware's sample clock is preloaded, so the first sample fires one
+        # state-machine cycle (not a full sample period) after trial start
+        cycle_period_us = mock_bpod_2p._hardware.cycle_period_us
+        assert frame['time'].dt.epoch('us').to_list() == [
+            1_000_000 + cycle_period_us,
+            1_000_000 + cycle_period_us + 1000,
+        ]
 
     def test_unknown_trial_counter_falls_back_to_raw_value(self, mock_bpod_2p):
         """A trial_counter with no recorded mapping is used as-is."""

@@ -38,7 +38,12 @@ def is_flexio_threshold_ambiguous(
 class FlexIO(AbstractFlexIO):
     """Local FlexIO implementation with direct hardware access."""
 
-    __slots__ = ('_bpod_serial', '_cycle_frequency', '_is_running')
+    __slots__ = (
+        '_analog_recording_started',
+        '_bpod_serial',
+        '_cycle_frequency',
+        '_is_running',
+    )
 
     _bpod_serial: ExtendedSerial
 
@@ -51,6 +56,7 @@ class FlexIO(AbstractFlexIO):
         on_channel_types_changed: Callable[[], None],
         on_analog_sampling_rate_changed: Callable[[], None],
         is_running: Callable[[], bool],
+        analog_recording_started: Callable[[], bool],
     ) -> None:
         super().__init__(
             n,
@@ -60,6 +66,7 @@ class FlexIO(AbstractFlexIO):
         self._bpod_serial = bpod_serial
         self._cycle_frequency = cycle_frequency
         self._is_running = is_running
+        self._analog_recording_started = analog_recording_started
 
     @override
     def _apply_settings(self, state: _FlexIOState, *, force: bool = False) -> None:
@@ -83,6 +90,14 @@ class FlexIO(AbstractFlexIO):
         analog_sampling_rate_changed = (
             force or state.analog_sampling_rate != old.analog_sampling_rate
         )
+        if (
+            channel_types_changed or analog_sampling_rate_changed
+        ) and self._analog_recording_started():
+            raise BpodError(
+                'Cannot change FlexIO channel types or the analog sampling rate '
+                'after a trial has run this session. Call reset_session_clock() '
+                'first.'
+            )
         if analog_sampling_rate_changed:
             n_cycles = round(self._cycle_frequency / state.analog_sampling_rate)
             buffer.extend(struct.pack('<cI', b'^', n_cycles))
