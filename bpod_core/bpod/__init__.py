@@ -16,6 +16,7 @@ from typing import (
     Any,
     ClassVar,
     Literal,
+    TypeVar,
     cast,
     overload,
 )
@@ -117,7 +118,19 @@ from bpod_core.misc import (
 logger = logging.getLogger(__name__)
 
 _ANALOG_FLUSH_INTERVAL_NS = 100_000_000  # 100 ms
-_ANALOG_VOLTS_PER_COUNT = 5 / UINT12_MAX  # 12-bit ADC counts (0-4095) -> volts (0-5)
+_ADC_DAC_FULL_SCALE_MV = 5000  # FlexIO ADC/DAC full-scale range (0-5 V), in mV
+
+_CountsT = TypeVar('_CountsT', int, pl.Expr)
+
+
+def _counts_to_mv(counts: _CountsT) -> _CountsT:
+    """Convert 12-bit ADC/DAC counts (0-4095) to integer millivolts, losslessly."""
+    return (counts * _ADC_DAC_FULL_SCALE_MV + UINT12_MAX // 2) // UINT12_MAX
+
+
+def _mv_to_counts(mv: _CountsT) -> _CountsT:
+    """Convert integer millivolts (0-5000) to 12-bit ADC/DAC counts, losslessly."""
+    return (mv * UINT12_MAX + _ADC_DAC_FULL_SCALE_MV // 2) // _ADC_DAC_FULL_SCALE_MV
 
 
 class Bpod(SerialDevice, AbstractBpod):
@@ -225,7 +238,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._fsm_annotations: StateMachineLookup | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
         self._hardware_hash: bytes = b''
-        self._analog_data = SimpleQueue()
+        self._analog_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
         self._analog_buffer = []
         self._analog_trial_number_by_sequence = []
         self._analog_sample_index = 0
@@ -1168,8 +1181,9 @@ class Bpod(SerialDevice, AbstractBpod):
                 .dt.replace_time_zone('UTC')
                 .alias('time'),
                 pl.col('trial').cast(pl.UInt16),
-                pl.col(self._analog_channel_names).cast(pl.Float32)
-                * _ANALOG_VOLTS_PER_COUNT,
+                _counts_to_mv(pl.col(self._analog_channel_names).cast(pl.UInt32)).cast(
+                    pl.UInt16
+                ),
             )
             .select('time', 'trial', *self._analog_channel_names)
         )
@@ -1327,19 +1341,19 @@ class Bpod(SerialDevice, AbstractBpod):
                 if (
                     flex_channel is not None
                     and flex_channel.channel_type == FlexIOChannelType.ANALOG_OUTPUT
-                ):
-                    if not 0 <= action_value <= 5:
-                        raise ValueError(
-                            f'Invalid value {action_value!r} for action '
-                            f"'{action_name}' in state '{state_name}' - FlexIO analog "
-                            f'output actions must be between 0 and 5 (V)'
-                        )
-                elif action_value != int(action_value):
+                )
+                if action_value != int(action_value):
                     raise ValueError(
                         f"Invalid value {action_value!r} for action '{action_name}' "
                         f"in state '{state_name}' - must be an integer"
                     )
-                elif (
+                if is_flexio_analog_output and not 0 <= action_value <= 5000:
+                    raise ValueError(
+                        f'Invalid value {action_value!r} for action '
+                        f"'{action_name}' in state '{state_name}' - FlexIO analog "
+                        f'output actions must be between 0 and 5000 (mV)'
+                    )
+                if (
                     action_name in ('AnalogThreshEnable', 'AnalogThreshDisable')
                     and self._flex_io is not None
                 ):
@@ -1546,24 +1560,38 @@ class Bpod(SerialDevice, AbstractBpod):
                     target_indices[target]
                 )
 
-        def _scale_action_value(action_name: str, value: float) -> int:
-            """Scale a FlexIO analog-output action value (0-5V) into 12-bit DAC counts.
-
-            Every other action value must already be an integer (enforced during
-            validation).
-            """
+        def _is_flexio_analog_output(action_name: str) -> bool:
             flexio_channel = self._flex_io.get(action_name) if self._flex_io else None
-            if (
+            return (
                 flexio_channel is not None
                 and flexio_channel.channel_type == FlexIOChannelType.ANALOG_OUTPUT
-            ):
-                return round(value / 5 * UINT12_MAX)
+            )
+
+        def _scale_action_value(action_name: str, value: int) -> int:
+            """Scale a FlexIO analog-output action value (0-5000 mV) into DAC counts.
+
+            Every other action value must already be an integer (enforced during
+            validation) and needs no further scaling.
+            """
+            if _is_flexio_analog_output(action_name):
+                return _mv_to_counts(value)
             return int(value)
 
-        # scale action values once, shared by the annotation data structure below and
-        # the ACTIONS wire-encoding section further down
+        # scale action values once, shared by the wire-encoding section further down
+        # and (for non-FlexIO actions) the annotation below
         state_actions = [
             {k: _scale_action_value(k, v) for k, v in s.actions.items()} for s in states
+        ]
+
+        # the annotation EventThread uses to record get_data()'s reported value
+        # reports FlexIO ANALOG_OUTPUT in millivolts (what was actually applied to
+        # the pin), not the wire's raw DAC count
+        reported_state_actions = [
+            {
+                k: _counts_to_mv(v) if _is_flexio_analog_output(k) else v
+                for k, v in actions.items()
+            }
+            for actions in state_actions
         ]
 
         # build annotation data structure for event decoding in EventThread
@@ -1571,7 +1599,7 @@ class Bpod(SerialDevice, AbstractBpod):
             fsm_hash=state_machine_hash,
             state_names=state_names,
             state_transition_matrix=state_transition_matrix,
-            state_actions=state_actions,
+            state_actions=reported_state_actions,
             use_back_op=use_back_op,
             state_lookup=dict(enumerate(state_names)),
         )
@@ -2025,11 +2053,11 @@ class Bpod(SerialDevice, AbstractBpod):
         """Pop one or more LazyFrames from a queue, optionally concatenating them."""
         frames = [queue.get()]
         if concat:
-            while True:
-                try:
+            try:
+                while True:
                     frames.append(queue.get(block=False))
-                except Empty:  # noqa: PERF203
-                    break
+            except Empty:
+                pass
             data = pl.concat(frames, rechunk=rechunk, how=how)
         else:
             data = frames[0]
@@ -2066,8 +2094,9 @@ class Bpod(SerialDevice, AbstractBpod):
         Returns
         -------
         DataFrame or LazyFrame
-            One ``Float32`` column of volts per FlexIO channel currently configured as
-            ``ANALOG_INPUT``, plus ``time`` and ``trial`` columns. The set of channel
+            One ``UInt16`` column of millivolts (0-5000) per FlexIO channel currently
+            configured as ``ANALOG_INPUT``, plus ``time`` and ``trial`` columns. The
+            set of channel
             columns reflects whatever configuration was active when the data was
             recorded, and may differ across concatenated batches if channels were
             reconfigured in between.
