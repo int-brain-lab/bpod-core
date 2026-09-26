@@ -56,6 +56,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          prune-cache: true
+          cache-suffix: "mypy"
       - name: sync dependencies
         run: uv sync --no-default-groups --group test
       - run: uv run tox -m 'typing' --parallel-no-spinner
@@ -74,6 +78,10 @@ jobs:
           version: 1.0
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          prune-cache: true
+          cache-suffix: "tox"
       - name: sync dependencies
         run: uv sync --no-default-groups --group test --group ci
       - name: run tox
