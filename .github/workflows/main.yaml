@@ -60,7 +60,7 @@ jobs:
           enable-cache: true
           prune-cache: true
       - name: sync dependencies
-        run: uv sync --no-default-groups --group test
+        run: uv sync --no-default-groups --group tox
       - run: uv run tox -m 'typing' --fail-fast -p --parallel-no-spinner
   tox:
     needs: [ruff, mypy]
@@ -81,7 +81,7 @@ jobs:
           enable-cache: true
           prune-cache: true
       - name: sync dependencies
-        run: uv sync --no-default-groups --group test --group ci
+        run: uv sync --no-default-groups --group tox --group ci
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
