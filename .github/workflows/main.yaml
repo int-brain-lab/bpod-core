@@ -52,6 +52,7 @@ jobs:
       - run: ruff check
       - run: ruff format --check
   mypy:
+    needs: [ruff]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
