@@ -42,7 +42,18 @@ jobs:
             echo "::error file=CHANGELOG.md::CHANGELOG must have version $PKG_VERSION with today's date ($TODAY)"
             exit 1
           fi
+  ruff:
+    name: Ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version-file: uv.lock
+      - run: ruff check
+      - run: ruff format --check
   tox:
+    needs: [ruff]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
