@@ -42,7 +42,25 @@ jobs:
             echo "::error file=CHANGELOG.md::CHANGELOG must have version $PKG_VERSION with today's date ($TODAY)"
             exit 1
           fi
+  quality:
+    name: "ruff & mypy"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version-file: uv.lock
+      - run: ruff check
+      - run: ruff format --check
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          prune-cache: true
+      - name: sync dependencies
+        run: uv sync --no-default-groups --group tox
+      - run: uv run tox -m 'typing' --fail-fast -p --parallel-no-spinner
   tox:
+    needs: [quality]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -56,12 +74,15 @@ jobs:
           version: 1.0
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          prune-cache: true
       - name: sync dependencies
-        run: uv sync --no-default-groups --group test --group ci
+        run: uv sync --no-default-groups --group tox --group ci
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uv run tox --fail-fast --parallel-no-spinner -- -ci
+        run: uv run tox --skip-env 'linting|formatting|typing' --fail-fast -p --parallel-no-spinner -- -ci
   finish:
     needs: tox
     if: ${{ always() }}

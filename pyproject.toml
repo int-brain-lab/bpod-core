@@ -69,7 +69,7 @@ doc = [
   "pyarrow>=23.0",
   "pandas>=2.3",
   "shibuya>=2026.7.12",
-  "sphinx-llm>=0.4.1",
+  "sphinx-llm>=1.1.0",
   "sphinx-sitemap>=2.9.0",
   "sphinxext-opengraph>=0.13",
   "sphinx-notfound-page>=1.1.0",
@@ -80,11 +80,10 @@ lint = [
 test = [
   { include-group = "typing" },
   { include-group = "lint" },
+  { include-group = "tox" },
   "pytest-cov>=6.1",
   "pytest>=8.3",
   "ruff>=0.11",
-  "tox>=4.36",
-  "tox-uv>=0.7",
   "packaging>=25.0",
   "pytest-mock>=3.14",
   "pytest-qt>=4.5",
@@ -100,6 +99,10 @@ typing = [
   "types-psutil>=7",
   "types-pyserial~=3.5",
   "types-pyyaml>=6",
+]
+tox = [
+  "tox>=4.36",
+  "tox-uv>=0.7",
 ]
 ci = [
   "coveralls>=4.0.1",
@@ -137,9 +140,6 @@ source-exclude = [
 
 [tool.uv.dependency-groups]
 doc = { requires-python = ">=3.14" }
-
-[tool.uv.sources]
-sphinx-llm = { git = "https://github.com/NVIDIA/sphinx-llm", branch = "main" }
 
 [tool.ruff]
 include = ["bpod_core/**/*.py", "tests/**/*.py", "examples/**/*.py", "docs/source/**/*.py"]
