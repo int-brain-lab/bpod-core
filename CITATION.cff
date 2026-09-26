@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: bpod-core
+message: >-
+  If you use this software, please cite it using the metadata from this file.
+  For a full list of contributors, please refer to the Git repository.
+type: software
+authors:
+  - name: "International Brain Laboratory"
+    alias: IBL
+  - name: "bpod-core contributors"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.21497456"
+    description: The concept DOI of the work.
+repository-code: 'https://github.com/int-brain-lab/bpod-core'
+url: 'https://int-brain-lab.github.io/bpod-core/'
+abstract: A modern Python interface for Bpod Finite State Machines.
+license: MIT

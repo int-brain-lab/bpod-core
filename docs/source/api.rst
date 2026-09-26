@@ -1,3 +1,6 @@
+.. meta::
+   :description: API reference for bpod-core.
+
 API
 ===
 
