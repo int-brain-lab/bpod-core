@@ -226,6 +226,7 @@ class TestEventThread:
             time_reference: TimeReferences | None = None,
             publish: Callable[[BpodEventUnion], object] | None = None,
             should_publish: Callable[[], bool] | None = None,
+            on_trial_start: Callable[[int], None] | None = None,
         ) -> tuple[EventThread, SimpleQueue[pl.LazyFrame]]:
             action_names = action_names or []
             event_names = event_names or ['Ev0', 'Tup']
@@ -246,6 +247,7 @@ class TestEventThread:
                 publish_gate=should_publish
                 if should_publish is not None
                 else (lambda: True),
+                on_trial_start=on_trial_start,
             )
             thread.start()
             threads.append(thread)
@@ -281,6 +283,20 @@ class TestEventThread:
         thread.stop()
         thread.join(timeout=2)
         assert not data_queue.empty()
+
+    def test_on_trial_start_fires_regardless_of_publish_gate(self, make_thread):
+        """on_trial_start fires with the absolute time even when publish_gate=False."""
+        captured = []
+        thread, _data_queue = make_thread(
+            time_reference=TimeReferences(0, 0, 5_000_000),  # +5000 us offset
+            should_publish=lambda: False,
+            on_trial_start=captured.append,
+        )
+        thread.queue.put(RawEvent(micros_us=100, event_id=_EventID.START_FSM))
+        thread.queue.put(RawEvent(micros_us=100, event_id=_EventID.START_STATE))
+        thread.stop()
+        thread.join(timeout=2)
+        assert captured == [5100]
 
     @staticmethod
     def _put_full_trial(thread: EventThread) -> None:
@@ -459,6 +475,17 @@ class TestEventThread:
         df = self._collect(data_queue)
         output = df.filter(pl.col('type') == 'OutputAction')
         assert 'PWM1' in output['channel'].cast(pl.String).to_list()
+
+    def test_output_action_value_above_uint8_range(self, make_thread):
+        """Output values above 255 (e.g. scaled FlexIO analog-output counts) survive."""
+        fsm = _make_fsm(state_actions=[{'Flex4': 2048}, {}])
+        thread, data_queue = make_thread(fsm=fsm, action_names=['Flex4'])
+        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        output = df.filter(pl.col('channel') == 'Flex4')
+        assert output['value'].to_list() == [2048]
 
     def test_ttl_reset_on_state_transition(self, make_thread):
         """TTL output is reset to 0."""

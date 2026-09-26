@@ -420,6 +420,13 @@ hardware are known:
       ...
    ValueError: Requested invalid Global Timer with index 20 - Bpod Finite State Machine R2.0-2.5 supports up to 16 Global Timers with indices 0-15
 
+Since the set of legal transition events and actions depends on the specific hardware
+configuration (e.g., connected Modules, configuration of FlexIO channels) it cannot be
+known in advance from the :class:`~bpod_core.fsm.StateMachine` definition alone. Once
+connected, :attr:`~bpod_core.bpod.Bpod.input_event_names` and
+:attr:`~bpod_core.bpod.Bpod.action_names` report exactly which names are currently
+valid, letting you check a state machine's transitions and actions before running it.
+
 
 Import and Export
 ^^^^^^^^^^^^^^^^^

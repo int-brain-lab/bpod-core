@@ -1,8 +1,11 @@
 """Constants used by the bpod module."""
 
+from enum import IntEnum
+from typing import Annotated
 from uuid import UUID
 
 import platformdirs
+from pydantic import Field
 
 from bpod_core.constants import VID_TEENSY, TeensyPID
 
@@ -69,3 +72,46 @@ _REMOTE_CALL_METHODS = frozenset(
 
 _REMOTE_DATA_METHODS = frozenset({'get_data', 'peek_data'})
 """DataFrame-returning methods that remote clients may invoke."""
+
+
+class FlexIOChannelType(IntEnum):
+    """Represents a FlexIO channel's type."""
+
+    DIGITAL_INPUT = 0
+    """Digital input channel."""
+    DIGITAL_OUTPUT = 1
+    """Digital output channel."""
+    ANALOG_INPUT = 2
+    """Analog input channel."""
+    ANALOG_OUTPUT = 3
+    """Analog output channel."""
+    DISABLED = 4
+    """Channel disabled / high impedance."""
+
+
+class FlexIOThresholdMode(IntEnum):
+    """Represents a FlexIO channel's threshold mode."""
+
+    MANUAL = 0
+    """Thresholds have to be re-enabled manually."""
+    LINKED = 1
+    """Crossing one threshold resets the other."""
+
+
+class FlexIOThresholdPolarity(IntEnum):
+    """Represents a FlexIO channel's threshold polarity."""
+
+    RISING = 0
+    """Event is triggered when the signal crosses above the threshold."""
+    FALLING = 1
+    """Event is triggered when the signal crosses below the threshold."""
+
+
+FlexIOThresholdVoltage = Annotated[float, Field(ge=0.0, le=5.0, allow_inf_nan=False)]
+"""Threshold voltage of an analog FlexIO input channel in volts"""
+
+FlexIOAnalogSamplingRate = Annotated[int, Field(ge=1, le=1000)]
+"""Sampling rate for FlexIO channels configured as analog input, in Hz."""
+
+FlexIONReadsPerSample = Annotated[int, Field(ge=1, le=4)]
+"""Number of ADC reads averaged per FlexIO analog sample."""

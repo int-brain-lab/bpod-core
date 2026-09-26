@@ -1,4 +1,5 @@
 import re
+import struct
 from unittest.mock import PropertyMock
 
 import pytest
@@ -35,6 +36,20 @@ fixture_bpod_25 = {
     b'E[\\x00\\x01]{13}': b'\x01',
 }
 
+# FlexIO.reset() on connect sends a single combined write for all 4 channels
+# (Q, ^, o, m, p, t, plus 8 per-threshold 'e' ops), expecting 14 acks in one go.
+_flexio_reset_2p = (
+    struct.pack('<c4B', b'Q', *(4,) * 4)
+    + struct.pack('<cI', b'^', 10)
+    + struct.pack('<cB', b'o', 3)
+    + struct.pack('<c4B', b'm', *(0,) * 4)
+    + struct.pack('<c8B', b'p', *(0,) * 8)
+    + struct.pack('<c8H', b't', *(4095,) * 8)
+    + b''.join(
+        struct.pack('<cBB?', b'e', ch, th, False) for ch in range(4) for th in (0, 1)
+    )
+)
+
 # Bpod 2+ with firmware version 23
 fixture_bpod_2p = {
     **fixture_bpod_all,
@@ -44,6 +59,14 @@ fixture_bpod_2p = {
     ),
     b'M': b'\x00\x00\x00',
     b'E[\\x00\\x01]{16}': b'\x01',
+    re.escape(_flexio_reset_2p): b'\x01' * 14,
+    b'Q[\\x00-\\x04]{4}': b'\x01',
+    b'\\^[\\x00-\\xff]{4}': b'\x01',
+    b'o[\\x01-\\x04]': b'\x01',
+    b'm[\\x00-\\xff]{4}': b'\x01',
+    b'p[\\x00-\\xff]{8}': b'\x01',
+    b't[\\x00-\\xff]{16}': b'\x01',
+    b'e[\\x00-\\x03][\\x00-\\x01][\\x00-\\x01]': b'\x01',
 }
 
 
@@ -74,6 +97,8 @@ def mock_ext_serial(mocker):
     extended_serial.last_write = b''
 
     def write(data) -> None:
+        if len(data) == 0:  # e.g., ExtendedSerial.verify() reading an acknowledgement
+            return
         for pattern, value in extended_serial.mock_responses.items():
             if re.match(pattern, data):
                 extended_serial.response_buffer.extend(value)
@@ -164,7 +189,9 @@ def mock_bpod_20(
 ):
     mock_ext_serial.mock_responses.update(fixture_bpod_20)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
-    mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
+    mocker.patch(
+        'bpod_core.bpod.Bpod._detect_additional_serial_ports', return_value=(None, None)
+    )
     mocker.patch('bpod_core.bpod.ServiceHost')
     return Bpod('COM3')
 
@@ -175,7 +202,9 @@ def mock_bpod_25(
 ):
     mock_ext_serial.mock_responses.update(fixture_bpod_25)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
-    mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
+    mocker.patch(
+        'bpod_core.bpod.Bpod._detect_additional_serial_ports', return_value=(None, None)
+    )
     mocker.patch('bpod_core.bpod.ServiceHost')
     return Bpod('COM3')
 
@@ -186,6 +215,8 @@ def mock_bpod_2p(
 ):
     mock_ext_serial.mock_responses.update(fixture_bpod_2p)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
-    mocker.patch('bpod_core.bpod.Bpod._detect_additional_serial_ports')
+    mocker.patch(
+        'bpod_core.bpod.Bpod._detect_additional_serial_ports', return_value=(None, None)
+    )
     mocker.patch('bpod_core.bpod.ServiceHost')
     return Bpod('COM3')

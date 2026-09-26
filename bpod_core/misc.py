@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from enum import IntEnum
 from os import PathLike, strerror
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import msgspec
@@ -167,16 +168,19 @@ def suggest_similar(
     return format_string.format(matches[0]) if len(matches) > 0 else ''
 
 
-class SuggestionDict(dict[str, V]):
-    """A dictionary that suggests similar keys on failed lookup.
+class SuggestionMapping(Mapping[str, V]):
+    """A read-only mapping that suggests similar keys on failed lookup.
 
     On :class:`KeyError`, raises ``error_class`` with a message that includes the
     closest match from the existing keys via :func:`suggest_similar`, making typos and
-    near-misses easier to diagnose.
+    near-misses easier to diagnose. Implementing only the :class:`Mapping` interface
+    means there is no ``__setitem__``/``__delitem__``/``update``/etc. to guard against,
+    appropriate for a fixed set of keys (e.g. hardware channels discovered once at
+    connect time) that should never be mutated after construction.
 
     Parameters
     ----------
-    dictionary : MutableMapping
+    dictionary : Mapping
         Initial key-value pairs.
     name : str, default: 'key'
         Human-readable label for the key type used in the error message.
@@ -185,7 +189,7 @@ class SuggestionDict(dict[str, V]):
 
     Examples
     --------
-    >>> d = SuggestionDict({'Port1': 1, 'Port2': 2}, name='channel')
+    >>> d = SuggestionMapping({'Port1': 1, 'Port2': 2}, name='channel')
     >>> d['Port1']
     1
     >>> d['Prot1']
@@ -194,25 +198,39 @@ class SuggestionDict(dict[str, V]):
     KeyError: "No such channel: 'Prot1' - did you mean 'Port1'?"
     """
 
+    __slots__ = ('_data', '_error_class', '_name')
+
     def __init__(
         self,
-        dictionary: MutableMapping[str, V],
+        dictionary: Mapping[str, V],
         *,
         name: str | None = None,
         error_class: type[Exception] = KeyError,
     ) -> None:
-        super().__init__(dictionary)
+        self._data = MappingProxyType(dict(dictionary))
         self._name = name or 'key'
         self._error_class = error_class
 
     @override
     def __getitem__(self, key: str) -> V:
         try:
-            return super().__getitem__(key)
+            return self._data[key]
         except KeyError as e:
             raise self._error_class(
-                f"No such {self._name}: '{key}'" + suggest_similar(key, self.keys())
+                f"No such {self._name}: '{key}'"
+                + suggest_similar(key, self._data.keys())
             ) from e
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    @override
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __repr__(self) -> str:
+        return f'{type(self).__name__}({dict(self._data)!r})'
 
 
 def set_nested(d: MutableMapping, keys: Sequence[Hashable], value: Any) -> None:

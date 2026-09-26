@@ -124,7 +124,10 @@ collected data as a Polars :class:`~polars.DataFrame` (see :doc:`/data_format`).
 .. seealso::
 
    Refer to :doc:`/state_machines/index` for the full reference of the
-   :class:`~bpod_core.fsm.StateMachine` object.
+   :class:`~bpod_core.fsm.StateMachine` object, including how to check which event
+   and action names are currently valid via
+   :attr:`~bpod_core.bpod.Bpod.input_event_names` and
+   :attr:`~bpod_core.bpod.Bpod.action_names`.
 
 
 Zero-Downtime Execution

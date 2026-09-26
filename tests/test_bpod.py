@@ -1,12 +1,18 @@
 import logging
 import struct
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock
 
 import pytest
 from serial import SerialException
 
 from bpod_core.bpod import Bpod, BpodError, RemoteBpod
-from bpod_core.bpod.constants import _REMOTE_CALL_METHODS, _REMOTE_DATA_METHODS
+from bpod_core.bpod.constants import (
+    _REMOTE_CALL_METHODS,
+    _REMOTE_DATA_METHODS,
+    FlexIOChannelType,
+    FlexIOThresholdMode,
+    FlexIOThresholdPolarity,
+)
 from bpod_core.bpod.structs import (
     BpodEventUnion,
     EventTrialStart,
@@ -219,6 +225,55 @@ class TestBpodHandshake:
         mock_bpod.serial0.reset_input_buffer.assert_called_once()
 
 
+class TestInitCleanup:
+    """Tests for cleanup when Bpod.__init__ fails partway through connecting."""
+
+    def test_failure_calls_close(
+        self, mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
+    ):
+        """A mid-connect failure closes the connection instead of leaving it stuck."""
+        mock_ext_serial.mock_responses.update(
+            {
+                b'6': b'5',
+                b'f': b'\x00\x00',
+                b'v': b'\x01',
+                b'F': b'\x17\x00\x03\x00',
+                b'H': (
+                    b'\x00\x01d\x00i\x05\x10\x08\x10\rUUUUUXZBBPPPP\x11UUUUUXZBBPPPPVVVV'
+                ),
+                b'M': b'\x00\x00\x00\x00\x00',
+                rb'\*': b'\x01',
+            }
+        )
+        mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
+        mocker.patch(
+            'bpod_core.bpod.Bpod._detect_additional_serial_ports',
+            return_value=(None, None),
+        )
+        mocker.patch('bpod_core.bpod.ServiceHost')
+        mocker.patch(
+            'bpod_core.bpod.Bpod._configure_io', side_effect=RuntimeError('boom')
+        )
+        close_spy = mocker.spy(Bpod, 'close')
+        with pytest.raises(RuntimeError, match='boom'):
+            Bpod('COM3')
+        close_spy.assert_called_once()
+
+    def test_handshake_failure_calls_close(
+        self, mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
+    ):
+        """A handshake failure inside super().__init__() is also covered by cleanup."""
+        mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
+        mocker.patch('bpod_core.bpod.ServiceHost')
+        mocker.patch(
+            'bpod_core.bpod.Bpod._handshake', side_effect=BpodError('handshake boom')
+        )
+        close_spy = mocker.spy(Bpod, 'close')
+        with pytest.raises(BpodError, match='handshake boom'):
+            Bpod('COM3')
+        close_spy.assert_called_once()
+
+
 class TestResetSessionClock:
     def test_reset_session_clock(self, mock_bpod, caplog):
         """Test successful reset of session clock."""
@@ -287,6 +342,17 @@ class TestRun:
         fsm = StateMachine()
         fsm.add_state('a', 5, {'SoftCode0': 'b', 'Tup': '>exit'})
         fsm.add_state('b', 0, {'Tup': '>exit'})
+        return fsm
+
+    @pytest.fixture
+    def fsm_flexio(self):
+        fsm = StateMachine()
+        fsm.add_state(
+            'a', 0, {'Flex3_High': 'b'}, {'Flex2': 1, 'AnalogThreshDisable': 1}
+        )
+        fsm.add_state('b', 0, {'Flex3_Low': 'c'}, {'Flex4': 1, 'AnalogThreshEnable': 1})
+        fsm.add_state('c', 0, {'Flex1_Trig0': 'd'}, {'Flex4': 2.5})
+        fsm.add_state('d', 0, {'Flex1_Trig1': '>exit'}, {'Flex4': 4})
         return fsm
 
     def test_run_basic_25(self, fsm_basic, mock_bpod_25):
@@ -382,6 +448,35 @@ class TestRun:
             b'\x00\x00\x00\x00'
         )
 
+    def test_run_flexio_2p(self, fsm_flexio, mock_bpod_2p):
+        """Test running a state machine with flexIO channels on Bpod 2+."""
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        mock_bpod_2p.flex_io['Flex2'].channel_type = FlexIOChannelType.DIGITAL_OUTPUT
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.DIGITAL_INPUT
+        mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.ANALOG_OUTPUT
+        mock_bpod_2p.run(fsm_flexio)
+        assert mock_bpod_2p.serial0.last_write == (
+            b'C\x01\x00d\x00\x04\x00\x00\x00\x00\x01\x02\x03\x01O\x01\x01P\x02\x01K\x03'
+            b'\x01L\x04\x01\x00\x06\x00\x01\x00\x01\x00\x08\x003\x03\x01\x00\x08\x00'
+            b'\x00\x08\x01\x00\x08\x00\xcc\x0c\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+            b'\x00\x00\x00\x00\x00\x00\x00\x01\x01\x01\x01\x00\x01\x00\x00\x00\x00\x00'
+            b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+            b'\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+        )
+
+    def test_run_flexio_channel_type_change_invalidates_cache(self, mock_bpod_2p):
+        """Switching a Flex channel's type busts the compiled-FSM cache."""
+        mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.DIGITAL_OUTPUT
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'}, {'Flex4': 1})
+        mock_bpod_2p.run(fsm)
+        idx = mock_bpod_2p._actions.index('Flex4')
+        assert struct.pack('<HHH', 1, idx, 1) in mock_bpod_2p.serial0.last_write
+
+        mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.ANALOG_OUTPUT
+        mock_bpod_2p.run(fsm)
+        assert struct.pack('<HHH', 1, idx, 819) in mock_bpod_2p.serial0.last_write
+
     def test_run_repeat(self, fsm_basic, mock_bpod_25):
         """Calling run() without sma re-sends the same compiled bytes from cache."""
         mock_bpod_25.run(fsm_basic)
@@ -393,6 +488,361 @@ class TestRun:
         """Calling run() without a prior run raises RuntimeError."""
         with pytest.raises(RuntimeError, match='No state machine has been run yet'):
             mock_bpod_25.run()
+
+
+class TestFlexIOSettings:
+    """Tests for Bpod.flex_io's configuration properties."""
+
+    def test_channel_type_change_rejected_after_recording_started(self, mock_bpod_2p):
+        """Channel type can't change once a trial has run this session."""
+        mock_bpod_2p._analog_first_trial_time_us = 1000
+        with pytest.raises(BpodError, match='Cannot change FlexIO channel types'):
+            mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
+
+    def test_sampling_rate_change_rejected_after_recording_started(self, mock_bpod_2p):
+        """Sampling rate can't change once a trial has run this session."""
+        mock_bpod_2p._analog_first_trial_time_us = 1000
+        with pytest.raises(BpodError, match='Cannot change FlexIO channel types'):
+            mock_bpod_2p.flex_io.analog_sampling_rate = 500
+
+    def test_threshold_settings_unaffected_by_recording_started(self, mock_bpod_2p):
+        """Threshold voltage/polarity/mode/enabled stay changeable regardless."""
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        mock_bpod_2p._analog_first_trial_time_us = 1000
+        mock_bpod_2p.flex_io['Flex1'].threshold_mode = FlexIOThresholdMode.LINKED
+        mock_bpod_2p.flex_io['Flex1'].thresholds[0].voltage = 2.5
+        mock_bpod_2p.flex_io['Flex1'].thresholds[
+            0
+        ].polarity = FlexIOThresholdPolarity.FALLING
+        mock_bpod_2p.flex_io['Flex1'].thresholds[0].enabled = True
+
+    def test_reconfiguration_allowed_after_session_clock_reset(self, mock_bpod_2p):
+        """A session-clock reset reopens the channel-type/rate config window."""
+        mock_bpod_2p._analog_first_trial_time_us = 1000
+        mock_bpod_2p.reset_session_clock()
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        mock_bpod_2p.flex_io.analog_sampling_rate = 500
+
+    def test_run_flexio_action_on_non_output_channel(self, mock_bpod_2p):
+        """Referencing a Flex action on a non-output-configured channel is rejected."""
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'}, {'Flex1': 1})
+        with pytest.raises(ValueError, match="Invalid action 'Flex1'"):
+            mock_bpod_2p.run(fsm)
+
+    def test_flexio_threshold_event_rejected_on_mis_ranked_channel(self, mock_bpod_2p):
+        """A Trig event on a mis-ranked ANALOG_INPUT channel can't be bound.
+
+        Firmware numbers analog-threshold events by rank among ANALOG_INPUT
+        channels only; if an earlier physical Flex channel isn't also
+        ANALOG_INPUT, the resulting event code collides with a different
+        channel's event.
+        """
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.DIGITAL_INPUT
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Flex3_Trig0': '>exit'})
+        with pytest.raises(ValueError, match='Invalid transition condition'):
+            mock_bpod_2p.validate_state_machine(fsm)
+
+    def test_flexio_threshold_arming_rejected_on_mis_ranked_channel(self, mock_bpod_2p):
+        """Arming a mis-ranked ANALOG_INPUT channel's threshold is rejected."""
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.DIGITAL_INPUT
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        with pytest.raises(BpodError, match="Cannot arm 'Flex3'"):
+            mock_bpod_2p.flex_io['Flex3'].thresholds[0].enabled = True
+
+    def test_analog_thresh_enable_action_rejected_on_mis_ranked_channel(
+        self, mock_bpod_2p
+    ):
+        """AnalogThreshEnable can't arm a mis-ranked channel's threshold either.
+
+        This action bypasses the `.enabled` setter and sends a raw bitmask
+        straight to firmware, so it needs its own validation against the same
+        rank-ambiguity rule.
+        """
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.DIGITAL_INPUT
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'}, {'AnalogThreshEnable': 0b100})
+        with pytest.raises(ValueError, match="arms channel 3's threshold"):
+            mock_bpod_2p.validate_state_machine(fsm)
+
+    @pytest.mark.parametrize(
+        'action_name', ['AnalogThreshEnable', 'AnalogThreshDisable']
+    )
+    def test_analog_thresh_action_rejected_on_non_analog_input_channel(
+        self, mock_bpod_2p, action_name
+    ):
+        """AnalogThreshEnable/Disable can't reference a non-ANALOG_INPUT channel."""
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.DIGITAL_OUTPUT
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'}, {action_name: 0b1})
+        with pytest.raises(ValueError, match='channel 1 is not configured'):
+            mock_bpod_2p.validate_state_machine(fsm)
+
+    def test_flexio_threshold_allowed_on_rank_0_channel(self, mock_bpod_2p):
+        """A channel with no non-ANALOG_INPUT channels ahead of it stays usable."""
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Flex1_Trig0': '>exit'})
+        mock_bpod_2p.validate_state_machine(fsm)
+        mock_bpod_2p.flex_io['Flex1'].thresholds[0].enabled = True
+
+    def test_flexio_analog_sampling_rate(self, mock_bpod_2p):
+        """Setting the FlexIO analog sampling rate sends the '^' opcode."""
+        cycle_frequency = mock_bpod_2p._hardware.cycle_frequency
+        mock_bpod_2p.flex_io.analog_sampling_rate = 500
+        n_cycles = round(cycle_frequency / 500)
+        assert mock_bpod_2p.serial0.last_write == struct.pack('<cI', b'^', n_cycles)
+
+    def test_flexio_analog_sampling_rate_refreshes_sample_period(
+        self, mock_bpod_2p, mocker
+    ):
+        """Changing the sampling rate live refreshes the cached analog sample period."""
+        cycle_frequency = mock_bpod_2p._hardware.cycle_frequency
+        cycle_period_us = mock_bpod_2p._hardware.cycle_period_us
+        mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial, is_open=False)
+        mocker.patch('bpod_core.bpod.ReaderThread')
+        mocker.patch('bpod_core.bpod.ChunkedSerialReader')
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        mock_bpod_2p.flex_io.analog_sampling_rate = 500
+        mock_bpod_2p.flex_io.analog_sampling_rate = 100
+        n_cycles = round(cycle_frequency / 100)
+        assert mock_bpod_2p._analog_sample_period_us == n_cycles * cycle_period_us
+
+    def test_flexio_threshold_enabled_always_writes(self, mock_bpod_2p):
+        """Re-enabling a threshold sends 'e' even if the cached state looks unchanged.
+
+        Firmware disarms a threshold autonomously when it fires, so the host's cached
+        state can go stale; setting `.enabled = True` must not be a no-op just because
+        the host's own cache already claims it's enabled.
+        """
+        threshold = mock_bpod_2p.flex_io['Flex1'].thresholds[0]
+        threshold.enabled = True
+        first_write = mock_bpod_2p.serial0.last_write
+        assert first_write == struct.pack('<cBB?', b'e', 0, 0, True)
+        mock_bpod_2p.serial0.last_write = b''
+        threshold.enabled = True  # simulates re-arming after a firmware-side trigger
+        assert mock_bpod_2p.serial0.last_write == first_write
+
+    def test_flexio_n_reads_per_sample(self, mock_bpod_2p):
+        """Setting the FlexIO reads-per-sample sends the 'o' opcode."""
+        mock_bpod_2p.flex_io.n_reads_per_sample = 2
+        assert mock_bpod_2p.serial0.last_write == struct.pack('<cB', b'o', 2)
+
+    def test_flexio_setters_raise_while_running(self, mock_bpod_2p, mocker):
+        """FlexIO setters refuse to write to serial0 while a trial is running.
+
+        A running trial's read thread also owns serial0; interleaving a FlexIO
+        settings write/ack with the live event stream would corrupt it.
+        """
+        mocker.patch.object(
+            Bpod, 'is_running', new_callable=PropertyMock
+        ).return_value = True
+        with pytest.raises(BpodError, match='Cannot change FlexIO settings'):
+            mock_bpod_2p.flex_io.n_reads_per_sample = 2
+        with pytest.raises(BpodError, match='Cannot re-arm an analog threshold'):
+            mock_bpod_2p.flex_io['Flex1'].thresholds[0].enabled = True
+
+    def test_flexio_threshold_voltages_are_threshold_major(self, mock_bpod_2p):
+        """The 't' opcode sends all channels' threshold-0 values, then threshold-1."""
+        voltages = {0: (1.0, 1.1), 1: (2.0, 2.1), 2: (3.0, 3.1), 3: (4.0, 4.1)}
+        for channel_index, (v0, v1) in voltages.items():
+            channel = mock_bpod_2p.flex_io[f'Flex{channel_index + 1}']
+            channel.thresholds[0].voltage = v0
+            channel.thresholds[1].voltage = v1
+        raw = [round(v0 / 5 * 4095) for v0, _ in voltages.values()]
+        raw += [round(v1 / 5 * 4095) for _, v1 in voltages.values()]
+        assert mock_bpod_2p.serial0.last_write == struct.pack('<c8H', b't', *raw)
+
+    def test_flexio_threshold_polarities_are_threshold_major(self, mock_bpod_2p):
+        """The 'p' opcode sends all channels' threshold-0 values, then threshold-1."""
+        polarities = {
+            0: (FlexIOThresholdPolarity.RISING, FlexIOThresholdPolarity.FALLING),
+            1: (FlexIOThresholdPolarity.FALLING, FlexIOThresholdPolarity.RISING),
+            2: (FlexIOThresholdPolarity.RISING, FlexIOThresholdPolarity.RISING),
+            3: (FlexIOThresholdPolarity.FALLING, FlexIOThresholdPolarity.FALLING),
+        }
+        for channel_index, (p0, p1) in polarities.items():
+            channel = mock_bpod_2p.flex_io[f'Flex{channel_index + 1}']
+            channel.thresholds[0].polarity = p0
+            channel.thresholds[1].polarity = p1
+        expected = [p0 for p0, _ in polarities.values()] + [
+            p1 for _, p1 in polarities.values()
+        ]
+        assert mock_bpod_2p.serial0.last_write == struct.pack('<c8B', b'p', *expected)
+
+
+class TestClose:
+    """Tests for Bpod.close()."""
+
+    def test_closes_flexio_serial(self, mock_bpod_2p):
+        """Closing the Bpod also closes the FlexIO analog serial port, if open."""
+        analog_serial = MagicMock(spec=ExtendedSerial, is_open=True)
+        mock_bpod_2p._flexio_serial = analog_serial
+        mock_bpod_2p.close()
+        analog_serial.close.assert_called_once()
+
+    def test_closes_analog_reader_thread(self, mock_bpod_2p):
+        """Closing the Bpod closes an active analog reader thread, if present."""
+        reader_thread = MagicMock()
+        mock_bpod_2p._analog_reader_thread = reader_thread
+        mock_bpod_2p.close()
+        reader_thread.close.assert_called_once()
+
+
+class TestAnalogChunk:
+    """Tests for Bpod._on_analog_chunk / _flush_analog_buffer / get_analog_data."""
+
+    def test_trial_counter_zero_is_dropped(self, mock_bpod_2p):
+        """A trial_counter of 0 (pre-trial idle state) is dropped, uncounted."""
+        mock_bpod_2p._analog_channel_names = ('Flex3',)
+        mock_bpod_2p._analog_struct = struct.Struct('<2H')
+        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 0, 2048)))
+        assert mock_bpod_2p._analog_buffer == []
+        assert mock_bpod_2p._analog_sample_index == 0
+
+    def test_samples_are_counted_before_anchor_is_known(self, mock_bpod_2p):
+        """Samples are buffered/counted even before the anchor is known.
+
+        The analog reader thread and the EventThread that sets the anchor run on
+        independent serial ports, so a real sample can arrive before the anchor
+        is known; it must still be counted, or every later timestamp would shift
+        by however many samples raced ahead of the anchor.
+        """
+        mock_bpod_2p._analog_channel_names = ('Flex3',)
+        mock_bpod_2p._analog_struct = struct.Struct('<2H')
+        mock_bpod_2p._analog_first_trial_time_us = None
+        mock_bpod_2p._analog_last_flush_ns = 0  # force an immediate flush attempt
+        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 2048)))
+        assert mock_bpod_2p._analog_sample_index == 1
+        assert len(mock_bpod_2p._analog_buffer) == 1
+        mock_bpod_2p._flush_analog_buffer()  # anchor unknown - must be a no-op
+        assert len(mock_bpod_2p._analog_buffer) == 1
+
+        mock_bpod_2p._analog_first_trial_time_us = 1_000_000
+        mock_bpod_2p._analog_sample_period_us = 1000
+        mock_bpod_2p._flush_analog_buffer()
+        assert mock_bpod_2p._analog_buffer == []
+        frame = mock_bpod_2p.get_analog_data()
+        cycle_period_us = mock_bpod_2p._hardware.cycle_period_us
+        assert frame['time'].dt.epoch('us').to_list() == [1_000_000 + cycle_period_us]
+
+    def test_buffers_and_flushes_decoded_samples(self, mock_bpod_2p):
+        """Decoded samples are buffered and flushed as a LazyFrame with timing."""
+        mock_bpod_2p._analog_channel_names = ('Flex3',)
+        mock_bpod_2p._analog_struct = struct.Struct('<2H')
+        mock_bpod_2p._analog_first_trial_time_us = 1_000_000
+        mock_bpod_2p._analog_sample_period_us = 1000
+        mock_bpod_2p._analog_trial_number_by_sequence = [7]
+        mock_bpod_2p._analog_last_flush_ns = 0  # force an immediate flush
+        # firmware's trial_counter is 1-indexed (increments before first use), so the
+        # first entry in _analog_trial_number_by_sequence corresponds to counter 1
+        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 2048)))
+        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 4095)))
+        mock_bpod_2p._flush_analog_buffer()  # flush the second sample too
+        frame = mock_bpod_2p.get_analog_data()
+        assert frame.columns == ['time', 'trial', 'Flex3']
+        assert frame['trial'].to_list() == [7, 7]
+        assert frame['Flex3'][0] == pytest.approx(2048 / 4095 * 5, abs=1e-3)
+        # firmware's sample clock is preloaded, so the first sample fires one
+        # state-machine cycle (not a full sample period) after trial start
+        cycle_period_us = mock_bpod_2p._hardware.cycle_period_us
+        assert frame['time'].dt.epoch('us').to_list() == [
+            1_000_000 + cycle_period_us,
+            1_000_000 + cycle_period_us + 1000,
+        ]
+
+    def test_unknown_trial_counter_falls_back_to_raw_value(self, mock_bpod_2p):
+        """A trial_counter with no recorded mapping is used as-is."""
+        mock_bpod_2p._analog_channel_names = ('Flex3',)
+        mock_bpod_2p._analog_struct = struct.Struct('<2H')
+        mock_bpod_2p._analog_first_trial_time_us = 0
+        mock_bpod_2p._analog_trial_number_by_sequence = []
+        mock_bpod_2p._analog_last_flush_ns = 0
+        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 5, 0)))
+        frame = mock_bpod_2p.get_analog_data()
+        assert frame['trial'][0] == 5
+
+    def test_get_analog_data_raises_when_unavailable(self, mock_bpod_2p):
+        """get_analog_data raises if no data exists and no reader is active."""
+        with pytest.raises(BpodError, match='No FlexIO analog-input data available'):
+            mock_bpod_2p.get_analog_data()
+
+
+class TestSyncAnalogReader:
+    """Tests for Bpod._sync_analog_reader."""
+
+    def test_noop_without_flexio_serial(self, mock_bpod_2p):
+        """No reader is started when the analog serial port wasn't detected."""
+        mock_bpod_2p._flexio_serial = None
+        mock_bpod_2p._sync_analog_reader()
+        assert mock_bpod_2p._analog_reader_thread is None
+
+    def test_noop_without_analog_input_channels(self, mock_bpod_2p):
+        """No reader is started while no channel is configured as ANALOG_INPUT."""
+        mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial)
+        mock_bpod_2p._sync_analog_reader()
+        assert mock_bpod_2p._analog_reader_thread is None
+
+    def test_starts_reader_when_channel_becomes_analog_input(
+        self, mock_bpod_2p, mocker
+    ):
+        """Configuring a channel as ANALOG_INPUT starts the analog reader thread."""
+        mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial, is_open=False)
+        mock_reader_thread_cls = mocker.patch('bpod_core.bpod.ReaderThread')
+        mocker.patch('bpod_core.bpod.ChunkedSerialReader')
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        assert mock_bpod_2p._analog_channel_names == ('Flex3',)
+        mock_reader_thread_cls.return_value.start.assert_called_once()
+
+    def test_stops_reader_when_no_channel_remains_analog_input(
+        self, mock_bpod_2p, mocker
+    ):
+        """Reconfiguring away from ANALOG_INPUT stops the analog reader thread."""
+        mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial, is_open=False)
+        mocker.patch('bpod_core.bpod.ReaderThread')
+        mocker.patch('bpod_core.bpod.ChunkedSerialReader')
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        reader_thread = mock_bpod_2p._analog_reader_thread
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.DIGITAL_INPUT
+        reader_thread.stop.assert_called_once()
+        assert mock_bpod_2p._analog_reader_thread is None
+        assert mock_bpod_2p._analog_channel_names == ()
+
+
+class TestAnalogSessionBookkeeping:
+    """Tests for analog-data bookkeeping tied to trial/session lifecycle."""
+
+    def test_reset_session_clock_clears_analog_bookkeeping(self, mock_bpod_2p):
+        """Resetting the session clock clears the analog anchor/trial mapping."""
+        mock_bpod_2p._analog_first_trial_time_us = 123
+        mock_bpod_2p._analog_trial_number_by_sequence = [0, 1, 2]
+        mock_bpod_2p._analog_sample_index = 5
+        mock_bpod_2p.reset_session_clock()
+        assert mock_bpod_2p._analog_first_trial_time_us is None
+        assert mock_bpod_2p._analog_trial_number_by_sequence == []
+        assert mock_bpod_2p._analog_sample_index == 0
+
+    def test_run_appends_trial_number_by_sequence(self, mock_bpod_25, mocker):
+        """Each run() call records its trial number at the next sequence position."""
+        mocker.patch('bpod_core.bpod.ReadThread')
+        mocker.patch('bpod_core.bpod.EventThread')
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        mock_bpod_25.run(fsm, trial_number=42)
+        assert mock_bpod_25._analog_trial_number_by_sequence == [42]
+        mock_bpod_25.run(fsm, trial_number=99)
+        assert mock_bpod_25._analog_trial_number_by_sequence == [42, 99]
+
+    def test_capture_analog_anchor_sets_it_once(self, mock_bpod_2p):
+        """The first captured time sets the analog anchor; later calls don't."""
+        assert mock_bpod_2p._analog_first_trial_time_us is None
+        mock_bpod_2p._capture_analog_anchor(1000)
+        assert mock_bpod_2p._analog_first_trial_time_us == 1000
+        mock_bpod_2p._capture_analog_anchor(2000)
+        assert mock_bpod_2p._analog_first_trial_time_us == 1000
 
 
 class TestRemoteCall:
