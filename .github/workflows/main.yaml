@@ -43,7 +43,6 @@ jobs:
             exit 1
           fi
   ruff:
-    name: Ruff
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -52,8 +51,16 @@ jobs:
           version-file: uv.lock
       - run: ruff check
       - run: ruff format --check
+  mypy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - name: sync dependencies
+        run: uv sync --no-default-groups --group test
+      - run: uv run tox -m 'typing' --parallel-no-spinner
   tox:
-    needs: [ruff]
+    needs: [ruff, mypy]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -72,7 +79,7 @@ jobs:
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uv run tox --fail-fast --parallel-no-spinner -- -ci
+        run: uv run tox --skip-env 'linting|formatting|typing' --fail-fast --parallel-no-spinner -- -ci
   finish:
     needs: tox
     if: ${{ always() }}
