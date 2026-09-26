@@ -62,7 +62,7 @@ jobs:
           prune-cache: true
       - name: sync dependencies
         run: uv sync --no-default-groups --group test
-      - run: uv run tox -m 'typing' --parallel-no-spinner
+      - run: uv run tox -m 'typing' -p --parallel-no-spinner
   tox:
     needs: [ruff, mypy]
     runs-on: ${{ matrix.os }}
@@ -86,7 +86,7 @@ jobs:
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uv run tox --skip-env 'linting|formatting|typing' --fail-fast --parallel-no-spinner -- -ci
+        run: uv run tox --skip-env 'linting|formatting|typing' --fail-fast -p --parallel-no-spinner -- -ci
   finish:
     needs: tox
     if: ${{ always() }}
