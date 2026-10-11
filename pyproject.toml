@@ -98,7 +98,7 @@ typing = [
   "types-docutils>=0.22",
   "types-psutil>=7",
   "types-pyserial~=3.5",
-  "types-pyyaml>=6",
+  "types-pyyaml>=6.0.12.20260724",
 ]
 tox = [
   "tox>=4.36",
