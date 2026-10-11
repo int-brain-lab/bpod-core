@@ -38,6 +38,7 @@ from zeroconf import (
 )
 
 from bpod_core.constants import IPV4_LOOPBACK, IPV4_WILDCARD
+from bpod_core.filtering import Filter, match_filter
 from bpod_core.misc import (
     _RE_NON_ALPHANUMERIC,
     ByteEnum,
@@ -381,7 +382,7 @@ class LocalServiceAdvertisement:
     @staticmethod
     def discover(
         service_type: str,
-        properties: Mapping[str, str | None] | None = None,
+        properties: Mapping[str, Filter[str] | None] | None = None,
     ) -> Iterator[LocalServiceInfo]:
         """Discover locally advertised services.
 
@@ -389,8 +390,9 @@ class LocalServiceAdvertisement:
         ----------
         service_type : str
             The service type to discover.
-        properties : dict, optional
-            Properties to match against the service's properties.
+        properties : Mapping, optional
+            Filters to match against the service's properties, see
+            :func:`~bpod_core.filtering.match_filter`. ``None`` values are ignored.
 
         Yields
         ------
@@ -416,7 +418,10 @@ class LocalServiceAdvertisement:
                     continue
 
                 # Check if properties match
-                if all(info.properties.get(k) == v for k, v in properties.items()):
+                if all(
+                    match_filter(info.properties.get(k), v)
+                    for k, v in properties.items()
+                ):
                     yield info
 
 
@@ -1651,7 +1656,7 @@ class _ServiceListenerIterator(ServiceListener):
     def __init__(
         self,
         q: 'queue.Queue[ServiceEvent | None]',
-        properties: Mapping[str, str | None],
+        properties: Mapping[str, Filter[str] | None],
     ) -> None:
         self._queue = q
         self._properties = properties
@@ -1672,7 +1677,7 @@ class _ServiceListenerIterator(ServiceListener):
 
         # check if the service matches the requested properties
         txt = info.decoded_properties
-        if not all(txt.get(k) == v for k, v in self._properties.items()):
+        if not all(match_filter(txt.get(k), v) for k, v in self._properties.items()):
             return
 
         # add event to the queue
@@ -1709,8 +1714,9 @@ class ServiceIterator(Iterator[ServiceEvent]):
     ----------
     service_type : str
         The service type to discover, e.g., ``'bpod'``.
-    properties : dict, optional
-        Dictionary of expected service properties to match.
+    properties : Mapping, optional
+        Filters to match against the service properties, see
+        :func:`~bpod_core.filtering.match_filter`. ``None`` values are ignored.
     timeout : float or None, default: 10.0
         How many seconds to monitor.
         Pass ``None`` to monitor indefinitely until the iterator is closed.
@@ -1731,7 +1737,7 @@ class ServiceIterator(Iterator[ServiceEvent]):
     def __init__(
         self,
         service_type: str,
-        properties: Mapping[str, str | None] | None = None,
+        properties: Mapping[str, Filter[str] | None] | None = None,
         *,
         timeout: float | None = 10.0,
         poll_interval: float = 1.0,
@@ -1896,7 +1902,7 @@ class ServiceIterator(Iterator[ServiceEvent]):
 
 def iter_services(
     service_type: str,
-    properties: Mapping[str, str | None] | None = None,
+    properties: Mapping[str, Filter[str] | None] | None = None,
     *,
     timeout: float | None = 10.0,
     poll_interval: float = 1.0,
@@ -1913,8 +1919,9 @@ def iter_services(
     ----------
     service_type : str
         The service type to discover, e.g., 'bpod'.
-    properties : dict, optional
-        Dictionary of expected service properties to match.
+    properties : Mapping, optional
+        Filters to match against the service properties, see
+        :func:`~bpod_core.filtering.match_filter`. ``None`` values are ignored.
     timeout : float or None, default: 10.0
         How many seconds to monitor.
         Pass ``None`` to monitor indefinitely until the iterator is closed.
@@ -1953,7 +1960,7 @@ def iter_services(
 
 def discover(
     service_type: str,
-    properties: Mapping[str, str | None] | None = None,
+    properties: Mapping[str, Filter[str] | None] | None = None,
     *,
     timeout: float = 10.0,
     poll_interval: float = 1.0,
@@ -1967,8 +1974,9 @@ def discover(
     ----------
     service_type : str
         The service type to discover, e.g., 'bpod'
-    properties : dict, optional
-        Dictionary of expected service properties to match.
+    properties : Mapping, optional
+        Filters to match against the service properties, see
+        :func:`~bpod_core.filtering.match_filter`. ``None`` values are ignored.
     timeout : float, default: 10.0
         How many seconds to wait for a matching service before timing out.
     poll_interval : float, default: 1.0

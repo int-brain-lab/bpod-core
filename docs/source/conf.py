@@ -19,7 +19,7 @@ from bpod_core.misc import ValidatedDict  # noqa: E402
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'bpod-core'
-copyright = f'{datetime.now().year}, International Brain Laboratory'  # noqa: A001, DTZ005
+copyright = f'{datetime.now().year}, International Brain Laboratory'  # noqa: A001
 author = 'International Brain Laboratory'
 language = 'en'
 release = '.'.join(__version__.split('.')[:3])
@@ -252,6 +252,7 @@ napoleon_type_aliases = {
     'TypeVar': '~typing.TypeVar',
     'ValidatedDict': '~bpod_core.misc.ValidatedDict',
     'ColorType': '~pydantic_extra_types.color.ColorType',
+    'Filter': '~bpod_core.filtering.Filter',
 }
 
 # -- FSM diagrams --------------------------------------------------------------

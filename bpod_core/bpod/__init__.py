@@ -2478,12 +2478,6 @@ class RemoteBpod(AbstractBpod):
         timeout: float = 10.0,
         event_callback: Callable[[BpodEventUnion], object] | None = None,
     ) -> None:
-        properties = {
-            'address': address,
-            'name': name,
-            'serial_number': serial_number,
-            'location': location,
-        }
         # the event loop may deliver messages before this constructor returns, so the
         # callback must be in place before the client exists
         self._event_callback = event_callback
@@ -2496,7 +2490,11 @@ class RemoteBpod(AbstractBpod):
                 address=address,
                 event_handler=self._event_handler if subscribe else None,
                 discovery_timeout=timeout,
-                txt_properties={k: v for k, v in properties.items() if v is not None},
+                txt_properties={
+                    'name': name,
+                    'serial_number': serial_number,
+                    'location': location,
+                },
                 default_reply_type=BpodReplyUnion,
                 event_type=BpodEventUnion if subscribe else Any,
             )
@@ -2721,15 +2719,10 @@ def discover_bpod(
 
         devices = list(discover_bpod())
     """
-    # create filter dict
-    filters: dict[str, str] = {}
-    if port is not None:
-        filters['device'] = port
-    if serial_number is not None:
-        filters['serial_number'] = serial_number
-
-    # find matching devices
-    for p in find_ports(vid=VIDS_BPOD, pid=PIDS_BPOD, **filters):
+    ports = find_ports(
+        vid=VIDS_BPOD, pid=PIDS_BPOD, device=port, serial_number=serial_number
+    )
+    for p in ports:
         if verify_serial_discovery(
             port=p.device, expected_message=b'\xde', timeout=DISCOVERY_TIMEOUT
         ):
@@ -2776,15 +2769,13 @@ def discover_remote_bpod(
         - address: str, the service address, e.g., ``'tcp://192.168.1.10:1234'``
         - properties: dict, the service properties, e.g., ``{'name': 'MyDevice'}``
     """
-    properties = {
-        'name': name,
-        'serial_number': serial_number,
-        'location': location,
-    }
-    properties = {k: v for k, v in properties.items() if v is not None}
     yield from iter_services(
         service_type='bpod',
-        properties=properties,
+        properties={
+            'name': name,
+            'serial_number': serial_number,
+            'location': location,
+        },
         timeout=timeout,
         poll_interval=poll_interval,
         local=local,

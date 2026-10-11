@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ExtendedSerial.temporary_timeout`: context manager for temporarily setting a timeout
   for serial reads.
 - Optimizations for agentic development (`AGENTS.md`, `.mcp.json`, `llms.txt`, etc.)
+- `filtering.match_filter` for matching values against scalar, regex or collection
+  criteria.
+- `ipc.iter_services`, `ipc.discover` and `ipc.ServiceIterator` accept regex and
+  collection criteria for `properties`.
 - Validation rejects invalid state machine action values before compilation (non-integer
   values for regular actions; out-of-range voltages for FlexIO analog-output actions).
 - `misc.SuggestionMapping`: a read-only mapping that suggests similar keys on failed
@@ -29,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `com.find_ports` takes explicit keyword-only filters instead of `**filters`;
+  unknown filter names now raise `TypeError` instead of silently matching nothing.
+- `com.find_ports` and service discovery ignore filters set to `None` instead of
+  matching only `None`-valued or missing attributes.
 - `Bpod.inputs`/`Bpod.outputs`/`Bpod.modules` are now read-only `misc.SuggestionMapping`
   instead of mutable dicts, preventing accidental corruption.
 - Module-not-found errors now suggest the closest matching module name, matching the
@@ -43,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `misc.SuggestionDict`, superseded by `misc.SuggestionMapping` (no longer used anywhere
   in the library).
+- `com.FilterValue`, superseded by `filtering.Filter`.
 
 ### Fixed
 
