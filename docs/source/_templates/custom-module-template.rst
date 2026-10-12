@@ -1,3 +1,6 @@
+.. meta::
+   :description: API reference for {{ fullname }}.
+
 {{ fullname | escape | underline}}
 
 .. currentmodule:: {{ fullname }}

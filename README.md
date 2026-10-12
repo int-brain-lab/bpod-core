@@ -1,13 +1,26 @@
 # bpod-core
 
-A Python library for communicating with [*Bpod Finite State
-Machines*](https://sanworks.io/).
+A modern Python interface for Bpod Finite State Machines.
 
 > [!WARNING]
 > bpod-core is under development and not yet ready for production use.
 
+Bpod Finite State Machines are an open-source platform by
+[*Sanworks*](https://sanworks.io/) for controlling behavioral experiments: a
+microcontroller-based finite state machine that runs the trial logic in real time and
+talks to sensors, valves, and other peripherals with deterministic millisecond-scale
+timing. Running the state machine on dedicated microcontroller hardware, rather than a
+general-purpose computer, keeps time-critical trial execution isolated from
+operating-system scheduling jitter. This makes Bpod particularly well-suited to
+closed-loop experiments, where state transitions must be triggered by sensor readings
+within a tight, predictable latency.
+
+bpod-core is a Python library for driving Bpod hardware. It grew out of the need for
+a modern, well-tested way to work with Bpod devices from Python, and is designed to fit
+naturally into everyday research workflows.
+
 This project is maintained by the software development team at the
-[*International Brain Lab*](https://internationalbrainlab.org/).
+[*International Brain Laboratory*](https://internationalbrainlab.org/).
 
 ## Goals
 
@@ -29,10 +42,10 @@ This project is maintained by the software development team at the
 
 ## Links
 
-* [Documentation and API reference](https://int-brain-lab.github.io/bpod-core)
-* [Bpod Wiki](https://sanworks.github.io/Bpod_Wiki) - maintained by [
-  *Sanworks*](https://sanworks.io/)
-* [PyBpod](https://pybpod.readthedocs.io) - another Python project for Bpod devices
+* [bpod-core documentation](https://int-brain-lab.github.io/bpod-core) – the official documentation of bpod-core.
+* [Bpod Wiki](https://sanworks.github.io/Bpod_Wiki) – maintained by [
+  *Sanworks*](https://sanworks.io/).
+* [PyBpod](https://pybpod.readthedocs.io) – another Python project for Bpod devices maintained by the [*Champalimaud Foundation*](http://research.fchampalimaud.org/).
 
 ---
 [![CI](https://github.com/int-brain-lab/bpod-core/actions/workflows/main.yaml/badge.svg)](https://github.com/int-brain-lab/bpod-core/actions/workflows/main.yaml)

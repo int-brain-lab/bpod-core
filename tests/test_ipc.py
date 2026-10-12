@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import socket
 import threading
 import time
@@ -150,6 +151,13 @@ class TestLocalServiceAdvertisement:
             )
             assert len(results) == 1
             assert results[0].address == 'tcp://127.0.0.1:5556'
+            results = list(
+                ipc.LocalServiceAdvertisement.discover(
+                    'service_type', properties={'name': re.compile('^f'), 'x': None}
+                )
+            )
+            assert len(results) == 1
+            assert results[0].address == 'tcp://127.0.0.1:5555'
 
     def test_discover_removes_stale_advertisements(
         self, mock_local_discovery_dir, mocker

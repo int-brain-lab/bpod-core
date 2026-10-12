@@ -1,20 +1,18 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it using these metadata."
-title: "bpod-core"
-abstract: "A modern Python interface for Bpod Finite State Machines."
+title: bpod-core
+message: >-
+  If you use this software, please cite it using the metadata from this file.
+  For a full list of contributors, please refer to the Git repository.
 type: software
 authors:
-  - given-names: Florian
-    family-names: Rau
-    alias: bimac
-    affiliation: "International Brain Laboratory"
-    orcid: "https://orcid.org/0000-0002-4685-9473"
   - name: "International Brain Laboratory"
-    alias: "IBL"
-keywords:
-  - neuroscience
-  - behavior
+    alias: IBL
+  - name: "bpod-core contributors"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.21497456"
+    description: The concept DOI of the work.
+repository-code: 'https://github.com/int-brain-lab/bpod-core'
+url: 'https://int-brain-lab.github.io/bpod-core/'
+abstract: A modern Python interface for Bpod Finite State Machines.
 license: MIT
-doi: "10.5281/zenodo.21497456"
-url: "https://int-brain-lab.github.io/bpod-core/"
-repository-code: "https://github.com/int-brain-lab/bpod-core"

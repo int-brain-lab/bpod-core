@@ -1,6 +1,6 @@
 """Module defining classes and types for creating and managing state machines."""
 
-import datetime
+import datetime as dt
 import re
 from os import PathLike
 from pathlib import Path
@@ -52,7 +52,7 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
     raise NotImplementedError(f'Objects of type {type} are not supported')
 
 
-_timedelta_adapter = TypeAdapter(datetime.timedelta)
+_timedelta_adapter = TypeAdapter(dt.timedelta)
 
 
 def _validate_seconds(v: Any, h: ValidatorFunctionWrapHandler) -> float:

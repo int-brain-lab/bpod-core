@@ -1,3 +1,7 @@
+.. meta::
+   :description: Creating, validating and visualizing finite-state machines with
+      bpod-core.
+
 Finite-State Machines
 =====================
 
