@@ -2,8 +2,7 @@
   "$defs": {
     "Actions": {
       "additionalProperties": {
-        "description": "The integer value of the output action",
-        "maximum": 255,
+        "description": "The value of the output action",
         "minimum": 0,
         "type": "integer"
       },
