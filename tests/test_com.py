@@ -413,15 +413,15 @@ class TestFindPorts:
         assert len(result) == 1
         assert mock_ports[0] in result
 
-    def test_nonexistent_attribute(self, mock_ports):
-        """Filter on missing attribute matches None values."""
-        result = com.find_ports(nonexistent_attr='value')
-        assert result == []
+    def test_none_filter_ignored(self, mock_ports):
+        """Filters set to None do not constrain the result."""
+        result = com.find_ports(vid=0x16C0, serial_number=None)
+        assert len(result) == 2
 
-    def test_regex_on_non_string(self, mock_ports):
-        """Regex filter on non-string attribute returns no match."""
-        result = com.find_ports(vid=re.compile(r'16C0'))
-        assert result == []
+    def test_unknown_filter_raises(self, mock_ports):
+        """Unknown filter names raise instead of silently matching nothing."""
+        with pytest.raises(TypeError):
+            com.find_ports(nonexistent_attr='value')
 
     def test_list_with_regex(self, mock_ports):
         """List can contain regex patterns."""

@@ -211,59 +211,65 @@ class Bpod(SerialDevice, AbstractBpod):
         self._softcode_thread = SoftcodeThread(softcode_handler=self._softcode_handler)
         self._softcode_thread.start()
 
-        # identify Bpod by port or serial number, open connection
-        bpod_port, _ = self._identify_bpod(port, serial_number)
-        super().__init__(port=bpod_port, open_connection=True)
-        self._serial_number = self._port_info.serial_number or 'unknown'
+        try:
+            # identify Bpod by port or serial number, open connection
+            bpod_port, _ = self._identify_bpod(port, serial_number)
+            super().__init__(port=bpod_port, open_connection=True)
+            self._serial_number = self._port_info.serial_number or 'unknown'
 
-        # record reference system time
-        self._time_reference = TimeReferences(
-            init_system_time_ns=time_ns(),
-            init_perf_counter_ns=perf_counter_ns(),
-            reset_system_time_ns=0,
-        )
-        self.reset_session_clock()
+            # record reference system time
+            self._time_reference = TimeReferences(
+                init_system_time_ns=time_ns(),
+                init_perf_counter_ns=perf_counter_ns(),
+                reset_system_time_ns=0,
+            )
+            self.reset_session_clock()
 
-        # get firmware version and machine type; enforce version requirements
-        self._get_version_info()
+            # get firmware version and machine type; enforce version requirements
+            self._get_version_info()
 
-        # get the Bpod's onboard hardware configuration
-        self._get_hardware_configuration()
+            # get the Bpod's onboard hardware configuration
+            self._get_hardware_configuration()
 
-        # configure input and output channels
-        self._configure_io()
+            # configure input and output channels
+            self._configure_io()
 
-        # detect additional serial ports
-        self._detect_additional_serial_ports()
+            # detect additional serial ports
+            self._detect_additional_serial_ports()
 
-        # update modules
-        self.update_modules()
+            # update modules
+            self.update_modules()
 
-        # log hardware information
-        logger.info(
-            'Connected to Bpod Finite State Machine %s on %s',
-            self.version.machine_str,
-            self.port,
-        )
-        logger.info(
-            'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
-            *self.version.firmware,
-            self._serial_number,
-            self.version.pcb,
-        )
+            # log hardware information
+            logger.info(
+                'Connected to Bpod Finite State Machine %s on %s',
+                self.version.machine_str,
+                self.port,
+            )
+            logger.info(
+                'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
+                *self.version.firmware,
+                self._serial_number,
+                self.version.pcb,
+            )
 
-        # start ZeroMQ service
-        self._start_zmq(use_zeroconf=remote)
-        logger.info('ZeroMQ service started on %s', self.address)
+            # start ZeroMQ service
+            self._start_zmq(use_zeroconf=remote)
+            logger.info('ZeroMQ service started on %s', self.address)
 
-        # when launched by a supervising process (e.g. QBpod), briefly wait for
-        # its subscription to register so the first trial's messages aren't lost
-        # to the PUB/SUB slow-joiner race
-        if 'BPOD_OVERRIDE_REMOTE' in os.environ:
-            if self._zmq.wait_for_subscribers(timeout=1.0):
-                logger.debug('Subscriber registered on the PUB/SUB channel')
-            else:
-                logger.debug('No subscriber registered within timeout')
+            # when launched by a supervising process (e.g. QBpod), briefly wait for
+            # its subscription to register so the first trial's messages aren't lost
+            # to the PUB/SUB slow-joiner race
+            if 'BPOD_OVERRIDE_REMOTE' in os.environ:
+                if self._zmq.wait_for_subscribers(timeout=1.0):
+                    logger.debug('Subscriber registered on the PUB/SUB channel')
+                else:
+                    logger.debug('No subscriber registered within timeout')
+        except BaseException:
+            # release what was acquired so far; report the original error
+            with contextlib.suppress(Exception):
+                self._shutdown()
+            raise
 
         # register destructors
         self._bpod_finalizer = weakref.finalize(
@@ -286,8 +292,15 @@ class Bpod(SerialDevice, AbstractBpod):
     ) -> None:
         """Exit context and close connection."""
         self._bpod_finalizer.detach()
-        self.close()
-        self._stop_zmq()
+        self._shutdown()
+
+    def _shutdown(self) -> None:
+        """Close the connection, then end the IPC service and softcode thread."""
+        try:
+            self.close()
+        finally:
+            self._stop_zmq()
+            self._softcode_thread.stop()
 
     def open(self) -> None:
         """
@@ -436,7 +449,7 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
     def _stop_zmq(self) -> None:
-        if hasattr(self, '_zmq_service'):
+        if hasattr(self, '_zmq'):
             self._zmq.close()
 
     @property
@@ -1563,18 +1576,10 @@ class Bpod(SerialDevice, AbstractBpod):
             publish=self._zmq.publish,
             publish_gate=lambda: self._zmq.has_subscribers,
         )
-        read_thread = ReadThread(
-            serial=self.serial0,
-            state_machine_hash=state_machine_lookup.fsm_hash,
-            trial=self._next_fsm_index,
-            cycle_period_us=self._hardware.cycle_period_us,
-            queue_events=event_thread.queue,
-            queue_softcodes=self._softcode_thread.queue,
-        )
-
         # wait for the previous trial's reader to finish, then resume reading the serial
         # stream without further delay (softcodes and raw events must not wait for the
-        # previous trial's event processing)
+        # previous trial's event processing). The previous reader may already have read
+        # the start of this trial - hand those bytes over to the new reader.
         previous_read_thread = self._read_thread
         if previous_read_thread is not None and previous_read_thread.is_alive():
             logger.debug(
@@ -1582,6 +1587,21 @@ class Bpod(SerialDevice, AbstractBpod):
                 previous_read_thread.trial_number,
             )
             previous_read_thread.join()
+        leftover, leftover_received_ns = (
+            (previous_read_thread.leftover, previous_read_thread.leftover_received_ns)
+            if previous_read_thread is not None
+            else (b'', 0)
+        )
+        read_thread = ReadThread(
+            serial=self.serial0,
+            state_machine_hash=state_machine_lookup.fsm_hash,
+            trial=self._next_fsm_index,
+            cycle_period_us=self._hardware.cycle_period_us,
+            queue_events=event_thread.queue,
+            queue_softcodes=self._softcode_thread.queue,
+            initial_bytes=leftover,
+            initial_received_ns=leftover_received_ns,
+        )
         read_thread.start()
 
         # before the new event thread publishes anything, let the previous one drain its
@@ -2083,12 +2103,6 @@ class RemoteBpod(AbstractBpod):
         timeout: float = 10.0,
         event_callback: Callable[[BpodEventUnion], object] | None = None,
     ) -> None:
-        properties = {
-            'address': address,
-            'name': name,
-            'serial_number': serial_number,
-            'location': location,
-        }
         # the event loop may deliver messages before this constructor returns, so the
         # callback must be in place before the client exists
         self._event_callback = event_callback
@@ -2101,7 +2115,11 @@ class RemoteBpod(AbstractBpod):
                 address=address,
                 event_handler=self._event_handler if subscribe else None,
                 discovery_timeout=timeout,
-                txt_properties={k: v for k, v in properties.items() if v is not None},
+                txt_properties={
+                    'name': name,
+                    'serial_number': serial_number,
+                    'location': location,
+                },
                 default_reply_type=BpodReplyUnion,
                 event_type=BpodEventUnion if subscribe else Any,
             )
@@ -2326,15 +2344,10 @@ def discover_bpod(
 
         devices = list(discover_bpod())
     """
-    # create filter dict
-    filters: dict[str, str] = {}
-    if port is not None:
-        filters['device'] = port
-    if serial_number is not None:
-        filters['serial_number'] = serial_number
-
-    # find matching devices
-    for p in find_ports(vid=VIDS_BPOD, pid=PIDS_BPOD, **filters):
+    ports = find_ports(
+        vid=VIDS_BPOD, pid=PIDS_BPOD, device=port, serial_number=serial_number
+    )
+    for p in ports:
         if verify_serial_discovery(
             port=p.device, expected_message=b'\xde', timeout=DISCOVERY_TIMEOUT
         ):
@@ -2381,15 +2394,13 @@ def discover_remote_bpod(
         - address: str, the service address, e.g., ``'tcp://192.168.1.10:1234'``
         - properties: dict, the service properties, e.g., ``{'name': 'MyDevice'}``
     """
-    properties = {
-        'name': name,
-        'serial_number': serial_number,
-        'location': location,
-    }
-    properties = {k: v for k, v in properties.items() if v is not None}
     yield from iter_services(
         service_type='bpod',
-        properties=properties,
+        properties={
+            'name': name,
+            'serial_number': serial_number,
+            'location': location,
+        },
         timeout=timeout,
         poll_interval=poll_interval,
         local=local,

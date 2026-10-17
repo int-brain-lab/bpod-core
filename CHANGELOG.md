@@ -6,6 +6,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## UNRELEASED
+
+### Added
+
+- Optimizations for agentic development (`AGENTS.md`, `.mcp.json`, `llms.txt`, etc.)
+- `filtering.match_filter` for matching values against scalar, regex or collection
+  criteria.
+- `ipc.iter_services`, `ipc.discover` and `ipc.ServiceIterator` accept regex and
+  collection criteria for `properties`.
+
+### Changed
+
+- `com.find_ports` takes explicit keyword-only filters instead of `**filters`;
+  unknown filter names now raise `TypeError` instead of silently matching nothing.
+- `com.find_ports` and service discovery ignore filters set to `None` instead of
+  matching only `None`-valued or missing attributes.
+- trial data is read from the Bpod in chunks rather than message by message, which
+  lowers the CPU load at high event and softcode rates.
+
+### Removed
+
+- `com.FilterValue`, superseded by `filtering.Filter`.
+
+### Fixed
+
+- leaving a `Bpod` context did not close its IPC service, so its sockets stayed bound
+  until garbage collection and reconnecting right away fell back to random ports.
+- leaving a `Bpod` context did not end its softcode thread, so every connection left
+  an idle thread behind.
+- a `Bpod` that failed to connect, e.g., due to unsupported firmware, kept its serial
+  port open until garbage collection and left its softcode thread behind.
+
 ## [0.1.0a14] - 2026-07-24
 
 ### Added

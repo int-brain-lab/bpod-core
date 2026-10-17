@@ -1,3 +1,6 @@
+.. meta::
+   :description: The tabular data format of trial data returned by bpod-core.
+
 Data Format
 ===========
 

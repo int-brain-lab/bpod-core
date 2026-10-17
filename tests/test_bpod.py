@@ -1,11 +1,13 @@
 import logging
 import struct
+import threading
 from unittest.mock import MagicMock
 
 import pytest
 from serial import SerialException
 
 from bpod_core.bpod import Bpod, BpodError, RemoteBpod
+from bpod_core.bpod._threads import SoftcodeThread
 from bpod_core.bpod.constants import _REMOTE_CALL_METHODS, _REMOTE_DATA_METHODS
 from bpod_core.bpod.structs import (
     BpodEventUnion,
@@ -423,6 +425,69 @@ class TestRemoteCall:
     def test_allowlist_names_are_methods(self, method_set):
         """Every allowlisted name refers to an existing Bpod method."""
         assert all(callable(getattr(Bpod, name)) for name in method_set)
+
+
+def test_exit_cleans_up(mock_bpod_2p):
+    """Leaving the context ends the IPC service and softcode thread."""
+    with mock_bpod_2p:
+        pass
+    mock_bpod_2p._zmq.close.assert_called_once()
+    assert not mock_bpod_2p._softcode_thread.is_alive()
+
+
+def test_exit_cleans_up_if_close_fails(mock_bpod_2p, mocker):
+    """Leaving the context ends the IPC service and softcode thread if close fails."""
+    mocker.patch.object(mock_bpod_2p, 'close', side_effect=SerialException)
+    with pytest.raises(SerialException), mock_bpod_2p:
+        pass
+    mock_bpod_2p._zmq.close.assert_called_once()
+    assert not mock_bpod_2p._softcode_thread.is_alive()
+
+
+@pytest.fixture
+def mock_unsupported_firmware(mock_comports, mock_ext_serial, mock_settings, mocker):
+    """Mock a Bpod with outdated firmware: connecting fails after opening the port."""
+    mock_ext_serial.mock_responses.update(
+        {
+            b'6': b'5',
+            rb'\*': b'\x01',
+            b'F': struct.pack('<2H', 20, 3),  # Firmware version 20 is not supported
+        }
+    )
+    mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
+
+
+def test_failed_init_cleans_up(mock_unsupported_firmware, mocker):
+    """A failed connection is closed and leaves no softcode thread behind."""
+    close = mocker.spy(Bpod, 'close')
+    threads_before = set(threading.enumerate())
+    with pytest.raises(BpodError, match=r'firmware .* is not supported'):
+        Bpod('COM3')
+    close.assert_called_once()
+    assert close.spy_exception is None
+    new_threads = set(threading.enumerate()) - threads_before
+    assert not any(isinstance(t, SoftcodeThread) for t in new_threads)
+
+
+def test_failed_init_raises_original_error(mock_unsupported_firmware, mocker):
+    """An error while cleaning up doesn't hide why the connection failed."""
+    mocker.patch.object(Bpod, 'close', side_effect=SerialException)
+    with pytest.raises(BpodError, match=r'firmware .* is not supported'):
+        Bpod('COM3')
+
+
+def test_next_reader_gets_leftover(mock_bpod_2p, mocker):
+    """A trial's reader starts with the bytes its predecessor read beyond its trial."""
+    read_thread_class = mocker.patch('bpod_core.bpod.ReadThread')
+    mocker.patch('bpod_core.bpod.EventThread')
+    mock_bpod_2p._read_thread = MagicMock(
+        leftover=b'\x01next', leftover_received_ns=42, is_alive=lambda: False
+    )
+    mock_bpod_2p._fsm_annotations = MagicMock()
+    mock_bpod_2p._run_state_machine()
+    kwargs = read_thread_class.call_args.kwargs
+    assert kwargs['initial_bytes'] == b'\x01next'
+    assert kwargs['initial_received_ns'] == 42
 
 
 class TestBpodSubscriberWait:

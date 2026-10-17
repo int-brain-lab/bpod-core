@@ -46,7 +46,7 @@ _CONFIRM_FAIL = b'\x00'
 
 
 def _start(micros_us: int = 0) -> bytes:
-    """Encode start_micros_us as read by read_uint64."""
+    """Encode the start time the Bpod sends at the beginning of a trial."""
     return STRUCT_UINT64_LE.pack(micros_us)
 
 
@@ -65,6 +65,22 @@ def _exit_data(n_cycles: int, end_micros_us: int) -> bytes:
     return struct.pack('<IQ', n_cycles, end_micros_us)
 
 
+class _TrickleSerial:
+    """Fake serial port that hands out its data one byte per read."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = bytearray(data)
+
+    @property
+    def in_waiting(self) -> int:
+        return min(1, len(self._data))
+
+    def read(self, size: int = 1) -> bytes:
+        chunk = bytes(self._data[:1])
+        del self._data[:1]
+        return chunk
+
+
 def _drain(q: SimpleQueue) -> list:
     items = []
     while not q.empty():
@@ -77,17 +93,26 @@ class TestReadThread:
     def make_thread(self, mock_ext_serial):
         """Factory: loads raw bytes into the mock serial and returns a ReadThread."""
 
-        def _make(data: bytes, *, cycle_period_us: int = 1):
+        def _make(
+            data: bytes,
+            *,
+            cycle_period_us: int = 1,
+            serial=None,
+            initial_bytes: bytes = b'',
+            initial_received_ns: int = 0,
+        ):
             mock_ext_serial.response_buffer.extend(data)
             q_events: SimpleQueue[RawEvent] = SimpleQueue()
             q_softcodes: SimpleQueue[RawSoftcode] = SimpleQueue()
             thread = ReadThread(
-                serial=mock_ext_serial,
+                serial=serial or mock_ext_serial,
                 state_machine_hash=b'',
                 trial=0,
                 cycle_period_us=cycle_period_us,
                 queue_events=q_events,
                 queue_softcodes=q_softcodes,
+                initial_bytes=initial_bytes,
+                initial_received_ns=initial_received_ns,
             )
             return thread, q_events, q_softcodes
 
@@ -146,6 +171,57 @@ class TestReadThread:
         thread.start()
         thread.join(timeout=2)
         assert [item.softcode for item in _drain(q_softcodes)] == [3]
+
+    def test_packets_split_across_reads(self, make_thread):
+        """Packets that arrive one byte at a time are reassembled correctly."""
+        data = (
+            _CONFIRM_OK
+            + _start(100)
+            + _opcode1([42, 43], n_cycles=5)
+            + _opcode2(3)
+            + _opcode1([255], n_cycles=10)
+            + _exit_data(10, 110)
+        )
+        thread, q_events, q_softcodes = make_thread(b'', serial=_TrickleSerial(data))
+        thread.start()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        events = [(e.micros_us, e.event_id) for e in _drain(q_events)]
+        assert (105, 42) in events
+        assert (105, 43) in events
+        assert [item.softcode for item in _drain(q_softcodes)] == [3]
+        assert thread.leftover == b''
+
+    def test_leftover_is_handed_to_next_trial(self, make_thread):
+        """Bytes read beyond a trial's end start the next reader's trial."""
+        next_trial = _CONFIRM_OK + _start(200) + _opcode2(4)
+        data = (
+            _CONFIRM_OK
+            + _start()
+            + _opcode1([255], n_cycles=1)
+            + _exit_data(1, 1)
+            + next_trial
+        )
+        thread, _, _ = make_thread(data)
+        thread.start()
+        thread.join(timeout=2)
+        assert thread.leftover == next_trial
+        assert thread.leftover_received_ns > 0
+
+        # the next reader starts from the leftover and reads the rest from the port;
+        # the softcode in the leftover keeps the time it was received at
+        next_thread, q_events, q_softcodes = make_thread(
+            _opcode1([255], n_cycles=1) + _exit_data(1, 201),
+            initial_bytes=thread.leftover,
+            initial_received_ns=thread.leftover_received_ns,
+        )
+        next_thread.start()
+        next_thread.join(timeout=2)
+        assert not next_thread.is_alive()
+        assert _drain(q_events)[0] == RawEvent(200, _EventID.START_FSM)
+        softcode = _drain(q_softcodes)[0]
+        assert softcode.softcode == 4
+        assert softcode.received_ns == thread.leftover_received_ns
 
     def test_end_events_enqueued(self, make_thread):
         """END_FSM_CYCLES, END_FSM_MICROS, and STOP_SENTINEL are enqueued after exit."""
@@ -293,7 +369,7 @@ class TestEventThread:
 
     def test_published_events_match_dataframe(self, make_thread):
         """Published messages mirror the trial DataFrame's event rows in order."""
-        published: list[BpodEventUnion] = []
+        published = []
         fsm = _make_fsm(transitions={(0, 0): 1})
         thread, data_queue = make_thread(fsm=fsm, publish=published.append)
         self._put_full_trial(thread)
@@ -329,7 +405,7 @@ class TestEventThread:
 
     def test_should_publish_gates_all_messages(self, make_thread):
         """should_publish=False skips publishing entirely; trial data remains."""
-        published: list[BpodEventUnion] = []
+        published = []
         thread, data_queue = make_thread(
             publish=published.append, should_publish=lambda: False
         )
@@ -342,7 +418,7 @@ class TestEventThread:
 
     def test_events_after_fsm_exit_trigger_no_transitions(self, make_thread, caplog):
         """Events arriving after an exit without successor are recorded but inert."""
-        published: list[BpodEventUnion] = []
+        published = []
         # event 0 in S0 exits without a successor (target == n_states)
         fsm = _make_fsm(transitions={(0, 0): 2})
         with caplog.at_level(logging.ERROR, logger='bpod_core.bpod._threads'):
@@ -370,7 +446,7 @@ class TestEventThread:
 
     def test_aborted_trial_publishes_no_trial_end(self, make_thread):
         """Without a hardware exit packet, no end messages are published."""
-        published: list[BpodEventUnion] = []
+        published = []
         thread, data_queue = make_thread(publish=published.append)
         thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_FSM))
         thread.queue.put(RawEvent(micros_us=0, event_id=0))
@@ -530,6 +606,15 @@ class TestSoftcodeThread:
         thread.queue.put(RawSoftcode(7, 0, 0))
         assert done.wait(timeout=2)
         assert received == [7]
+
+    def test_stop(self, make_thread):
+        """stop() handles the queued softcodes first, then ends the thread."""
+        received = []
+        thread = make_thread(handler=received.append)
+        thread.queue.put(RawSoftcode(3, 0, 0))
+        thread.stop()
+        assert received == [3]
+        assert not thread.is_alive()
 
     def test_handler_called_in_order(self, make_thread):
         """Handler is called once per softcode in the order received."""
