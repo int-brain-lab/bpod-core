@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `com.FilterValue`, superseded by `filtering.Filter`.
 
+### Fixed
+
+- module events and softcodes never reached the state machine. Serial events are
+  now allocated to modules as in Bpod's MATLAB software and sent to the state
+  machine when modules are updated. This also fixes misnumbered input events with
+  modules requesting a non-default number of events.
+
 ## [0.1.0a14] - 2026-07-24
 
 ### Added
