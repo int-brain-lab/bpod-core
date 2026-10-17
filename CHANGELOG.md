@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unknown filter names now raise `TypeError` instead of silently matching nothing.
 - `com.find_ports` and service discovery ignore filters set to `None` instead of
   matching only `None`-valued or missing attributes.
+- trial data is read from the Bpod in chunks rather than message by message, which
+  lowers the CPU load at high event and softcode rates.
 
 ### Removed
 

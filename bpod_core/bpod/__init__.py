@@ -1564,18 +1564,10 @@ class Bpod(SerialDevice, AbstractBpod):
             publish=self._zmq.publish,
             publish_gate=lambda: self._zmq.has_subscribers,
         )
-        read_thread = ReadThread(
-            serial=self.serial0,
-            state_machine_hash=state_machine_lookup.fsm_hash,
-            trial=self._next_fsm_index,
-            cycle_period_us=self._hardware.cycle_period_us,
-            queue_events=event_thread.queue,
-            queue_softcodes=self._softcode_thread.queue,
-        )
-
         # wait for the previous trial's reader to finish, then resume reading the serial
         # stream without further delay (softcodes and raw events must not wait for the
-        # previous trial's event processing)
+        # previous trial's event processing). The previous reader may already have read
+        # the start of this trial - hand those bytes over to the new reader.
         previous_read_thread = self._read_thread
         if previous_read_thread is not None and previous_read_thread.is_alive():
             logger.debug(
@@ -1583,6 +1575,21 @@ class Bpod(SerialDevice, AbstractBpod):
                 previous_read_thread.trial_number,
             )
             previous_read_thread.join()
+        leftover, leftover_received_ns = (
+            (previous_read_thread.leftover, previous_read_thread.leftover_received_ns)
+            if previous_read_thread is not None
+            else (b'', 0)
+        )
+        read_thread = ReadThread(
+            serial=self.serial0,
+            state_machine_hash=state_machine_lookup.fsm_hash,
+            trial=self._next_fsm_index,
+            cycle_period_us=self._hardware.cycle_period_us,
+            queue_events=event_thread.queue,
+            queue_softcodes=self._softcode_thread.queue,
+            initial_bytes=leftover,
+            initial_received_ns=leftover_received_ns,
+        )
         read_thread.start()
 
         # before the new event thread publishes anything, let the previous one drain its

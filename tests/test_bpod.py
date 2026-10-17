@@ -439,6 +439,20 @@ def test_exit_stops_softcode_thread(mock_bpod_2p):
     assert not mock_bpod_2p._softcode_thread.is_alive()
 
 
+def test_next_reader_gets_leftover(mock_bpod_2p, mocker):
+    """A trial's reader starts with the bytes its predecessor read beyond its trial."""
+    read_thread_class = mocker.patch('bpod_core.bpod.ReadThread')
+    mocker.patch('bpod_core.bpod.EventThread')
+    mock_bpod_2p._read_thread = MagicMock(
+        leftover=b'\x01next', leftover_received_ns=42, is_alive=lambda: False
+    )
+    mock_bpod_2p._fsm_annotations = MagicMock()
+    mock_bpod_2p._run_state_machine()
+    kwargs = read_thread_class.call_args.kwargs
+    assert kwargs['initial_bytes'] == b'\x01next'
+    assert kwargs['initial_received_ns'] == 42
+
+
 class TestBpodSubscriberWait:
     def test_waits_for_subscribers_when_supervised(self, monkeypatch, request):
         """With BPOD_OVERRIDE_REMOTE set, init waits for a PUB/SUB subscriber."""
