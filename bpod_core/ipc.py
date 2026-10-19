@@ -1113,7 +1113,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             except Exception as e:
                 raise ServiceError('Error encoding message to publish') from e
             try:
-                self._pub_socket.send(payload, copy=False)
+                self._pub_socket.send(payload)
             except zmq.ZMQError as e:
                 raise ServiceError('Error publishing message') from e
 
@@ -1485,7 +1485,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         flags = 0
         while not stop_event.is_set():
             try:
-                frame = socket_sub.recv(flags, copy=False)
+                payload = socket_sub.recv(flags)
             except zmq.Again:  # recv timed out / queue drained -> wait again
                 flags = 0
                 continue
@@ -1496,7 +1496,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
             flags = zmq.NOBLOCK
 
             try:
-                message = pub_decoder.decode(frame.buffer)
+                message = pub_decoder.decode(payload)
             except msgspec.DecodeError:
                 logger.exception('Error decoding published message')
                 continue
