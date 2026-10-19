@@ -27,11 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - live trial events are published in batches rather than one message per event,
   lowering the CPU load while a client is subscribed. `RemoteBpod`'s `event_callback`
   still receives single events.
-- polars 2 is supported (`polars>=1.38,<3`).
+- polars 2 is supported (`polars>=1.32.3,<3`).
+- lowered the minimum versions of most dependencies to the oldest ones tested to work.
+  pydantic now requires 2.8 or newer: older 2.x versions could be installed but failed
+  on import.
 
 ### Removed
 
 - `com.FilterValue`, superseded by `filtering.Filter`.
+- the unused `qtpy` dependency.
 
 ### Fixed
 
