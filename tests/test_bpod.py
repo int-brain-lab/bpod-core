@@ -1,12 +1,18 @@
 import logging
 import struct
+import threading
+import time
+import weakref
+from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock
+from uuid import uuid4
 
 import polars as pl
 import pytest
 from serial import SerialException
 
-from bpod_core.bpod import Bpod, BpodError, RemoteBpod
+from bpod_core.bpod import Bpod, BpodError, RemoteBpod, _allocate_module_events
+from bpod_core.bpod._threads import SoftcodeThread
 from bpod_core.bpod.constants import (
     _REMOTE_CALL_METHODS,
     _REMOTE_DATA_METHODS,
@@ -17,12 +23,14 @@ from bpod_core.bpod.constants import (
 from bpod_core.bpod.structs import (
     BpodEventUnion,
     EventTrialStart,
+    RawSoftcode,
     RequestCall,
     RequestData,
 )
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import STRUCT_INT16_LE, STRUCT_UINT8
 from bpod_core.fsm import StateMachine
+from bpod_core.ipc import ErrorData, RemoteError, ServiceHost
 
 
 class TestBpodIdentifyBpod:
@@ -198,6 +206,54 @@ class TestGetHardwareConfiguration:
         assert mock_bpod._hardware.cycle_frequency == 10000
         assert mock_bpod._hardware.n_modules == 3
         assert mock_bpod.serial0.in_waiting == 0
+
+
+class TestUpdateModules:
+    @pytest.mark.parametrize(
+        ('ports', 'expected'),
+        [
+            ([('A', 5), (None, 0), (None, 0)], [15, 15, 15]),  # surplus is kept
+            ([('A', 45), (None, 0), (None, 0)], [45, 0, 0]),  # unused ports emptied
+            ([('A', 20), ('B', 0), ('ValveModule1', 0)], [20, 15, 10]),  # valve module
+            ([('A', 25), (None, 0), ('C', 10)], [25, 10, 10]),  # surplus of module C
+        ],
+    )
+    def test_allocate_module_events(self, ports, expected):
+        """Serial events are allocated to module ports as in Bpod's MATLAB software."""
+        modules = [SimpleNamespace(name=n, is_connected=bool(n)) for n, _ in ports]
+        n_requested = [n for _, n in ports]
+        assert _allocate_module_events(modules, n_requested) == expected
+
+    def test_allocate_module_events_exceeded(self):
+        """Requests that cannot be met by unused ports or spare events raise."""
+        modules = [SimpleNamespace(name=n, is_connected=True) for n in 'ABC']
+        with pytest.raises(BpodError, match='A requests 24 serial events, but only 15'):
+            _allocate_module_events(modules, [24, 0, 0])
+
+    def test_serial_event_allocation_is_sent(self, mock_bpod_2p):
+        """The allocation is sent with '%' and matches the event numbering."""
+        mock_bpod_2p.serial0.mock_responses[b'M'] = (
+            b'\x01'  # module port 1: connected
+            + struct.pack('<IB', 1, 15)  # firmware version, length of name
+            + b'DIO_12Ch_Stream\x01'  # name, more info follows
+            + b'#\x18\x01'  # requests 24 events, more info follows
+            + b'E\x01\x04Lick\x01'  # one custom event name, more info follows
+            + b'V\x02\x01v\x00\x00'  # hardware version 2.0, no more info
+            + b'\x00\x00'  # module ports 2 and 3: not connected
+        )
+        mock_bpod_2p.update_modules()
+        assert mock_bpod_2p.serial0.last_write == b'%' + bytes((24, 15, 6, 15, 15))
+        event_names = mock_bpod_2p.modules['DIO_12Ch_Stream1'].event_names
+        assert event_names[:2] == ['DIO_12Ch_Stream1_Lick', 'DIO_12Ch_Stream1_1']
+        assert mock_bpod_2p._event_indices['DIO_12Ch_Stream1_Lick'] == 0
+        assert mock_bpod_2p._event_indices['Flex1_0'] == 75  # max_serial_events
+        assert mock_bpod_2p._n_softcodes == 15
+
+    def test_unacknowledged_allocation_raises(self, mock_bpod_2p):
+        """A state machine that does not acknowledge the allocation is an error."""
+        mock_bpod_2p.serial0.mock_responses[b'%'] = b'\x00'
+        with pytest.raises(BpodError, match='did not acknowledge'):
+            mock_bpod_2p.update_modules()
 
 
 class TestBpodHandshake:
@@ -962,6 +1018,149 @@ class TestRemoteCall:
         assert all(callable(getattr(Bpod, name)) for name in method_set)
 
 
+def test_exit_cleans_up(mock_bpod_2p):
+    """Leaving the context ends the IPC service and softcode thread."""
+    with mock_bpod_2p:
+        pass
+    mock_bpod_2p._zmq.close.assert_called_once()
+    assert not mock_bpod_2p._softcode_thread.is_alive()
+
+
+def test_exit_cleans_up_if_close_fails(mock_bpod_2p, mocker):
+    """Leaving the context ends the IPC service and softcode thread if close fails."""
+    mocker.patch.object(mock_bpod_2p, 'close', side_effect=SerialException)
+    with pytest.raises(SerialException), mock_bpod_2p:
+        pass
+    mock_bpod_2p._zmq.close.assert_called_once()
+    assert not mock_bpod_2p._softcode_thread.is_alive()
+
+
+@pytest.fixture
+def mock_unsupported_firmware(mock_comports, mock_ext_serial, mock_settings, mocker):
+    """Mock a Bpod with outdated firmware: connecting fails after opening the port."""
+    mock_ext_serial.mock_responses.update(
+        {
+            b'6': b'5',
+            rb'\*': b'\x01',
+            b'F': struct.pack('<2H', 20, 3),  # Firmware version 20 is not supported
+        }
+    )
+    mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
+
+
+def test_failed_init_cleans_up(mock_unsupported_firmware, mocker):
+    """A failed connection is closed and leaves no softcode thread behind."""
+    close = mocker.spy(Bpod, 'close')
+    threads_before = set(threading.enumerate())
+    with pytest.raises(BpodError, match=r'firmware .* is not supported'):
+        Bpod('COM3')
+    close.assert_called_once()
+    assert close.spy_exception is None
+    new_threads = set(threading.enumerate()) - threads_before
+    assert not any(isinstance(t, SoftcodeThread) for t in new_threads)
+
+
+def test_failed_init_raises_original_error(mock_unsupported_firmware, mocker):
+    """An error while cleaning up doesn't hide why the connection failed."""
+    mocker.patch.object(Bpod, 'close', side_effect=SerialException)
+    with pytest.raises(BpodError, match=r'firmware .* is not supported'):
+        Bpod('COM3')
+
+
+@pytest.fixture
+def real_ipc(mock_bpod_2p, mock_ports_file, fast_event_loop, mocker):
+    """Connect further Bpods to the mocked device with a real IPC service."""
+    mocker.patch('bpod_core.bpod.ServiceHost', ServiceHost)
+    mocker.patch.object(Bpod, '_get_setting', return_value=None)  # no name, location
+    mocker.patch('bpod_core.bpod.uuid5', return_value=uuid4())  # unique socket names
+
+
+def test_dropped_task_cleans_up(real_ipc, assert_collected):
+    """A Bpod, owned by a dropped object that handles its softcodes, is cleaned up."""
+
+    class Task:
+        def __init__(self):
+            self.handled = threading.Event()
+            self.bpod = Bpod('COM3')
+
+            def on_softcode(code):  # a closure over self, not a bound method
+                self.handled.set()
+
+            self.bpod.set_softcode_handler(on_softcode)
+
+    task = Task()
+    task.bpod._softcode_thread.queue.put(RawSoftcode(1, 0, 0))
+    assert task.handled.wait(timeout=2)
+    with RemoteBpod(address=task.bpod.address):  # requests for the IPC service
+        pass
+    bpod_ref = weakref.ref(task.bpod)
+    threads = task.bpod._zmq._event_thread, task.bpod._softcode_thread
+    del task
+    assert_collected(bpod_ref, *threads, close=lambda b: b.__exit__(None, None, None))
+
+
+def test_dropped_remote_bpod_cleans_up(real_ipc, assert_collected):
+    """A subscribed RemoteBpod dropped without leaving its context ends its thread."""
+    with Bpod('COM3') as bpod:
+        events = []
+        remote = RemoteBpod(address=bpod.address, event_callback=events.append)
+        deadline = time.monotonic() + 2
+        while not events and time.monotonic() < deadline:  # slow-joiner safe
+            bpod._zmq.publish([EventTrialStart(time_us=0, trial=0, fsm_hash='00')])
+            time.sleep(0.02)
+        assert events
+        remote_ref = weakref.ref(remote)
+        event_thread = remote._zmq._event_thread
+        del remote
+        assert_collected(remote_ref, event_thread, close=lambda r: r.close())
+
+
+def test_cleanup_runs_softcodes_before_disconnecting(mocker):
+    """The finalizer lets queued softcodes run before disconnecting the Bpod."""
+    calls = MagicMock()
+    mocker.patch.object(Bpod, '_request_disconnect', calls.disconnect)
+    Bpod._bpod_cleanup(calls.serial, calls.softcode_thread)
+    names = [name for name, *_ in calls.mock_calls]
+    assert names.index('softcode_thread.stop') < names.index('disconnect')
+
+
+def test_wait_after_lost_connection(mock_bpod_2p):
+    """wait() raises a lost connection once, with the serial error as its cause."""
+    error = SerialException('device disconnected')
+    mock_bpod_2p._read_thread = MagicMock(
+        error=error, trial_number=3, is_alive=lambda: False
+    )
+    with pytest.raises(
+        BpodError, match='Lost connection to the Bpod during trial #3'
+    ) as e:
+        mock_bpod_2p.wait()
+    assert e.value.__cause__ is error
+    mock_bpod_2p.wait()  # reported already
+
+
+def test_close_after_lost_connection(mock_bpod_2p, mock_ext_serial, mocker):
+    """close() still closes the port if the Bpod can't be told to disconnect."""
+    mocker.patch.object(mock_ext_serial, 'is_open', True)  # reset after the test
+    mocker.patch.object(mock_ext_serial, 'write', side_effect=SerialException('gone'))
+    close = mocker.spy(mock_ext_serial, 'close')  # this port only, not other mocks
+    mock_bpod_2p.close()
+    close.assert_called_once()
+
+
+def test_next_reader_gets_leftover(mock_bpod_2p, mocker):
+    """A trial's reader starts with the bytes its predecessor read beyond its trial."""
+    read_thread_class = mocker.patch('bpod_core.bpod.ReadThread')
+    mocker.patch('bpod_core.bpod.EventThread')
+    mock_bpod_2p._read_thread = MagicMock(
+        leftover=b'\x01next', leftover_received_ns=42, is_alive=lambda: False
+    )
+    mock_bpod_2p._fsm_annotations = MagicMock()
+    mock_bpod_2p._run_state_machine()
+    kwargs = read_thread_class.call_args.kwargs
+    assert kwargs['initial_bytes'] == b'\x01next'
+    assert kwargs['initial_received_ns'] == 42
+
+
 class TestBpodSubscriberWait:
     def test_waits_for_subscribers_when_supervised(self, monkeypatch, request):
         """With BPOD_OVERRIDE_REMOTE set, init waits for a PUB/SUB subscriber."""
@@ -982,14 +1181,22 @@ class TestRemoteBpodEventCallback:
         """Mock the ServiceClient used by RemoteBpod."""
         return mocker.patch('bpod_core.bpod.ServiceClient', autospec=True)
 
+    def test_failed_handshake_closes_client(self, mock_client):
+        """A RemoteBpod whose handshake fails closes its connection."""
+        error = RemoteError(ErrorData.from_exception(RuntimeError('Version mismatch')))
+        mock_client.return_value.request.side_effect = error
+        with pytest.raises(RemoteError, match='Version mismatch'):
+            RemoteBpod(address='tcp://127.0.0.1:1', event_callback=print)
+        mock_client.return_value.close.assert_called_once()
+
     def test_callback_subscribes_and_forwards(self, mock_client):
         """With an event_callback, the client subscribes and messages forward."""
         received = []
         remote = RemoteBpod(address='tcp://127.0.0.1:1', event_callback=received.append)
         kwargs = mock_client.call_args.kwargs
         assert kwargs['event_handler'] == remote._event_handler
-        assert kwargs['event_type'] is BpodEventUnion
+        assert kwargs['event_type'] == list[BpodEventUnion]
 
         message = EventTrialStart(time_us=0, trial=0, fsm_hash='00')
-        remote._event_handler(message)
+        remote._event_handler([message])
         assert received == [message]

@@ -23,26 +23,20 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: 3.14
           enable-cache: true
       - run: sudo apt-get install -y graphviz
-      - uses: actions/cache@v5
-        with:
-          path: docs/build/.doctrees
-          key: sphinx-${{ runner.os }}-${{ hashFiles('uv.lock', 'docs/source/conf.py') }}
-          restore-keys: |
-            sphinx-${{ runner.os }}-
       - name: build documentation
         env:
           UMAMI_SCRIPT_URL: ${{ vars.UMAMI_SCRIPT_URL }}
           UMAMI_SITE_ID: ${{ vars.UMAMI_SITE_ID }}
         run: uv run --no-default-groups --group doc sphinx-build -b dirhtml docs/source docs/build
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs/build/
 
@@ -54,7 +48,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
   context7:
     name: Trigger Context7 rescan

@@ -1,10 +1,14 @@
+import gc
 import json
 import logging
 import os
 import re
+import shutil
 import socket
 import threading
 import time
+import weakref
+from pathlib import Path
 from typing import Any, NamedTuple
 from uuid import uuid4
 
@@ -55,9 +59,7 @@ def _wait_until(predicate, timeout=2.0):
     return False
 
 
-@pytest.fixture(autouse=True)
-def fast_event_loop(mocker):
-    mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 5)
+pytestmark = pytest.mark.usefixtures('fast_event_loop')
 
 
 class TestLocalServiceAdvertisement:
@@ -76,6 +78,32 @@ class TestLocalServiceAdvertisement:
             assert ad.service_file.suffix == '.json'
         assert not ad.service_file.exists()
         assert not mock_local_discovery_dir.exists()
+
+    def test_close_keeps_replacement(self, mock_local_discovery_dir):
+        """close() leaves a newer advertisement with the same UUID in place."""
+        uuid = uuid4()
+        old = ipc.LocalServiceAdvertisement('a', 'type', 'tcp://127.0.0.1:1', uuid=uuid)
+        new = ipc.LocalServiceAdvertisement('a', 'type', 'tcp://127.0.0.1:2', uuid=uuid)
+        old.close()
+        assert new.service_file.exists()
+        new.close()
+        assert not new.service_file.exists()
+
+    def test_folder_removed_while_advertising(self, mock_local_discovery_dir, mocker):
+        """Writing is retried if another process removed the folder just created."""
+        write_bytes = Path.write_bytes
+        calls = []
+
+        def remove_folder_first(path, data):
+            calls.append(path)
+            if len(calls) == 1:
+                shutil.rmtree(mock_local_discovery_dir)
+            return write_bytes(path, data)
+
+        mocker.patch.object(Path, 'write_bytes', remove_folder_first)
+        with ipc.LocalServiceAdvertisement('a', 'type', 'tcp://127.0.0.1:1') as ad:
+            assert ad.service_file.exists()
+        assert len(calls) == 2
 
     def test_close_removes_file(self, mock_local_discovery_dir):
         """close() removes the service file and removes empty parent directories."""
@@ -410,6 +438,27 @@ class TestClient:
             with pytest.raises(TimeoutError):
                 client.request('slow', timeout=0.05)
             assert client.request('fast') == {'echo': 'fast'}
+
+    def test_owner_collected(self, host, mock_service_browser, assert_collected):
+        """A client doesn't keep alive an object whose method handles its events."""
+
+        class Owner:
+            def __init__(self):
+                self.events = []
+                self.client = ipc.ServiceClient(
+                    'dualtest', address=host.rep_tcp_addr, event_handler=self.on_event
+                )
+
+            def on_event(self, event):
+                self.events.append(event)
+
+        owner = Owner()
+        events = owner.events
+        _publish_until(host, {'x': 1}, lambda: events)
+        owner_ref = weakref.ref(owner)
+        event_thread = owner.client._event_thread
+        del owner
+        assert_collected(owner_ref, event_thread, close=lambda o: o.client.close())
 
     def test_request_after_close_raises(self, mock_advertisement, mock_service_browser):
         """Requests on a closed client raise ServiceError."""
@@ -756,6 +805,43 @@ class TestHost:
         with pytest.raises(ValueError, match='serialization'):
             ipc.ServiceHost('test', 'test_service', _noop_handler, serialization='xml')
 
+    def test_handler_object_kept_alive(self, mock_advertisement, mock_service_browser):
+        """The host keeps the object of a bound-method request handler alive."""
+
+        class Handler:
+            def handle(self, request):
+                return request
+
+        with (
+            ipc.ServiceHost(
+                'test', 'test_service', Handler().handle, remote=False
+            ) as host,
+            ipc.ServiceClient('test_service', address=host.rep_tcp_addr) as client,
+        ):
+            gc.collect()
+            assert client.request('ping', timeout=1) == 'ping'
+
+    def test_owner_collected(
+        self, mock_advertisement, mock_service_browser, assert_collected
+    ):
+        """A host doesn't keep alive an object that a request handler refers to."""
+
+        class Owner:
+            def __init__(self):
+                self.replies = {'ping': 'pong'}
+                self.host = ipc.ServiceHost(
+                    'test', 'test_service', lambda r: self.replies[r], remote=False
+                )
+
+        owner = Owner()
+        address = owner.host.rep_tcp_addr
+        with ipc.ServiceClient('test_service', address=address) as client:
+            assert client.request('ping', timeout=1) == 'pong'
+        owner_ref = weakref.ref(owner)
+        event_thread = owner.host._event_thread
+        del owner
+        assert_collected(owner_ref, event_thread, close=lambda o: o.host.close())
+
     def test_close_is_idempotent(self, mock_advertisement):
         """close() can be called multiple times without error."""
         host = ipc.ServiceHost('test', 'test_service', _noop_handler, remote=False)
@@ -769,6 +855,22 @@ class TestHost:
         assert service_file.exists()
         host.close()
         assert not service_file.exists()
+
+    def test_close_from_request_handler(self, mock_advertisement, mock_service_browser):
+        """A host closed from within its request handler still sends the reply."""
+
+        def handler(request):
+            host.close()
+            return request
+
+        host = ipc.ServiceHost('test', 'test_service', handler, remote=False)
+        try:
+            with ipc.ServiceClient('test_service', address=host.rep_tcp_addr) as client:
+                assert client.request('bye', timeout=1) == 'bye'
+            host._event_thread.join(timeout=1)
+            assert not host._event_thread.is_alive()
+        finally:
+            host.close()  # don't leak into later tests
 
 
 class TestBindIpc:
@@ -1047,6 +1149,29 @@ class TestIterServices:
         assert len(events_1) == 1
         assert len(events_2) == 2
         assert events_1[0].address == 'tcp://127.0.0.1:6666'
+
+    def test_dropped_iterator_cleans_up(
+        self,
+        mock_zeroconf,
+        mock_service_browser,
+        mock_local_discovery_dir,
+        assert_collected,
+    ):
+        """An iterator dropped without closing it stops watching for services."""
+        iterator = ipc.iter_services('service_type', timeout=None)
+        iterator_ref = weakref.ref(iterator)
+        watcher = iterator._watcher
+        del iterator
+        assert_collected(iterator_ref, watcher, close=lambda i: i.close())
+        mock_zeroconf.return_value.close.assert_called_once()
+
+    def test_failed_zeroconf_stops_watcher(self, mock_local_discovery_dir, mocker):
+        """If Zeroconf fails to start, the watcher for local services is stopped too."""
+        mocker.patch('bpod_core.ipc.Zeroconf', side_effect=OSError('no network'))
+        threads_before = set(threading.enumerate())
+        with pytest.raises(OSError, match='no network'):
+            ipc.iter_services('service_type')
+        assert set(threading.enumerate()) <= threads_before
 
     def test_remote_false_no_zeroconf(self, mock_zeroconf, mock_local_discovery_dir):
         """remote=False never instantiates Zeroconf."""

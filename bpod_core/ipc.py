@@ -42,6 +42,7 @@ from bpod_core.filtering import Filter, match_filter
 from bpod_core.misc import (
     _RE_NON_ALPHANUMERIC,
     ByteEnum,
+    _HandlerSlot,
     get_local_ipv4,
     prune_empty_parent_directories,
     to_snake_case,
@@ -72,6 +73,14 @@ _EVENT_LOOP_POLL_MS = 100
 
 Determines how quickly the event loops react to stop requests, and how quickly
 a blocking :meth:`ServiceClient._req` notices close() or an expired deadline.
+"""
+
+_HANDOFF_LINGER_MS = 100
+"""Linger period, in milliseconds, for sockets closed after their own event loop.
+
+When a host or client is closed from its own event thread - e.g., by a handler or the
+garbage collector - the reply the loop sent last may still be queued. The linger period
+gives it time to go out before the sockets are closed.
 """
 
 _HANDSHAKE_TIMEOUT_S = 10.0
@@ -124,6 +133,16 @@ class _MessageKind(ByteEnum):
     """A reply sent by the host."""
     ERROR = ord('E')
     """An error message."""
+
+
+_FileId: TypeAlias = tuple[int, int]
+"""Inode and modification time of a file, see :func:`_file_id`."""
+
+
+def _file_id(path: Path) -> _FileId:
+    """Identify a file by inode and modification time, to tell it from a replacement."""
+    stat = path.stat()
+    return stat.st_ino, stat.st_mtime_ns
 
 
 def _safe_str(obj: Any) -> str:
@@ -325,15 +344,24 @@ class LocalServiceAdvertisement:
         )
 
         self.service_file = self._get_service_file(service_type, uuid)
-        self.service_file.parent.mkdir(parents=True, exist_ok=True)
-        self._finalizer = weakref.finalize(self, self._close, self.service_file)
 
-        # write advertisement to JSON file (atomic)
+        # write advertisement to JSON file (atomic), retrying as another process's
+        # close() may prune the folders between mkdir() and write_bytes()
         json_data = msgspec.json.encode(info)
         temp_file = self.service_file.with_suffix('.tmp')
-        temp_file.write_bytes(json_data)
+        for attempt in range(5):
+            try:
+                temp_file.parent.mkdir(parents=True, exist_ok=True)
+                temp_file.write_bytes(json_data)
+                break
+            except (FileNotFoundError, FileExistsError):
+                if attempt == 4:
+                    raise
         temp_file.replace(self.service_file)
         logger.debug("Advertising local service at '%s'", self.service_file)
+        self._finalizer = weakref.finalize(
+            self, self._close, self.service_file, _file_id(self.service_file)
+        )
 
     def __enter__(self) -> Self:
         """Enter context manager."""
@@ -352,11 +380,13 @@ class LocalServiceAdvertisement:
         self._finalizer()
 
     @staticmethod
-    def _close(service_file: Path) -> None:
+    def _close(service_file: Path, file_id: _FileId) -> None:
         lock_file = service_file.with_suffix('.lock')
         with contextlib.suppress(Exception), FileLock(lock_file):
-            logger.debug("Removing local service advertisement at '%s'", service_file)
-            service_file.unlink(missing_ok=True)
+            # another advertisement with the same UUID may have replaced the file
+            if _file_id(service_file) == file_id:
+                logger.debug("Removing local advertisement at '%s'", service_file)
+                service_file.unlink()
         with contextlib.suppress(Exception):
             lock_file.unlink(missing_ok=True)
         with contextlib.suppress(Exception):
@@ -438,12 +468,44 @@ class ServiceBase(ABC):
         self._stop_event_loop = threading.Event()
 
     @staticmethod
+    def _continue_off_event_thread(
+        finalize: Callable[..., None], **kwargs: Any
+    ) -> bool:
+        """Re-run a finalizer on a helper thread if it was called on the event thread.
+
+        That happens when a handler closes its own host or client, or when the garbage
+        collector runs on the event thread. The helper thread can wait for the event
+        loop to end, and lingers so that the reply the loop sent last still goes out.
+
+        Returns
+        -------
+        bool
+            True if the finalizer continues on a helper thread.
+        """
+        if kwargs['event_thread'] is not threading.current_thread():
+            return False
+        kwargs['stop_event'].set()
+        kwargs['linger_ms'] = _HANDOFF_LINGER_MS
+        threading.Thread(target=finalize, kwargs=kwargs, daemon=True).start()
+        return True
+
+    @staticmethod
     def _finalize_base(
         event_thread: threading.Thread | None,
         stop_event: threading.Event,
         sockets: Iterable[zmq.Socket],
         zmq_context: zmq.Context,
+        linger_ms: int = 0,
     ) -> None:
+        if ServiceBase._continue_off_event_thread(
+            ServiceBase._finalize_base,
+            event_thread=event_thread,
+            stop_event=stop_event,
+            sockets=sockets,
+            zmq_context=zmq_context,
+        ):
+            return
+
         # event thread
         if event_thread is not None and event_thread.is_alive():
             stop_event.set()
@@ -455,7 +517,7 @@ class ServiceBase(ABC):
         logger.debug('Closing ZMQ sockets')
         for zmq_socket in sockets:
             with contextlib.suppress(Exception):
-                zmq_socket.close(linger=0)
+                zmq_socket.close(linger=linger_ms)
 
         # ZMQ context
         try:
@@ -567,8 +629,6 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
     pub_tcp_port: int
     """TCP port of the PUB socket."""
 
-    _named_pipe_rep: Path | None = None
-    _named_pipe_pub: Path | None = None
     _local_advertisement: LocalServiceAdvertisement | None = None
     _zeroconf: Zeroconf | None = None
 
@@ -617,6 +677,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
         # create ZeroMQ sockets
         self._rep_socket, self._pub_socket = self._create_sockets(self._zmq_context)
+        named_pipes: list[tuple[Path, _FileId]] = []
 
         try:
             # bind sockets to TCP addresses. Explicit port arguments take precedence
@@ -638,13 +699,18 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 self._remember_ports(uuid, self.rep_tcp_port, self.pub_tcp_port)
 
             # bind sockets to IPC addresses for improved performance (POSIX only)
-            rep_ipc_addr, self._named_pipe_rep = self._bind_ipc(
+            rep_ipc_addr, rep_pipe = self._bind_ipc(
                 zmq_socket=self._rep_socket,
                 identifier=f'REQ_REP_{self._uuid.hex}',
             )
-            pub_ipc_addr, self._named_pipe_pub = self._bind_ipc(
+            pub_ipc_addr, pub_pipe = self._bind_ipc(
                 zmq_socket=self._pub_socket,
                 identifier=f'PUB_SUB_{self._uuid.hex}',
+            )
+            named_pipes.extend(
+                (pipe, _file_id(pipe))
+                for pipe in (rep_pipe, pub_pipe)
+                if pipe is not None
             )
 
             # start event loop for request handling; HELLO requests are answered with
@@ -677,7 +743,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 zmq_context=self._zmq_context,
                 local_advertisement=self._local_advertisement,
                 zeroconf=self._zeroconf,
-                named_pipes=[self._named_pipe_rep, self._named_pipe_pub],
+                named_pipes=named_pipes,
             )
         except BaseException:
             # unwind partially-acquired resources when construction fails
@@ -688,7 +754,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 zmq_context=self._zmq_context,
                 local_advertisement=self._local_advertisement,
                 zeroconf=self._zeroconf,
-                named_pipes=[self._named_pipe_rep, self._named_pipe_pub],
+                named_pipes=named_pipes,
             )
             raise
 
@@ -826,6 +892,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         self, request_handler: Callable[[Q], Any], handshake_data: _WelcomeData
     ) -> None:
         """Start the background thread processing incoming requests."""
+        self._handler_slot = _HandlerSlot(request_handler)
         self._event_thread = threading.Thread(
             target=ServiceHost._event_loop,
             kwargs={
@@ -835,7 +902,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 'pub_lock': self._pub_lock,
                 'req_decoder': self._req_decoder,
                 'rep_encoder': self._rep_encoder,
-                'request_handler': request_handler,
+                'handler_slot': weakref.ref(self._handler_slot),
                 'handshake_data': handshake_data,
                 'has_subscribers': self._has_subscribers,
             },
@@ -905,9 +972,22 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         zmq_context: zmq.Context,
         local_advertisement: LocalServiceAdvertisement | None,
         zeroconf: Zeroconf | None,
-        named_pipes: Iterable[Path | None],
+        named_pipes: Iterable[tuple[Path, _FileId]],
+        linger_ms: int = 0,
     ) -> None:
         """Unadvertise the service and release all resources held by the host."""
+        if ServiceBase._continue_off_event_thread(  # noqa: SLF001
+            ServiceHost._finalize,
+            event_thread=event_thread,
+            stop_event=stop_event,
+            sockets=sockets,
+            zmq_context=zmq_context,
+            local_advertisement=local_advertisement,
+            zeroconf=zeroconf,
+            named_pipes=named_pipes,
+        ):
+            return
+
         # remove local advertisement
         if local_advertisement is not None:
             with contextlib.suppress(Exception):
@@ -925,13 +1005,14 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             stop_event,
             sockets,
             zmq_context,
+            linger_ms,
         )
 
-        # named pipes
-        for pipe in named_pipes:
-            if pipe is not None:
-                with contextlib.suppress(Exception):
-                    pipe.unlink(missing_ok=True)
+        # named pipes, unless another host with the same UUID has replaced them
+        for pipe, file_id in named_pipes:
+            with contextlib.suppress(Exception):
+                if _file_id(pipe) == file_id:
+                    pipe.unlink()
 
     @overload
     @staticmethod
@@ -1039,7 +1120,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             except Exception as e:
                 raise ServiceError('Error encoding message to publish') from e
             try:
-                self._pub_socket.send(payload, copy=False)
+                self._pub_socket.send(payload)
             except zmq.ZMQError as e:
                 raise ServiceError('Error publishing message') from e
 
@@ -1052,7 +1133,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         pub_lock: threading.Lock,
         req_decoder: msgspec.msgpack.Decoder[Q] | msgspec.json.Decoder[Q],
         rep_encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder,
-        request_handler: Callable[[Q], Any],
+        handler_slot: weakref.ref[_HandlerSlot[Callable[[Q], Any]]],
         handshake_data: _WelcomeData,
         has_subscribers: threading.Event,
     ) -> None:
@@ -1155,17 +1236,26 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                         continue
                     reply_kind = _MessageKind.REPLY
 
+                    # the host is being garbage-collected: reply, then stop
+                    if (slot := handler_slot()) is None:
+                        shutting_down = ServiceError('The service is shutting down')
+                        encode_and_send(
+                            _MessageKind.ERROR, ErrorData.from_exception(shutting_down)
+                        )
+                        break
+
                     # call request_handler
                     # expose the request frame to get_metadata() during the call
                     token = _current_frame.set(request_frames[1])
                     try:
-                        reply_data = request_handler(request_data)
+                        reply_data = slot.handler(request_data)
                     except Exception:
                         logger.exception('Error during request handler call')
                         reply_kind = _MessageKind.ERROR
                         reply_data = ErrorData.from_exception()
                     finally:
                         _current_frame.reset(token)
+                        del slot  # waiting for the next request mustn't pin the owner
 
                 case _MessageKind.HELLO:
                     # a subscription may be imminent (it follows the handshake):
@@ -1372,13 +1462,14 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         logger.debug("Connecting SUB socket to '%s'", self._address_sub)
         self._sub_socket.connect(self._address_sub)
         self._sub_socket.setsockopt_string(zmq.SUBSCRIBE, '')
+        self._handler_slot = _HandlerSlot(event_handler)
         self._event_thread = threading.Thread(
             target=ServiceClient._event_loop,
             args=(
                 self._stop_event_loop,
                 self._sub_socket,
                 self._event_decoder,
-                event_handler,
+                weakref.ref(self._handler_slot),
             ),
             daemon=True,
         )
@@ -1389,7 +1480,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         stop_event: threading.Event,
         socket_sub: zmq.Socket,
         pub_decoder: msgspec.msgpack.Decoder[E] | msgspec.json.Decoder[E],
-        event_handler: Callable[[E], object],
+        handler_slot: weakref.ref[_HandlerSlot[Callable[[E], object]]],
     ) -> None:
         """Process incoming PUB messages."""
         # receive with a timeout instead of poll + receive: this saves a syscall per
@@ -1401,7 +1492,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         flags = 0
         while not stop_event.is_set():
             try:
-                frame = socket_sub.recv(flags, copy=False)
+                payload = socket_sub.recv(flags)
             except zmq.Again:  # recv timed out / queue drained -> wait again
                 flags = 0
                 continue
@@ -1412,14 +1503,17 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
             flags = zmq.NOBLOCK
 
             try:
-                message = pub_decoder.decode(frame.buffer)
+                message = pub_decoder.decode(payload)
             except msgspec.DecodeError:
                 logger.exception('Error decoding published message')
                 continue
+            if (slot := handler_slot()) is None:  # the client was garbage-collected
+                break
             try:
-                event_handler(message)
+                slot.handler(message)
             except Exception as e:
                 logger.exception('Subscription handler raised an exception', exc_info=e)
+            del slot  # waiting for the next message mustn't pin the owner
 
     def _set_serialization(self, serialization: Serialization) -> None:
         """Build the encoder and decoders for the given serialization format."""
@@ -1758,37 +1852,32 @@ class ServiceIterator(Iterator[ServiceEvent]):
         self._pending: deque[str] = deque()  # waiting to be emitted
         properties = properties or {}
 
-        # watch for local service changes
+        # watch for local service changes; the watcher is a static method with explicit
+        # arguments, so that the running thread can't keep the iterator alive
         self._watcher: threading.Thread | None = None
-        if local:
+        try:
+            if local:
+                seen = ServiceIterator._rescan(self._q, service_type, properties, {})
+                self._watcher = threading.Thread(
+                    target=ServiceIterator._watch_local,
+                    args=(self._q, self._stop, service_type, properties, poll_interval),
+                    kwargs={'state': seen},
+                    daemon=True,
+                )
+                self._watcher.start()
 
-            def rescan(previous: dict[str, ServiceEvent]) -> dict[str, ServiceEvent]:
-                current: dict[str, ServiceEvent] = {}
-                for i in LocalServiceAdvertisement.discover(service_type, properties):
-                    current[i.uuid.hex] = ServiceEvent('added', i.address, i.properties)
-                for event in (v for k, v in previous.items() if k not in current):
-                    self._q.put(ServiceEvent('removed', *event[1:]))
-                for event in (v for k, v in current.items() if k not in previous):
-                    self._q.put(event)
-                return current
-
-            def watch_local(state: dict[str, ServiceEvent]) -> None:
-                while not self._stop.is_set():
-                    state = rescan(state)
-                    self._stop.wait(poll_interval)
-
-            seen = rescan({})
-            self._watcher = threading.Thread(
-                target=watch_local, args=(seen,), daemon=True
+            # watch for remote service changes
+            if remote:
+                handler = _ServiceListenerIterator(self._q, properties)
+                zc_service_type = _format_zeroconf_service_type(service_type)
+                self._zc = Zeroconf()
+                self._browser = ServiceBrowser(self._zc, zc_service_type, handler)
+        except BaseException:
+            # unwind partially-acquired resources when construction fails
+            ServiceIterator._cleanup(
+                self._q, self._stop, self._watcher, self._zc, self._browser
             )
-            self._watcher.start()
-
-        # watch for remote service changes
-        if remote:
-            handler = _ServiceListenerIterator(self._q, properties)
-            zc_service_type = _format_zeroconf_service_type(service_type)
-            self._zc = Zeroconf()
-            self._browser = ServiceBrowser(self._zc, zc_service_type, handler)
+            raise
 
         # register finalizer to clean up resources on exit
         self._finalizer = weakref.finalize(
@@ -1875,6 +1964,37 @@ class ServiceIterator(Iterator[ServiceEvent]):
                 zc.close()
         # unblock a consumer waiting in __next__ and mark the iterator exhausted
         q.put(None)
+
+    @staticmethod
+    def _rescan(
+        q: 'queue.Queue[ServiceEvent | None]',
+        service_type: str,
+        properties: Mapping[str, Filter[str] | None],
+        previous: dict[str, ServiceEvent],
+    ) -> dict[str, ServiceEvent]:
+        """Queue events for local services added or removed since the previous scan."""
+        current: dict[str, ServiceEvent] = {}
+        for i in LocalServiceAdvertisement.discover(service_type, properties):
+            current[i.uuid.hex] = ServiceEvent('added', i.address, i.properties)
+        for event in (v for k, v in previous.items() if k not in current):
+            q.put(ServiceEvent('removed', *event[1:]))
+        for event in (v for k, v in current.items() if k not in previous):
+            q.put(event)
+        return current
+
+    @staticmethod
+    def _watch_local(
+        q: 'queue.Queue[ServiceEvent | None]',
+        stop: threading.Event,
+        service_type: str,
+        properties: Mapping[str, Filter[str] | None],
+        poll_interval: float,
+        *,
+        state: dict[str, ServiceEvent],
+    ) -> None:
+        """Rescan the local services every ``poll_interval`` seconds until stopped."""
+        while not stop.wait(poll_interval):
+            state = ServiceIterator._rescan(q, service_type, properties, state)
 
     def _process(self, event: ServiceEvent) -> None:
         address = event.address

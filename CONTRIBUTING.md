@@ -3,11 +3,13 @@
 Contributions to bpod-core's codebase are very welcome! Whether you're fixing a bug,
 adding a feature, or improving the documentation, we appreciate your help.
 
-Before starting work on a non-trivial contribution, please check the
-[issue tracker](https://github.com/int-brain-lab/bpod-core/issues) to see if the topic
-is already being discussed or worked on. If not, open a new issue to describe what you
-have in mind. This helps avoid duplicate effort and ensures your contribution is aligned
-with the project's direction before you invest significant time.
+## Reporting Bugs and Requesting Features
+
+Bug reports, feature requests, and plans for non-trivial contributions all go through
+the [issue tracker](https://github.com/int-brain-lab/bpod-core/issues). Please check
+whether your topic is already being discussed; if not, open a new issue using the
+matching template. For contributions, this helps avoid duplicate effort and ensures your
+work is aligned with the project's direction before you invest significant time.
 
 ## Development Environment
 

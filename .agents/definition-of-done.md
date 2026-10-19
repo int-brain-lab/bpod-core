@@ -8,3 +8,4 @@ Before considering work complete:
 4. Ensure examples still work if affected.
 5. Update docstrings and documentation where relevant.
 6. Add a concise note under `## UNRELEASED` in `CHANGELOG.md` for user-facing changes.
+7. The diff contains only what the stated goal needs.

@@ -46,15 +46,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - FlexIO channels are now reset to their default settings on connect, guaranteeing
   the hardware actually matches bpod-core's assumed baseline instead of trusting
   leftover configuration from a previous session.
+- trial data is read from the Bpod in chunks rather than message by message, which
+  lowers the CPU load at high event and softcode rates.
+- live trial events are published in batches rather than one message per event,
+  lowering the CPU load while a client is subscribed. `RemoteBpod`'s `event_callback`
+  still receives single events.
+- polars 2 is supported (`polars>=1.32.3,<3`).
+- lowered the minimum versions of most dependencies to the oldest ones tested to work.
+  pydantic now requires 2.8 or newer: older 2.x versions could be installed but failed
+  on import.
 
 ### Removed
 
 - `misc.SuggestionDict`, superseded by `misc.SuggestionMapping` (no longer used anywhere
   in the library).
 - `com.FilterValue`, superseded by `filtering.Filter`.
+- the `rechunk` parameter of `get_data`: call `.rechunk()` on the result instead.
+- the unused `qtpy` dependency.
 
 ### Fixed
 
+- starting a service could fail with `FileNotFoundError` while another process on the
+  same machine closed its last service.
+- `RemoteBpod.get_data` raised a `DeprecationWarning` with polars 1.43.2 or newer.
+- leaving a `Bpod` context did not close its IPC service, so its sockets stayed bound
+  until garbage collection and reconnecting right away fell back to random ports.
+- leaving a `Bpod` context did not end its softcode thread, so every connection left
+  an idle thread behind.
+- a `Bpod` that failed to connect, e.g., due to unsupported firmware, kept its serial
+  port open until garbage collection and left its softcode thread behind.
+- a `Bpod` or subscribed `RemoteBpod` dropped without closing it, an unfinished
+  `iter_services` iterator, e.g., after a `break`, and any object whose handler for a
+  `ServiceHost`, `ServiceClient` or `Bpod.set_softcode_handler` referred back to it
+  were never garbage-collected, so their connections and threads ran until Python
+  exited.
+- a failed `RemoteBpod` handshake, e.g., due to a version mismatch, or a failed
+  Zeroconf start in `iter_services` left connections or threads running.
+- closing a `Bpod`, `ServiceHost` or `ServiceClient` from within its own handler hung
+  or raised a `RuntimeError`.
+- closing a `ServiceHost` or `LocalServiceAdvertisement` could remove the files of a
+  newer one with the same UUID.
+- unplugging the Bpod during a trial went unnoticed: `wait()` returned as if the trial
+  had ended normally. It now raises a `BpodError`, and `close()` tolerates the
+  vanished port.
+- a blocking `Bpod.peek_data()` could, rarely, hang when its trial ended without
+  reaching a trigger state.
+- closing a `Bpod` could disconnect before the last softcodes were handled.
+- module events and softcodes never reached the state machine. Serial events are
+  now allocated to modules as in Bpod's MATLAB software and sent to the state
+  machine when modules are updated. This also fixes misnumbered input events with
+  modules requesting a non-default number of events.
 - FlexIO analog-output (`Flex*`) action values are now scaled correctly (0-5V into
   12-bit DAC counts) for whichever channel is configured as `ANALOG_OUTPUT`, instead of
   a formula that always rounded to zero on a single hardcoded channel.

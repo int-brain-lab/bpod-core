@@ -36,7 +36,7 @@ Load these only when relevant to the task at hand:
 - [References](.agents/references.md) — Bpod firmware sources and MATLAB implementation.
 - [Development principles](.agents/development-principles.md)
 - [Code style](.agents/code-style.md) / [docstrings](.agents/docstrings.md)
-- [Testing](.agents/testing.md) / [hardware considerations](.agents/hardware.md)
+- [Testing](.agents/testing.md) / [hardware and firmware](.agents/hardware.md)
 - [Definition of done](.agents/definition-of-done.md) — checklist before finishing
   a code change.
 - [Plan mode](.agents/plan-mode.md)

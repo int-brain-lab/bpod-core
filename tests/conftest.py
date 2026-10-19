@@ -1,3 +1,4 @@
+import gc
 import re
 import struct
 from unittest.mock import PropertyMock
@@ -16,6 +17,7 @@ fixture_bpod_all = {
     b'C[\\x00\\x01]{2}.*': b'',
     rb'\*': b'\x01',
     b'X': b'',  # stop state machine / analog acquisition (fire-and-forget, no ack)
+    b'%': b'\x01',
 }
 
 # Bpod 2.0 with firmware version 22
@@ -122,18 +124,35 @@ def mock_ext_serial(mocker):
     mocker.patch(f'{tmp}.close')
     mocker.patch(f'{tmp}.write', side_effect=write)
     mocker.patch(f'{tmp}.read', side_effect=read)
-
-    def readinto(buf) -> int:
-        n = len(buf)
-        chunk = bytes(extended_serial.response_buffer[:n])
-        del extended_serial.response_buffer[:n]
-        buf[: len(chunk)] = chunk
-        return len(chunk)
-
     mocker.patch(f'{tmp}.reset_input_buffer')
     mocker.patch(f'{tmp}.in_waiting', new_callable=PropertyMock, side_effect=in_waiting)
-    mocker.patch(f'{tmp}.readinto', side_effect=readinto)
     return extended_serial
+
+
+@pytest.fixture
+def assert_collected():
+    """Check that a dropped object was garbage-collected and its threads have ended.
+
+    If it wasn't, the object is closed with ``close``, so that its threads and sockets
+    don't leak into later tests.
+    """
+
+    def check(ref, *threads, close):
+        gc.collect()
+        try:
+            assert ref() is None
+            assert not any(thread.is_alive() for thread in threads)
+        finally:
+            if (obj := ref()) is not None:
+                close(obj)
+
+    return check
+
+
+@pytest.fixture
+def fast_event_loop(mocker):
+    """Shorten the IPC event loops' poll interval, so that they stop quickly."""
+    mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 5)
 
 
 @pytest.fixture

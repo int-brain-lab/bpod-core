@@ -5,6 +5,11 @@ A modern Python interface for Bpod Finite State Machines.
 > [!WARNING]
 > bpod-core is under development and not yet ready for production use.
 
+bpod-core is a Python library for running behavioral experiments on Bpod hardware. You
+describe the trial logic as a finite state machine; bpod-core validates it, runs it on a
+connected Bpod device, and returns every recorded event with precise timestamps as an
+analysis-ready data frame.
+
 Bpod Finite State Machines are an open-source platform by
 [*Sanworks*](https://sanworks.io/) for controlling behavioral experiments: a
 microcontroller-based finite state machine that runs the trial logic in real time and
@@ -15,14 +20,12 @@ operating-system scheduling jitter. This makes Bpod particularly well-suited to
 closed-loop experiments, where state transitions must be triggered by sensor readings
 within a tight, predictable latency.
 
-bpod-core is a Python library for driving Bpod hardware. It grew out of the need for
-a modern, well-tested way to work with Bpod devices from Python, and is designed to fit
-naturally into everyday research workflows.
-
-This project is maintained by the software development team at the
+bpod-core grew out of the need for a modern, well-tested way to work with Bpod devices
+from Python, and is designed to fit naturally into everyday research workflows. It is
+maintained by the software development team at the
 [*International Brain Laboratory*](https://internationalbrainlab.org/).
 
-## Goals
+### Goals
 
 * **Interface to Bpod Devices:** Provides an interface for interacting with Bpod
   devices.
@@ -33,12 +36,29 @@ This project is maintained by the software development team at the
 * **Performance-Oriented:** Designed to be lean and fast.
 * **Quality Assurance:** Typed, tested, and documented.
 
-## Non-Goals
+### Non-Goals
 
 * **No GUI:** Does not include a graphical user interface.
 * **Limited High-Level Functionality:** Does not provide features such as data
   management, configuration, or calibration.
 * **No Specific Module Support:** Does not implement support for specific Bpod modules.
+
+## Installation
+
+bpod-core is available on [PyPI](https://pypi.org/project/bpod-core/):
+
+```console
+pip install bpod-core
+```
+
+See the [installation guide](https://int-brain-lab.github.io/bpod-core/installation/)
+for requirements and recommended setup.
+
+## Feedback and Contributing
+
+Report bugs and request features on the
+[issue tracker](https://github.com/int-brain-lab/bpod-core/issues). To contribute, see
+the [contributing guide](https://int-brain-lab.github.io/bpod-core/contributing/).
 
 ## Links
 

@@ -141,7 +141,6 @@ html_context = {
 }
 html_baseurl = 'https://int-brain-lab.github.io/bpod-core/'
 html_copy_source = False
-html_extra_path = ['robots.txt']
 
 # -- Analytics -----------------------------------------------------------------
 

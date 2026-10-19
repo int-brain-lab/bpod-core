@@ -3,7 +3,7 @@
 
 .. include:: ../../README.md
    :parser: myst_parser.sphinx_
-   :end-before: ## Links
+   :end-before: ## Installation
 
 .. toctree::
    :caption: User Guide

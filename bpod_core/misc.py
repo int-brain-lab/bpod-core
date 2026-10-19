@@ -20,7 +20,7 @@ from enum import IntEnum
 from os import PathLike, strerror
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 import msgspec
 from filelock import FileLock
@@ -33,6 +33,7 @@ K = TypeVar('K', bound=Hashable)
 """Key type variable for generic mappings such as :class:`ValidatedDict`."""
 V = TypeVar('V')
 """Value type variable for generic mappings such as :class:`ValidatedDict`."""
+_H = TypeVar('_H')
 
 _MISSING = object()
 """Sentinel for distinguishing a missing key from a key set to None."""
@@ -689,3 +690,18 @@ def suppress_logging(level: int = logging.CRITICAL) -> Iterator[None]:
         yield
     finally:
         logging.disable(previous)
+
+
+class _HandlerSlot(Generic[_H]):
+    """Holds a handler for a thread, which references only the slot, and only weakly.
+
+    A running thread is never garbage-collected, and neither is anything it references.
+    If a thread referenced its handler, and the handler referred back to the thread's
+    owner - as a bound method, lambda or closure might - the owner could never be
+    collected. Instead, the owner holds the slot and the thread looks the handler up
+    through a weak reference to the slot. The cycle owner → slot → handler → owner is
+    then an ordinary one, which the garbage collector frees.
+    """
+
+    def __init__(self, handler: _H) -> None:
+        self.handler = handler

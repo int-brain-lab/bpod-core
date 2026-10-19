@@ -53,7 +53,7 @@ class FlexIO(AbstractFlexIO):
         n: int,
         *,
         cycle_frequency: int,
-        on_channel_types_changed: Callable[[], None],
+        on_channel_types_changed: Callable[[], object],
         on_analog_sampling_rate_changed: Callable[[], None],
         is_running: Callable[[], bool],
         analog_recording_started: Callable[[], bool],
