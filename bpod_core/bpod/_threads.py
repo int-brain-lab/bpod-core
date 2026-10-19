@@ -716,7 +716,7 @@ class EventThread(threading.Thread):
         return (
             pl.from_numpy(data)
             .lazy()
-            .join(self._event_lookup, on='event_id', how='left')
+            .join(self._event_lookup, on='event_id', how='left', maintain_order='left')
             .with_columns(
                 pl.col('state_id')
                 .replace_strict(

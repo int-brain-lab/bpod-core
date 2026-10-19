@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - live trial events are published in batches rather than one message per event,
   lowering the CPU load while a client is subscribed. `RemoteBpod`'s `event_callback`
   still receives single events.
+- polars 2 is supported (`polars>=1.38,<3`).
 
 ### Removed
 
@@ -34,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `RemoteBpod.get_data` raised a `DeprecationWarning` with polars 1.43.2 or newer.
 - leaving a `Bpod` context did not close its IPC service, so its sockets stayed bound
   until garbage collection and reconnecting right away fell back to random ports.
 - leaving a `Bpod` context did not end its softcode thread, so every connection left

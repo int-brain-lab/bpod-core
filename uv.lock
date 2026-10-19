@@ -293,7 +293,7 @@ requires-dist = [
     { name = "numpy", specifier = "~=2.0" },
     { name = "packaging", specifier = ">=25" },
     { name = "platformdirs", specifier = "~=4.4" },
-    { name = "polars", specifier = "~=1.38" },
+    { name = "polars", specifier = ">=1.38,<3" },
     { name = "psutil", specifier = ">=7" },
     { name = "pydantic", specifier = "~=2.0" },
     { name = "pydantic-extra-types", specifier = "~=2.0" },

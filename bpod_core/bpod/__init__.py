@@ -1728,7 +1728,7 @@ class Bpod(SerialDevice, AbstractBpod):
             empty = pl.DataFrame(schema=_TRIAL_DATA_SCHEMA)
             return empty.lazy() if lazy else empty
         data = self._event_thread.peek_data(trigger_states)
-        return data if lazy else data.collect()
+        return data if lazy else data.collect(engine='in-memory')
 
     @overload
     def get_data(
@@ -1756,8 +1756,9 @@ class Bpod(SerialDevice, AbstractBpod):
         else:
             data = frames[0]
 
-        # return data
-        return data if lazy else data.collect()
+        # trial data is small: the in-memory engine avoids the streaming engine's
+        # start-up cost (polars 2 picks streaming by default)
+        return data if lazy else data.collect(engine='in-memory')
 
     @override
     def stop_state_machine(self) -> None:
@@ -2344,9 +2345,9 @@ class RemoteBpod(AbstractBpod):
                 raise BpodError(e.original_error.message) from e
             raise
 
-        if lazy:
-            return pl.scan_ipc(reply, rechunk=rechunk)
-        return pl.read_ipc(reply, rechunk=rechunk)
+        # rechunk like Bpod.get_data does: concat applies it to both frame types
+        data = pl.scan_ipc(reply) if lazy else pl.read_ipc(reply)
+        return pl.concat([data], rechunk=rechunk)
 
     @override
     @property
