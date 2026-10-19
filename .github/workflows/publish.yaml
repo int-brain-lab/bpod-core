@@ -15,7 +15,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Verify tag matches package version
-        if: github.event_name != 'workflow_dispatch'
         run: |
           PKG_VERSION=$(uv version --short)
           if [ "$PKG_VERSION" != "${GITHUB_REF_NAME}" ]; then
@@ -27,6 +26,8 @@ jobs:
     name: Run CI
     needs: check
     uses: ./.github/workflows/main.yaml
+    with:
+      release: true
     permissions:
       contents: read
 
@@ -59,7 +60,8 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - run: |
           # Define variables
-          PRERELEASE_FLAG=$([[ "${GITHUB_REF_NAME}" =~ (a|b|rc) ]] && echo "--prerelease")
+          PRERELEASE_FLAG=''
+          if [[ "${GITHUB_REF_NAME}" =~ (a|b|rc) ]]; then PRERELEASE_FLAG='--prerelease'; fi
           REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
           PREV_VERSION=$(gh release list --limit 2 | tail -1 | awk '{print $1}')
 
