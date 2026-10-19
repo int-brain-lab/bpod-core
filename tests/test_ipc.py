@@ -3,10 +3,12 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import threading
 import time
 import weakref
+from pathlib import Path
 from typing import Any, NamedTuple
 from uuid import uuid4
 
@@ -86,6 +88,22 @@ class TestLocalServiceAdvertisement:
         assert new.service_file.exists()
         new.close()
         assert not new.service_file.exists()
+
+    def test_folder_removed_while_advertising(self, mock_local_discovery_dir, mocker):
+        """Writing is retried if another process removed the folder just created."""
+        write_bytes = Path.write_bytes
+        calls = []
+
+        def remove_folder_first(path, data):
+            calls.append(path)
+            if len(calls) == 1:
+                shutil.rmtree(mock_local_discovery_dir)
+            return write_bytes(path, data)
+
+        mocker.patch.object(Path, 'write_bytes', remove_folder_first)
+        with ipc.LocalServiceAdvertisement('a', 'type', 'tcp://127.0.0.1:1') as ad:
+            assert ad.service_file.exists()
+        assert len(calls) == 2
 
     def test_close_removes_file(self, mock_local_discovery_dir):
         """close() removes the service file and removes empty parent directories."""

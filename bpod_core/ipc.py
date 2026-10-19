@@ -344,12 +344,19 @@ class LocalServiceAdvertisement:
         )
 
         self.service_file = self._get_service_file(service_type, uuid)
-        self.service_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # write advertisement to JSON file (atomic)
+        # write advertisement to JSON file (atomic), retrying as another process's
+        # close() may prune the folders between mkdir() and write_bytes()
         json_data = msgspec.json.encode(info)
         temp_file = self.service_file.with_suffix('.tmp')
-        temp_file.write_bytes(json_data)
+        for attempt in range(5):
+            try:
+                temp_file.parent.mkdir(parents=True, exist_ok=True)
+                temp_file.write_bytes(json_data)
+                break
+            except (FileNotFoundError, FileExistsError):
+                if attempt == 4:
+                    raise
         temp_file.replace(self.service_file)
         logger.debug("Advertising local service at '%s'", self.service_file)
         self._finalizer = weakref.finalize(

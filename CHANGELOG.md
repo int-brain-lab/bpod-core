@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- starting a service could fail with `FileNotFoundError` while another process on the
+  same machine closed its last service.
 - `RemoteBpod.get_data` raised a `DeprecationWarning` with polars 1.43.2 or newer.
 - leaving a `Bpod` context did not close its IPC service, so its sockets stayed bound
   until garbage collection and reconnecting right away fell back to random ports.
