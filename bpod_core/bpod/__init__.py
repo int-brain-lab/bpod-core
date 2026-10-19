@@ -1732,16 +1732,14 @@ class Bpod(SerialDevice, AbstractBpod):
 
     @overload
     def get_data(
-        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[False] = False
+        self, *, concat: bool = ..., lazy: Literal[False] = False
     ) -> pl.DataFrame: ...
 
     @overload
-    def get_data(
-        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[True]
-    ) -> pl.LazyFrame: ...
+    def get_data(self, *, concat: bool = ..., lazy: Literal[True]) -> pl.LazyFrame: ...
 
     @override
-    def get_data(self, *, concat=True, rechunk=False, lazy=False):
+    def get_data(self, *, concat=True, lazy=False):
         if self._trial_data.empty() and not self.is_running:
             raise BpodError('No trial data available')
 
@@ -1752,7 +1750,7 @@ class Bpod(SerialDevice, AbstractBpod):
                     frames.append(self._trial_data.get(block=False))
                 except Empty:  # noqa: PERF203
                     break
-            data = pl.concat(frames, rechunk=rechunk)
+            data = pl.concat(frames)
         else:
             data = frames[0]
 
@@ -2321,16 +2319,14 @@ class RemoteBpod(AbstractBpod):
 
     @overload
     def get_data(
-        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[False] = False
+        self, *, concat: bool = ..., lazy: Literal[False] = False
     ) -> pl.DataFrame: ...
 
     @overload
-    def get_data(
-        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[True]
-    ) -> pl.LazyFrame: ...
+    def get_data(self, *, concat: bool = ..., lazy: Literal[True]) -> pl.LazyFrame: ...
 
     @override
-    def get_data(self, *, concat=True, rechunk=False, lazy=False):
+    def get_data(self, *, concat=True, lazy=False):
         try:
             reply = self._zmq.request(
                 request_data=RequestData(
@@ -2345,9 +2341,7 @@ class RemoteBpod(AbstractBpod):
                 raise BpodError(e.original_error.message) from e
             raise
 
-        # rechunk like Bpod.get_data does: concat applies it to both frame types
-        data = pl.scan_ipc(reply) if lazy else pl.read_ipc(reply)
-        return pl.concat([data], rechunk=rechunk)
+        return pl.scan_ipc(reply) if lazy else pl.read_ipc(reply)
 
     @override
     @property

@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - `com.FilterValue`, superseded by `filtering.Filter`.
+- the `rechunk` parameter of `get_data`: call `.rechunk()` on the result instead.
 - the unused `qtpy` dependency.
 
 ### Fixed
