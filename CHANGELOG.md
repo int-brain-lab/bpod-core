@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - unplugging the Bpod during a trial went unnoticed: `wait()` returned as if the trial
   had ended normally. It now raises a `BpodError`, and `close()` tolerates the
   vanished port.
+- a blocking `Bpod.peek_data()` could, rarely, hang when its trial ended without
+  reaching a trigger state.
 - module events and softcodes never reached the state machine. Serial events are
   now allocated to modules as in Bpod's MATLAB software and sent to the state
   machine when modules are updated. This also fixes misnumbered input events with

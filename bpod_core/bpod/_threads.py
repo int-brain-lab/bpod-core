@@ -477,6 +477,7 @@ class EventThread(threading.Thread):
         self._buffer: npt.NDArray = np.empty(_INITIAL_BUFFER_SIZE, dtype=_EVENT_DTYPE)
         self._n_events: int = 0
         self._check_trigger = threading.Event()
+        self._finished = False  # set before the final wake-up of peek_data()
         self._event_lookup = event_lookup.lazy()
         self._state_names = fsm.state_names
         self._state_lookup = fsm.state_lookup
@@ -680,6 +681,7 @@ class EventThread(threading.Thread):
                             active_outputs[idx] = val  # noqa: PERF403
         finally:
             self._enqueue_data()
+            self._finished = True
             self._check_trigger.set()
 
     @property
@@ -752,7 +754,8 @@ class EventThread(threading.Thread):
         while True:
             self._check_trigger.clear()
             view = self._buffer_view
-            if np.any(np.isin(view['state_id'], target_ids)) or not self.is_alive():
+            # check the flag rather than is_alive(): the thread outlives its last set()
+            if np.any(np.isin(view['state_id'], target_ids)) or self._finished:
                 return self._to_lazyframe(view.copy())
             self._check_trigger.wait()
 

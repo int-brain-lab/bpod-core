@@ -588,6 +588,20 @@ class TestEventThread:
         df = thread.peek_data().collect()
         assert len(df) > 0
 
+    def test_peek_data_after_last_wake_up(self, mocker, make_thread):
+        """A blocking peek_data() returns once the thread is done, while still alive."""
+        thread, _ = make_thread()
+        thread.stop()
+        thread.join(timeout=2)
+        mocker.patch.object(thread, 'is_alive', return_value=True)  # just after set()
+        snapshots = []
+        peek = threading.Thread(
+            target=lambda: snapshots.append(thread.peek_data(['S1'])), daemon=True
+        )
+        peek.start()
+        peek.join(timeout=1)
+        assert snapshots
+
     def test_buffer_growth(self, mocker, make_thread):
         """Buffer doubles correctly."""
         init_buffer_size = 10
