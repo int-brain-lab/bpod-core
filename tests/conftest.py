@@ -15,6 +15,7 @@ fixture_bpod_all = {
     b'v': b'\x01',
     b'C[\\x00\\x01]{2}.*': b'',
     rb'\*': b'\x01',
+    b'X': b'',  # stop state machine / analog acquisition (fire-and-forget, no ack)
 }
 
 # Bpod 2.0 with firmware version 22

@@ -40,7 +40,13 @@ class AbstractBpod(AbstractContextManager):
 
     @property
     def flex_io(self) -> 'AbstractFlexIO':
-        """The FlexIO subsystem."""
+        """
+        The FlexIO subsystem.
+
+        On supported hardware (e.g. Bpod Finite State Machine r2+),
+        :attr:`~bpod_core.bpod.Bpod.flex_io` acts as a read-only mapping for configuring
+        the FlexIO subsystem.
+        """
         if self._flex_io is None:
             if self._hardware.n_flexio == 0:
                 raise RuntimeError(

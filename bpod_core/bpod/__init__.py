@@ -389,15 +389,44 @@ class Bpod(SerialDevice, AbstractBpod):
             If the port could not be closed.
         """
         self.wait()
+        serial0_open = hasattr(self, '_serial') and getattr(
+            self._serial, 'is_open', False
+        )
+        if serial0_open:
+            # firmware keeps streaming FlexIO analog samples on its own serial port
+            # until explicitly told to stop - even after a trial ends naturally via
+            # '>exit', unlike stop_state_machine() this isn't gated on is_running,
+            # so the next connection's discovery handshake doesn't race stray bytes
+            self._serial.write(b'X')
         self._softcode_thread.drain()
         if self._analog_reader_thread is not None:
-            self._analog_reader_thread.close()  # stops the thread + closes the serial
+            self._analog_reader_thread.stop()  # thread stopped, serial still open
             self._analog_reader_thread = None
-        elif self._flexio_serial is not None and self._flexio_serial.is_open:
+        if self._flexio_serial is not None and self._flexio_serial.is_open:
+            # discard any analog samples firmware sent (or was still sending) up to
+            # the 'X' above, so a stale byte can't be misread as the next
+            # connection's discovery-handshake response
+            self._discard_stray_bytes(self._flexio_serial, 'the FlexIO serial port')
             self._flexio_serial.close()
         if hasattr(self, 'serial0'):
             self._request_disconnect(self.serial0)
+        if serial0_open:
+            # discard anything unread at this point - we're about to abandon the
+            # connection either way, so this just keeps a straggler byte from
+            # confusing the next connection's own handshake on this port
+            self._discard_stray_bytes(self._serial, 'serial0')
         super().close()
+
+    @staticmethod
+    def _discard_stray_bytes(serial: ExtendedSerial, name: str) -> None:
+        """Read and discard any bytes waiting on `serial`, logging how many."""
+        discarded = serial.read_all()
+        if discarded:
+            logger.warning(
+                'Discarded %d stray byte(s) from %s before closing it',
+                len(discarded),
+                name,
+            )
 
     @staticmethod
     def _request_disconnect(serial: ExtendedSerial) -> None:
@@ -1338,7 +1367,7 @@ class Bpod(SerialDevice, AbstractBpod):
             # validate action values
             for action_name, action_value in state.actions.items():
                 flex_channel = self._flex_io.get(action_name) if self._flex_io else None
-                if (
+                is_flexio_analog_output = (
                     flex_channel is not None
                     and flex_channel.channel_type == FlexIOChannelType.ANALOG_OUTPUT
                 )
@@ -2107,8 +2136,13 @@ class Bpod(SerialDevice, AbstractBpod):
             If no data is available and no FlexIO channel is currently configured as
             ``ANALOG_INPUT``.
         """
-        if self._analog_data.empty() and self._analog_reader_thread is None:
-            raise BpodError('No FlexIO analog-input data available')
+        if not self._hardware.n_flexio:
+            raise BpodError(
+                f'Bpod Finite State Machine {self._version.machine_str} does not have '
+                f'FlexIO channels.'
+            )
+        # if self._analog_reader_thread is None:
+        #     raise BpodError('No FlexIO channels configured for analog input')
         return self._drain_queue(
             self._analog_data,
             concat=concat,
