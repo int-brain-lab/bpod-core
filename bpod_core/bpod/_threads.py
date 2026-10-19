@@ -596,7 +596,7 @@ class EventThread(threading.Thread):
         state_action_indices = self._state_action_indices
         resettable_indices = self._resettable_indices
         use_back_op = self._use_back_op
-        target_exit = state_transition_matrix.shape[0]
+        target_exit = len(state_transition_matrix)
         target_back = 255
         stateless_events = (
             _EventID.START_FSM,
@@ -644,9 +644,7 @@ class EventThread(threading.Thread):
                     if current_state < 0:  # FSM already exited - record event only
                         continue
                     # define the target state based on the state transition matrix
-                    target_state = int(
-                        state_transition_matrix[current_state][event_index]
-                    )
+                    target_state = state_transition_matrix[current_state][event_index]
                     if target_state == current_state:  # no transition
                         continue
                     if target_state == target_exit:  # state exited without a successor

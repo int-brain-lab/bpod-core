@@ -9,7 +9,6 @@ import time
 from queue import SimpleQueue
 from typing import TYPE_CHECKING
 
-import numpy as np
 import polars as pl
 import pytest
 from serial import SerialException
@@ -298,7 +297,7 @@ def _make_fsm(
     state_actions: list[dict[str, int]] | None = None,
 ) -> StateMachineLookup:
     """Build a minimal CompiledStateMachine for testing."""
-    mat = np.arange(n_states, dtype=np.uint8)[:, np.newaxis].repeat(255, axis=1)
+    mat = [[state] * 255 for state in range(n_states)]
     for (state, event), target in (transitions or {}).items():
         mat[state][event] = target
     state_names = [f'S{i}' for i in range(n_states)]

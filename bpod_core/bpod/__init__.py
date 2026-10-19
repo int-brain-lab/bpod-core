@@ -16,7 +16,6 @@ from typing import Any, ClassVar, Literal, cast, overload
 from uuid import uuid5
 
 import msgspec
-import numpy as np
 import polars as pl
 from cachetools import FIFOCache
 from pydantic import ConfigDict, validate_call
@@ -1292,9 +1291,7 @@ class Bpod(SerialDevice, AbstractBpod):
         timer_channel_indices = self._timer_channel_indices
 
         # build the state transition matrix (n_states x 255 events)
-        state_transition_matrix = np.arange(n_states, dtype=np.uint8)[
-            :, np.newaxis
-        ].repeat(255, axis=1)
+        state_transition_matrix = [[state_idx] * 255 for state_idx in range(n_states)]
         for state_idx, state in enumerate(states):
             for event, target in state.transitions.items():
                 state_transition_matrix[state_idx][event_indices[event]] = (
@@ -1351,7 +1348,8 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # STATE TIMER TARGET INDICES (n_states bytes):
         # Target state index for each state's 'Tup' event (defaults to self)
-        fsm_bytes.extend(state_transition_matrix[:, event_indices['Tup']].tobytes())
+        tup_index = event_indices['Tup']
+        fsm_bytes.extend(targets[tup_index] for targets in state_transition_matrix)
 
         # INPUT EVENTS (variable length, per state):
         #   [count] [event_idx, target_idx] ...  for events on physical input channels
