@@ -8,7 +8,7 @@ import weakref
 from collections.abc import Callable, Collection
 from enum import IntEnum, auto
 from queue import SimpleQueue
-from typing import get_args
+from typing import cast, get_args
 
 import numpy as np
 import numpy.typing as npt
@@ -47,6 +47,13 @@ _OUTPUT_ID_OFFSET = 1000
 
 _SOFTCODE_STOP = RawSoftcode(-1, 0, 0)
 """Sentinel that ends :class:`SoftcodeThread` once the softcodes before it are done."""
+
+
+class _DrainMarker(RawSoftcode):
+    """Queued by :meth:`SoftcodeThread.drain`; ``done`` is set once it is reached."""
+
+    done: threading.Event
+
 
 _EVENT_DTYPE = np.dtype(
     [
@@ -790,17 +797,20 @@ class SoftcodeThread(threading.Thread):
         super().__init__(name='SoftcodeThread', daemon=True)
         self.queue: SimpleQueue[RawSoftcode] = SimpleQueue()
         self._handler_slot = weakref.ref(handler_slot)
-        self._idle = threading.Event()
-        self._idle.set()
         self._pc_base_ns: int = 0  # perf_counter_ns equivalent of session clock t=0
 
     def drain(self) -> None:
-        """Block until the queue is empty and any running handler has returned."""
-        if self is threading.current_thread():
-            return  # called by a handler, which would otherwise wait for itself
-        if not self._idle.is_set():
+        """Block until the softcodes queued so far have been handled."""
+        if self is threading.current_thread() or not self.is_alive():
+            return  # a handler would wait for itself; a dead thread handles nothing
+        marker = _DrainMarker(-2, 0, 0)
+        marker.done = threading.Event()
+        self.queue.put(marker)
+        if not marker.done.wait(timeout=0.1):
             logger.warning('Waiting for softcodes to be processed ...')
-        self._idle.wait()
+            while not marker.done.wait(timeout=0.1):
+                if not self.is_alive():  # stopped before reaching the marker
+                    return
 
     def stop(self) -> None:
         """Process the softcodes still queued, then end the thread."""
@@ -827,7 +837,9 @@ class SoftcodeThread(threading.Thread):
         # enter the reading loop
         while (item := queue.get()) is not _SOFTCODE_STOP:
             softcode, received_ns, micros_us = item
-            self._idle.clear()
+            if softcode < 0:  # a marker from drain(): the softcodes before it are done
+                cast('_DrainMarker', item).done.set()
+                continue
             handler = None if (slot := handler_slot()) is None else slot.handler
             if handler is not None:
                 try:
@@ -857,5 +869,3 @@ class SoftcodeThread(threading.Thread):
                     'Received softcode %d from Bpod but no handler is defined', softcode
                 )
             del slot, handler  # waiting for the next softcode mustn't pin the owner
-            if queue.empty():
-                self._idle.set()

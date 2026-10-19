@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vanished port.
 - a blocking `Bpod.peek_data()` could, rarely, hang when its trial ended without
   reaching a trigger state.
+- closing a `Bpod` could disconnect before the last softcodes were handled.
 - module events and softcodes never reached the state machine. Serial events are
   now allocated to modules as in Bpod's MATLAB software and sent to the state
   machine when modules are updated. This also fixes misnumbered input events with

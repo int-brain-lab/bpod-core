@@ -15,6 +15,7 @@ import pytest
 from serial import SerialException
 
 from bpod_core.bpod._threads import (
+    _SOFTCODE_STOP,
     _TRIAL_DATA_SCHEMA,
     EventThread,
     ReadThread,
@@ -741,6 +742,45 @@ class TestSoftcodeThread:
         thread.queue.put(RawSoftcode(1, 0, 0))
         thread.stop()
         assert 'no handler' not in caplog.text
+
+    def test_drain_waits_for_queued_softcodes(self):
+        """drain() returns only once the softcodes queued before it are handled."""
+        received = []
+        gate = threading.Event()
+
+        class GatedQueue(SimpleQueue):  # a thread slow to pick up its next softcode
+            def get(self, *args, **kwargs):
+                gate.wait()
+                return super().get(*args, **kwargs)
+
+        slot = _HandlerSlot(received.append)
+        thread = SoftcodeThread(handler_slot=slot)
+        thread.queue = GatedQueue()
+        thread.start()
+        thread.queue.put(RawSoftcode(5, 0, 0))
+        drainer = threading.Thread(target=thread.drain, daemon=True)
+        drainer.start()
+        drainer.join(timeout=0.05)
+        assert drainer.is_alive()  # still waiting for softcode 5
+        gate.set()
+        drainer.join(timeout=2)
+        assert not drainer.is_alive()
+        assert received == [5]
+        thread.stop()
+
+    def test_drain_after_stop(self, make_thread):
+        """drain() returns once the thread stops, even before reaching its marker."""
+        release = threading.Event()
+        thread = make_thread(handler=lambda _: release.wait())
+        thread.queue.put(RawSoftcode(1, 0, 0))
+        thread.queue.put(_SOFTCODE_STOP)  # as stop() does, without waiting
+        drainer = threading.Thread(target=thread.drain, daemon=True)
+        drainer.start()
+        drainer.join(timeout=0.05)
+        assert drainer.is_alive()  # its marker is queued behind the stop sentinel
+        release.set()
+        drainer.join(timeout=2)
+        assert not drainer.is_alive()
 
     def test_drain_from_handler(self, make_thread):
         """drain() called from within a handler returns instead of waiting forever."""
