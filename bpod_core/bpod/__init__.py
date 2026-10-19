@@ -722,15 +722,22 @@ class Bpod(SerialDevice, AbstractBpod):
         for module in self.modules.values():
             module.set_relay(False)
 
-    def _compile_input_events(self) -> None:
-        """Compile input events supported by the Bpod hardware."""
+    def _compile_input_events(self) -> bytes:
+        """Compile input events supported by the Bpod hardware.
+
+        Returns
+        -------
+        bytes
+            The number of events per serial channel, in the order of the channels.
+        """
         hw = self._hardware
-        n_serial_events = sum(len(m.event_names) for m in self.modules.values())
+        n_serial_events = sum(m.n_events for m in self.modules.values())
         n_softcodes = hw.max_serial_events - n_serial_events
         n_usb = hw.input_description.count(b'X')
         n_usb_ext = hw.input_description.count(b'Z')
         n_softcodes_per_usb = n_softcodes // (n_usb + n_usb_ext)
         n_app_softcodes = n_usb_ext * n_softcodes_per_usb
+        serial_event_allocation: list[int] = []
         event_names: list[str] = []
         event_channels: list[str | None] = []
         event_values: list[int | None] = []
@@ -765,6 +772,8 @@ class Bpod(SerialDevice, AbstractBpod):
             else:
                 logger.warning('Skipping unsupported input channel: %s', io_key)
                 continue
+            if io_key in b'UXZ':
+                serial_event_allocation.append(len(ev_names))
             event_names.extend(ev_names)
             event_channels.extend(ev_channels)
             event_values.extend(ev_values)
@@ -832,6 +841,7 @@ class Bpod(SerialDevice, AbstractBpod):
             k: v
             for v, k in enumerate(modules + physical_input_channels + global_timers)
         }
+        return bytes(serial_event_allocation)
 
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""
@@ -890,6 +900,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # self._disable_all_module_relays()
         self.serial0.write(b'M')
         modules = []
+        n_requested = [0] * self._hardware.n_modules
         for idx in range(self._hardware.n_modules):
             # check connection state
             if not (is_connected := self.serial0.read_bool()):
@@ -898,7 +909,6 @@ class Bpod(SerialDevice, AbstractBpod):
                 continue
 
             # read further information if module is connected
-            n_events = N_SERIAL_EVENTS_DEFAULT
             firmware_version, n_chars = self.serial0.read_struct('<IB')
             base_name, more_info = self.serial0.read_struct(f'<{n_chars}s?')
             base_name = base_name.decode('UTF8')
@@ -906,7 +916,9 @@ class Bpod(SerialDevice, AbstractBpod):
             while more_info:
                 match self.serial0.read(1):
                     case b'#':
-                        n_events = self.serial0.read_uint8()
+                        n_requested[idx] = self.serial0.read_uint8()
+                    case b'V' | b'v':  # hardware version: major / minor
+                        self.serial0.read(1)
                     case b'E':
                         n_event_names = self.serial0.read_uint8()
                         for _ in range(n_event_names):
@@ -929,20 +941,28 @@ class Bpod(SerialDevice, AbstractBpod):
                     name=module_name,
                     is_connected=is_connected,
                     firmware_version=firmware_version,
-                    n_events=n_events,
                     _custom_event_names=custom_event_names,
                 ),
             )
 
+        n_events = _allocate_module_events(modules, n_requested)
+        for module, n in zip(modules, n_events, strict=True):
+            module.n_events = n
         self.modules = _ModuleDict(
             {m.name: m for m in modules},
             available_modules=[m.name for m in modules if m.is_connected],
         )
 
         # update event names and output actions
-        self._compile_input_events()
+        serial_event_allocation = self._compile_input_events()
         self._compile_output_actions()
         self._event_lookup = _build_event_lookup(self._input_events, self._actions)
+
+        # tell the state machine how many events each serial channel may report -
+        # until then, it drops all module events and softcodes
+        if not self.serial0.verify(b'%' + serial_event_allocation):
+            raise BpodError('State machine did not acknowledge serial event allocation')
+        logger.debug('Serial event allocation sent: %s', list(serial_event_allocation))
 
         # compute hardware identity hash for cache keying
         self._hardware_hash = self._compute_hardware_hash()
@@ -1974,18 +1994,6 @@ class Module:
             return f'{self.name} on module port {self.index + 1})'
         return self.name
 
-    def __post_init__(self) -> None:
-        self._define_event_names()
-
-    def _define_event_names(self) -> None:
-        """Define the module's event names."""
-        self._event_names = []
-        for idx in range(self.n_events):
-            if len(self._custom_event_names) > idx:
-                self._event_names.append(f'{self.name}_{self._custom_event_names[idx]}')
-            else:
-                self._event_names.append(f'{self.name}_{idx}')
-
     @validate_call()
     def set_relay(self, enabled: bool) -> None:  # noqa: FBT001
         """
@@ -2068,7 +2076,73 @@ class Module:
     @property
     def event_names(self) -> list[str]:
         """A list of event names associated with the module."""
-        return self._event_names
+        names = self._custom_event_names[: self.n_events]
+        names += [str(idx) for idx in range(len(names), self.n_events)]
+        return [f'{self.name}_{name}' for name in names]
+
+
+def _allocate_module_events(modules: list[Module], n_requested: list[int]) -> list[int]:
+    """Allocate serial events to module ports, as Bpod's MATLAB software does.
+
+    The module ports share a fixed budget of 15 events per port
+    (``N_SERIAL_EVENTS_DEFAULT``). Requests are met by moving events between ports, so
+    the softcodes' share of the state machine's serial events is never touched:
+
+    1. Every port starts with 15 events, including ports whose module requests fewer.
+    2. Modules requesting more than 15 events are served in port order. Each takes the
+       missing events from the ports in reverse order, starting with the last port:
+
+       - unused ports and valve modules give up all of their events,
+       - modules that requested fewer events than they hold give up the surplus,
+       - all other modules give up nothing.
+
+    3. If the ports cannot cover a request, a :class:`BpodError` is raised.
+
+    For example, a Bpod 2+ with a module requesting 24 events on port 1 and no modules
+    on ports 2 and 3 gets ``[24, 15, 6]``: port 3 gives up the 9 missing events.
+
+    Unlike in MATLAB, a module that can cover only part of a request gives up just its
+    surplus, not all of its events.
+
+    Parameters
+    ----------
+    modules : list of Module
+        The modules, ordered by port.
+    n_requested : list of int
+        The number of events requested by each module, 0 if it did not request any.
+
+    Returns
+    -------
+    list of int
+        The number of events allocated to each module port.
+
+    Raises
+    ------
+    BpodError
+        If the requested events exceed the events available.
+    """
+    n_events = [N_SERIAL_EVENTS_DEFAULT] * len(modules)
+    n_reserved = [  # events a port keeps: none for unused ports and valve modules
+        (n or N_SERIAL_EVENTS_DEFAULT)
+        if m.is_connected and 'ValveModule' not in m.name
+        else 0
+        for m, n in zip(modules, n_requested, strict=True)
+    ]
+    for idx, n in enumerate(n_requested):
+        n_missing = n - n_events[idx]
+        if n_missing <= 0:
+            continue
+        n_events[idx] = n
+        for pos in reversed(range(len(modules))):
+            n_taken = min(max(n_events[pos] - n_reserved[pos], 0), n_missing)
+            n_events[pos] -= n_taken
+            n_missing -= n_taken
+        if n_missing > 0:
+            raise BpodError(
+                f'{modules[idx].name} requests {n} serial events, but only '
+                f'{n - n_missing} are available - please reconfigure modules'
+            )
+    return n_events
 
 
 class RemoteBpod(AbstractBpod):

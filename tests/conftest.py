@@ -15,6 +15,7 @@ fixture_bpod_all = {
     b'v': b'\x01',
     b'C[\\x00\\x01]{2}.*': b'',
     rb'\*': b'\x01',
+    b'%': b'\x01',
 }
 
 # Bpod 2.0 with firmware version 22
