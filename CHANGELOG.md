@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   matching only `None`-valued or missing attributes.
 - trial data is read from the Bpod in chunks rather than message by message, which
   lowers the CPU load at high event and softcode rates.
+- live trial events are published in batches rather than one message per event,
+  lowering the CPU load while a client is subscribed. `RemoteBpod`'s `event_callback`
+  still receives single events.
 
 ### Removed
 

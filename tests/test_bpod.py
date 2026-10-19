@@ -569,7 +569,7 @@ def test_dropped_remote_bpod_cleans_up(real_ipc, assert_collected):
         remote = RemoteBpod(address=bpod.address, event_callback=events.append)
         deadline = time.monotonic() + 2
         while not events and time.monotonic() < deadline:  # slow-joiner safe
-            bpod._zmq.publish(EventTrialStart(time_us=0, trial=0, fsm_hash='00'))
+            bpod._zmq.publish([EventTrialStart(time_us=0, trial=0, fsm_hash='00')])
             time.sleep(0.02)
         assert events
         remote_ref = weakref.ref(remote)
@@ -658,8 +658,8 @@ class TestRemoteBpodEventCallback:
         remote = RemoteBpod(address='tcp://127.0.0.1:1', event_callback=received.append)
         kwargs = mock_client.call_args.kwargs
         assert kwargs['event_handler'] == remote._event_handler
-        assert kwargs['event_type'] is BpodEventUnion
+        assert kwargs['event_type'] == list[BpodEventUnion]
 
         message = EventTrialStart(time_us=0, trial=0, fsm_hash='00')
-        remote._event_handler(message)
+        remote._event_handler([message])
         assert received == [message]

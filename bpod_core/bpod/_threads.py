@@ -448,13 +448,14 @@ class EventThread(threading.Thread):
     time_reference : TimeReferences
         Reference values for performance counters.
     publish : Callable
-        Called with one :class:`~bpod_core.bpod.structs.BpodEventUnion` message per
-        recorded hardware event; return values are ignored. Publishing is best-effort:
-        exceptions are logged but do not interrupt trial recording.
+        Called with a list of :class:`~bpod_core.bpod.structs.BpodEventUnion`
+        messages recorded since the previous call, once the thread has caught up with
+        the queue. Return values are ignored. Publishing is best-effort: exceptions are
+        logged but do not interrupt trial recording.
     publish_gate : Callable
-        Zero-argument callable consulted before resolving and publishing each message;
-        returning False skips that work entirely. Checked per message, so a subscriber
-        appearing mid-trial picks up the stream from there.
+        Zero-argument callable consulted before resolving each message; returning False
+        skips that work entirely. Checked per message, so a subscriber appearing
+        mid-trial picks up the stream from there.
     """
 
     queue: SimpleQueue[RawEvent]
@@ -469,7 +470,7 @@ class EventThread(threading.Thread):
         event_lookup: pl.DataFrame,
         action_names: list[str],
         time_reference: TimeReferences,
-        publish: Callable[[BpodEventUnion], object],
+        publish: Callable[[list[BpodEventUnion]], object],
         publish_gate: Callable[[], bool],
     ) -> None:
         super().__init__(name='EventThread', daemon=True)
@@ -514,6 +515,7 @@ class EventThread(threading.Thread):
             for row in event_lookup.iter_rows(named=True)
         }
         self._n_published: int = 0
+        self._pending: list[BpodEventUnion] = []  # messages not published yet
 
     def stop(self) -> None:
         """Signal the FSM thread to stop."""
@@ -539,7 +541,7 @@ class EventThread(threading.Thread):
         )
         self._n_events += 1
 
-        # publish the event using ZeroMQ
+        # queue the event's message for _flush()
         try:
             # Skip resolution and struct construction if nobody is listening.
             if not self._publish_gate():
@@ -584,10 +586,18 @@ class EventThread(threading.Thread):
                 case _:
                     logger.warning('Not publishing unknown event type: %s', kind)
                     return
-            self._publish(message)
+            self._pending.append(message)
             self._n_published += 1
         except Exception:
-            logger.exception('Failed to publish trial event')
+            logger.exception('Failed to build trial event message')
+
+    def _flush(self) -> None:
+        """Publish the messages collected since the last call, as one batch."""
+        batch, self._pending = self._pending, []
+        try:
+            self._publish(batch)
+        except Exception:
+            logger.exception('Failed to publish trial events')
 
     def run(self) -> None:
         """Execute the EventThread."""
@@ -611,6 +621,10 @@ class EventThread(threading.Thread):
 
         try:
             while True:
+                # once the backlog is processed, publish its messages as one batch
+                if self._pending and event_queue.empty():
+                    self._flush()
+
                 # get the next event
                 bpod_count_us, event_index = event_queue.get()
 
@@ -685,6 +699,8 @@ class EventThread(threading.Thread):
                         if idx in resettable_indices and val > 0:
                             active_outputs[idx] = val  # noqa: PERF403
         finally:
+            if self._pending:
+                self._flush()
             self._enqueue_data()
             self._finished = True
             self._check_trigger.set()

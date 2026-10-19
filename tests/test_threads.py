@@ -323,7 +323,7 @@ class TestEventThread:
             action_names: list[str] | None = None,
             event_names: list[str] | None = None,
             time_reference: TimeReferences | None = None,
-            publish: Callable[[BpodEventUnion], object] | None = None,
+            publish: Callable[[list[BpodEventUnion]], object] | None = None,
             should_publish: Callable[[], bool] | None = None,
         ) -> tuple[EventThread, SimpleQueue[pl.LazyFrame]]:
             action_names = action_names or []
@@ -394,7 +394,7 @@ class TestEventThread:
         """Published messages mirror the trial DataFrame's event rows in order."""
         published = []
         fsm = _make_fsm(transitions={(0, 0): 1})
-        thread, data_queue = make_thread(fsm=fsm, publish=published.append)
+        thread, data_queue = make_thread(fsm=fsm, publish=published.extend)
         self._put_full_trial(thread)
         thread.stop()
         thread.join(timeout=2)
@@ -430,7 +430,7 @@ class TestEventThread:
         """should_publish=False skips publishing entirely; trial data remains."""
         published = []
         thread, data_queue = make_thread(
-            publish=published.append, should_publish=lambda: False
+            publish=published.extend, should_publish=lambda: False
         )
         self._put_full_trial(thread)
         thread.stop()
@@ -445,7 +445,7 @@ class TestEventThread:
         # event 0 in S0 exits without a successor (target == n_states)
         fsm = _make_fsm(transitions={(0, 0): 2})
         with caplog.at_level(logging.ERROR, logger='bpod_core.bpod._threads'):
-            thread, data_queue = make_thread(fsm=fsm, publish=published.append)
+            thread, data_queue = make_thread(fsm=fsm, publish=published.extend)
             thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
             thread.queue.put(RawEvent(micros_us=10, event_id=0))  # S0 -> exit
             thread.queue.put(RawEvent(micros_us=20, event_id=0))  # after exit
@@ -470,7 +470,7 @@ class TestEventThread:
     def test_aborted_trial_publishes_no_trial_end(self, make_thread):
         """Without a hardware exit packet, no end messages are published."""
         published = []
-        thread, data_queue = make_thread(publish=published.append)
+        thread, data_queue = make_thread(publish=published.extend)
         thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_FSM))
         thread.queue.put(RawEvent(micros_us=0, event_id=0))
         thread.stop()
@@ -485,7 +485,7 @@ class TestEventThread:
     def test_publish_failure_does_not_interrupt_recording(self, make_thread, caplog):
         """A raising publish callable is logged but does not affect the trial data."""
 
-        def broken_publish(_: BpodEventUnion) -> None:
+        def broken_publish(_: list[BpodEventUnion]) -> None:
             raise RuntimeError('boom')
 
         with caplog.at_level(logging.ERROR, logger='bpod_core.bpod._threads'):

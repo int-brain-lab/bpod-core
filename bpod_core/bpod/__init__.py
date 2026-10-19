@@ -147,7 +147,7 @@ class Bpod(SerialDevice, AbstractBpod):
     _settings: SettingsDict
     _read_thread: ReadThread | None = None
     _event_thread: EventThread | None = None
-    _zmq: ServiceHost[BpodRequestUnion, BpodEventUnion]
+    _zmq: ServiceHost[BpodRequestUnion, list[BpodEventUnion]]
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
@@ -2168,7 +2168,7 @@ class RemoteBpod(AbstractBpod):
     timeout : float, default: 10.0
         Discovery timeout in seconds.
     event_callback : Callable, optional
-        Called with each live trial-event message received over the events channel;
+        Called with each live trial event received over the events channel;
         return values are ignored. Runs on a background thread and should not block;
         exceptions it raises are logged but not propagated.
 
@@ -2178,7 +2178,7 @@ class RemoteBpod(AbstractBpod):
         If no matching remote Bpod is found within `timeout` seconds.
     """
 
-    _zmq: ServiceClient[BpodRequestUnion, BpodReplyUnion, BpodEventUnion]
+    _zmq: ServiceClient[BpodRequestUnion, BpodReplyUnion, list[BpodEventUnion]]
     _name: str | None = None
     _location: str | None = None
     _event_callback: Callable[[BpodEventUnion], object] | None = None
@@ -2211,7 +2211,7 @@ class RemoteBpod(AbstractBpod):
                     'location': location,
                 },
                 default_reply_type=BpodReplyUnion,
-                event_type=BpodEventUnion if subscribe else Any,
+                event_type=list[BpodEventUnion] if subscribe else Any,
             )
         except TimeoutError as e:
             raise TimeoutError('Failed to discover remote Bpod.') from e
@@ -2296,23 +2296,27 @@ class RemoteBpod(AbstractBpod):
         self._name = reply.name
         self._location = reply.location
 
-    def _event_handler(self, message: BpodEventUnion) -> None:
-        """Handle a message received on the PUB/SUB channel.
+    def _event_handler(self, messages: list[BpodEventUnion]) -> None:
+        """Handle a batch of messages received on the PUB/SUB channel.
 
         Logs selected messages, then forwards each message to the ``event_callback``
         given at construction.
 
         Parameters
         ----------
-        message : BpodEventUnion
-            The decoded message.
+        messages : list of BpodEventUnion
+            The decoded messages, in the order they were recorded.
         """
-        if logger.isEnabledFor(logging.INFO):
+        for message in messages:
             match message:
                 case EventTrialStart(trial=trial, fsm_hash=fsm_hash):
                     logger.info('Starting state machine %s / trial %s', fsm_hash, trial)
-        if self._event_callback is not None:
-            self._event_callback(message)
+            if self._event_callback is not None:
+                # a failing callback mustn't cost the rest of the batch
+                try:
+                    self._event_callback(message)
+                except Exception:
+                    logger.exception('event_callback raised an exception')
 
     @overload
     def get_data(
