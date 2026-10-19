@@ -19,8 +19,8 @@ jobs:
       contents: read
     if: (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.base_ref == 'main') || github.event_name == 'workflow_call'
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Verify lockfile
         run: |
           uv lock --check || (echo "::error file=uv.lock::uv.lock is not up to date" && exit 1)
@@ -46,12 +46,12 @@ jobs:
     name: "ruff & mypy"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/ruff-action@v4.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
         with:
           version-file: uv.lock
       - run: ruff format --check
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           prune-cache: true
@@ -67,12 +67,12 @@ jobs:
     steps:
       - name: Install libegl1 (Ubuntu only)
         if: matrix.os == 'ubuntu-latest'
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
         with:
           packages: libegl1
           version: 1.0
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           prune-cache: true
@@ -87,7 +87,7 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - uses: coverallsapp/github-action@v2
+      - uses: coverallsapp/github-action@8d6379e14d29928660c4ba802d8e85393440b329 # v2.3.8
         continue-on-error: true
         with:
           parallel-finished: true
