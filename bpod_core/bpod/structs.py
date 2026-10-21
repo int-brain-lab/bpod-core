@@ -1,5 +1,6 @@
 """Data structures used by the bpod module."""
 
+from collections.abc import Sequence
 from enum import IntEnum
 from typing import Any, Literal, NamedTuple, TypeAlias
 
@@ -71,13 +72,13 @@ class TimeReferences(NamedTuple):
     """System time when Bpod's session clock was last reset (nanoseconds)."""
 
 
-class RawEvent(NamedTuple):
-    """Raw event data from the Bpod device."""
+class _RawEvents(NamedTuple):
+    """Raw events of one state machine cycle, or a single synthetic event."""
 
     micros_us: int
-    """Time of the event relative to the Bpod's session clock (microseconds)."""
-    event_id: int
-    """Index of the event."""
+    """Time of the events relative to the Bpod's session clock (microseconds)."""
+    event_ids: Sequence[int]
+    """Indices of the events, in the order the Bpod evaluates them."""
 
 
 class RawSoftcode(NamedTuple):
