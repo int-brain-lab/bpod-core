@@ -198,7 +198,10 @@ class ReadThread(threading.Thread):
 
     After the loop, the thread takes the 12-byte end-of-trial packet (``uInt32`` cycle
     count + ``uInt64`` µs timestamp, unpacked via :attr:`_struct_exit`) and enqueues
-    :attr:`~_EventID.END_FSM_CYCLES` and :attr:`~_EventID.END_FSM_MICROS`. Bytes read
+    :attr:`~_EventID.END_FSM_CYCLES` and :attr:`~_EventID.END_FSM_MICROS`. Like every
+    other event, :attr:`~_EventID.END_FSM_CYCLES` is timed by the exit packet's cycle
+    count, and the timing check compares that same time with the µs timestamp. The
+    end-of-trial packet's own cycle count is ignored. Bytes read
     beyond that packet belong to the next trial, which the Bpod starts right away if
     one is queued; they are kept in :attr:`leftover` for the next ``ReadThread``.
     A :attr:`~_EventID.STOP_SENTINEL` is always enqueued in ``finally`` so
@@ -368,10 +371,13 @@ class ReadThread(threading.Thread):
                 received_ns = self._received_ns
 
             # the Bpod sends two values after exiting the state machine trial:
-            # 1) n_cycles - the number of hardware timer callbacks executed (uInt32)
+            # 1) the number of hardware timer callbacks executed (uInt32) - ignored: for
+            #    a queued trial, it also counts the cycle in which the previous trial
+            #    ended (firmware quirk). n_cycles keeps the exit packet's cycle count,
+            #    the time base of all events.
             # 2) bpod_micros - the microsecond count at the end of the trial (uInt64)
             del buffer[:pos]
-            n_cycles, end_micros_us = self._struct_exit.unpack(self._take(12))
+            _, end_micros_us = self._struct_exit.unpack(self._take(12))
 
             # anything beyond belongs to the next trial, if one has been queued
             self.leftover = bytes(buffer)

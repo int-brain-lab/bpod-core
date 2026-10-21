@@ -306,8 +306,8 @@ class EventTrialEnd(BpodMessage, tag=_EventTag.TrialEnd.value):
     """
 
     time_us: int
-    """Absolute time of the trial end, derived from the hardware cycle count
-    (microseconds since epoch, UTC)."""
+    """Absolute time of the trial end, derived from the exit event's hardware cycle
+    count like all other event times (microseconds since epoch, UTC)."""
 
     trial: int
     """Zero-based trial index."""
@@ -318,8 +318,8 @@ class EventTrialEndControl(BpodMessage, tag=_EventTag.TrialEndControl.value):
     Message terminating a trial's stream with timing-verification data.
 
     Trails :class:`EventTrialEnd` and carries the hardware's independent
-    end-of-trial microsecond count - the same clock pair compared by the
-    reader's timing-violation warning.
+    end-of-trial microsecond count, which the reader's timing-violation warning
+    compares with :class:`EventTrialEnd`.
     """
 
     time_us: int

@@ -257,6 +257,46 @@ class TestReadThread:
         assert _EventID.END_FSM_MICROS in event_indices
         assert event_indices[-1] == _EventID.STOP_SENTINEL
 
+    def test_trial_end_timed_by_exit_packet(self, make_thread, caplog):
+        """TrialEnd uses the exit packet's cycle count, like every other event.
+
+        For a queued trial, the firmware's end-of-trial cycle count is one higher
+        than the exit packet's, since it also counts the cycle in which the previous
+        trial ended.
+        """
+        data = (
+            _CONFIRM_OK
+            + _start(micros_us=1000)
+            + _opcode1([255], n_cycles=10)
+            + _exit_data(11, 2000)
+        )
+        thread, q_events, _ = make_thread(data, cycle_period_us=100)
+        with caplog.at_level(logging.WARNING):
+            thread.start()
+            thread.join(timeout=2)
+        events = {e.event_id: e.micros_us for e in _drain(q_events)}
+        assert events[_EventID.END_FSM_CYCLES] == 2000  # 1000 + 10 * 100
+        assert events[_EventID.END_FSM_MICROS] == 2000
+        assert 'timing' not in caplog.text.lower()
+
+    def test_timing_check_uses_exit_packet(self, make_thread, caplog):
+        """The timing check compares the reported TrialEnd, not the end-of-trial count.
+
+        The exit packet's 10 cycles match the 1000 µs the trial took; the end-of-trial
+        count (30 cycles) would suggest a 2 ms discrepancy.
+        """
+        data = (
+            _CONFIRM_OK
+            + _start(micros_us=1000)
+            + _opcode1([255], n_cycles=10)
+            + _exit_data(30, 2000)
+        )
+        thread, _, _ = make_thread(data, cycle_period_us=100)
+        with caplog.at_level(logging.WARNING):
+            thread.start()
+            thread.join(timeout=2)
+        assert 'timing' not in caplog.text.lower()
+
     def test_fsm_confirmation_success(self, make_thread):
         """Proceeds normally when Bpod responds with a truthy confirmation byte."""
         data = _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(0, 0)
@@ -282,7 +322,7 @@ class TestReadThread:
         """Logs a WARNING when cycle/micros discrepancy exceeds 1 ms."""
         # cycle-based duration: 5 * 1 = 5 µs; actual: 2000 µs; discrepancy: 1995 > 1000
         data = (
-            _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(5, 2000)
+            _CONFIRM_OK + _start() + _opcode1([255], n_cycles=5) + _exit_data(5, 2000)
         )
         thread, _, _ = make_thread(data, cycle_period_us=1)
         with caplog.at_level(logging.WARNING):

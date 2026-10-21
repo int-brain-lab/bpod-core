@@ -75,7 +75,7 @@ For the state machine in :numref:`on_the_fly_fsm` the returned
    │ 2026-07-22 12:57:45.100633 UTC ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
    │ 2026-07-22 12:57:45.200633 UTC ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
    │ 2026-07-22 12:57:45.200633 UTC ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-   │ 2026-07-22 12:57:45.200733 UTC ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 12:57:45.200633 UTC ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
    │ 2026-07-22 12:57:45.200635 UTC ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
    └────────────────────────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
 
@@ -115,7 +115,7 @@ Displaying the timestamps in a different timezone is a one-liner:
    │ 2026-07-22 14:57:45.100633 CES… ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
    │ 2026-07-22 14:57:45.200633 CES… ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
    │ 2026-07-22 14:57:45.200633 CES… ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-   │ 2026-07-22 14:57:45.200733 CES… ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 14:57:45.200633 CES… ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
    │ 2026-07-22 14:57:45.200635 CES… ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
    └─────────────────────────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
 
@@ -143,7 +143,7 @@ the result automatically takes on the :class:`~polars.datatypes.Duration` type:
    │ 15s 334ms    ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
    │ 15s 434ms    ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
    │ 15s 434ms    ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-   │ 15s 434100µs ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+   │ 15s 434ms    ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
    │ 15s 434002µs ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
    └──────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
 
@@ -274,7 +274,7 @@ If you prefer `Pandas <https://pandas.pydata.org/>`__ over
    1095 2026-07-22 12:57:45.100633+00:00     99  855928477a81a140    s2     OutputAction   NaN    PWM1    0.0
    1096 2026-07-22 12:57:45.200633+00:00     99  855928477a81a140    s2       InputEvent   Tup     NaN    NaN
    1097 2026-07-22 12:57:45.200633+00:00     99  855928477a81a140    s2         StateEnd   NaN     NaN    NaN
-   1098 2026-07-22 12:57:45.200733+00:00     99  855928477a81a140   NaN         TrialEnd   NaN     NaN    NaN
+   1098 2026-07-22 12:57:45.200633+00:00     99  855928477a81a140   NaN         TrialEnd   NaN     NaN    NaN
    1099 2026-07-22 12:57:45.200635+00:00     99  855928477a81a140   NaN  TrialEndControl   NaN     NaN    NaN
    <BLANKLINE>
    [1100 rows x 8 columns]
