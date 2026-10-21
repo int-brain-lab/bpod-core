@@ -398,10 +398,17 @@ class Bpod(SerialDevice, AbstractBpod):
         - resume sending of the discovery byte
         - change the color of the status LED
         - disable the valve driver (if applicable)
+
+        Logs a warning if the Bpod doesn't confirm the request.
         """
         if getattr(serial, 'is_open', False):
             logger.debug('Sending close request to Bpod Finite State Machine')
-            serial.verify(b'Z')
+            with serial.temporary_timeout(0.2):
+                reply = serial.query(b'Z', 1)
+            # TODO: drop b'1' once all supported firmware acknowledges 'Z' with 0x01,
+            #       like every other command (reported upstream)
+            if reply not in (b'1', b'\x01'):
+                logger.warning('Bpod did not confirm the disconnect request')
 
     @property
     def input_event_names(self) -> list[str]:
