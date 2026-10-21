@@ -568,6 +568,14 @@ class TestRun:
             b'\x00\x00\x00\x00'
         )
 
+    def test_run_while_running(self, fsm_basic, mock_bpod_25, mocker):
+        """A state machine can be queued while another one is running."""
+        mocker.patch.object(
+            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
+        )
+        mock_bpod_25.run(fsm_basic)
+        assert mock_bpod_25.serial0.last_write.startswith(b'C')
+
     def test_run_repeat(self, fsm_basic, mock_bpod_25):
         """Calling run() without sma re-sends the same compiled bytes from cache."""
         mock_bpod_25.run(fsm_basic)

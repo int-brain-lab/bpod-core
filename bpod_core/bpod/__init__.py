@@ -752,8 +752,11 @@ class Bpod(SerialDevice, AbstractBpod):
         return True
 
     def _disable_all_module_relays(self) -> None:
+        # relays can only be enabled while idle and are disabled before every state
+        # machine, so this sends nothing while one is running (e.g. when queuing)
         for module in self.modules.values():
-            module.set_relay(False)
+            if module.relay:
+                module.set_relay(False)
 
     def _compile_input_events(self) -> bytes:
         """Compile input events supported by the Bpod hardware.
