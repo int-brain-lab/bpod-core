@@ -97,7 +97,7 @@ Built from :data:`~bpod_core.bpod.structs.BpodEventType`.
 
 _TRIAL_DATA_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
     'time': pl.Datetime('us', time_zone='UTC'),
-    'trial': pl.UInt16,
+    'trial': pl.UInt32,
     'state machine': pl.Categorical,
     'state': pl.Categorical,
     'type': _EVENT_TYPE_ENUM,
@@ -742,7 +742,7 @@ class EventThread(threading.Thread):
             )
             .with_columns(
                 pl.col('time').dt.replace_time_zone('UTC'),
-                pl.lit(self._trial).cast(pl.UInt16).alias('trial'),
+                pl.lit(self._trial).cast(pl.UInt32).alias('trial'),
                 pl.lit(self._fsm_hash_str).cast(pl.Categorical).alias('state machine'),
                 pl.coalesce(
                     pl.col('value').replace(-1, None),

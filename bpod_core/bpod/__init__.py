@@ -1288,7 +1288,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 pl.from_epoch(anchor_us + pl.col('k') * period_us, time_unit='us')
                 .dt.replace_time_zone('UTC')
                 .alias('time'),
-                pl.col('trial').cast(pl.UInt16),
+                pl.col('trial').cast(pl.UInt32),
                 _counts_to_mv(pl.col(self._analog_channel_names).cast(pl.UInt32)).cast(
                     pl.UInt16
                 ),
@@ -1916,11 +1916,14 @@ class Bpod(SerialDevice, AbstractBpod):
         trial_number: int | None = None,
         validate: bool = True,
     ) -> None:
-        debugging = logger.isEnabledFor(logging.DEBUG)
         if trial_number is None:
-            self._next_fsm_index += 1
-        else:
-            self._next_fsm_index = trial_number
+            trial_number = self._next_fsm_index + 1
+        if not 0 <= trial_number <= UINT32_MAX:
+            raise ValueError(
+                f'trial_number must be between 0 and {UINT32_MAX}, got {trial_number}'
+            )
+        self._next_fsm_index = trial_number
+        debugging = logger.isEnabledFor(logging.DEBUG)
         self._disable_all_module_relays()
 
         # If the user did not provide a state machine, recover the last run state

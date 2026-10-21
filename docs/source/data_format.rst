@@ -31,7 +31,7 @@ Polars :class:`~polars.DataFrame` with the following columns:
      - :class:`~polars.datatypes.Datetime`
      - absolute UTC timestamp, see section `Timestamps`_ below.
    * - ``trial``
-     - :class:`~polars.datatypes.UInt16`
+     - :class:`~polars.datatypes.UInt32`
      - zero-based trial index.
    * - ``state machine``
      - :class:`~polars.datatypes.Categorical`
@@ -64,7 +64,7 @@ For the state machine in :numref:`on_the_fly_fsm` the returned
    ┌────────────────────────────────┬───────┬──────────────────┬───────┬─────────────────┬───────┬─────────┬───────┐
    │ time                           ┆ trial ┆ state machine    ┆ state ┆ type            ┆ event ┆ channel ┆ value │
    │ ---                            ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
-   │ datetime[μs, UTC]              ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
+   │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
    ╞════════════════════════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
    │ 2026-07-22 12:57:29.766633 UTC ┆ 0     ┆ 3725de06508951c9 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
    │ 2026-07-22 12:57:29.766633 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
@@ -104,7 +104,7 @@ Displaying the timestamps in a different timezone is a one-liner:
    ┌─────────────────────────────────┬───────┬──────────────────┬───────┬─────────────────┬───────┬─────────┬───────┐
    │ time                            ┆ trial ┆ state machine    ┆ state ┆ type            ┆ event ┆ channel ┆ value │
    │ ---                             ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
-   │ datetime[μs, Europe/Berlin]     ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
+   │ datetime[μs, Europe/Berlin]     ┆ u32   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
    ╞═════════════════════════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
    │ 2026-07-22 14:57:29.766633 CES… ┆ 0     ┆ 3725de06508951c9 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
    │ 2026-07-22 14:57:29.766633 CES… ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
@@ -132,7 +132,7 @@ the result automatically takes on the :class:`~polars.datatypes.Duration` type:
    ┌──────────────┬───────┬──────────────────┬───────┬─────────────────┬───────┬─────────┬───────┐
    │ time         ┆ trial ┆ state machine    ┆ state ┆ type            ┆ event ┆ channel ┆ value │
    │ ---          ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
-   │ duration[μs] ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
+   │ duration[μs] ┆ u32   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
    ╞══════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
    │ 0µs          ┆ 0     ┆ 3725de06508951c9 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
    │ 0µs          ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
@@ -164,7 +164,7 @@ filter the table like so:
    ┌────────────────────────────────┬───────┬──────────────────┬───────┬──────────────┬───────┬─────────┬───────┐
    │ time                           ┆ trial ┆ state machine    ┆ state ┆ type         ┆ event ┆ channel ┆ value │
    │ ---                            ┆ ---   ┆ ---              ┆ ---   ┆ ---          ┆ ---   ┆ ---     ┆ ---   │
-   │ datetime[μs, UTC]              ┆ u16   ┆ cat              ┆ cat   ┆ enum         ┆ cat   ┆ cat     ┆ u16   │
+   │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat   ┆ enum         ┆ cat   ┆ cat     ┆ u16   │
    ╞════════════════════════════════╪═══════╪══════════════════╪═══════╪══════════════╪═══════╪═════════╪═══════╡
    │ 2026-07-22 12:57:29.766633 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 153   │
    │ 2026-07-22 12:57:29.844833 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
