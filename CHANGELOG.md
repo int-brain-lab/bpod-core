@@ -95,6 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - closing a `Bpod` checked the reply to its disconnect request against the wrong value
   and could wait forever for it. It now waits at most 0.2 s and logs a warning if the
   Bpod doesn't confirm.
+- the `TrialEnd` time of a queued trial was one state machine cycle late (100 µs on a
+  Bpod 2+), because it was derived from a firmware cycle count that also includes the
+  cycle in which the previous trial ended. It now comes from the trial's exit event,
+  like all other event times.
 
 ## [0.1.0a14] - 2026-07-24
 
