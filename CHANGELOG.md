@@ -46,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - FlexIO channels are now reset to their default settings on connect, guaranteeing
   the hardware actually matches bpod-core's assumed baseline instead of trusting
   leftover configuration from a previous session.
+- methods that query or reconfigure the Bpod (e.g., `set_status_led`, `update_modules`,
+  `Input.read`, `Module.load_serial_message`) raise a `BpodError` while a state machine
+  is running, instead of corrupting the trial's data.
+- `send_softcode` no longer sends a softcode while no state machine is running, since
+  the Bpod ignores it then; it still logs a warning.
 - trial data is read from the Bpod in chunks rather than message by message, which
   lowers the CPU load at high event and softcode rates.
 - live trial events are published in batches rather than one message per event,
@@ -105,6 +110,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Bpod.flex_io.analog_sampling_rate` on a live connection; the cached per-sample
   time step is refreshed whenever the sampling rate changes, not only when a FlexIO
   channel is reconfigured.
+- `Input.override` didn't send the input's index, so the Bpod took the first byte of
+  the next command as the override state. While no state machine is running, the
+  override is no longer sent, since the Bpod would ignore it; a warning is logged
+  instead.
+- `is_running` was briefly `False` while a queued state machine was starting, although
+  the Bpod was already running it; `stop_state_machine()` then did nothing.
 
 ## [0.1.0a14] - 2026-07-24
 

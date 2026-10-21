@@ -1,4 +1,6 @@
+import inspect
 import logging
+import re
 import struct
 import threading
 import time
@@ -11,7 +13,15 @@ import polars as pl
 import pytest
 from serial import SerialException
 
-from bpod_core.bpod import Bpod, BpodError, RemoteBpod, _allocate_module_events
+from bpod_core.bpod import (
+    Bpod,
+    BpodError,
+    Input,
+    Module,
+    Output,
+    RemoteBpod,
+    _allocate_module_events,
+)
 from bpod_core.bpod._threads import SoftcodeThread
 from bpod_core.bpod.constants import (
     _REMOTE_CALL_METHODS,
@@ -341,8 +351,195 @@ class TestResetSessionClock:
         assert caplog.records[0].levelname == 'DEBUG'
         assert 'Resetting' in caplog.records[0].message
         mock_bpod.is_running = True
-        with pytest.raises(BpodError, match=r'Cannot reset session clock'):
+        with pytest.raises(BpodError, match=r'Cannot use Bpod.reset_session_clock'):
             Bpod.reset_session_clock(mock_bpod)
+
+
+def _first(mapping):
+    return next(iter(mapping.values()))
+
+
+def _enable_first_input(bpod):
+    _first(bpod.inputs).enabled = True
+
+
+_IDLE_ONLY_CALLS = {
+    'Bpod.open': lambda bpod: bpod.open(),
+    'Bpod.reset_session_clock': lambda bpod: bpod.reset_session_clock(),
+    'Bpod.set_status_led': lambda bpod: bpod.set_status_led(True),
+    'Bpod.update_modules': lambda bpod: bpod.update_modules(),
+    'Input.enable': lambda bpod: _first(bpod.inputs).enable(True),
+    'Input.enabled': _enable_first_input,
+    'Input.read': lambda bpod: _first(bpod.inputs).read(),
+    'Module.load_serial_message': lambda bpod: _first(bpod.modules).load_serial_message(
+        0, b'\x01'
+    ),
+    'Module.set_relay': lambda bpod: _first(bpod.modules).set_relay(True),
+}
+"""Calls to every member that must be refused while a state machine is running."""
+
+_ALLOWED_WHILE_RUNNING = frozenset(
+    {
+        'Bpod.action_names',
+        'Bpod.address',
+        'Bpod.address_control',
+        'Bpod.address_events',
+        'Bpod.close',
+        'Bpod.flex_io',
+        'Bpod.get_analog_data',
+        'Bpod.get_data',
+        'Bpod.input_event_names',
+        'Bpod.is_queued',
+        'Bpod.is_ready',
+        'Bpod.is_running',
+        'Bpod.location',
+        'Bpod.name',
+        'Bpod.peek_data',
+        'Bpod.port',
+        'Bpod.run',
+        'Bpod.send_softcode',
+        'Bpod.serial0',
+        'Bpod.serial_number',
+        'Bpod.set_softcode_handler',
+        'Bpod.stop_state_machine',
+        'Bpod.validate_state_machine',
+        'Bpod.version',
+        'Bpod.wait',
+        'Input.override',
+        'Module.event_names',
+        'Module.relay',
+        'Output.override',
+    }
+)
+"""Public members that are safe to use while a state machine is running."""
+
+
+class TestRequiresIdle:
+    """Members that query or reconfigure the Bpod are refused during a trial."""
+
+    def test_every_public_member_is_classified(self):
+        """Each public member is either refused during a trial or explicitly allowed.
+
+        A new public method or property fails this test until it's either decorated
+        with ``_requires_idle`` (and added to ``_IDLE_ONLY_CALLS``) or added to
+        ``_ALLOWED_WHILE_RUNNING``.
+        """
+        requires_idle = {}
+        for cls in (Bpod, Input, Output, Module):
+            for name, member in inspect.getmembers(cls):
+                if name.startswith('_'):
+                    continue
+                if isinstance(member, property):
+                    function = member.fset  # only setters change state
+                elif callable(member):
+                    function = member
+                else:
+                    continue
+                qualified_name = f'{cls.__name__}.{name}'
+                requires_idle[qualified_name] = getattr(
+                    function, 'requires_idle', False
+                )
+        idle_only = {name for name, flag in requires_idle.items() if flag}
+        assert idle_only == _IDLE_ONLY_CALLS.keys()
+        assert requires_idle.keys() - idle_only == _ALLOWED_WHILE_RUNNING
+
+    @pytest.mark.parametrize('name', sorted(_IDLE_ONLY_CALLS))
+    def test_refused_while_running(self, name, mock_bpod_25, mock_ext_serial, mocker):
+        """Refused members raise and send nothing to the Bpod."""
+        mocker.patch.object(
+            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
+        )
+        mock_ext_serial.mock_responses.clear()  # any write would raise AssertionError
+        with pytest.raises(BpodError, match=f'Cannot use {re.escape(name)} while'):
+            _IDLE_ONLY_CALLS[name](mock_bpod_25)
+
+
+class TestInputOverride:
+    @pytest.fixture
+    def port(self, mock_bpod_25, mock_ext_serial):
+        mock_ext_serial.mock_responses[rb'V'] = b''
+        return mock_bpod_25.inputs['Port2']
+
+    def test_sends_channel_index_and_state(self, port, mock_ext_serial, mocker, caplog):
+        """The override message carries the input's index and the new state."""
+        mocker.patch.object(
+            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
+        )
+        port.override(True)
+        assert mock_ext_serial.last_write == bytes([ord('V'), port.index, 1])
+        assert not caplog.records
+
+    def test_not_sent_without_running_state_machine(
+        self, port, mock_ext_serial, caplog
+    ):
+        """An override while idle isn't sent, since the Bpod would ignore it."""
+        mock_ext_serial.mock_responses.clear()  # any write would raise AssertionError
+        port.override(True)
+        assert 'override of Port2 not sent' in caplog.text
+
+
+class TestModuleRelay:
+    def test_set_relay(self, mock_bpod_25, mock_ext_serial, caplog):
+        """Switching a relay sends 'J' with the module's index and logs it."""
+        caplog.set_level(logging.INFO)
+        mock_ext_serial.mock_responses[rb'J'] = b''
+        module = _first(mock_bpod_25.modules)
+        module.set_relay(True)
+        assert mock_ext_serial.last_write == bytes([ord('J'), module.index, 1])
+        assert f'Enabling relay for module {module.name}' in caplog.text
+        assert module.relay
+
+
+class TestSendSoftcode:
+    def test_sends_softcode(self, mock_bpod_25, mock_ext_serial, mocker, caplog):
+        """A softcode is sent to a running state machine."""
+        mocker.patch.object(
+            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
+        )
+        mock_ext_serial.mock_responses[rb'~'] = b''
+        mock_bpod_25.send_softcode(3)
+        assert mock_ext_serial.last_write == b'~\x03'
+        assert not caplog.records
+
+    def test_not_sent_without_running_state_machine(
+        self, mock_bpod_25, mock_ext_serial, caplog
+    ):
+        """A softcode while idle isn't sent, since the Bpod would ignore it."""
+        mock_ext_serial.mock_responses.clear()  # any write would raise AssertionError
+        mock_bpod_25.send_softcode(3)
+        assert 'softcode 3 not sent' in caplog.text
+
+
+class TestIsRunning:
+    @pytest.fixture
+    def fsm(self):
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        return fsm
+
+    def test_true_while_handing_over(self, fsm, mock_bpod_25, mocker):
+        """is_running stays true while a queued state machine's threads are set up.
+
+        The Bpod starts a queued state machine as soon as the previous one ends, while
+        run() still waits for the previous event thread to drain.
+        """
+        mocker.patch('bpod_core.bpod.ReadThread')
+        mocker.patch('bpod_core.bpod.EventThread')
+        observed = []
+        mock_bpod_25._read_thread = MagicMock(**{'is_alive.return_value': False})
+        mock_bpod_25._event_thread = MagicMock(**{'is_alive.return_value': True})
+        mock_bpod_25._event_thread.join.side_effect = lambda: observed.append(
+            mock_bpod_25.is_running
+        )
+        mock_bpod_25.run(fsm)
+        assert observed == [True]
+
+    def test_false_after_failed_send(self, fsm, mock_bpod_25, mock_ext_serial, mocker):
+        """A state machine that couldn't be sent doesn't count as running."""
+        mocker.patch.object(mock_ext_serial, 'write', side_effect=SerialException)
+        with pytest.raises(SerialException):
+            mock_bpod_25.run(fsm)
+        assert not mock_bpod_25.is_running
 
 
 class TestRun:
@@ -536,6 +733,14 @@ class TestRun:
         mock_bpod_2p.run(fsm)
         # 1000 mV -> round(1000 * 4095/5000) = 819 DAC counts
         assert struct.pack('<HHH', 1, idx, 819) in mock_bpod_2p.serial0.last_write
+
+    def test_run_while_running(self, fsm_basic, mock_bpod_25, mocker):
+        """A state machine can be queued while another one is running."""
+        mocker.patch.object(
+            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
+        )
+        mock_bpod_25.run(fsm_basic)
+        assert mock_bpod_25.serial0.last_write.startswith(b'C')
 
     def test_run_repeat(self, fsm_basic, mock_bpod_25):
         """Calling run() without sma re-sends the same compiled bytes from cache."""

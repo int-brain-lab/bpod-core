@@ -201,6 +201,17 @@ trial, yielding randomized state timers and action values:
 
    data = bpod.get_data()
 
+.. note::
+
+   While a state machine is running, the Bpod's serial connection carries the trial's
+   events. Methods that query or reconfigure the hardware, such as
+   :meth:`~bpod_core.bpod.Bpod.set_status_led`,
+   :meth:`~bpod_core.bpod.Bpod.update_modules`,
+   :meth:`~bpod_core.bpod.Bpod.reset_session_clock` or reading an input, raise a
+   :exc:`~bpod_core.bpod.BpodError` until it has finished. Queuing the next state
+   machine with :meth:`~bpod_core.bpod.Bpod.run`, sending softcodes, overriding outputs,
+   stopping the state machine and retrieving data all work during a trial.
+
 Retrieval of Partial Data
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 

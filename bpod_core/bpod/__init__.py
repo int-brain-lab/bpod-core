@@ -1,6 +1,7 @@
 """Module for interfacing with the Bpod Finite State Machine."""
 
 import contextlib
+import functools
 import logging
 import os
 import re
@@ -15,7 +16,9 @@ from types import TracebackType
 from typing import (
     Any,
     ClassVar,
+    Concatenate,
     Literal,
+    ParamSpec,
     TypeVar,
     cast,
     overload,
@@ -133,6 +136,35 @@ def _mv_to_counts(mv: _CountsT) -> _CountsT:
     return (mv * UINT12_MAX + _ADC_DAC_FULL_SCALE_MV // 2) // _ADC_DAC_FULL_SCALE_MV
 
 
+_S = TypeVar('_S')
+_P = ParamSpec('_P')
+_R = TypeVar('_R')
+
+
+def _requires_idle(
+    method: Callable[Concatenate[_S, _P], _R],
+) -> Callable[Concatenate[_S, _P], _R]:
+    """Refuse calls to `method` while a state machine is running.
+
+    While a trial runs, its read thread owns the Bpod's serial port: a command that
+    expects a reply would steal the trial's event bytes or corrupt them with its reply,
+    and reconfiguring the hardware mid-trial is unsafe. Applies to methods of
+    :class:`Bpod` and of objects that refer to one as ``_bpod`` (channels, modules).
+    Decorated methods are marked with ``requires_idle = True``.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self: _S, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        if cast('Bpod', getattr(self, '_bpod', self)).is_running:
+            raise BpodError(
+                f'Cannot use {method.__qualname__} while a state machine is running.'
+            )
+        return method(self, *args, **kwargs)
+
+    wrapper.requires_idle = True  # type: ignore[attr-defined]
+    return wrapper
+
+
 class Bpod(SerialDevice, AbstractBpod):
     """Interface to a Bpod Finite State Machine.
 
@@ -167,6 +199,7 @@ class Bpod(SerialDevice, AbstractBpod):
     _settings: SettingsDict
     _read_thread: ReadThread | None = None
     _event_thread: EventThread | None = None
+    _starting_state_machine: bool = False
     _zmq: ServiceHost[BpodRequestUnion, list[BpodEventUnion]]
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
@@ -354,6 +387,7 @@ class Bpod(SerialDevice, AbstractBpod):
             self._stop_zmq()
             self._softcode_thread.stop()
 
+    @_requires_idle
     def open(self) -> None:
         """
         Open the connection to the Bpod and perform a handshake.
@@ -808,12 +842,8 @@ class Bpod(SerialDevice, AbstractBpod):
         return self.serial0.read(1) == b'\x01'
 
     @override
+    @_requires_idle
     def reset_session_clock(self) -> bool:
-        if self.is_running:
-            raise BpodError(
-                'Cannot reset session clock while a state machine is running.'
-            )
-
         # reset the session clock
         # bracket the serial round-trip to estimate reset time within ±(t1-t0)/2
         logger.debug('Resetting session clock')
@@ -844,8 +874,11 @@ class Bpod(SerialDevice, AbstractBpod):
         return True
 
     def _disable_all_module_relays(self) -> None:
+        # relays can only be enabled while idle and are disabled before every state
+        # machine, so this sends nothing while one is running (e.g. when queuing)
         for module in self.modules.values():
-            module.set_relay(False)
+            if module.relay:
+                module.set_relay(False)
 
     def _compile_input_events(self) -> bytes:
         """Compile input events supported by the Bpod hardware.
@@ -1037,6 +1070,7 @@ class Bpod(SerialDevice, AbstractBpod):
         }
         self._timer_channel_indices[None] = 254
 
+    @_requires_idle
     @validate_call()
     def set_status_led(self, enable: bool) -> bool:  # noqa: FBT001
         """Enable or disable the Bpod status LED.
@@ -1055,6 +1089,7 @@ class Bpod(SerialDevice, AbstractBpod):
         return self.serial0.verify()
 
     @override
+    @_requires_idle
     def update_modules(self) -> None:
         # self._disable_all_module_relays()
         self.serial0.write(b'M')
@@ -1488,7 +1523,8 @@ class Bpod(SerialDevice, AbstractBpod):
     def send_softcode(self, softcode: int) -> None:
         """Send a softcode to the state machine.
 
-        Can be used to trigger transitions.
+        Can be used to trigger transitions. While no state machine is running, the Bpod
+        would ignore the softcode, so it isn't sent and a warning is logged instead.
 
         Parameters
         ----------
@@ -1507,9 +1543,9 @@ class Bpod(SerialDevice, AbstractBpod):
             )
         if not self.is_running:
             logger.warning(
-                'No state machine is running - softcode %d will have no effect',
-                softcode,
+                'No state machine is running - softcode %d not sent', softcode
             )
+            return
         logger.debug('Sending softcode %d to Bpod', softcode)
         self._serial.write_struct('<cB', b'~', softcode)
 
@@ -1930,21 +1966,28 @@ class Bpod(SerialDevice, AbstractBpod):
             # 3) STORE THE CACHE KEY FOR REPEAT CALLS
             self._last_cache_key = (self._hardware_hash, fsm_hash, validate)
 
-        # Send state machine to Bpod; always queue for immediate back-to-back execution
-        message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
-        if debugging:
-            t0 = perf_counter_ns()
-            self.serial0.write(message)
-            logger.debug(
-                'Sent state machine %s to Bpod (%d μs)',
-                fsm_hash.hex(),
-                (perf_counter_ns() - t0) // 1000,
-            )
-        else:
-            self.serial0.write(message)
+        # Send state machine to Bpod; always queue for immediate back-to-back execution.
+        # The Bpod may start it at any time from here on - count it as running until
+        # the threads reading it are registered, so that is_running doesn't drop out
+        # while the previous state machine's threads finish.
+        self._starting_state_machine = True
+        try:
+            message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
+            if debugging:
+                t0 = perf_counter_ns()
+                self.serial0.write(message)
+                logger.debug(
+                    'Sent state machine %s to Bpod (%d μs)',
+                    fsm_hash.hex(),
+                    (perf_counter_ns() - t0) // 1000,
+                )
+            else:
+                self.serial0.write(message)
 
-        # Start threads
-        self._run_state_machine()
+            # Start threads
+            self._run_state_machine()
+        finally:
+            self._starting_state_machine = False
 
     def _capture_analog_anchor(self, time_us: int) -> None:
         """Capture the first trial's start time as the FlexIO analog-sample anchor."""
@@ -2015,7 +2058,10 @@ class Bpod(SerialDevice, AbstractBpod):
     @property
     def is_running(self) -> bool:
         """Check if the Bpod is currently running a state machine."""
-        return self._read_thread is not None and self._read_thread.is_alive()
+        if self._starting_state_machine:  # cleared only once _read_thread is updated
+            return True
+        read_thread = self._read_thread  # snapshot for thread-safety
+        return read_thread is not None and read_thread.is_alive()
 
     @property
     def is_ready(self) -> bool:
@@ -2271,6 +2317,7 @@ class Channel:
         self.name = name
         self.io_type = io_key
         self.index = index
+        self._bpod = bpod
         self._serial0 = bpod.serial0
 
     def __repr__(self) -> str:
@@ -2285,6 +2332,7 @@ class Input(Channel):
         self._set_enable_inputs = bpod._set_enable_inputs  # noqa: SLF001
         self._enabled = io_key in (b'PBWF')  # Enable Port, TTL, Wire and FlexIO inputs
 
+    @_requires_idle
     def read(self) -> bool:
         """
         Read the state of the input channel.
@@ -2300,13 +2348,24 @@ class Input(Channel):
         """
         Override the state of the input channel.
 
+        Creates a virtual event for the running state machine. While no state machine
+        is running, the Bpod would ignore the override, so it isn't sent and a warning
+        is logged instead. Once overridden, the physical input is ignored until the next
+        state machine starts.
+
         Parameters
         ----------
         state : bool
             The state to set for the input channel.
         """
-        self._serial0.write_struct('<cB', b'V', state)
+        if not self._bpod.is_running:
+            logger.warning(
+                'No state machine is running - override of %s not sent', self.name
+            )
+            return
+        self._serial0.write_struct('<c2B', b'V', self.index, state)
 
+    @_requires_idle
     def enable(self, enable: bool) -> bool:  # noqa: FBT001
         """
         Enable or disable the input channel.
@@ -2343,6 +2402,7 @@ class Input(Channel):
         return self._enabled
 
     @enabled.setter
+    @_requires_idle
     def enabled(self, enabled: bool) -> None:
         """
         Enable or disable the input channel.
@@ -2408,6 +2468,7 @@ class Module:
             return f'{self.name} on module port {self.index + 1})'
         return self.name
 
+    @_requires_idle
     @validate_call()
     def set_relay(self, enabled: bool) -> None:  # noqa: FBT001
         """
@@ -2424,7 +2485,7 @@ class Module:
             for module in self._bpod.modules.values():
                 module.set_relay(False)
         logger.info(
-            '%sabling relay for module %s', {'En' if enabled else 'Dis'}, self.name
+            '%sabling relay for module %s', 'En' if enabled else 'Dis', self.name
         )
         self._bpod.serial0.write_struct('<cB?', b'J', self.index, enabled)
         self._relay_is_enabled = enabled
@@ -2438,6 +2499,7 @@ class Module:
         """
         return self._relay_is_enabled
 
+    @_requires_idle
     @validate_call()
     def load_serial_message(
         self,
