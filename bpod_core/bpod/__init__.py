@@ -403,11 +403,9 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         if getattr(serial, 'is_open', False):
             logger.debug('Sending close request to Bpod Finite State Machine')
-            with serial.temporary_timeout(0.2):
-                reply = serial.query(b'Z', 1)
-            # TODO: drop b'1' once all supported firmware acknowledges 'Z' with 0x01,
-            #       like every other command (reported upstream)
-            if reply not in (b'1', b'\x01'):
+            # note: unlike other commands, the firmware acknowledges 'Z' with ASCII '1'
+            # instead of 0x01 (an upstream inconsistency)
+            if not serial.verify(b'Z', b'1', timeout=0.2):
                 logger.warning('Bpod did not confirm the disconnect request')
 
     @property
