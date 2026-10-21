@@ -25,7 +25,7 @@ from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 from pydantic_extra_types.color import Color, ColorType
 from xxhash import xxh3_64 as _xxh3_64
 
-from bpod_core.constants import UINT32_MAX
+from bpod_core.constants import UINT16_MAX, UINT32_MAX
 from bpod_core.misc import ValidatedDict, suggest_similar
 
 
@@ -294,7 +294,10 @@ OutputActionName = Annotated[
 OutputActionValue = Annotated[
     int,
     Field(
-        title='Output Action Value', description='The value of the output action', ge=0
+        title='Output Action Value',
+        description='The integer value of the output action',
+        ge=0,
+        le=UINT16_MAX,
     ),
 ]
 

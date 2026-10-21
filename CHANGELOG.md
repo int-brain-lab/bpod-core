@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- support for FlexIO channels (Bpod Finite State Machine r2+): `Bpod.flex_io`
+  configures each channel as digital or analog input or output, along with analog
+  thresholds and the sampling rate; `Bpod.get_analog_data` returns the continuously
+  sampled analog input in millivolts. Flex channel events and analog-output actions
+  can be used in state machines.
+- `Bpod.action_names`: names of all actions a state machine can currently set,
+  mirroring `Bpod.input_event_names`.
+- state machine validation rejects non-integer action values before compilation.
 - `ExtendedSerial.temporary_timeout`: context manager for temporarily setting a timeout
   for serial reads.
 - Optimizations for agentic development (`AGENTS.md`, `.mcp.json`, `llms.txt`, etc.)
@@ -17,19 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   criteria.
 - `ipc.iter_services`, `ipc.discover` and `ipc.ServiceIterator` accept regex and
   collection criteria for `properties`.
-- Validation rejects invalid state machine action values before compilation (non-integer
-  values for regular actions; out-of-range voltages for FlexIO analog-output actions).
 - `misc.SuggestionMapping`: a read-only mapping that suggests similar keys on failed
   lookup, for fixed sets of keys (e.g. hardware channels) that should never be mutated
   after construction.
-- `Bpod.action_names`: names of all actions a state machine can currently set, mirroring
-  the existing `Bpod.input_event_names`.
-- `Bpod.flex_io.analog_sampling_rate` and `Bpod.flex_io.n_reads_per_sample`: previously
-  unconfigurable FlexIO subsystem-wide settings controlling the sampling rate and
-  ADC averaging for channels configured as `ANALOG_INPUT`.
-- `Bpod.get_analog_data`: retrieves continuously streamed FlexIO analog-input samples
-  (in volts) as a wide Polars DataFrame/LazyFrame with one column per channel currently
-  configured as `ANALOG_INPUT`, mirroring `Bpod.get_data`.
 
 ### Changed
 
@@ -41,17 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of mutable dicts, preventing accidental corruption.
 - Module-not-found errors now suggest the closest matching module name, matching the
   error style already used for input/output channels.
-- `Bpod.serial2` removed; the FlexIO analog serial connection is now a private
-  attribute on `Bpod` instead of a public attribute.
-- FlexIO channels are now reset to their default settings on connect, guaranteeing
-  the hardware actually matches bpod-core's assumed baseline instead of trusting
-  leftover configuration from a previous session.
 - methods that query or reconfigure the Bpod (e.g., `set_status_led`, `update_modules`,
   `Input.read`, `Module.load_serial_message`) raise a `BpodError` while a state machine
   is running, instead of corrupting the trial's data.
 - `send_softcode` no longer sends a softcode while no state machine is running, since
   the Bpod ignores it then; it still logs a warning.
 - the `trial` column of trial data is `UInt32` instead of `UInt16`.
+- state machine action values can be up to 65535 on Bpod r2+ (still 255 on earlier
+  models), and the `value` column of trial data is `UInt16` instead of `UInt8`, to hold
+  FlexIO analog-output values in millivolts.
 - trial data is read from the Bpod in chunks rather than message by message, which
   lowers the CPU load at high event and softcode rates.
 - live trial events are published in batches rather than one message per event,
@@ -69,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `com.FilterValue`, superseded by `filtering.Filter`.
 - the `rechunk` parameter of `get_data`: call `.rechunk()` on the result instead.
 - the unused `qtpy` dependency.
+- `Bpod.serial2`: the FlexIO serial connection is now private.
 
 ### Fixed
 
@@ -102,15 +99,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now allocated to modules as in Bpod's MATLAB software and sent to the state
   machine when modules are updated. This also fixes misnumbered input events with
   modules requesting a non-default number of events.
-- FlexIO analog-output (`Flex*`) action values are now scaled correctly (0-5V into
-  12-bit DAC counts) for whichever channel is configured as `ANALOG_OUTPUT`, instead of
-  a formula that always rounded to zero on a single hardcoded channel.
-- Trial-data action values now match what's actually sent to hardware (previously the
-  raw, unscaled value was recorded for FlexIO analog-output actions).
-- `Bpod.get_analog_data` timestamps are now correct after changing
-  `Bpod.flex_io.analog_sampling_rate` on a live connection; the cached per-sample
-  time step is refreshed whenever the sampling rate changes, not only when a FlexIO
-  channel is reconfigured.
 - `Input.override` didn't send the input's index, so the Bpod took the first byte of
   the next command as the override state. While no state machine is running, the
   override is no longer sent, since the Bpod would ignore it; a warning is logged

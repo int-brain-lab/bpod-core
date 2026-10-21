@@ -65,7 +65,12 @@ from bpod_core.bpod.constants import (
     FlexIOChannelType,
 )
 from bpod_core.bpod.errors import BpodError, BpodKeyError
-from bpod_core.bpod.flexio import FlexIO, is_flexio_threshold_ambiguous
+from bpod_core.bpod.flexio import (
+    FlexIO,
+    _counts_to_mv,
+    _mv_to_counts,
+    is_flexio_threshold_ambiguous,
+)
 from bpod_core.bpod.structs import (
     BpodEventUnion,
     BpodInfo,
@@ -97,7 +102,8 @@ from bpod_core.constants import (
     FMT_UINT8,
     FMT_UINT16_LE,
     FMT_UINT32_LE,
-    UINT12_MAX,
+    UINT8_MAX,
+    UINT16_MAX,
     UINT32_MAX,
     TeensyPID,
 )
@@ -121,23 +127,10 @@ from bpod_core.misc import (
 logger = logging.getLogger(__name__)
 
 _ANALOG_FLUSH_INTERVAL_NS = 100_000_000  # 100 ms
-_ADC_DAC_FULL_SCALE_MV = 5000  # FlexIO ADC/DAC full-scale range (0-5 V), in mV
 # while idle, the Bpod answers 'X' with a trial-end report: opcode 1, one event, event
 # code 255 (end of trial), then 2 x uInt32 cycle counts and a uInt64 timestamp
 _IDLE_STOP_REPLY_HEADER = b'\x01\x01\xff'
 _IDLE_STOP_REPLY_SIZE = len(_IDLE_STOP_REPLY_HEADER) + 16
-
-_CountsT = TypeVar('_CountsT', int, pl.Expr)
-
-
-def _counts_to_mv(counts: _CountsT) -> _CountsT:
-    """Convert 12-bit ADC/DAC counts (0-4095) to integer millivolts, losslessly."""
-    return (counts * _ADC_DAC_FULL_SCALE_MV + UINT12_MAX // 2) // UINT12_MAX
-
-
-def _mv_to_counts(mv: _CountsT) -> _CountsT:
-    """Convert integer millivolts (0-5000) to 12-bit ADC/DAC counts, losslessly."""
-    return (mv * UINT12_MAX + _ADC_DAC_FULL_SCALE_MV // 2) // _ADC_DAC_FULL_SCALE_MV
 
 
 _S = TypeVar('_S')
@@ -1401,6 +1394,8 @@ class Bpod(SerialDevice, AbstractBpod):
         # validate states
         valid_targets = set(state_names).union(VALID_OPERATORS)
         max_time_uint32 = UINT32_MAX / self._hardware.cycle_frequency
+        # Bpod r2+ receives action values as 16-bit integers, older models as 8-bit
+        max_action_value = UINT16_MAX if self._version.machine == 4 else UINT8_MAX
         for state_name, state in state_machine.states.items():
             if state.timer > max_time_uint32:
                 max_timedelta = timedelta(seconds=max_time_uint32)
@@ -1454,6 +1449,12 @@ class Bpod(SerialDevice, AbstractBpod):
                     raise ValueError(
                         f"Invalid value {action_value!r} for action '{action_name}' "
                         f"in state '{state_name}' - must be an integer"
+                    )
+                if action_value > max_action_value:
+                    raise ValueError(
+                        f"Invalid value {action_value!r} for action '{action_name}' "
+                        f"in state '{state_name}' - must not exceed {max_action_value} "
+                        f'on this Bpod'
                     )
                 if is_flexio_analog_output and not 0 <= action_value <= 5000:
                     raise ValueError(

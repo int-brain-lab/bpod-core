@@ -432,6 +432,18 @@ class TestValidation:
         with pytest.raises(ValidationError):
             state_machine.add_state('state3', timer=-1)
 
+    @pytest.mark.parametrize('value', [-1, 65536])
+    def test_validate_action_value(self, value):
+        """Output action values must fit the trial data's UInt16 value column."""
+        with pytest.raises(ValidationError):
+            StateMachine().add_state('a', actions={'PWM1': value})
+
+    def test_largest_action_value(self):
+        """The largest value that fits the value column is accepted."""
+        fsm = StateMachine()
+        fsm.add_state('a', actions={'PWM1': 65535})
+        assert fsm.states['a'].actions == {'PWM1': 65535}
+
 
 class TestCheck:
     def test_caching(self, mocker):

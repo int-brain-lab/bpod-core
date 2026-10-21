@@ -235,7 +235,7 @@ class FlexIOThreshold:
 
     @property
     def voltage(self) -> FlexIOThresholdVoltage:
-        """The voltage of the threshold."""
+        """The voltage of the threshold, in millivolts (0-5000)."""
         state = self._state_getter()
         return state.threshold_voltages[self._channel_index][self._threshold_index]
 

@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import polars as pl
 import pytest
+from pydantic import ValidationError
 from serial import SerialException
 
 from bpod_core.bpod import (
@@ -763,6 +764,20 @@ class TestRun:
         # 1000 mV -> round(1000 * 4095/5000) = 819 DAC counts
         assert struct.pack('<HHH', 1, idx, 819) in mock_bpod_2p.serial0.last_write
 
+    @pytest.mark.parametrize(
+        ('bpod', 'largest'), [('mock_bpod_25', 255), ('mock_bpod_2p', 65535)]
+    )
+    def test_action_value_fits_the_bpod(self, bpod, largest, request):
+        """Action values fit the Bpod's 8-bit (before r2+) or 16-bit values."""
+        bpod = request.getfixturevalue(bpod)
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'}, {'PWM1': largest})
+        bpod.validate_state_machine(fsm)
+        if largest < 65535:  # 65536 is already rejected by the state machine model
+            fsm.states['a'].actions['PWM1'] = largest + 1
+            with pytest.raises(ValueError, match=f'must not exceed {largest} on this'):
+                bpod.validate_state_machine(fsm)
+
     def test_run_while_running(self, fsm_basic, mock_bpod_25, mocker):
         """A state machine can be queued while another one is running."""
         mocker.patch.object(
@@ -829,7 +844,7 @@ class TestFlexIOSettings:
         mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
         mock_bpod_2p._analog_first_trial_time_us = 1000
         mock_bpod_2p.flex_io['Flex1'].threshold_mode = FlexIOThresholdMode.LINKED
-        mock_bpod_2p.flex_io['Flex1'].thresholds[0].voltage = 2.5
+        mock_bpod_2p.flex_io['Flex1'].thresholds[0].voltage = 2500
         mock_bpod_2p.flex_io['Flex1'].thresholds[
             0
         ].polarity = FlexIOThresholdPolarity.FALLING
@@ -993,14 +1008,28 @@ class TestFlexIOSettings:
 
     def test_flexio_threshold_voltages_are_threshold_major(self, mock_bpod_2p):
         """The 't' opcode sends all channels' threshold-0 values, then threshold-1."""
-        voltages = {0: (1.0, 1.1), 1: (2.0, 2.1), 2: (3.0, 3.1), 3: (4.0, 4.1)}
+        voltages = {0: (1000, 1100), 1: (2000, 2100), 2: (3000, 3100), 3: (4000, 4100)}
         for channel_index, (v0, v1) in voltages.items():
             channel = mock_bpod_2p.flex_io[f'Flex{channel_index + 1}']
             channel.thresholds[0].voltage = v0
             channel.thresholds[1].voltage = v1
-        raw = [round(v0 / 5 * 4095) for v0, _ in voltages.values()]
-        raw += [round(v1 / 5 * 4095) for _, v1 in voltages.values()]
+        raw = [round(v0 * 4095 / 5000) for v0, _ in voltages.values()]
+        raw += [round(v1 * 4095 / 5000) for _, v1 in voltages.values()]
         assert mock_bpod_2p.serial0.last_write == struct.pack('<c8H', b't', *raw)
+
+    def test_flexio_threshold_voltage_matches_analog_data(self, mock_bpod_2p):
+        """A threshold set to a recorded value maps to that sample's exact ADC count."""
+        for count in (0, 1, 2047, 2048, 4094, 4095):
+            millivolts = (count * 5000 + 4095 // 2) // 4095  # as in get_analog_data
+            mock_bpod_2p.flex_io['Flex1'].thresholds[0].voltage = millivolts
+            sent = struct.unpack('<c8H', mock_bpod_2p.serial0.last_write)[1]
+            assert sent == count
+
+    @pytest.mark.parametrize('value', [2.5, -1, 5001])
+    def test_flexio_threshold_voltage_rejects_invalid(self, mock_bpod_2p, value):
+        """Thresholds take whole millivolts from 0 to 5000."""
+        with pytest.raises(ValidationError):
+            mock_bpod_2p.flex_io['Flex1'].thresholds[0].voltage = value
 
     def test_flexio_threshold_polarities_are_threshold_major(self, mock_bpod_2p):
         """The 'p' opcode sends all channels' threshold-0 values, then threshold-1."""

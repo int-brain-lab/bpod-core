@@ -3,8 +3,10 @@
 import logging
 import struct
 from collections.abc import Callable, Sequence
+from typing import TypeVar
 
 import msgspec
+import polars as pl
 from typing_extensions import override
 
 from bpod_core.bpod.abc import AbstractFlexIO
@@ -17,6 +19,20 @@ from bpod_core.constants import UINT12_MAX
 logger = logging.getLogger(__name__)
 
 _SERIAL_TIMEOUT = 0.2
+
+_ADC_DAC_FULL_SCALE_MV = 5000  # FlexIO ADC/DAC full-scale range (0-5 V), in mV
+
+_CountsT = TypeVar('_CountsT', int, pl.Expr)
+
+
+def _counts_to_mv(counts: _CountsT) -> _CountsT:
+    """Convert 12-bit ADC/DAC counts (0-4095) to integer millivolts, losslessly."""
+    return (counts * _ADC_DAC_FULL_SCALE_MV + UINT12_MAX // 2) // UINT12_MAX
+
+
+def _mv_to_counts(mv: _CountsT) -> _CountsT:
+    """Convert integer millivolts (0-5000) to 12-bit ADC/DAC counts, losslessly."""
+    return (mv * UINT12_MAX + _ADC_DAC_FULL_SCALE_MV // 2) // _ADC_DAC_FULL_SCALE_MV
 
 
 def is_flexio_threshold_ambiguous(
@@ -114,9 +130,7 @@ class FlexIO(AbstractFlexIO):
             n_confirmations += 1
         if force or state.threshold_voltages != old.threshold_voltages:
             voltages = (
-                round(ch[k] / 5 * UINT12_MAX)
-                for k in (0, 1)
-                for ch in state.threshold_voltages
+                _mv_to_counts(ch[k]) for k in (0, 1) for ch in state.threshold_voltages
             )
             buffer.extend(struct.pack(f'<c{n * 2}H', b't', *voltages))
             n_confirmations += 1

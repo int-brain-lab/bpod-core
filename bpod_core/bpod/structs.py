@@ -412,7 +412,7 @@ class _FlexIOState(msgspec.Struct):
     channel_types: tuple[FlexIOChannelType, ...]
     threshold_modes: tuple[FlexIOThresholdMode, ...]
     threshold_enabled: tuple[tuple[bool, ...], ...]
-    threshold_voltages: tuple[tuple[float, ...], ...]
+    threshold_voltages: tuple[tuple[int, ...], ...]
     threshold_polarities: tuple[tuple[FlexIOThresholdPolarity, ...], ...]
     analog_sampling_rate: int
     n_reads_per_sample: int
@@ -433,7 +433,7 @@ class _FlexIOState(msgspec.Struct):
             channel_types=n_channels * (FlexIOChannelType.DISABLED,),
             threshold_modes=n_channels * (FlexIOThresholdMode.MANUAL,),
             threshold_enabled=n_channels * ((False,) * n_thresholds,),
-            threshold_voltages=n_channels * ((5.0,) * n_thresholds,),
+            threshold_voltages=n_channels * ((5000,) * n_thresholds,),
             threshold_polarities=n_channels
             * ((FlexIOThresholdPolarity.RISING,) * n_thresholds,),
             analog_sampling_rate=1000,

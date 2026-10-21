@@ -107,8 +107,8 @@ class FlexIOThresholdPolarity(IntEnum):
     """Event is triggered when the signal crosses below the threshold."""
 
 
-FlexIOThresholdVoltage = Annotated[float, Field(ge=0.0, le=5.0, allow_inf_nan=False)]
-"""Threshold voltage of an analog FlexIO input channel in volts"""
+FlexIOThresholdVoltage = Annotated[int, Field(ge=0, le=5000)]
+"""Threshold voltage of an analog FlexIO input channel, in millivolts."""
 
 FlexIOAnalogSamplingRate = Annotated[int, Field(ge=1, le=1000)]
 """Sampling rate for FlexIO channels configured as analog input, in Hz."""
