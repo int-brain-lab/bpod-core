@@ -306,8 +306,8 @@ class EventTrialEnd(BpodMessage, tag=_EventTag.TrialEnd.value):
     """
 
     time_us: int
-    """Absolute time of the trial end, derived from the exit event's hardware cycle
-    count like all other event times (microseconds since epoch, UTC)."""
+    """Absolute time of the trial end, derived from the hardware cycle count
+    (microseconds since epoch, UTC)."""
 
     trial: int
     """Zero-based trial index."""
