@@ -125,6 +125,7 @@ def mock_ext_serial(mocker):
     mocker.patch(f'{tmp}.write', side_effect=write)
     mocker.patch(f'{tmp}.read', side_effect=read)
     mocker.patch(f'{tmp}.reset_input_buffer')
+    mocker.patch(f'{tmp}._reconfigure_port')  # e.g. a timeout set while open
     mocker.patch(f'{tmp}.in_waiting', new_callable=PropertyMock, side_effect=in_waiting)
     return extended_serial
 

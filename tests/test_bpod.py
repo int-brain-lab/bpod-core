@@ -1000,18 +1000,42 @@ class TestClose:
             mock_bpod_2p.close()
         assert 'Discarded 4 stray byte(s)' in caplog.text
 
-    def test_sends_stop_command_on_close(self, mock_bpod_2p, mocker):
-        """Closing the Bpod sends the 'X' stop command, if the connection is open.
+    def test_stops_analog_acquisition_on_close(self, mock_bpod_2p, mocker, caplog):
+        """With an analog input, closing sends 'X' and reads the Bpod's reply.
 
         Firmware only stops FlexIO analog acquisition on an explicit 'X', not when
-        a trial ends naturally via '>exit', so this must happen unconditionally.
+        a trial ends naturally via '>exit'. While idle, it answers 'X' with a
+        trial-end report, which must not be taken for stray bytes.
         """
         # isolate the 'X' write from the later disconnect request, which would
         # otherwise also update last_write
         mocker.patch.object(Bpod, '_request_disconnect')
-        mock_bpod_2p.serial0.is_open = True
+        serial0 = mock_bpod_2p.serial0
+        serial0.is_open = True
+        serial0.mock_responses[b'X'] = b'\x01\x01\xff' + bytes(16)
+        mock_bpod_2p._analog_reader_thread = MagicMock()
         mock_bpod_2p.close()
-        assert mock_bpod_2p.serial0.last_write == b'X'
+        assert serial0.last_write == b'X'
+        assert len(serial0.response_buffer) == 0
+        assert 'stray' not in caplog.text
+        assert 'Unexpected reply' not in caplog.text
+
+    def test_no_stop_command_without_analog_input(self, mock_bpod_2p, mocker):
+        """Without an analog input there is no stream to stop, so no 'X' is sent."""
+        mocker.patch.object(Bpod, '_request_disconnect')
+        mock_bpod_2p.serial0.is_open = True
+        mock_bpod_2p.serial0.last_write = b''
+        mock_bpod_2p.close()
+        assert mock_bpod_2p.serial0.last_write == b''
+
+    def test_unexpected_reply_to_stop_command(self, mock_bpod_2p, mocker, caplog):
+        """A reply that isn't a trial-end report is logged."""
+        mocker.patch.object(Bpod, '_request_disconnect')
+        mock_bpod_2p.serial0.is_open = True
+        mock_bpod_2p.serial0.mock_responses[b'X'] = b'\x02\x01'
+        mock_bpod_2p._analog_reader_thread = MagicMock()
+        mock_bpod_2p.close()
+        assert 'Unexpected reply to stop command: 0201' in caplog.text
 
     def test_flushes_serial0_before_closing(self, mock_bpod_2p, mocker):
         """Bytes waiting on serial0 are read and discarded before the port closes.

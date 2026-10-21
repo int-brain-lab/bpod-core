@@ -122,6 +122,10 @@ logger = logging.getLogger(__name__)
 
 _ANALOG_FLUSH_INTERVAL_NS = 100_000_000  # 100 ms
 _ADC_DAC_FULL_SCALE_MV = 5000  # FlexIO ADC/DAC full-scale range (0-5 V), in mV
+# while idle, the Bpod answers 'X' with a trial-end report: opcode 1, one event, event
+# code 255 (end of trial), then 2 x uInt32 cycle counts and a uInt64 timestamp
+_IDLE_STOP_REPLY_HEADER = b'\x01\x01\xff'
+_IDLE_STOP_REPLY_SIZE = len(_IDLE_STOP_REPLY_HEADER) + 16
 
 _CountsT = TypeVar('_CountsT', int, pl.Expr)
 
@@ -425,13 +429,17 @@ class Bpod(SerialDevice, AbstractBpod):
         serial0_open = hasattr(self, '_serial') and getattr(
             self._serial, 'is_open', False
         )
-        if serial0_open:
+        if serial0_open and self._analog_reader_thread is not None:
             # firmware keeps streaming FlexIO analog samples on its own serial port
             # until explicitly told to stop - even after a trial ends naturally via
-            # '>exit', unlike stop_state_machine() this isn't gated on is_running,
-            # so the next connection's discovery handshake doesn't race stray bytes
+            # '>exit' - so the next connection's discovery handshake would race stray
+            # bytes. Read the Bpod's reply, so it isn't taken for stray bytes below.
             with contextlib.suppress(SerialException):  # the Bpod may be unplugged
                 self._serial.write(b'X')
+                with self._serial.temporary_timeout(0.2):
+                    reply = self._serial.read(_IDLE_STOP_REPLY_SIZE)
+                if not reply.startswith(_IDLE_STOP_REPLY_HEADER):
+                    logger.warning('Unexpected reply to stop command: %s', reply.hex())
         self._softcode_thread.drain()
         if self._analog_reader_thread is not None:
             self._analog_reader_thread.stop()  # thread stopped, serial still open
