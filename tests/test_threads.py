@@ -365,6 +365,7 @@ class TestEventThread:
             time_reference: TimeReferences | None = None,
             publish: Callable[[list[BpodEventUnion]], object] | None = None,
             should_publish: Callable[[], bool] | None = None,
+            trial: int = 0,
         ) -> tuple[EventThread, SimpleQueue[pl.LazyFrame]]:
             action_names = action_names or []
             event_names = event_names or ['Ev0', 'Tup']
@@ -375,7 +376,7 @@ class TestEventThread:
             )
             data_queue: SimpleQueue[pl.LazyFrame] = SimpleQueue()
             thread = EventThread(
-                trial=0,
+                trial=trial,
                 fsm=fsm or _make_fsm(),
                 data_queue=data_queue,
                 event_lookup=_build_event_lookup(input_events, action_names),
@@ -413,6 +414,14 @@ class TestEventThread:
         thread.join(timeout=2)
         df = self._collect(data_queue)
         assert dict(df.schema) == _TRIAL_DATA_SCHEMA
+
+    def test_trial_number_beyond_uint16(self, make_thread):
+        """Trial numbers above 65535 are kept, not rejected when collecting."""
+        thread, data_queue = make_thread(trial=70_000)
+        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
+        thread.stop()
+        thread.join(timeout=2)
+        assert self._collect(data_queue)['trial'].unique().to_list() == [70_000]
 
     def test_data_enqueued_on_stop(self, make_thread):
         """A LazyFrame is pushed to data_queue when the thread exits."""

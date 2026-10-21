@@ -79,7 +79,7 @@ class AbstractBpod(AbstractContextManager):
             Columns:
 
             - **time** (:class:`~polars.datatypes.Datetime`) – absolute Bpod timestamp.
-            - **trial** (:class:`~polars.datatypes.UInt16`) – zero-based trial index.
+            - **trial** (:class:`~polars.datatypes.UInt32`) – zero-based trial index.
             - **state machine** (:class:`~polars.datatypes.Categorical`) – state machine
               hash, see :meth:`~bpod_core.fsm.StateMachine.hash`.
             - **state** (:class:`~polars.datatypes.Categorical`) – state name.
@@ -134,8 +134,9 @@ class AbstractBpod(AbstractContextManager):
             The state machine to run. If not provided, the previously sent state machine
             is repeated.
         trial_number : int, optional
-            The trial number to assign to the state machine. If not provided, the trial
-            number is automatically incremented with each run.
+            The trial number to assign to the state machine, from 0 to 4,294,967,295.
+            If not provided, the trial number is automatically incremented with each
+            run.
         validate : bool, default: True
             If False, the state machine will not be validated prior to compilation. This
             will speed up the process, but may result in errors or unexpected behavior
@@ -146,7 +147,8 @@ class AbstractBpod(AbstractContextManager):
         RuntimeError
             If called without an argument and no state machine has been run yet.
         ValueError
-            If the state machine is invalid or exceeds hardware limitations.
+            If the state machine is invalid or exceeds hardware limitations, or if
+            ``trial_number`` is out of range.
         ValidationError
             If function arguments don't match type hints.
 

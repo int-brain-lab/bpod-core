@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is running, instead of corrupting the trial's data.
 - `send_softcode` no longer sends a softcode while no state machine is running, since
   the Bpod ignores it then; it still logs a warning.
+- the `trial` column of trial data is `UInt32` instead of `UInt16`.
 - trial data is read from the Bpod in chunks rather than message by message, which
   lowers the CPU load at high event and softcode rates.
 - live trial events are published in batches rather than one message per event,
@@ -99,6 +100,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Bpod 2+), because it was derived from a firmware cycle count that also includes the
   cycle in which the previous trial ended. It now comes from the trial's exit event,
   like all other event times.
+- a trial number above 65535 or below 0 made `get_data()` fail, losing the trials it
+  had collected. `run()` now rejects trial numbers outside 0 to 4,294,967,295.
 
 ## [0.1.0a14] - 2026-07-24
 

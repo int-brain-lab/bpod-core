@@ -31,7 +31,7 @@ from bpod_core.bpod.structs import (
     RequestData,
 )
 from bpod_core.com import ExtendedSerial
-from bpod_core.constants import STRUCT_INT16_LE, STRUCT_UINT8
+from bpod_core.constants import STRUCT_INT16_LE, STRUCT_UINT8, UINT32_MAX
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ErrorData, RemoteError, ServiceHost
 
@@ -668,6 +668,31 @@ class TestRun:
         )
         mock_bpod_25.run(fsm_basic)
         assert mock_bpod_25.serial0.last_write.startswith(b'C')
+
+    @pytest.mark.parametrize('trial_number', [-1, UINT32_MAX + 1])
+    def test_run_rejects_out_of_range_trial_number(
+        self, fsm_basic, mock_bpod_25, trial_number
+    ):
+        """An out-of-range trial number is rejected before anything is sent."""
+        mock_bpod_25.serial0.mock_responses.clear()  # any write would raise
+        index = mock_bpod_25._next_fsm_index
+        with pytest.raises(ValueError, match='trial_number must be between'):
+            mock_bpod_25.run(fsm_basic, trial_number=trial_number)
+        assert mock_bpod_25._next_fsm_index == index
+
+    def test_run_accepts_largest_trial_number(self, fsm_basic, mock_bpod_25):
+        """The largest trial number that fits the trial column is accepted."""
+        mock_bpod_25.run(fsm_basic, trial_number=UINT32_MAX)
+        assert mock_bpod_25._next_fsm_index == UINT32_MAX
+
+    def test_run_rejects_incrementing_past_largest_trial_number(
+        self, fsm_basic, mock_bpod_25
+    ):
+        """The automatic trial number is checked too."""
+        mock_bpod_25.run(fsm_basic, trial_number=UINT32_MAX)
+        with pytest.raises(ValueError, match='trial_number must be between'):
+            mock_bpod_25.run(fsm_basic)
+        assert mock_bpod_25._next_fsm_index == UINT32_MAX
 
     def test_run_repeat(self, fsm_basic, mock_bpod_25):
         """Calling run() without sma re-sends the same compiled bytes from cache."""
