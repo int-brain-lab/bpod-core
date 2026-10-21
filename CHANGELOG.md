@@ -114,6 +114,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like all other event times.
 - a trial number above 65535 or below 0 made `get_data()` fail, losing the trials it
   had collected. `run()` now rejects trial numbers outside 0 to 4,294,967,295.
+- `GlobalTimerTrig` and `GlobalTimerCancel` acted on the wrong global timers for
+  indices of 2 or more: the Bpod reads their values as one bit per timer, but they were
+  sent as index plus one. Indices of global timers that haven't been set are now
+  rejected.
 
 ## [0.1.0a14] - 2026-07-24
 

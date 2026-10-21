@@ -1500,6 +1500,12 @@ class Bpod(SerialDevice, AbstractBpod):
                                 'analog-threshold events cannot be reliably '
                                 'attributed (upstream firmware quirk)'
                             )
+            for key in self._global_timer_actions:
+                if (value := state.actions.get(key)) not in (None, *global_timer_ids):
+                    raise ValueError(
+                        f"Invalid value {value} for action '{key}' in state "
+                        f"'{state_name}' - Global Timer {value} has not been set"
+                    )
 
         # validate global timers
         if global_timer_ids:
@@ -1897,10 +1903,10 @@ class Bpod(SerialDevice, AbstractBpod):
         else:
             format_string = FMT_UINT8
 
-        # GLOBAL TIMER TRIGGERS AND CANCELS
+        # GLOBAL TIMER TRIGGERS AND CANCELS (bitmasks, one bit per timer)
         for key in ('GlobalTimerTrig', 'GlobalTimerCancel'):
-            idx = [actions.get(key, -1) + 1 for actions in state_actions]
-            extend_packed(fsm_bytes, idx, format_string)
+            bitmasks = [1 << s.actions[key] if key in s.actions else 0 for s in states]
+            extend_packed(fsm_bytes, bitmasks, format_string)
 
         # GLOBAL TIMER ONSET TRIGGERS
         extend_packed(

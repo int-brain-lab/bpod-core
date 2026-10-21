@@ -602,7 +602,7 @@ class TestRun:
             loop_interval=3,
             onset_trigger=0,
         )
-        fsm.add_state('a', 1, {'GlobalTimer2_Start': 'b'}, {'GlobalTimerTrig': 3})
+        fsm.add_state('a', 1, {'GlobalTimer2_Start': 'b'}, {'GlobalTimerTrig': 2})
         fsm.add_state('b', 1, {'GlobalTimer2_End': '>exit'})
         return fsm
 
@@ -738,6 +738,15 @@ class TestRun:
             b'\x00\x00\x00\x00\x98\x3a\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x30\x75'
             b'\x00\x00\x00'
         )
+
+    @pytest.mark.parametrize('action', ['GlobalTimerTrig', 'GlobalTimerCancel'])
+    def test_run_global_timer_action_without_timer(
+        self, fsm_global_timers, mock_bpod_25, action
+    ):
+        """Triggering or canceling a global timer that hasn't been set is rejected."""
+        fsm_global_timers.states['b'].actions[action] = 1
+        with pytest.raises(ValueError, match='Global Timer 1 has not been set'):
+            mock_bpod_25.run(fsm_global_timers)
 
     def test_run_global_counters_25(self, fsm_global_counters, mock_bpod_25):
         """Test running a state machine with global counters on Bpod 2.5."""
