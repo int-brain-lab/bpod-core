@@ -1900,12 +1900,22 @@ class Input(Channel):
         """
         Override the state of the input channel.
 
+        Creates a virtual event for the running state machine. While no state machine
+        is running, the Bpod would ignore the override, so it isn't sent and a warning
+        is logged instead. Once overridden, the physical input is ignored until the next
+        state machine starts.
+
         Parameters
         ----------
         state : bool
             The state to set for the input channel.
         """
-        self._serial0.write_struct('<cB', b'V', state)
+        if not self._bpod.is_running:
+            logger.warning(
+                'No state machine is running - override of %s not sent', self.name
+            )
+            return
+        self._serial0.write_struct('<c2B', b'V', self.index, state)
 
     @_requires_idle
     def enable(self, enable: bool) -> bool:  # noqa: FBT001

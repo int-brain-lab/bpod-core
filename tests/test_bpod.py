@@ -395,6 +395,30 @@ class TestRequiresIdle:
             _IDLE_ONLY_CALLS[name](mock_bpod_25)
 
 
+class TestInputOverride:
+    @pytest.fixture
+    def port(self, mock_bpod_25, mock_ext_serial):
+        mock_ext_serial.mock_responses[rb'V'] = b''
+        return mock_bpod_25.inputs['Port2']
+
+    def test_sends_channel_index_and_state(self, port, mock_ext_serial, mocker, caplog):
+        """The override message carries the input's index and the new state."""
+        mocker.patch.object(
+            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
+        )
+        port.override(True)
+        assert mock_ext_serial.last_write == bytes([ord('V'), port.index, 1])
+        assert not caplog.records
+
+    def test_not_sent_without_running_state_machine(
+        self, port, mock_ext_serial, caplog
+    ):
+        """An override while idle isn't sent, since the Bpod would ignore it."""
+        mock_ext_serial.mock_responses.clear()  # any write would raise AssertionError
+        port.override(True)
+        assert 'override of Port2 not sent' in caplog.text
+
+
 class TestRun:
     @pytest.fixture(autouse=True)
     def patch_run_state_machine(self, mocker):
