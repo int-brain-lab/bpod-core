@@ -50,16 +50,14 @@ class AbstractBpod(AbstractContextManager):
 
     @overload
     def get_data(
-        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[False] = False
+        self, *, concat: bool = ..., lazy: Literal[False] = False
     ) -> pl.DataFrame: ...
 
     @overload
-    def get_data(
-        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[True]
-    ) -> pl.LazyFrame: ...
+    def get_data(self, *, concat: bool = ..., lazy: Literal[True]) -> pl.LazyFrame: ...
 
     @abstractmethod
-    def get_data(self, *, concat=True, rechunk=False, lazy=False):
+    def get_data(self, *, concat=True, lazy=False):
         """Return trial data from the data queue.
 
         Parameters
@@ -69,9 +67,6 @@ class AbstractBpod(AbstractContextManager):
             a single DataFrame, blocking until at least one is available.
             If ``False``, pop and return one DataFrame, blocking until one is
             available.
-        rechunk : bool, default: False
-            If ``True``, make sure that the result data is in contiguous memory. Only
-            applies when ``concat=True``.
         lazy : bool, default: False
             If ``True``, return a :class:`polars.LazyFrame`.
             If ``False``, return a :class:`polars.DataFrame`.

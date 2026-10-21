@@ -16,7 +16,6 @@ from typing import Any, ClassVar, Literal, cast, overload
 from uuid import uuid5
 
 import msgspec
-import numpy as np
 import polars as pl
 from cachetools import FIFOCache
 from pydantic import ConfigDict, validate_call
@@ -97,6 +96,7 @@ from bpod_core.ipc import (
 from bpod_core.misc import (
     SettingsDict,
     SuggestionDict,
+    _HandlerSlot,
     extend_packed,
     suggest_similar,
     suppress_logging,
@@ -147,7 +147,7 @@ class Bpod(SerialDevice, AbstractBpod):
     _settings: SettingsDict
     _read_thread: ReadThread | None = None
     _event_thread: EventThread | None = None
-    _zmq: ServiceHost[BpodRequestUnion, BpodEventUnion]
+    _zmq: ServiceHost[BpodRequestUnion, list[BpodEventUnion]]
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
@@ -161,7 +161,7 @@ class Bpod(SerialDevice, AbstractBpod):
     ] = FIFOCache(maxsize=1024)
 
     _softcode_thread: SoftcodeThread
-    _softcode_handler: Callable[[int], None] | None = None
+    _softcode_slot: _HandlerSlot[Callable[[int], None] | None]
 
     serial1: ExtendedSerial | None = None
     """Secondary serial device for communication with the Bpod."""
@@ -208,72 +208,81 @@ class Bpod(SerialDevice, AbstractBpod):
         self._hardware_hash: bytes = b''
 
         self._n_softcodes = 0
-        self._softcode_thread = SoftcodeThread(softcode_handler=self._softcode_handler)
+        self._softcode_slot = _HandlerSlot(None)
+        self._softcode_thread = SoftcodeThread(handler_slot=self._softcode_slot)
         self._softcode_thread.start()
 
-        # identify Bpod by port or serial number, open connection
-        bpod_port, _ = self._identify_bpod(port, serial_number)
-        super().__init__(port=bpod_port, open_connection=True)
-        self._serial_number = self._port_info.serial_number or 'unknown'
+        try:
+            # identify Bpod by port or serial number, open connection
+            bpod_port, _ = self._identify_bpod(port, serial_number)
+            super().__init__(port=bpod_port, open_connection=True)
+            self._serial_number = self._port_info.serial_number or 'unknown'
 
-        # record reference system time
-        self._time_reference = TimeReferences(
-            init_system_time_ns=time_ns(),
-            init_perf_counter_ns=perf_counter_ns(),
-            reset_system_time_ns=0,
-        )
-        self.reset_session_clock()
+            # record reference system time
+            self._time_reference = TimeReferences(
+                init_system_time_ns=time_ns(),
+                init_perf_counter_ns=perf_counter_ns(),
+                reset_system_time_ns=0,
+            )
+            self.reset_session_clock()
 
-        # get firmware version and machine type; enforce version requirements
-        self._get_version_info()
+            # get firmware version and machine type; enforce version requirements
+            self._get_version_info()
 
-        # get the Bpod's onboard hardware configuration
-        self._get_hardware_configuration()
+            # get the Bpod's onboard hardware configuration
+            self._get_hardware_configuration()
 
-        # configure input and output channels
-        self._configure_io()
+            # configure input and output channels
+            self._configure_io()
 
-        # detect additional serial ports
-        self._detect_additional_serial_ports()
+            # detect additional serial ports
+            self._detect_additional_serial_ports()
 
-        # update modules
-        self.update_modules()
+            # update modules
+            self.update_modules()
 
-        # log hardware information
-        logger.info(
-            'Connected to Bpod Finite State Machine %s on %s',
-            self.version.machine_str,
-            self.port,
-        )
-        logger.info(
-            'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
-            *self.version.firmware,
-            self._serial_number,
-            self.version.pcb,
-        )
+            # log hardware information
+            logger.info(
+                'Connected to Bpod Finite State Machine %s on %s',
+                self.version.machine_str,
+                self.port,
+            )
+            logger.info(
+                'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
+                *self.version.firmware,
+                self._serial_number,
+                self.version.pcb,
+            )
 
-        # start ZeroMQ service
-        self._start_zmq(use_zeroconf=remote)
-        logger.info('ZeroMQ service started on %s', self.address)
+            # start ZeroMQ service
+            self._start_zmq(use_zeroconf=remote)
+            logger.info('ZeroMQ service started on %s', self.address)
 
-        # when launched by a supervising process (e.g. QBpod), briefly wait for
-        # its subscription to register so the first trial's messages aren't lost
-        # to the PUB/SUB slow-joiner race
-        if 'BPOD_OVERRIDE_REMOTE' in os.environ:
-            if self._zmq.wait_for_subscribers(timeout=1.0):
-                logger.debug('Subscriber registered on the PUB/SUB channel')
-            else:
-                logger.debug('No subscriber registered within timeout')
+            # when launched by a supervising process (e.g. QBpod), briefly wait for
+            # its subscription to register so the first trial's messages aren't lost
+            # to the PUB/SUB slow-joiner race
+            if 'BPOD_OVERRIDE_REMOTE' in os.environ:
+                if self._zmq.wait_for_subscribers(timeout=1.0):
+                    logger.debug('Subscriber registered on the PUB/SUB channel')
+                else:
+                    logger.debug('No subscriber registered within timeout')
+        except BaseException:
+            # release what was acquired so far; report the original error
+            with contextlib.suppress(Exception):
+                self._shutdown()
+            raise
 
         # register destructors
         self._bpod_finalizer = weakref.finalize(
             self,
             Bpod._bpod_cleanup,
             self._serial,
+            self._softcode_thread,
         )
 
     @staticmethod
-    def _bpod_cleanup(serial: ExtendedSerial) -> None:
+    def _bpod_cleanup(serial: ExtendedSerial, softcode_thread: SoftcodeThread) -> None:
+        softcode_thread.stop()
         with contextlib.suppress(Exception):
             if serial.is_open:
                 Bpod._request_disconnect(serial)
@@ -286,8 +295,15 @@ class Bpod(SerialDevice, AbstractBpod):
     ) -> None:
         """Exit context and close connection."""
         self._bpod_finalizer.detach()
-        self.close()
-        self._stop_zmq()
+        self._shutdown()
+
+    def _shutdown(self) -> None:
+        """Close the connection, then end the IPC service and softcode thread."""
+        try:
+            self.close()
+        finally:
+            self._stop_zmq()
+            self._softcode_thread.stop()
 
     def open(self) -> None:
         """
@@ -325,7 +341,9 @@ class Bpod(SerialDevice, AbstractBpod):
         self.wait()
         self._softcode_thread.drain()
         if hasattr(self, 'serial0'):
-            self._request_disconnect(self.serial0)
+            # the Bpod may have been unplugged
+            with contextlib.suppress(SerialException):
+                self._request_disconnect(self.serial0)
         super().close()
 
     @staticmethod
@@ -436,7 +454,7 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
     def _stop_zmq(self) -> None:
-        if hasattr(self, '_zmq_service'):
+        if hasattr(self, '_zmq'):
             self._zmq.close()
 
     @property
@@ -703,15 +721,22 @@ class Bpod(SerialDevice, AbstractBpod):
         for module in self.modules.values():
             module.set_relay(False)
 
-    def _compile_input_events(self) -> None:
-        """Compile input events supported by the Bpod hardware."""
+    def _compile_input_events(self) -> bytes:
+        """Compile input events supported by the Bpod hardware.
+
+        Returns
+        -------
+        bytes
+            The number of events per serial channel, in the order of the channels.
+        """
         hw = self._hardware
-        n_serial_events = sum(len(m.event_names) for m in self.modules.values())
+        n_serial_events = sum(m.n_events for m in self.modules.values())
         n_softcodes = hw.max_serial_events - n_serial_events
         n_usb = hw.input_description.count(b'X')
         n_usb_ext = hw.input_description.count(b'Z')
         n_softcodes_per_usb = n_softcodes // (n_usb + n_usb_ext)
         n_app_softcodes = n_usb_ext * n_softcodes_per_usb
+        serial_event_allocation: list[int] = []
         event_names: list[str] = []
         event_channels: list[str | None] = []
         event_values: list[int | None] = []
@@ -746,6 +771,8 @@ class Bpod(SerialDevice, AbstractBpod):
             else:
                 logger.warning('Skipping unsupported input channel: %s', io_key)
                 continue
+            if io_key in b'UXZ':
+                serial_event_allocation.append(len(ev_names))
             event_names.extend(ev_names)
             event_channels.extend(ev_channels)
             event_values.extend(ev_values)
@@ -813,6 +840,7 @@ class Bpod(SerialDevice, AbstractBpod):
             k: v
             for v, k in enumerate(modules + physical_input_channels + global_timers)
         }
+        return bytes(serial_event_allocation)
 
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""
@@ -871,6 +899,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # self._disable_all_module_relays()
         self.serial0.write(b'M')
         modules = []
+        n_requested = [0] * self._hardware.n_modules
         for idx in range(self._hardware.n_modules):
             # check connection state
             if not (is_connected := self.serial0.read_bool()):
@@ -879,7 +908,6 @@ class Bpod(SerialDevice, AbstractBpod):
                 continue
 
             # read further information if module is connected
-            n_events = N_SERIAL_EVENTS_DEFAULT
             firmware_version, n_chars = self.serial0.read_struct('<IB')
             base_name, more_info = self.serial0.read_struct(f'<{n_chars}s?')
             base_name = base_name.decode('UTF8')
@@ -887,7 +915,9 @@ class Bpod(SerialDevice, AbstractBpod):
             while more_info:
                 match self.serial0.read(1):
                     case b'#':
-                        n_events = self.serial0.read_uint8()
+                        n_requested[idx] = self.serial0.read_uint8()
+                    case b'V' | b'v':  # hardware version: major / minor
+                        self.serial0.read(1)
                     case b'E':
                         n_event_names = self.serial0.read_uint8()
                         for _ in range(n_event_names):
@@ -910,20 +940,28 @@ class Bpod(SerialDevice, AbstractBpod):
                     name=module_name,
                     is_connected=is_connected,
                     firmware_version=firmware_version,
-                    n_events=n_events,
                     _custom_event_names=custom_event_names,
                 ),
             )
 
+        n_events = _allocate_module_events(modules, n_requested)
+        for module, n in zip(modules, n_events, strict=True):
+            module.n_events = n
         self.modules = _ModuleDict(
             {m.name: m for m in modules},
             available_modules=[m.name for m in modules if m.is_connected],
         )
 
         # update event names and output actions
-        self._compile_input_events()
+        serial_event_allocation = self._compile_input_events()
         self._compile_output_actions()
         self._event_lookup = _build_event_lookup(self._input_events, self._actions)
+
+        # tell the state machine how many events each serial channel may report -
+        # until then, it drops all module events and softcodes
+        if not self.serial0.verify(b'%' + serial_event_allocation):
+            raise BpodError('State machine did not acknowledge serial event allocation')
+        logger.debug('Serial event allocation sent: %s', list(serial_event_allocation))
 
         # compute hardware identity hash for cache keying
         self._hardware_hash = self._compute_hardware_hash()
@@ -1253,9 +1291,7 @@ class Bpod(SerialDevice, AbstractBpod):
         timer_channel_indices = self._timer_channel_indices
 
         # build the state transition matrix (n_states x 255 events)
-        state_transition_matrix = np.arange(n_states, dtype=np.uint8)[
-            :, np.newaxis
-        ].repeat(255, axis=1)
+        state_transition_matrix = [[state_idx] * 255 for state_idx in range(n_states)]
         for state_idx, state in enumerate(states):
             for event, target in state.transitions.items():
                 state_transition_matrix[state_idx][event_indices[event]] = (
@@ -1312,7 +1348,8 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # STATE TIMER TARGET INDICES (n_states bytes):
         # Target state index for each state's 'Tup' event (defaults to self)
-        fsm_bytes.extend(state_transition_matrix[:, event_indices['Tup']].tobytes())
+        tup_index = event_indices['Tup']
+        fsm_bytes.extend(targets[tup_index] for targets in state_transition_matrix)
 
         # INPUT EVENTS (variable length, per state):
         #   [count] [event_idx, target_idx] ...  for events on physical input channels
@@ -1563,18 +1600,10 @@ class Bpod(SerialDevice, AbstractBpod):
             publish=self._zmq.publish,
             publish_gate=lambda: self._zmq.has_subscribers,
         )
-        read_thread = ReadThread(
-            serial=self.serial0,
-            state_machine_hash=state_machine_lookup.fsm_hash,
-            trial=self._next_fsm_index,
-            cycle_period_us=self._hardware.cycle_period_us,
-            queue_events=event_thread.queue,
-            queue_softcodes=self._softcode_thread.queue,
-        )
-
         # wait for the previous trial's reader to finish, then resume reading the serial
         # stream without further delay (softcodes and raw events must not wait for the
-        # previous trial's event processing)
+        # previous trial's event processing). The previous reader may already have read
+        # the start of this trial - hand those bytes over to the new reader.
         previous_read_thread = self._read_thread
         if previous_read_thread is not None and previous_read_thread.is_alive():
             logger.debug(
@@ -1582,6 +1611,21 @@ class Bpod(SerialDevice, AbstractBpod):
                 previous_read_thread.trial_number,
             )
             previous_read_thread.join()
+        leftover, leftover_received_ns = (
+            (previous_read_thread.leftover, previous_read_thread.leftover_received_ns)
+            if previous_read_thread is not None
+            else (b'', 0)
+        )
+        read_thread = ReadThread(
+            serial=self.serial0,
+            state_machine_hash=state_machine_lookup.fsm_hash,
+            trial=self._next_fsm_index,
+            cycle_period_us=self._hardware.cycle_period_us,
+            queue_events=event_thread.queue,
+            queue_softcodes=self._softcode_thread.queue,
+            initial_bytes=leftover,
+            initial_received_ns=leftover_received_ns,
+        )
         read_thread.start()
 
         # before the new event thread publishes anything, let the previous one drain its
@@ -1618,6 +1662,12 @@ class Bpod(SerialDevice, AbstractBpod):
         Blocks until the state machine's reader and event threads complete - i.e., until
         all of the trial's events have been recorded and published. If no state machine
         is currently running, this method returns immediately.
+
+        Raises
+        ------
+        BpodError
+            If the connection to the Bpod was lost during the trial. The events received
+            up to then are kept.
         """
         read_thread = self._read_thread  # snapshot for thread-safety
         if read_thread is not None and read_thread.is_alive():
@@ -1630,6 +1680,13 @@ class Bpod(SerialDevice, AbstractBpod):
         event_thread = self._event_thread  # snapshot for thread-safety
         if event_thread is not None and event_thread.is_alive():
             event_thread.join()
+
+        if read_thread is not None and (error := read_thread.error) is not None:
+            read_thread.error = None  # report it once
+            trial = read_thread.trial_number
+            raise BpodError(
+                f'Lost connection to the Bpod during trial #{trial}'
+            ) from error
 
     @overload
     def peek_data(
@@ -1671,20 +1728,18 @@ class Bpod(SerialDevice, AbstractBpod):
             empty = pl.DataFrame(schema=_TRIAL_DATA_SCHEMA)
             return empty.lazy() if lazy else empty
         data = self._event_thread.peek_data(trigger_states)
-        return data if lazy else data.collect()
+        return data if lazy else data.collect(engine='in-memory')
 
     @overload
     def get_data(
-        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[False] = False
+        self, *, concat: bool = ..., lazy: Literal[False] = False
     ) -> pl.DataFrame: ...
 
     @overload
-    def get_data(
-        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[True]
-    ) -> pl.LazyFrame: ...
+    def get_data(self, *, concat: bool = ..., lazy: Literal[True]) -> pl.LazyFrame: ...
 
     @override
-    def get_data(self, *, concat=True, rechunk=False, lazy=False):
+    def get_data(self, *, concat=True, lazy=False):
         if self._trial_data.empty() and not self.is_running:
             raise BpodError('No trial data available')
 
@@ -1695,12 +1750,13 @@ class Bpod(SerialDevice, AbstractBpod):
                     frames.append(self._trial_data.get(block=False))
                 except Empty:  # noqa: PERF203
                     break
-            data = pl.concat(frames, rechunk=rechunk)
+            data = pl.concat(frames)
         else:
             data = frames[0]
 
-        # return data
-        return data if lazy else data.collect()
+        # trial data is small: the in-memory engine avoids the streaming engine's
+        # start-up cost (polars 2 picks streaming by default)
+        return data if lazy else data.collect(engine='in-memory')
 
     @override
     def stop_state_machine(self) -> None:
@@ -1756,8 +1812,7 @@ class Bpod(SerialDevice, AbstractBpod):
         softcode_handler : Callable, optional
             The function to call when a softcode is received.
         """
-        self._softcode_handler = softcode_handler
-        self._softcode_thread.set_handler(softcode_handler)
+        self._softcode_slot.handler = softcode_handler
 
 
 class Channel:
@@ -1936,18 +1991,6 @@ class Module:
             return f'{self.name} on module port {self.index + 1})'
         return self.name
 
-    def __post_init__(self) -> None:
-        self._define_event_names()
-
-    def _define_event_names(self) -> None:
-        """Define the module's event names."""
-        self._event_names = []
-        for idx in range(self.n_events):
-            if len(self._custom_event_names) > idx:
-                self._event_names.append(f'{self.name}_{self._custom_event_names[idx]}')
-            else:
-                self._event_names.append(f'{self.name}_{idx}')
-
     @validate_call()
     def set_relay(self, enabled: bool) -> None:  # noqa: FBT001
         """
@@ -2030,7 +2073,73 @@ class Module:
     @property
     def event_names(self) -> list[str]:
         """A list of event names associated with the module."""
-        return self._event_names
+        names = self._custom_event_names[: self.n_events]
+        names += [str(idx) for idx in range(len(names), self.n_events)]
+        return [f'{self.name}_{name}' for name in names]
+
+
+def _allocate_module_events(modules: list[Module], n_requested: list[int]) -> list[int]:
+    """Allocate serial events to module ports, as Bpod's MATLAB software does.
+
+    The module ports share a fixed budget of 15 events per port
+    (``N_SERIAL_EVENTS_DEFAULT``). Requests are met by moving events between ports, so
+    the softcodes' share of the state machine's serial events is never touched:
+
+    1. Every port starts with 15 events, including ports whose module requests fewer.
+    2. Modules requesting more than 15 events are served in port order. Each takes the
+       missing events from the ports in reverse order, starting with the last port:
+
+       - unused ports and valve modules give up all of their events,
+       - modules that requested fewer events than they hold give up the surplus,
+       - all other modules give up nothing.
+
+    3. If the ports cannot cover a request, a :class:`BpodError` is raised.
+
+    For example, a Bpod 2+ with a module requesting 24 events on port 1 and no modules
+    on ports 2 and 3 gets ``[24, 15, 6]``: port 3 gives up the 9 missing events.
+
+    Unlike in MATLAB, a module that can cover only part of a request gives up just its
+    surplus, not all of its events.
+
+    Parameters
+    ----------
+    modules : list of Module
+        The modules, ordered by port.
+    n_requested : list of int
+        The number of events requested by each module, 0 if it did not request any.
+
+    Returns
+    -------
+    list of int
+        The number of events allocated to each module port.
+
+    Raises
+    ------
+    BpodError
+        If the requested events exceed the events available.
+    """
+    n_events = [N_SERIAL_EVENTS_DEFAULT] * len(modules)
+    n_reserved = [  # events a port keeps: none for unused ports and valve modules
+        (n or N_SERIAL_EVENTS_DEFAULT)
+        if m.is_connected and 'ValveModule' not in m.name
+        else 0
+        for m, n in zip(modules, n_requested, strict=True)
+    ]
+    for idx, n in enumerate(n_requested):
+        n_missing = n - n_events[idx]
+        if n_missing <= 0:
+            continue
+        n_events[idx] = n
+        for pos in reversed(range(len(modules))):
+            n_taken = min(max(n_events[pos] - n_reserved[pos], 0), n_missing)
+            n_events[pos] -= n_taken
+            n_missing -= n_taken
+        if n_missing > 0:
+            raise BpodError(
+                f'{modules[idx].name} requests {n} serial events, but only '
+                f'{n - n_missing} are available - please reconfigure modules'
+            )
+    return n_events
 
 
 class RemoteBpod(AbstractBpod):
@@ -2058,7 +2167,7 @@ class RemoteBpod(AbstractBpod):
     timeout : float, default: 10.0
         Discovery timeout in seconds.
     event_callback : Callable, optional
-        Called with each live trial-event message received over the events channel;
+        Called with each live trial event received over the events channel;
         return values are ignored. Runs on a background thread and should not block;
         exceptions it raises are logged but not propagated.
 
@@ -2068,7 +2177,7 @@ class RemoteBpod(AbstractBpod):
         If no matching remote Bpod is found within `timeout` seconds.
     """
 
-    _zmq: ServiceClient[BpodRequestUnion, BpodReplyUnion, BpodEventUnion]
+    _zmq: ServiceClient[BpodRequestUnion, BpodReplyUnion, list[BpodEventUnion]]
     _name: str | None = None
     _location: str | None = None
     _event_callback: Callable[[BpodEventUnion], object] | None = None
@@ -2083,12 +2192,6 @@ class RemoteBpod(AbstractBpod):
         timeout: float = 10.0,
         event_callback: Callable[[BpodEventUnion], object] | None = None,
     ) -> None:
-        properties = {
-            'address': address,
-            'name': name,
-            'serial_number': serial_number,
-            'location': location,
-        }
         # the event loop may deliver messages before this constructor returns, so the
         # callback must be in place before the client exists
         self._event_callback = event_callback
@@ -2101,13 +2204,21 @@ class RemoteBpod(AbstractBpod):
                 address=address,
                 event_handler=self._event_handler if subscribe else None,
                 discovery_timeout=timeout,
-                txt_properties={k: v for k, v in properties.items() if v is not None},
+                txt_properties={
+                    'name': name,
+                    'serial_number': serial_number,
+                    'location': location,
+                },
                 default_reply_type=BpodReplyUnion,
-                event_type=BpodEventUnion if subscribe else Any,
+                event_type=list[BpodEventUnion] if subscribe else Any,
             )
         except TimeoutError as e:
             raise TimeoutError('Failed to discover remote Bpod.') from e
-        self._handshake()
+        try:
+            self._handshake()
+        except BaseException:
+            self._zmq.close()
+            raise
 
         # log hardware information
         logger.info(
@@ -2184,36 +2295,38 @@ class RemoteBpod(AbstractBpod):
         self._name = reply.name
         self._location = reply.location
 
-    def _event_handler(self, message: BpodEventUnion) -> None:
-        """Handle a message received on the PUB/SUB channel.
+    def _event_handler(self, messages: list[BpodEventUnion]) -> None:
+        """Handle a batch of messages received on the PUB/SUB channel.
 
         Logs selected messages, then forwards each message to the ``event_callback``
         given at construction.
 
         Parameters
         ----------
-        message : BpodEventUnion
-            The decoded message.
+        messages : list of BpodEventUnion
+            The decoded messages, in the order they were recorded.
         """
-        if logger.isEnabledFor(logging.INFO):
+        for message in messages:
             match message:
                 case EventTrialStart(trial=trial, fsm_hash=fsm_hash):
                     logger.info('Starting state machine %s / trial %s', fsm_hash, trial)
-        if self._event_callback is not None:
-            self._event_callback(message)
+            if self._event_callback is not None:
+                # a failing callback mustn't cost the rest of the batch
+                try:
+                    self._event_callback(message)
+                except Exception:
+                    logger.exception('event_callback raised an exception')
 
     @overload
     def get_data(
-        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[False] = False
+        self, *, concat: bool = ..., lazy: Literal[False] = False
     ) -> pl.DataFrame: ...
 
     @overload
-    def get_data(
-        self, *, concat: bool = ..., rechunk: bool = ..., lazy: Literal[True]
-    ) -> pl.LazyFrame: ...
+    def get_data(self, *, concat: bool = ..., lazy: Literal[True]) -> pl.LazyFrame: ...
 
     @override
-    def get_data(self, *, concat=True, rechunk=False, lazy=False):
+    def get_data(self, *, concat=True, lazy=False):
         try:
             reply = self._zmq.request(
                 request_data=RequestData(
@@ -2228,9 +2341,7 @@ class RemoteBpod(AbstractBpod):
                 raise BpodError(e.original_error.message) from e
             raise
 
-        if lazy:
-            return pl.scan_ipc(reply, rechunk=rechunk)
-        return pl.read_ipc(reply, rechunk=rechunk)
+        return pl.scan_ipc(reply) if lazy else pl.read_ipc(reply)
 
     @override
     @property
@@ -2326,15 +2437,10 @@ def discover_bpod(
 
         devices = list(discover_bpod())
     """
-    # create filter dict
-    filters: dict[str, str] = {}
-    if port is not None:
-        filters['device'] = port
-    if serial_number is not None:
-        filters['serial_number'] = serial_number
-
-    # find matching devices
-    for p in find_ports(vid=VIDS_BPOD, pid=PIDS_BPOD, **filters):
+    ports = find_ports(
+        vid=VIDS_BPOD, pid=PIDS_BPOD, device=port, serial_number=serial_number
+    )
+    for p in ports:
         if verify_serial_discovery(
             port=p.device, expected_message=b'\xde', timeout=DISCOVERY_TIMEOUT
         ):
@@ -2381,15 +2487,13 @@ def discover_remote_bpod(
         - address: str, the service address, e.g., ``'tcp://192.168.1.10:1234'``
         - properties: dict, the service properties, e.g., ``{'name': 'MyDevice'}``
     """
-    properties = {
-        'name': name,
-        'serial_number': serial_number,
-        'location': location,
-    }
-    properties = {k: v for k, v in properties.items() if v is not None}
     yield from iter_services(
         service_type='bpod',
-        properties=properties,
+        properties={
+            'name': name,
+            'serial_number': serial_number,
+            'location': location,
+        },
         timeout=timeout,
         poll_interval=poll_interval,
         local=local,

@@ -3,11 +3,13 @@
 Contributions to bpod-core's codebase are very welcome! Whether you're fixing a bug,
 adding a feature, or improving the documentation, we appreciate your help.
 
-Before starting work on a non-trivial contribution, please check the
-[issue tracker](https://github.com/int-brain-lab/bpod-core/issues) to see if the topic
-is already being discussed or worked on. If not, open a new issue to describe what you
-have in mind. This helps avoid duplicate effort and ensures your contribution is aligned
-with the project's direction before you invest significant time.
+## Reporting Bugs and Requesting Features
+
+Bug reports, feature requests, and plans for non-trivial contributions all go through
+the [issue tracker](https://github.com/int-brain-lab/bpod-core/issues). Please check
+whether your topic is already being discussed; if not, open a new issue using the
+matching template. For contributions, this helps avoid duplicate effort and ensures your
+work is aligned with the project's direction before you invest significant time.
 
 ## Development Environment
 
@@ -62,10 +64,12 @@ output will indicate whether the checks passed or failed.
 To run individual tools against your current environment:
 
 ```console
-uv run pytest          # run unit-tests
-uv run mypy            # run type checking
-uv run ruff check      # check for linting issues
-uv run ruff format     # auto-format code
+uv run tox -p -m pytest     # run unit-tests
+uv run tox -p -m mypy       # run type checking
+uv run ruff check           # check for linting issues
+uv run ruff check --fix     # auto-correct fixable linting issues
+uv run ruff format --check  # check for formatting issues
+uv run ruff format          # auto-format code
 ```
 
 Adding `--fix` to `ruff check` will automatically correct fixable issues.

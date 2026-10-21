@@ -37,13 +37,13 @@ the agent can look things up on demand through four tools:
 
    * - Tool
      - Purpose
-   * - ``fetch_bpod-core_documentation``
+   * - ``fetch_bpod_core_documentation``
      - Retrieve bpod-core's documentation as a whole.
-   * - ``search_bpod-core_documentation``
+   * - ``search_bpod_core_documentation``
      - Search the documentation for a specific topic.
-   * - ``search_bpod-core_code``
+   * - ``search_bpod_core_code``
      - Search the repository's source code, tests and examples.
-   * - ``fetch_url_content``
+   * - ``fetch_generic_url_content``
      - Follow links encountered in the above.
 
 .. note::

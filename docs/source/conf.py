@@ -1,7 +1,7 @@
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from docutils import nodes
@@ -19,7 +19,7 @@ from bpod_core.misc import ValidatedDict  # noqa: E402
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'bpod-core'
-copyright = f'{datetime.now().year}, International Brain Laboratory'  # noqa: A001, DTZ005
+copyright = f'{datetime.now().year}, International Brain Laboratory'  # noqa: A001
 author = 'International Brain Laboratory'
 language = 'en'
 release = '.'.join(__version__.split('.')[:3])
@@ -58,15 +58,18 @@ extensions = [
     'fsm_codeblock',
     'fsm_examples',
     'missing_references',
+    'hide_doctest_comments',
     'matplotlib.sphinxext.plot_directive',
     'sphinx_llm.txt',
     'sphinx_sitemap',
     'sphinxext.opengraph',
+    'notfound.extension',
 ]
 
 source_suffix = {'.rst': 'restructuredtext', '.md': 'myst'}
 templates_path = ['_templates']
 exclude_patterns = []
+smartquotes_action = 'De'
 
 numfig = True
 nitpicky = True
@@ -138,7 +141,6 @@ html_context = {
 }
 html_baseurl = 'https://int-brain-lab.github.io/bpod-core/'
 html_copy_source = False
-html_extra_path = ['robots.txt']
 
 # -- Analytics -----------------------------------------------------------------
 
@@ -166,8 +168,8 @@ ogp_custom_meta_tags = ['<meta name="twitter:card" content="summary"/>']
 # -- Sitemap -------------------------------------------------------------------
 
 sitemap_url_scheme = '{link}'
-sitemap_excludes = ['search/', 'genindex/', 'py-modindex/']
-sitemap_show_lastmod = False
+sitemap_excludes = ['search/', 'genindex/', 'py-modindex/', '404/']
+sitemap_show_lastmod = True
 sitemap_indent = 2
 sitemap_locales = [None]
 
@@ -249,6 +251,7 @@ napoleon_type_aliases = {
     'TypeVar': '~typing.TypeVar',
     'ValidatedDict': '~bpod_core.misc.ValidatedDict',
     'ColorType': '~pydantic_extra_types.color.ColorType',
+    'Filter': '~bpod_core.filtering.Filter',
 }
 
 # -- FSM diagrams --------------------------------------------------------------
@@ -299,9 +302,33 @@ plot_rcparams = {
 
 # -- sphinx-llm ----------------------------------------------------------------
 
-llms_txt_description = 'A modern Python interface for Bpod Finite State Machines.'
+llms_txt_description = (
+    'A modern Python interface for Bpod Finite State Machines.\n\n'
+    '## Facts\n\n'
+    '- bpod-core is a Python library for defining and running behavioral experiments '
+    'using Bpod Finite State Machines.\n'
+    f'- the current version of bpod-core is {__version__}.\n'
+    '- the documentation of bpod-core was last updated on '
+    f'{datetime.now(UTC):%B %d, %Y}.\n'
+    '- bpod-core requires Python 3.10 or newer.\n'
+    '- bpod-core is compatible with Linux, macOS, and Windows.\n'
+    '- bpod-core is compatible with Bpod r2.0 and newer. '
+    'Older hardware revisions are not currently supported.\n'
+    '- bpod-core uses different syntax from both Bpod MATLAB software and pybpod. '
+    'The documentation of these projects is of limited relevance for bpod-core.\n\n'
+    '## Links\n\n'
+    '- [source code of bpod-core](https://github.com/int-brain-lab/bpod-core)\n'
+    '- [PyPI package of bpod-core](https://pypi.org/project/bpod-core)\n'
+    '- [DOI for citing bpod-core](https://doi.org/10.5281/zenodo.21497456)\n'
+    '- [JSON schema for state machines](https://raw.githubusercontent.com/int-brain-lab/bpod-core/main/.schema/statemachine.json)'
+)
 llms_txt_build_parallel = False
-llms_txt_suffix_mode = 'url-suffix'  # faq.md rather than faq/index.html.md
+llms_txt_exclude = ['schema']
+llms_txt_full_build = True
+
+# we only set `markdown_http_base` if we're running on GitHub
+if os.getenv('GITHUB_ACTIONS') == 'true':
+    markdown_http_base = 'https://int-brain-lab.github.io/bpod-core/'
 
 # -- Miscellaneous -------------------------------------------------------------
 
@@ -309,6 +336,7 @@ linkcode_link_text = ' '
 pygments_style = 'default'
 highlight_language = 'python3'
 numpydoc_show_class_members = False
+notfound_urls_prefix = '/bpod-core/'
 
 # -- Hooks ---------------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 version: 2
 
 updates:
-  - package-ecosystem: pip
+  - package-ecosystem: uv
     directory: "/"
     target-branch: "develop"
 
@@ -14,6 +14,12 @@ updates:
       - "dependencies"
 
     open-pull-requests-limit: 5
+
+    # only update uv.lock: pyproject.toml holds the tested minimum versions
+    versioning-strategy: lockfile-only
+
+    cooldown:
+      default-days: 7
 
     groups:
       python-minor-patch:
@@ -43,6 +49,9 @@ updates:
       - "dependencies"
 
     open-pull-requests-limit: 3
+
+    cooldown:
+      default-days: 7
 
     groups:
       github-actions:

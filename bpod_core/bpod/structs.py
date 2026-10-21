@@ -4,8 +4,6 @@ from enum import IntEnum
 from typing import Any, Literal, NamedTuple, TypeAlias
 
 import msgspec
-import numpy as np
-import numpy.typing as npt
 
 from bpod_core.misc import ByteEnum
 
@@ -52,8 +50,8 @@ class StateMachineLookup(NamedTuple):
     """The state machine's hash value."""
     state_names: list[str]
     """Names of all states, indexed by state index."""
-    state_transition_matrix: npt.NDArray[np.uint8]
-    """Transition matrix of shape ``(n_states, 255)``."""
+    state_transition_matrix: list[list[int]]
+    """Target state per state and event: ``n_states`` lists of 255 state indices."""
     state_actions: list[dict[str, int]]
     """Per-state mapping of action name to value."""
     use_back_op: bool

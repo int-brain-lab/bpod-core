@@ -253,7 +253,7 @@ once a trial has finished. To follow a trial as it unfolds, pass an
    with RemoteBpod(serial_number='14260000', event_callback=on_event) as bpod:
        bpod.run(fsm)
 
-Each message is one of the tagged structs in :mod:`bpod_core.bpod.structs`:
+Each event is one of the tagged structs in :mod:`bpod_core.bpod.structs`:
 :class:`~bpod_core.bpod.structs.EventTrialStart`,
 :class:`~bpod_core.bpod.structs.EventStateStart`,
 :class:`~bpod_core.bpod.structs.EventInput`,
@@ -263,6 +263,11 @@ Each message is one of the tagged structs in :mod:`bpod_core.bpod.structs`:
 :class:`~bpod_core.bpod.structs.EventTrialEndControl`. Their union is available as
 :obj:`~bpod_core.bpod.structs.BpodEventUnion`, which makes ``match`` statements like
 the one above exhaustively checkable by a type checker.
+
+On the wire, the host groups events into batches: each published message is a list
+of these structs. The callback still receives them one at a time. To subscribe without
+:class:`~bpod_core.bpod.RemoteBpod`, pass ``event_type=list[BpodEventUnion]`` to
+:class:`~bpod_core.ipc.ServiceClient`.
 
 .. warning::
 

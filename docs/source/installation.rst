@@ -7,8 +7,9 @@ Installation
 Requirements
 ------------
 
-bpod-core requires **Python 3.10 or later**. It is supported on Linux, macOS, and
-Windows.
+bpod-core requires **Python 3.10 or later** and is supported on Linux, macOS, and
+Windows. It is compatible with Bpod Finite State Machines r2 and newer. Older hardware
+revisions are not supported as of now.
 
 Virtual Environment
 -------------------

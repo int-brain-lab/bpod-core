@@ -8,6 +8,7 @@ from bpod_core.bpod import structs
 
 def _all_subclasses(cls: type) -> Iterator[type]:
     """Yield all direct and indirect subclasses of a class."""
+    subclass: type
     for subclass in cls.__subclasses__():
         yield subclass
         yield from _all_subclasses(subclass)
