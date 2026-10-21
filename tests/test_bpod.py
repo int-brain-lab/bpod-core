@@ -419,6 +419,18 @@ class TestInputOverride:
         assert 'override of Port2 not sent' in caplog.text
 
 
+class TestModuleRelay:
+    def test_set_relay(self, mock_bpod_25, mock_ext_serial, caplog):
+        """Switching a relay sends 'J' with the module's index and logs it."""
+        caplog.set_level(logging.INFO)
+        mock_ext_serial.mock_responses[rb'J'] = b''
+        module = _first(mock_bpod_25.modules)
+        module.set_relay(True)
+        assert mock_ext_serial.last_write == bytes([ord('J'), module.index, 1])
+        assert f'Enabling relay for module {module.name}' in caplog.text
+        assert module.relay
+
+
 class TestSendSoftcode:
     def test_sends_softcode(self, mock_bpod_25, mock_ext_serial, mocker, caplog):
         """A softcode is sent to a running state machine."""

@@ -2052,7 +2052,7 @@ class Module:
             for module in self._bpod.modules.values():
                 module.set_relay(False)
         logger.info(
-            '%sabling relay for module %s', {'En' if enabled else 'Dis'}, self.name
+            '%sabling relay for module %s', 'En' if enabled else 'Dis', self.name
         )
         self._bpod.serial0.write_struct('<cB?', b'J', self.index, enabled)
         self._relay_is_enabled = enabled
