@@ -216,7 +216,15 @@ class AbstractBpod(AbstractContextManager):
 
     @abstractmethod
     def stop_state_machine(self) -> None:
-        """Stop the currently running state machine."""
+        """
+        Stop the currently running state machine.
+
+        Notes
+        -----
+        On a Bpod with FlexIO channels configured as analog inputs, this also stops
+        analog sampling and threshold detection, until
+        :meth:`reset_session_clock` is called and the next state machine starts.
+        """
 
     @abstractmethod
     def update_modules(self) -> None:

@@ -55,8 +55,8 @@ class FlexIO(AbstractFlexIO):
     """Local FlexIO implementation with direct hardware access."""
 
     __slots__ = (
-        '_analog_recording_started',
         '_bpod_serial',
+        '_configuration_locked',
         '_cycle_frequency',
         '_is_running',
     )
@@ -72,7 +72,7 @@ class FlexIO(AbstractFlexIO):
         on_channel_types_changed: Callable[[], object],
         on_analog_sampling_rate_changed: Callable[[], None],
         is_running: Callable[[], bool],
-        analog_recording_started: Callable[[], bool],
+        configuration_locked: Callable[[], bool],
     ) -> None:
         super().__init__(
             n,
@@ -82,7 +82,7 @@ class FlexIO(AbstractFlexIO):
         self._bpod_serial = bpod_serial
         self._cycle_frequency = cycle_frequency
         self._is_running = is_running
-        self._analog_recording_started = analog_recording_started
+        self._configuration_locked = configuration_locked
 
     @override
     def _apply_settings(self, state: _FlexIOState, *, force: bool = False) -> None:
@@ -106,13 +106,16 @@ class FlexIO(AbstractFlexIO):
         analog_sampling_rate_changed = (
             force or state.analog_sampling_rate != old.analog_sampling_rate
         )
+        # channel types and the sampling rate set the analog stream's frame layout
+        # and timing. Once a state machine has started the stream, the firmware
+        # keeps it running (also across session-clock resets), so changing them
+        # would corrupt it - they stay fixed until the Bpod is reconnected
         if (
             channel_types_changed or analog_sampling_rate_changed
-        ) and self._analog_recording_started():
+        ) and self._configuration_locked():
             raise BpodError(
-                'Cannot change FlexIO channel types or the analog sampling rate '
-                'after a trial has run this session. Call reset_session_clock() '
-                'first.'
+                'Cannot change FlexIO channel types or the analog sampling rate after '
+                'a state machine has run. Close and reopen the Bpod to change them.'
             )
         if analog_sampling_rate_changed:
             n_cycles = round(self._cycle_frequency / state.analog_sampling_rate)

@@ -197,6 +197,7 @@ class Bpod(SerialDevice, AbstractBpod):
     _read_thread: ReadThread | None = None
     _event_thread: EventThread | None = None
     _starting_state_machine: bool = False
+    _state_machine_started: bool = False  # fixes FlexIO channel types and rate
     _zmq: ServiceHost[BpodRequestUnion, list[BpodEventUnion]]
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
@@ -711,9 +712,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 on_channel_types_changed=self._recompile_hardware_tables,
                 on_analog_sampling_rate_changed=self._sync_analog_reader,
                 is_running=lambda: self.is_running,
-                analog_recording_started=lambda: (
-                    self._analog_first_trial_time_us is not None
-                ),
+                configuration_locked=lambda: self._state_machine_started,
             )
 
     def _configure_io(self) -> None:
@@ -801,7 +800,11 @@ class Bpod(SerialDevice, AbstractBpod):
                     logger.debug('Detected FlexIO serial port: %s', port.device)
                     break
             if flexio_serial is None:
-                raise BpodError('Could not detect FlexIO serial port')
+                raise BpodError(
+                    'Could not detect FlexIO serial port. If another program left '
+                    'FlexIO analog sampling running (e.g., after a crash), power-cycle '
+                    'the Bpod.'
+                )
 
         return serial1, flexio_serial
 
@@ -1202,34 +1205,43 @@ class Bpod(SerialDevice, AbstractBpod):
 
     def _sync_analog_reader(self) -> None:
         """(Re)start or stop the FlexIO analog reader to match the current channels."""
-        self._flush_analog_buffer()
+        if self._flexio_serial is None or self._flex_io is None:
+            names: tuple[str, ...] = ()
+        else:
+            names = tuple(
+                name
+                for name, channel in self._flex_io.items()
+                if channel.channel_type == FlexIOChannelType.ANALOG_INPUT
+            )
+            n_cycles_per_sample = round(
+                self._hardware.cycle_frequency / self._flex_io.analog_sampling_rate
+            )
+            self._analog_sample_period_us = (
+                n_cycles_per_sample * self._hardware.cycle_period_us
+            )
+
+        # keep a running reader if its channels are unchanged (e.g. update_modules()
+        # mid-session): the stream has no frame markers, so a reader restarted while
+        # the Bpod is streaming could start mid-frame. Channels can only change
+        # before the first state machine (see FlexIO._apply_settings), when nothing
+        # is streaming or buffered yet.
+        if names == self._analog_channel_names:
+            return
         if self._analog_reader_thread is not None:
             self._analog_reader_thread.stop()  # keeps _flexio_serial open
             self._analog_reader_thread = None
             self._analog_struct = None
-        if self._flexio_serial is None or self._flex_io is None:
-            self._analog_channel_names = ()
-            return
-        self._analog_channel_names = tuple(
-            name
-            for name, channel in self._flex_io.items()
-            if channel.channel_type == FlexIOChannelType.ANALOG_INPUT
-        )
-        n = len(self._analog_channel_names)
-        if n == 0:
+        self._analog_channel_names = names
+        n = len(names)
+        serial = self._flexio_serial
+        if n == 0 or serial is None:
             return  # firmware transmits nothing until >=1 channel is ANALOG_INPUT
-        if not self._flexio_serial.is_open:
-            self._flexio_serial.open()
+        if not serial.is_open:
+            serial.open()
         self._analog_struct = struct.Struct(f'<{1 + n}H')  # trial_counter + n samples
-        n_cycles_per_sample = round(
-            self._hardware.cycle_frequency / self._flex_io.analog_sampling_rate
-        )
-        self._analog_sample_period_us = (
-            n_cycles_per_sample * self._hardware.cycle_period_us
-        )
         chunk_size = self._analog_struct.size
         self._analog_reader_thread = ReaderThread(
-            self._flexio_serial,
+            serial,
             lambda: ChunkedSerialReader(chunk_size, callback=self._on_analog_chunk),
         )
         self._analog_reader_thread.start()
@@ -1988,6 +2000,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # the threads reading it are registered, so that is_running doesn't drop out
         # while the previous state machine's threads finish.
         self._starting_state_machine = True
+        self._state_machine_started = True
         try:
             message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
             if debugging:
@@ -2261,6 +2274,12 @@ class Bpod(SerialDevice, AbstractBpod):
     def stop_state_machine(self) -> None:
         if not self.is_running:
             return
+        if self._analog_channel_names:
+            logger.warning(
+                'Stopping the state machine also stops FlexIO analog sampling and '
+                'threshold detection until reset_session_clock() is called and the '
+                'next state machine starts'
+            )
         logger.debug('Stopping state machine')
         self.serial0.write(b'X')
         if self._read_thread is not None:
