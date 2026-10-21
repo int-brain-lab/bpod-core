@@ -348,16 +348,15 @@ class TestRequestDisconnect:
         yield mock_ext_serial
         mock_ext_serial.is_open = False  # else pyserial's close() runs on collection
 
-    @pytest.mark.parametrize('reply', [b'1', b'\x01'], ids=['ascii 1', '0x01'])
-    def test_confirmed(self, open_serial, reply, caplog):
-        """The firmware's '1' and the usual 0x01 both confirm the disconnect."""
-        open_serial.mock_responses[b'Z'] = reply
+    def test_confirmed(self, open_serial, caplog):
+        """The firmware confirms the disconnect with ASCII '1'."""
+        open_serial.mock_responses[b'Z'] = b'1'
         Bpod._request_disconnect(open_serial)
         assert open_serial.last_write == b'Z'
         assert len(open_serial.response_buffer) == 0
         assert 'did not confirm' not in caplog.text
 
-    @pytest.mark.parametrize('reply', [b'', b'\x02'], ids=['no reply', 'unexpected'])
+    @pytest.mark.parametrize('reply', [b'', b'\x01'], ids=['no reply', 'unexpected'])
     def test_not_confirmed(self, open_serial, reply, caplog):
         """A missing or unexpected reply is logged."""
         open_serial.mock_responses[b'Z'] = reply
