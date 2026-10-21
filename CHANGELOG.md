@@ -88,6 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the next command as the override state. While no state machine is running, the
   override is no longer sent, since the Bpod would ignore it; a warning is logged
   instead.
+- `is_running` was briefly `False` while a queued state machine was starting, although
+  the Bpod was already running it; `stop_state_machine()` then did nothing.
 
 ## [0.1.0a14] - 2026-07-24
 

@@ -186,6 +186,7 @@ class Bpod(SerialDevice, AbstractBpod):
     _settings: SettingsDict
     _read_thread: ReadThread | None = None
     _event_thread: EventThread | None = None
+    _starting_state_machine: bool = False
     _zmq: ServiceHost[BpodRequestUnion, list[BpodEventUnion]]
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
@@ -1608,21 +1609,28 @@ class Bpod(SerialDevice, AbstractBpod):
             # 3) STORE THE CACHE KEY FOR REPEAT CALLS
             self._last_cache_key = (self._hardware_hash, fsm_hash, validate)
 
-        # Send state machine to Bpod; always queue for immediate back-to-back execution
-        message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
-        if debugging:
-            t0 = perf_counter_ns()
-            self.serial0.write(message)
-            logger.debug(
-                'Sent state machine %s to Bpod (%d μs)',
-                fsm_hash.hex(),
-                (perf_counter_ns() - t0) // 1000,
-            )
-        else:
-            self.serial0.write(message)
+        # Send state machine to Bpod; always queue for immediate back-to-back execution.
+        # The Bpod may start it at any time from here on - count it as running until
+        # the threads reading it are registered, so that is_running doesn't drop out
+        # while the previous state machine's threads finish.
+        self._starting_state_machine = True
+        try:
+            message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
+            if debugging:
+                t0 = perf_counter_ns()
+                self.serial0.write(message)
+                logger.debug(
+                    'Sent state machine %s to Bpod (%d μs)',
+                    fsm_hash.hex(),
+                    (perf_counter_ns() - t0) // 1000,
+                )
+            else:
+                self.serial0.write(message)
 
-        # Start threads
-        self._run_state_machine()
+            # Start threads
+            self._run_state_machine()
+        finally:
+            self._starting_state_machine = False
 
     def _run_state_machine(self) -> None:
         state_machine_lookup = cast('StateMachineLookup', self._fsm_annotations)
@@ -1681,7 +1689,10 @@ class Bpod(SerialDevice, AbstractBpod):
     @property
     def is_running(self) -> bool:
         """Check if the Bpod is currently running a state machine."""
-        return self._read_thread is not None and self._read_thread.is_alive()
+        if self._starting_state_machine:  # cleared only once _read_thread is updated
+            return True
+        read_thread = self._read_thread  # snapshot for thread-safety
+        return read_thread is not None and read_thread.is_alive()
 
     @property
     def is_ready(self) -> bool:

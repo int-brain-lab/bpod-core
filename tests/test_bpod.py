@@ -419,6 +419,38 @@ class TestInputOverride:
         assert 'override of Port2 not sent' in caplog.text
 
 
+class TestIsRunning:
+    @pytest.fixture
+    def fsm(self):
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        return fsm
+
+    def test_true_while_handing_over(self, fsm, mock_bpod_25, mocker):
+        """is_running stays true while a queued state machine's threads are set up.
+
+        The Bpod starts a queued state machine as soon as the previous one ends, while
+        run() still waits for the previous event thread to drain.
+        """
+        mocker.patch('bpod_core.bpod.ReadThread')
+        mocker.patch('bpod_core.bpod.EventThread')
+        observed = []
+        mock_bpod_25._read_thread = MagicMock(**{'is_alive.return_value': False})
+        mock_bpod_25._event_thread = MagicMock(**{'is_alive.return_value': True})
+        mock_bpod_25._event_thread.join.side_effect = lambda: observed.append(
+            mock_bpod_25.is_running
+        )
+        mock_bpod_25.run(fsm)
+        assert observed == [True]
+
+    def test_false_after_failed_send(self, fsm, mock_bpod_25, mock_ext_serial, mocker):
+        """A state machine that couldn't be sent doesn't count as running."""
+        mocker.patch.object(mock_ext_serial, 'write', side_effect=SerialException)
+        with pytest.raises(SerialException):
+            mock_bpod_25.run(fsm)
+        assert not mock_bpod_25.is_running
+
+
 class TestRun:
     @pytest.fixture(autouse=True)
     def patch_run_state_machine(self, mocker):
