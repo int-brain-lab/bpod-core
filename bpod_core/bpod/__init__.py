@@ -2216,24 +2216,23 @@ class Bpod(SerialDevice, AbstractBpod):
         DataFrame or LazyFrame
             One ``UInt16`` column of millivolts (0-5000) per FlexIO channel currently
             configured as ``ANALOG_INPUT``, plus ``time`` and ``trial`` columns. The
-            set of channel
-            columns reflects whatever configuration was active when the data was
-            recorded, and may differ across concatenated batches if channels were
-            reconfigured in between.
+            set of channel columns reflects whatever configuration was active when the
+            data was recorded, and may differ across concatenated batches if channels
+            were reconfigured in between.
 
         Raises
         ------
         BpodError
-            If no data is available and no FlexIO channel is currently configured as
-            ``ANALOG_INPUT``.
+            If the Bpod has no FlexIO channels, or if no data is available and no
+            FlexIO channel is currently configured as ``ANALOG_INPUT``.
         """
         if not self._hardware.n_flexio:
             raise BpodError(
                 f'Bpod Finite State Machine {self._version.machine_str} does not have '
                 f'FlexIO channels.'
             )
-        # if self._analog_reader_thread is None:
-        #     raise BpodError('No FlexIO channels configured for analog input')
+        if self._analog_data.empty() and self._analog_reader_thread is None:
+            raise BpodError('No FlexIO channels configured for analog input')
         return self._drain_queue(
             self._analog_data,
             concat=concat,

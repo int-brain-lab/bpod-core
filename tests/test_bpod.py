@@ -1118,6 +1118,14 @@ class TestAnalogChunk:
         with pytest.raises(BpodError, match='No FlexIO channels configured'):
             mock_bpod_2p.get_analog_data()
 
+    def test_get_analog_data_returns_data_after_reader_stopped(self, mock_bpod_2p):
+        """Data recorded before the analog reader stopped can still be retrieved."""
+        assert mock_bpod_2p._analog_reader_thread is None
+        mock_bpod_2p._analog_data.put(pl.LazyFrame({'Flex1': [1, 2]}))
+        assert mock_bpod_2p.get_analog_data()['Flex1'].to_list() == [1, 2]
+        with pytest.raises(BpodError, match='No FlexIO channels configured'):
+            mock_bpod_2p.get_analog_data()
+
 
 class TestSyncAnalogReader:
     """Tests for Bpod._sync_analog_reader."""
