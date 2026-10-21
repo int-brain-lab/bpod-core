@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of mutable dicts, preventing accidental corruption.
 - Module-not-found errors now suggest the closest matching module name, matching the
   error style already used for input/output channels.
+- methods that query or reconfigure the Bpod (e.g., `set_status_led`, `update_modules`,
+  `Input.read`, `Module.load_serial_message`) raise a `BpodError` while a state machine
+  is running, instead of corrupting the trial's data.
 - trial data is read from the Bpod in chunks rather than message by message, which
   lowers the CPU load at high event and softcode rates.
 - live trial events are published in batches rather than one message per event,

@@ -1,6 +1,7 @@
 """Module for interfacing with the Bpod Finite State Machine."""
 
 import contextlib
+import functools
 import logging
 import os
 import re
@@ -12,7 +13,16 @@ from datetime import timedelta
 from queue import Empty, SimpleQueue
 from time import perf_counter_ns, time_ns
 from types import TracebackType
-from typing import Any, ClassVar, Literal, cast, overload
+from typing import (
+    Any,
+    ClassVar,
+    Concatenate,
+    Literal,
+    ParamSpec,
+    TypeVar,
+    cast,
+    overload,
+)
 from uuid import uuid5
 
 import msgspec
@@ -111,6 +121,35 @@ class BpodError(Exception):
 
 class BpodKeyError(BpodError, KeyError):
     """Exception class for Bpod-related key errors."""
+
+
+_S = TypeVar('_S')
+_P = ParamSpec('_P')
+_R = TypeVar('_R')
+
+
+def _requires_idle(
+    method: Callable[Concatenate[_S, _P], _R],
+) -> Callable[Concatenate[_S, _P], _R]:
+    """Refuse calls to `method` while a state machine is running.
+
+    While a trial runs, its read thread owns the Bpod's serial port: a command that
+    expects a reply would steal the trial's event bytes or corrupt them with its reply,
+    and reconfiguring the hardware mid-trial is unsafe. Applies to methods of
+    :class:`Bpod` and of objects that refer to one as ``_bpod`` (channels, modules).
+    Decorated methods are marked with ``requires_idle = True``.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self: _S, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        if cast('Bpod', getattr(self, '_bpod', self)).is_running:
+            raise BpodError(
+                f'Cannot use {method.__qualname__} while a state machine is running.'
+            )
+        return method(self, *args, **kwargs)
+
+    wrapper.requires_idle = True  # type: ignore[attr-defined]
+    return wrapper
 
 
 class Bpod(SerialDevice, AbstractBpod):
@@ -305,6 +344,7 @@ class Bpod(SerialDevice, AbstractBpod):
             self._stop_zmq()
             self._softcode_thread.stop()
 
+    @_requires_idle
     def open(self) -> None:
         """
         Open the connection to the Bpod and perform a handshake.
@@ -687,12 +727,8 @@ class Bpod(SerialDevice, AbstractBpod):
         return self.serial0.read(1) == b'\x01'
 
     @override
+    @_requires_idle
     def reset_session_clock(self) -> bool:
-        if self.is_running:
-            raise BpodError(
-                'Cannot reset session clock while a state machine is running.'
-            )
-
         # reset the session clock
         # bracket the serial round-trip to estimate reset time within ±(t1-t0)/2
         logger.debug('Resetting session clock')
@@ -875,6 +911,7 @@ class Bpod(SerialDevice, AbstractBpod):
         }
         self._timer_channel_indices[None] = 254
 
+    @_requires_idle
     @validate_call()
     def set_status_led(self, enable: bool) -> bool:  # noqa: FBT001
         """Enable or disable the Bpod status LED.
@@ -893,6 +930,7 @@ class Bpod(SerialDevice, AbstractBpod):
         return self.serial0.verify()
 
     @override
+    @_requires_idle
     def update_modules(self) -> None:
         # self._disable_all_module_relays()
         self.serial0.write(b'M')
@@ -1831,6 +1869,7 @@ class Channel:
         self.name = name
         self.io_type = io_key
         self.index = index
+        self._bpod = bpod
         self._serial0 = bpod.serial0
 
     def __repr__(self) -> str:
@@ -1845,6 +1884,7 @@ class Input(Channel):
         self._set_enable_inputs = bpod._set_enable_inputs  # noqa: SLF001
         self._enabled = io_key in (b'PBWF')  # Enable Port, TTL, Wire and FlexIO inputs
 
+    @_requires_idle
     def read(self) -> bool:
         """
         Read the state of the input channel.
@@ -1867,6 +1907,7 @@ class Input(Channel):
         """
         self._serial0.write_struct('<cB', b'V', state)
 
+    @_requires_idle
     def enable(self, enable: bool) -> bool:  # noqa: FBT001
         """
         Enable or disable the input channel.
@@ -1903,6 +1944,7 @@ class Input(Channel):
         return self._enabled
 
     @enabled.setter
+    @_requires_idle
     def enabled(self, enabled: bool) -> None:
         """
         Enable or disable the input channel.
@@ -1968,6 +2010,7 @@ class Module:
             return f'{self.name} on module port {self.index + 1})'
         return self.name
 
+    @_requires_idle
     @validate_call()
     def set_relay(self, enabled: bool) -> None:  # noqa: FBT001
         """
@@ -1998,6 +2041,7 @@ class Module:
         """
         return self._relay_is_enabled
 
+    @_requires_idle
     @validate_call()
     def load_serial_message(
         self,

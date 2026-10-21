@@ -1,16 +1,26 @@
+import inspect
 import logging
+import re
 import struct
 import threading
 import time
 import weakref
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, PropertyMock
 from uuid import uuid4
 
 import pytest
 from serial import SerialException
 
-from bpod_core.bpod import Bpod, BpodError, RemoteBpod, _allocate_module_events
+from bpod_core.bpod import (
+    Bpod,
+    BpodError,
+    Input,
+    Module,
+    Output,
+    RemoteBpod,
+    _allocate_module_events,
+)
 from bpod_core.bpod._threads import SoftcodeThread
 from bpod_core.bpod.constants import _REMOTE_CALL_METHODS, _REMOTE_DATA_METHODS
 from bpod_core.bpod.structs import (
@@ -285,8 +295,104 @@ class TestResetSessionClock:
         assert caplog.records[0].levelname == 'DEBUG'
         assert 'Resetting' in caplog.records[0].message
         mock_bpod.is_running = True
-        with pytest.raises(BpodError, match=r'Cannot reset session clock'):
+        with pytest.raises(BpodError, match=r'Cannot use Bpod.reset_session_clock'):
             Bpod.reset_session_clock(mock_bpod)
+
+
+def _first(mapping):
+    return next(iter(mapping.values()))
+
+
+def _enable_first_input(bpod):
+    _first(bpod.inputs).enabled = True
+
+
+_IDLE_ONLY_CALLS = {
+    'Bpod.open': lambda bpod: bpod.open(),
+    'Bpod.reset_session_clock': lambda bpod: bpod.reset_session_clock(),
+    'Bpod.set_status_led': lambda bpod: bpod.set_status_led(True),
+    'Bpod.update_modules': lambda bpod: bpod.update_modules(),
+    'Input.enable': lambda bpod: _first(bpod.inputs).enable(True),
+    'Input.enabled': _enable_first_input,
+    'Input.read': lambda bpod: _first(bpod.inputs).read(),
+    'Module.load_serial_message': lambda bpod: _first(bpod.modules).load_serial_message(
+        0, b'\x01'
+    ),
+    'Module.set_relay': lambda bpod: _first(bpod.modules).set_relay(True),
+}
+"""Calls to every member that must be refused while a state machine is running."""
+
+_ALLOWED_WHILE_RUNNING = frozenset(
+    {
+        'Bpod.address',
+        'Bpod.address_control',
+        'Bpod.address_events',
+        'Bpod.close',
+        'Bpod.get_data',
+        'Bpod.input_event_names',
+        'Bpod.is_queued',
+        'Bpod.is_ready',
+        'Bpod.is_running',
+        'Bpod.location',
+        'Bpod.name',
+        'Bpod.peek_data',
+        'Bpod.port',
+        'Bpod.run',
+        'Bpod.send_softcode',
+        'Bpod.serial0',
+        'Bpod.serial_number',
+        'Bpod.set_softcode_handler',
+        'Bpod.stop_state_machine',
+        'Bpod.validate_state_machine',
+        'Bpod.version',
+        'Bpod.wait',
+        'Input.override',
+        'Module.event_names',
+        'Module.relay',
+        'Output.override',
+    }
+)
+"""Public members that are safe to use while a state machine is running."""
+
+
+class TestRequiresIdle:
+    """Members that query or reconfigure the Bpod are refused during a trial."""
+
+    def test_every_public_member_is_classified(self):
+        """Each public member is either refused during a trial or explicitly allowed.
+
+        A new public method or property fails this test until it's either decorated
+        with ``_requires_idle`` (and added to ``_IDLE_ONLY_CALLS``) or added to
+        ``_ALLOWED_WHILE_RUNNING``.
+        """
+        requires_idle = {}
+        for cls in (Bpod, Input, Output, Module):
+            for name, member in inspect.getmembers(cls):
+                if name.startswith('_'):
+                    continue
+                if isinstance(member, property):
+                    function = member.fset  # only setters change state
+                elif callable(member):
+                    function = member
+                else:
+                    continue
+                qualified_name = f'{cls.__name__}.{name}'
+                requires_idle[qualified_name] = getattr(
+                    function, 'requires_idle', False
+                )
+        idle_only = {name for name, flag in requires_idle.items() if flag}
+        assert idle_only == _IDLE_ONLY_CALLS.keys()
+        assert requires_idle.keys() - idle_only == _ALLOWED_WHILE_RUNNING
+
+    @pytest.mark.parametrize('name', sorted(_IDLE_ONLY_CALLS))
+    def test_refused_while_running(self, name, mock_bpod_25, mock_ext_serial, mocker):
+        """Refused members raise and send nothing to the Bpod."""
+        mocker.patch.object(
+            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
+        )
+        mock_ext_serial.mock_responses.clear()  # any write would raise AssertionError
+        with pytest.raises(BpodError, match=f'Cannot use {re.escape(name)} while'):
+            _IDLE_ONLY_CALLS[name](mock_bpod_25)
 
 
 class TestRun:
