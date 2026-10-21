@@ -6,7 +6,7 @@ import os
 import re
 import struct
 import weakref
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import timedelta
 from queue import Empty, SimpleQueue
@@ -95,7 +95,7 @@ from bpod_core.ipc import (
 )
 from bpod_core.misc import (
     SettingsDict,
-    SuggestionDict,
+    SuggestionMapping,
     _HandlerSlot,
     extend_packed,
     suggest_similar,
@@ -169,13 +169,13 @@ class Bpod(SerialDevice, AbstractBpod):
     serial2: ExtendedSerial | None = None
     """Tertiary serial device for communication with the Bpod - used by Bpod 2+ only."""
 
-    inputs: dict[str, 'Input']
-    """Dictionary of available input channels, keyed by name."""
+    inputs: Mapping[str, 'Input']
+    """Read-only mapping of available input channels, keyed by name."""
 
-    outputs: dict[str, 'Output']
-    """Dictionary of available output channels, keyed by name."""
+    outputs: Mapping[str, 'Output']
+    """Read-only mapping of available output channels, keyed by name."""
 
-    modules: dict[str, 'Module']
+    modules: Mapping[str, 'Module']
     """Dictionary of available modules, keyed by name."""
 
     @validate_call()
@@ -593,7 +593,7 @@ class Bpod(SerialDevice, AbstractBpod):
             setattr(
                 self,
                 io_class,
-                SuggestionDict(channels, name=name, error_class=BpodKeyError),
+                SuggestionMapping(channels, name=name, error_class=BpodKeyError),
             )
 
         # set the enabled state of the input channels
@@ -945,9 +945,8 @@ class Bpod(SerialDevice, AbstractBpod):
         n_events = _allocate_module_events(modules, n_requested)
         for module, n in zip(modules, n_events, strict=True):
             module.n_events = n
-        self.modules = _ModuleDict(
-            {m.name: m for m in modules},
-            available_modules=[m.name for m in modules if m.is_connected],
+        self.modules = SuggestionMapping(
+            {m.name: m for m in modules}, name='module', error_class=BpodKeyError
         )
 
         # update event names and output actions
@@ -1932,26 +1931,6 @@ class Output(Channel):
         if isinstance(state, int) and self.io_type in (b'D', b'B', b'W'):
             state = state > 0
         self._serial0.write_struct('<c2B', b'O', self.index, state)
-
-
-class _ModuleDict(dict[str, 'Module']):
-    """A dict of :class:`Module` objects keyed by name."""
-
-    def __init__(
-        self, dictionary: dict[str, 'Module'], *, available_modules: list[str]
-    ) -> None:
-        super().__init__(dictionary)
-        self._available_modules = [f"'{x}'" for x in available_modules]
-
-    def __getitem__(self, key: str) -> 'Module':
-        try:
-            return super().__getitem__(key)
-        except KeyError as e:
-            if self._available_modules:
-                hint = f'connected modules: {", ".join(self._available_modules)}'
-            else:
-                hint = 'no modules connected to Bpod'
-            raise BpodKeyError(f"No such module: '{key}'; {hint}") from e
 
 
 @dataclass

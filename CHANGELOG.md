@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   criteria.
 - `ipc.iter_services`, `ipc.discover` and `ipc.ServiceIterator` accept regex and
   collection criteria for `properties`.
+- `misc.SuggestionMapping`: a read-only mapping that suggests similar keys on failed
+  lookup, for fixed sets of keys (e.g. hardware channels) that should never be mutated
+  after construction.
 
 ### Changed
 
@@ -24,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unknown filter names now raise `TypeError` instead of silently matching nothing.
 - `com.find_ports` and service discovery ignore filters set to `None` instead of
   matching only `None`-valued or missing attributes.
+- `Bpod.inputs`/`Bpod.outputs`/`Bpod.modules` are now read-only `misc.SuggestionMapping`
+  instead of mutable dicts, preventing accidental corruption.
+- Module-not-found errors now suggest the closest matching module name, matching the
+  error style already used for input/output channels.
 - trial data is read from the Bpod in chunks rather than message by message, which
   lowers the CPU load at high event and softcode rates.
 - live trial events are published in batches rather than one message per event,
@@ -36,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `misc.SuggestionDict`, superseded by `misc.SuggestionMapping` (no longer used anywhere
+  in the library).
 - `com.FilterValue`, superseded by `filtering.Filter`.
 - the `rechunk` parameter of `get_data`: call `.rechunk()` on the result instead.
 - the unused `qtpy` dependency.
