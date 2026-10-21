@@ -116,6 +116,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead.
 - `is_running` was briefly `False` while a queued state machine was starting, although
   the Bpod was already running it; `stop_state_machine()` then did nothing.
+- closing a `Bpod` checked the reply to its disconnect request against the wrong value
+  and could wait forever for it. It now waits at most 0.2 s and logs a warning if the
+  Bpod doesn't confirm.
 
 ## [0.1.0a14] - 2026-07-24
 

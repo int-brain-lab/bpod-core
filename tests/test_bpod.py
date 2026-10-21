@@ -341,6 +341,36 @@ class TestInitCleanup:
         close_spy.assert_called_once()
 
 
+class TestRequestDisconnect:
+    @pytest.fixture
+    def open_serial(self, mock_ext_serial):
+        mock_ext_serial.is_open = True
+        yield mock_ext_serial
+        mock_ext_serial.is_open = False  # else pyserial's close() runs on collection
+
+    @pytest.mark.parametrize('reply', [b'1', b'\x01'], ids=['ascii 1', '0x01'])
+    def test_confirmed(self, open_serial, reply, caplog):
+        """The firmware's '1' and the usual 0x01 both confirm the disconnect."""
+        open_serial.mock_responses[b'Z'] = reply
+        Bpod._request_disconnect(open_serial)
+        assert open_serial.last_write == b'Z'
+        assert len(open_serial.response_buffer) == 0
+        assert 'did not confirm' not in caplog.text
+
+    @pytest.mark.parametrize('reply', [b'', b'\x02'], ids=['no reply', 'unexpected'])
+    def test_not_confirmed(self, open_serial, reply, caplog):
+        """A missing or unexpected reply is logged."""
+        open_serial.mock_responses[b'Z'] = reply
+        Bpod._request_disconnect(open_serial)
+        assert 'Bpod did not confirm the disconnect request' in caplog.text
+
+    def test_skipped_on_closed_port(self, mock_ext_serial):
+        """Nothing is sent over a closed port."""
+        mock_ext_serial.is_open = False
+        mock_ext_serial.mock_responses.clear()  # any write would raise AssertionError
+        Bpod._request_disconnect(mock_ext_serial)
+
+
 class TestResetSessionClock:
     def test_reset_session_clock(self, mock_bpod, caplog):
         """Test successful reset of session clock."""
