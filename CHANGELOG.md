@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ExtendedSerial.temporary_timeout`: context manager for temporarily setting a timeout
+  for serial reads.
 - Optimizations for agentic development (`AGENTS.md`, `.mcp.json`, `llms.txt`, etc.)
 - `filtering.match_filter` for matching values against scalar, regex or collection
   criteria.
