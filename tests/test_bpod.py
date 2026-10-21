@@ -419,6 +419,26 @@ class TestInputOverride:
         assert 'override of Port2 not sent' in caplog.text
 
 
+class TestSendSoftcode:
+    def test_sends_softcode(self, mock_bpod_25, mock_ext_serial, mocker, caplog):
+        """A softcode is sent to a running state machine."""
+        mocker.patch.object(
+            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
+        )
+        mock_ext_serial.mock_responses[rb'~'] = b''
+        mock_bpod_25.send_softcode(3)
+        assert mock_ext_serial.last_write == b'~\x03'
+        assert not caplog.records
+
+    def test_not_sent_without_running_state_machine(
+        self, mock_bpod_25, mock_ext_serial, caplog
+    ):
+        """A softcode while idle isn't sent, since the Bpod would ignore it."""
+        mock_ext_serial.mock_responses.clear()  # any write would raise AssertionError
+        mock_bpod_25.send_softcode(3)
+        assert 'softcode 3 not sent' in caplog.text
+
+
 class TestIsRunning:
     @pytest.fixture
     def fsm(self):

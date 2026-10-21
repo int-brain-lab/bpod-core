@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - methods that query or reconfigure the Bpod (e.g., `set_status_led`, `update_modules`,
   `Input.read`, `Module.load_serial_message`) raise a `BpodError` while a state machine
   is running, instead of corrupting the trial's data.
+- `send_softcode` no longer sends a softcode while no state machine is running, since
+  the Bpod ignores it then; it still logs a warning.
 - trial data is read from the Bpod in chunks rather than message by message, which
   lowers the CPU load at high event and softcode rates.
 - live trial events are published in batches rather than one message per event,

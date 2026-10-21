@@ -1207,7 +1207,8 @@ class Bpod(SerialDevice, AbstractBpod):
     def send_softcode(self, softcode: int) -> None:
         """Send a softcode to the state machine.
 
-        Can be used to trigger transitions.
+        Can be used to trigger transitions. While no state machine is running, the Bpod
+        would ignore the softcode, so it isn't sent and a warning is logged instead.
 
         Parameters
         ----------
@@ -1226,9 +1227,9 @@ class Bpod(SerialDevice, AbstractBpod):
             )
         if not self.is_running:
             logger.warning(
-                'No state machine is running - softcode %d will have no effect',
-                softcode,
+                'No state machine is running - softcode %d not sent', softcode
             )
+            return
         logger.debug('Sending softcode %d to Bpod', softcode)
         self._serial.write_struct('<cB', b'~', softcode)
 
