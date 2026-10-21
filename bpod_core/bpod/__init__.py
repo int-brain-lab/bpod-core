@@ -2040,6 +2040,10 @@ class Bpod(SerialDevice, AbstractBpod):
         # while the previous state machine's threads finish.
         self._starting_state_machine = True
         self._state_machine_started = True
+        # record the trial number before the Bpod can start the state machine: analog
+        # samples only carry the firmware's positional trial counter, so decoding looks
+        # the number up by position from the trial's first sample on
+        self._analog_trial_number_by_sequence.append(self._next_fsm_index)
         try:
             message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
             if debugging:
@@ -2065,12 +2069,6 @@ class Bpod(SerialDevice, AbstractBpod):
 
     def _run_state_machine(self) -> None:
         state_machine_lookup = cast('StateMachineLookup', self._fsm_annotations)
-
-        # record the host-facing trial number for this run, keyed by its position in
-        # the sequence - firmware's own trial counter (embedded in FlexIO analog data)
-        # is strictly positional and may not match this number, e.g. if a caller
-        # overrides trial_number, so analog decoding looks it up by position instead
-        self._analog_trial_number_by_sequence.append(self._next_fsm_index)
 
         # initialize new threads
         event_thread = EventThread(

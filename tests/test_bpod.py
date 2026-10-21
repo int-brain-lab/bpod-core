@@ -1408,15 +1408,28 @@ class TestAnalogSessionBookkeeping:
         assert mock_bpod_2p._analog_sample_index == 0
 
     def test_run_appends_trial_number_by_sequence(self, mock_bpod_25, mocker):
-        """Each run() call records its trial number at the next sequence position."""
+        """Each run() call records its trial number at the next sequence position.
+
+        It is recorded before the state machine is sent, since the Bpod may start it
+        right away.
+        """
         mocker.patch('bpod_core.bpod.ReadThread')
         mocker.patch('bpod_core.bpod.EventThread')
+        recorded_when_sent = []
+        write = mock_bpod_25.serial0.write
+
+        def record_and_write(data):
+            if data[:1] == b'C':  # state machine transmission
+                trial_numbers = mock_bpod_25._analog_trial_number_by_sequence
+                recorded_when_sent.append(list(trial_numbers))
+            return write(data)
+
+        mocker.patch.object(mock_bpod_25.serial0, 'write', side_effect=record_and_write)
         fsm = StateMachine()
         fsm.add_state('a', 0, {'Tup': '>exit'})
         mock_bpod_25.run(fsm, trial_number=42)
-        assert mock_bpod_25._analog_trial_number_by_sequence == [42]
         mock_bpod_25.run(fsm, trial_number=99)
-        assert mock_bpod_25._analog_trial_number_by_sequence == [42, 99]
+        assert recorded_when_sent == [[42], [42, 99]]
 
     def test_capture_analog_anchor_sets_it_once(self, mock_bpod_2p):
         """The first captured time sets the analog anchor; later calls don't."""
