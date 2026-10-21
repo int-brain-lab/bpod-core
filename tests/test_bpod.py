@@ -349,8 +349,7 @@ class TestRequestDisconnect:
     @pytest.fixture
     def open_serial(self, mock_ext_serial):
         mock_ext_serial.is_open = True
-        yield mock_ext_serial
-        mock_ext_serial.is_open = False  # else pyserial's close() runs on collection
+        return mock_ext_serial
 
     def test_confirmed(self, open_serial, caplog):
         """The firmware confirms the disconnect with ASCII '1'."""
@@ -673,6 +672,59 @@ class TestRun:
             b'\x30\x75\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x98\x3a\x00\x00\x00\x00'
             b'\x00\x00\x00\x00\x00\x00\x30\x75\x00\x00\x00'
         )
+
+    @pytest.mark.parametrize(
+        'channel_type',
+        [
+            FlexIOChannelType.ANALOG_INPUT,
+            FlexIOChannelType.DIGITAL_INPUT,
+            FlexIOChannelType.DISABLED,
+        ],
+    )
+    def test_global_timer_on_flexio_input_rejected(self, mock_bpod_2p, channel_type):
+        """Global timers can't drive FlexIO channels that aren't outputs."""
+        mock_bpod_2p.flex_io['Flex4'].channel_type = channel_type
+        fsm = StateMachine()
+        fsm.set_global_timer(index=0, duration=1, channel='Flex4')
+        fsm.add_state('a', 1, {'Tup': '>exit'})
+        with pytest.raises(ValueError, match='not configured as an output'):
+            mock_bpod_2p.validate_state_machine(fsm)
+
+    def test_global_timer_on_flexio_digital_output(self, mock_bpod_2p):
+        """A global timer can drive a FlexIO digital output."""
+        mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.DIGITAL_OUTPUT
+        fsm = StateMachine()
+        fsm.set_global_timer(index=0, duration=1, channel='Flex4')
+        fsm.add_state('a', 1, {'Tup': '>exit'})
+        mock_bpod_2p.validate_state_machine(fsm)
+
+    def test_global_timer_on_flexio_analog_output(self, mock_bpod_2p):
+        """Timer values on a FlexIO analog output are millivolts, sent as DAC counts."""
+        mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.ANALOG_OUTPUT
+        fsm = StateMachine()
+        fsm.set_global_timer(
+            index=0, duration=1, channel='Flex4', value_on=2500, value_off=1000
+        )
+        fsm.add_state('a', 1, {'Tup': '>exit'})
+        mock_bpod_2p.run(fsm)
+        # value_on then value_off, as 16-bit DAC counts: 2500 mV -> 2048, 1000 -> 819
+        assert struct.pack('<2H', 2048, 819) in mock_bpod_2p.serial0.last_write
+
+    @pytest.mark.parametrize(
+        ('channel', 'value', 'match'),
+        [
+            ('Flex4', 5001, 'must not exceed 5000 mV'),
+            ('PWM1', 256, 'must not exceed 255'),
+        ],
+    )
+    def test_global_timer_value_limits(self, mock_bpod_2p, channel, value, match):
+        """Analog outputs take up to 5000 mV, every other channel up to 255."""
+        mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.ANALOG_OUTPUT
+        fsm = StateMachine()
+        fsm.set_global_timer(index=0, duration=1, channel=channel, value_on=value)
+        fsm.add_state('a', 1, {'Tup': '>exit'})
+        with pytest.raises(ValueError, match=match):
+            mock_bpod_2p.validate_state_machine(fsm)
 
     def test_run_global_timers_2p(self, fsm_global_timers, mock_bpod_2p):
         """Test running a state machine with global timers on Bpod 2+."""

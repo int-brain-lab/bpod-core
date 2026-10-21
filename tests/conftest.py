@@ -127,7 +127,10 @@ def mock_ext_serial(mocker):
     mocker.patch(f'{tmp}.reset_input_buffer')
     mocker.patch(f'{tmp}._reconfigure_port')  # e.g. a timeout set while open
     mocker.patch(f'{tmp}.in_waiting', new_callable=PropertyMock, side_effect=in_waiting)
-    return extended_serial
+    yield extended_serial
+    # tests may mark the port open; pyserial's real close() would then run on garbage
+    # collection, after the patches above are gone
+    extended_serial.is_open = False
 
 
 @pytest.fixture

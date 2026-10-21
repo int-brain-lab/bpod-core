@@ -194,7 +194,7 @@ GlobalTimerChannelValue = Annotated[
         description='The value a channel is set to',
         default=0,
         ge=0,
-        le=255,
+        le=UINT16_MAX,
     ),
 ]
 

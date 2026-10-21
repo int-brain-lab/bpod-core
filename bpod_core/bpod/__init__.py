@@ -1511,6 +1511,33 @@ class Bpod(SerialDevice, AbstractBpod):
                             timer.channel or '', self._physical_output_channels
                         ),
                     )
+                flex_channel = (
+                    self._flex_io.get(timer.channel)
+                    if self._flex_io is not None and timer.channel is not None
+                    else None
+                )
+                if flex_channel is not None and flex_channel.channel_type not in (
+                    FlexIOChannelType.DIGITAL_OUTPUT,
+                    FlexIOChannelType.ANALOG_OUTPUT,
+                ):
+                    raise ValueError(
+                        f"Invalid channel '{timer.channel}' for Global Timer "
+                        f'{timer_id} - it is not configured as an output'
+                    )
+                # FlexIO analog outputs take millivolts; every other channel uses at
+                # most 8 bits of a timer's value (PWM level, message index, softcode)
+                is_flexio_analog_output = (
+                    flex_channel is not None
+                    and flex_channel.channel_type == FlexIOChannelType.ANALOG_OUTPUT
+                )
+                max_value = 5000 if is_flexio_analog_output else UINT8_MAX
+                for key in ('value_on', 'value_off'):
+                    if (value := getattr(timer, key)) > max_value:
+                        unit = ' mV' if is_flexio_analog_output else ''
+                        raise ValueError(
+                            f'Invalid {key} {value} for Global Timer {timer_id} - '
+                            f"must not exceed {max_value}{unit} on '{timer.channel}'"
+                        )
                 for key in ('duration', 'onset_delay', 'loop_interval'):
                     if getattr(timer, key) > max_time_uint32:
                         max_timedelta = timedelta(seconds=max_time_uint32)
@@ -1803,12 +1830,18 @@ class Bpod(SerialDevice, AbstractBpod):
             )
 
             # GLOBAL TIMER ON & OFF VALUES
-            # Bpod 2+ uses 16-bit values for value_on and value_off
+            # Bpod 2+ uses 16-bit values for value_on and value_off; values for FlexIO
+            # analog outputs are millivolts, sent as DAC counts like action values
             format_string = FMT_UINT16_LE if version.machine == 4 else FMT_UINT8
             for field_name in ('value_on', 'value_off'):
                 extend_packed(
                     fsm_bytes,
-                    [getattr(gt, field_name, 0) for gt in global_timers_list],
+                    [
+                        _scale_action_value(gt.channel, getattr(gt, field_name))
+                        if gt is not None and gt.channel is not None
+                        else getattr(gt, field_name, 0)
+                        for gt in global_timers_list
+                    ],
                     format_string,
                 )
 
