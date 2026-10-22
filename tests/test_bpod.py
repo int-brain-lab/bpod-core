@@ -1241,6 +1241,16 @@ class TestClose:
         reader_thread.stop.assert_called_once()
         assert mock_bpod_2p._analog_reader_thread is None
 
+    def test_keeps_buffered_analog_samples_on_close(self, mock_bpod_2p):
+        """Samples buffered since the last periodic flush are kept on close."""
+        mock_bpod_2p._analog_reader_thread = MagicMock()
+        mock_bpod_2p._analog_channel_names = ('Flex1',)
+        mock_bpod_2p._analog_first_trial_time_us = 0
+        mock_bpod_2p._analog_sample_period_us = 1000
+        mock_bpod_2p._analog_buffer = [(0, 0, 2048)]
+        mock_bpod_2p.close()
+        assert mock_bpod_2p.get_analog_data()['Flex1'].to_list() == [2501]
+
 
 class TestAnalogChunk:
     """Tests for Bpod._on_analog_chunk / _flush_analog_buffer / get_analog_data."""

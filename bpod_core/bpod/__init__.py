@@ -442,6 +442,7 @@ class Bpod(SerialDevice, AbstractBpod):
         if self._analog_reader_thread is not None:
             self._analog_reader_thread.stop()  # thread stopped, serial still open
             self._analog_reader_thread = None
+            self._flush_analog_buffer()  # samples since the last periodic flush
         if self._flexio_serial is not None and self._flexio_serial.is_open:
             # discard any analog samples firmware sent (or was still sending) up to
             # the 'X' above, so a stale byte can't be misread as the next
