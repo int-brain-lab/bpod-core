@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - methods that query or reconfigure the Bpod (e.g., `set_status_led`, `update_modules`,
   `Input.read`, `Module.load_serial_message`) raise a `BpodError` while a state machine
   is running, instead of corrupting the trial's data.
+- FlexIO channels are no longer listed in `Bpod.inputs` and `Bpod.outputs`, since the
+  Bpod can't read or override them directly; use `Bpod.flex_io` instead.
 - `send_softcode` no longer sends a softcode while no state machine is running, since
   the Bpod ignores it then; it still logs a warning.
 - the `trial` column of trial data is `UInt32` instead of `UInt16`.

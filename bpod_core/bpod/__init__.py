@@ -231,10 +231,14 @@ class Bpod(SerialDevice, AbstractBpod):
     _analog_last_flush_ns: int = 0
 
     inputs: Mapping[str, 'Input']
-    """Read-only mapping of available input channels, keyed by name."""
+    """Read-only mapping of available input channels, keyed by name.
+
+    FlexIO channels are accessed through :attr:`flex_io` instead."""
 
     outputs: Mapping[str, 'Output']
-    """Read-only mapping of available output channels, keyed by name."""
+    """Read-only mapping of available output channels, keyed by name.
+
+    FlexIO channels are accessed through :attr:`flex_io` instead."""
 
     modules: Mapping[str, 'Module']
     """Dictionary of available modules, keyed by name."""
@@ -726,13 +730,16 @@ class Bpod(SerialDevice, AbstractBpod):
             io_class = f'{channel_class.__name__.lower()}s'
             channels: dict[str, Any] = {}
 
-            # loop over the description array and create channels
-            for idx, io_key in enumerate(struct.unpack(f'<{n_channels}c', description)):
+            # loop over the description array and create channels - except for FlexIO
+            # channels, which are accessed through flex_io
+            for io_key in struct.unpack(f'<{n_channels}c', description):
                 if io_key not in channel_names:
                     raise RuntimeError(f'Unknown {io_class[:-1]} type: {io_key}')
-                n = description[:idx].count(io_key) + 1
-                name = f'{channel_names[io_key]}{n}'
-                channels[name] = channel_class(self, name, io_key, idx)
+            for idx, (io_key, name) in enumerate(
+                _name_channels(description, channel_names)
+            ):
+                if io_key != b'F':
+                    channels[name] = channel_class(self, name, io_key, idx)
 
             # store channels to typed dict and set as a class attribute
             name = 'input channel' if channel_class is Input else 'output channel'
@@ -846,7 +853,10 @@ class Bpod(SerialDevice, AbstractBpod):
 
     def _set_enable_inputs(self) -> bool:
         logger.debug('Updating enabled state of input channels')
-        enable = [i.enabled for i in self.inputs.values()]
+        # the Bpod expects a value for each of its inputs: FlexIO inputs, which aren't
+        # in self.inputs, stay enabled, as their channel type determines their events
+        enabled = {i.index: i.enabled for i in self.inputs.values()}
+        enable = [enabled.get(idx, True) for idx in range(self._hardware.n_inputs)]
         self.serial0.write_struct(f'<c{self._hardware.n_inputs}?', b'E', *enable)
         return self.serial0.read(1) == b'\x01'
 
@@ -1023,8 +1033,9 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
         modules = list(self.modules)
+        input_channels = _name_channels(hw.input_description, CHANNEL_TYPES_INPUT)
         physical_input_channels = [
-            i.name for i in self.inputs.values() if i.io_type != b'U'
+            name for io_key, name in input_channels if io_key != b'U'
         ]
         global_timers = [
             f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}' for i in range(hw.n_global_timers)
@@ -1072,7 +1083,11 @@ class Bpod(SerialDevice, AbstractBpod):
         )
         self._action_indices = {k: v for v, k in enumerate(self._actions)}
         self._physical_output_channels = list(self.modules) + [
-            o.name for o in self.outputs.values() if o.io_type != b'U'
+            name
+            for io_key, name in _name_channels(
+                self._hardware.output_description, CHANNEL_TYPES_OUTPUT
+            )
+            if io_key != b'U'
         ]
         self._timer_channel_indices: dict[str | None, int] = {
             k: v for v, k in enumerate(self._physical_output_channels)
@@ -2402,7 +2417,7 @@ class Input(Channel):
     def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
         super().__init__(bpod, name, io_key, index)
         self._set_enable_inputs = bpod._set_enable_inputs  # noqa: SLF001
-        self._enabled = io_key in (b'PBWF')  # Enable Port, TTL, Wire and FlexIO inputs
+        self._enabled = io_key in (b'PBW')  # Enable Port, TTL and Wire inputs
 
     @_requires_idle
     def read(self) -> bool:
@@ -2452,7 +2467,7 @@ class Input(Channel):
         bool
             True if the operation was successful, False otherwise.
         """
-        if self.io_type not in b'FDBWVP':
+        if self.io_type not in b'DBWVP':
             logger.warning(
                 '%sabling input `%s` has no effect',
                 'En' if enable else 'Dis',
@@ -2627,6 +2642,17 @@ class Module:
         names = self._custom_event_names[: self.n_events]
         names += [str(idx) for idx in range(len(names), self.n_events)]
         return [f'{self.name}_{name}' for name in names]
+
+
+def _name_channels(
+    description: bytes, channel_types: Mapping[bytes, str]
+) -> list[tuple[bytes, str]]:
+    """Pair each channel of a hardware I/O description with its name, e.g. 'Port1'."""
+    io_keys = [bytes([io_key]) for io_key in description]
+    return [
+        (io_key, f'{channel_types[io_key]}{io_keys[:idx].count(io_key) + 1}')
+        for idx, io_key in enumerate(io_keys)
+    ]
 
 
 def _allocate_module_events(modules: list[Module], n_requested: list[int]) -> list[int]:

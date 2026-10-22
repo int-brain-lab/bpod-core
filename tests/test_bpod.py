@@ -510,6 +510,25 @@ class TestInputOverride:
         assert 'override of Port2 not sent' in caplog.text
 
 
+class TestFlexIOChannelsNotInInputsOutputs:
+    """FlexIO channels are accessed through flex_io, not inputs and outputs."""
+
+    def test_not_listed(self, mock_bpod_2p):
+        assert not [n for n in mock_bpod_2p.inputs if n.startswith('Flex')]
+        assert not [n for n in mock_bpod_2p.outputs if n.startswith('Flex')]
+
+    def test_other_channels_keep_their_hardware_index(self, mock_bpod_2p):
+        """Indices follow the hardware description, which still has FlexIO channels."""
+        assert mock_bpod_2p.inputs['TTLIn1'].index == 9  # after U U U X Z F F F F
+        assert mock_bpod_2p.outputs['TTLOut1'].index == 9
+
+    def test_flexio_inputs_stay_enabled(self, mock_bpod_2p, mock_ext_serial):
+        """The enable message still covers every input; FlexIO inputs are enabled."""
+        mock_bpod_2p._set_enable_inputs()
+        # U U U X Z disabled, F F F F enabled, then B B P P P P P enabled
+        assert mock_ext_serial.last_write == b'E' + bytes(5) + b'\x01' * 11
+
+
 class TestModuleRelay:
     def test_set_relay(self, mock_bpod_25, mock_ext_serial, caplog):
         """Switching a relay sends 'J' with the module's index and logs it."""
