@@ -362,7 +362,7 @@ class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
     """Abstract base for FlexIO subsystems."""
 
     __slots__ = (
-        '_on_channel_types_changed',
+        '_on_input_events_changed',
         '_state',
     )
 
@@ -372,10 +372,10 @@ class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
         self,
         n: int,
         *,
-        on_channel_types_changed: Callable[[], object],
+        on_input_events_changed: Callable[[], object],
     ) -> None:
         self._state = _FlexIOState.create_default(n_channels=n)
-        self._on_channel_types_changed = on_channel_types_changed
+        self._on_input_events_changed = on_input_events_changed
         view = {}
         for i in range(n):
             channel = FlexIOChannel(

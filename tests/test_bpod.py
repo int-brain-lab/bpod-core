@@ -957,6 +957,21 @@ class TestFlexIOSettings:
         ].polarity = FlexIOThresholdPolarity.FALLING
         mock_bpod_2p.flex_io['Flex1'].thresholds[0].enabled = True
 
+    def test_threshold_events_carry_threshold_voltage(self, mock_bpod_2p):
+        """Trig events record their threshold's voltage, also after it changes."""
+        flex1 = mock_bpod_2p.flex_io['Flex1']
+        flex1.channel_type = FlexIOChannelType.ANALOG_INPUT
+        flex1.thresholds[0].voltage = 2500
+        mock_bpod_2p._state_machine_started = True  # voltages stay changeable
+        flex1.thresholds[1].voltage = 1000
+        lookup = mock_bpod_2p._event_lookup.filter(
+            pl.col('event').cast(pl.String).str.starts_with('Flex1_Trig')
+        )
+        values = dict(
+            lookup.select(pl.col('event').cast(pl.String), 'default_value').rows()
+        )
+        assert values == {'Flex1_Trig0': 2500, 'Flex1_Trig1': 1000}
+
     def test_run_flexio_action_on_non_output_channel(self, mock_bpod_2p):
         """Referencing a Flex action on a non-output-configured channel is rejected."""
         fsm = StateMachine()

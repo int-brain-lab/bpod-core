@@ -714,7 +714,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 bpod_serial=self.serial0,
                 n=self._hardware.n_flexio,
                 cycle_frequency=self._hardware.cycle_frequency,
-                on_channel_types_changed=self._recompile_hardware_tables,
+                on_input_events_changed=self._recompile_hardware_tables,
                 is_running=lambda: self.is_running,
                 configuration_locked=lambda: self._state_machine_started,
             )
@@ -950,7 +950,9 @@ class Bpod(SerialDevice, AbstractBpod):
                         ev_values = [1, 0]
                     case FlexIOChannelType.ANALOG_INPUT:
                         ev_names = [f'{channel}_{s}' for s in ('Trig0', 'Trig1')]
-                        ev_values = [0, 1]
+                        ev_values = [
+                            t.voltage for t in self.flex_io[channel].thresholds
+                        ]
                         if is_flexio_threshold_ambiguous(
                             flexio_types, counters[io_key]
                         ):
@@ -1183,10 +1185,11 @@ class Bpod(SerialDevice, AbstractBpod):
     def _recompile_hardware_tables(self) -> bytes:
         """Recompile input events and output actions, and refresh the hardware hash.
 
-        Must be called whenever anything that affects event/action naming changes
-        after the initial connection (e.g. module discovery, FlexIO channel
-        reconfiguration), so that compiled state machines reflect the current
-        hardware configuration and stale cache entries aren't served.
+        Must be called whenever anything that affects event/action naming or event
+        values changes after the initial connection (e.g. module discovery, FlexIO
+        channel types or threshold voltages), so that compiled state machines and
+        recorded events reflect the current hardware configuration and stale cache
+        entries aren't served.
 
         Returns
         -------

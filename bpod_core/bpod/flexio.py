@@ -69,11 +69,11 @@ class FlexIO(AbstractFlexIO):
         n: int,
         *,
         cycle_frequency: int,
-        on_channel_types_changed: Callable[[], object],
+        on_input_events_changed: Callable[[], object],
         is_running: Callable[[], bool],
         configuration_locked: Callable[[], bool],
     ) -> None:
-        super().__init__(n, on_channel_types_changed=on_channel_types_changed)
+        super().__init__(n, on_input_events_changed=on_input_events_changed)
         self._bpod_serial = bpod_serial
         self._cycle_frequency = cycle_frequency
         self._is_running = is_running
@@ -126,7 +126,10 @@ class FlexIO(AbstractFlexIO):
             polarities = (ch[k] for k in (0, 1) for ch in state.threshold_polarities)
             buffer.extend(struct.pack(f'<c{n * 2}B', b'p', *polarities))
             n_confirmations += 1
-        if force or state.threshold_voltages != old.threshold_voltages:
+        threshold_voltages_changed = (
+            force or state.threshold_voltages != old.threshold_voltages
+        )
+        if threshold_voltages_changed:
             voltages = (
                 _mv_to_counts(ch[k]) for k in (0, 1) for ch in state.threshold_voltages
             )
@@ -156,8 +159,9 @@ class FlexIO(AbstractFlexIO):
             raise RuntimeError('Failed to apply FlexIO settings')
 
         self._state = state
-        if channel_types_changed:
-            self._on_channel_types_changed()
+        # channel types name the input events, threshold voltages set their values
+        if channel_types_changed or threshold_voltages_changed:
+            self._on_input_events_changed()
 
     @override
     def _set_threshold_enabled(

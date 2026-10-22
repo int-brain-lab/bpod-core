@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configures each channel as digital or analog input or output, along with analog
   thresholds and the sampling rate; `Bpod.get_analog_data` returns the continuously
   sampled analog input in millivolts. Flex channel events and analog-output actions
-  can be used in state machines, and global timers can drive Flex outputs.
+  can be used in state machines, and global timers can drive Flex outputs. Analog
+  threshold events record their threshold's voltage as their value.
 - `Bpod.action_names`: names of all actions a state machine can currently set,
   mirroring `Bpod.input_event_names`.
 - state machine validation rejects non-integer action values before compilation.

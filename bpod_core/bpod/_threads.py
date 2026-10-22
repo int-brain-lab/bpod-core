@@ -117,7 +117,7 @@ _SYNTHETIC_EVENT_LOOKUP = pl.DataFrame(
         'event': pl.Series([None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.Null),
         'channel': pl.Series([None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.Null),
         'default_value': pl.Series(
-            [None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.UInt8
+            [None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.UInt16
         ),
     }
 )
@@ -141,7 +141,7 @@ def _build_event_lookup(
     pl.DataFrame
         DataFrame with columns ``event_id`` (Int16), ``type`` (Enum),
         ``event`` (Categorical), ``channel`` (Categorical), and
-        ``default_value`` (UInt8, null if no pre-defined value),
+        ``default_value`` (UInt16, null if no pre-defined value),
         covering input events, synthetic events, and output actions.
     """
     output_ids = [_OUTPUT_ID_OFFSET + i for i in range(len(action_names))]
@@ -153,7 +153,7 @@ def _build_event_lookup(
             ),
             'event': pl.Series(input_events.names, dtype=pl.Categorical),
             'channel': pl.Series(input_events.channels, dtype=pl.Categorical),
-            'default_value': pl.Series(input_events.values, dtype=pl.UInt8),
+            'default_value': pl.Series(input_events.values, dtype=pl.UInt16),
         }
     )
     output_lookup = pl.DataFrame(
@@ -164,7 +164,7 @@ def _build_event_lookup(
             ),
             'event': pl.Series([None] * len(action_names), dtype=pl.Categorical),
             'channel': pl.Series(action_names, dtype=pl.Categorical),
-            'default_value': pl.Series([None] * len(action_names), dtype=pl.UInt8),
+            'default_value': pl.Series([None] * len(action_names), dtype=pl.UInt16),
         }
     )
     return pl.concat([input_lookup, _SYNTHETIC_EVENT_LOOKUP, output_lookup])
