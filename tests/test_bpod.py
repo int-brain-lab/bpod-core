@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock
 from uuid import uuid4
 
+import polars as pl
 import pytest
 from serial import SerialException
 
@@ -510,6 +511,25 @@ class TestIsRunning:
         with pytest.raises(SerialException):
             mock_bpod_25.run(fsm)
         assert not mock_bpod_25.is_running
+
+
+class TestGetData:
+    def test_waits_for_event_thread(self, mock_bpod_25):
+        """Data the event thread is still processing is waited for."""
+
+        def finish():
+            time.sleep(0.05)
+            mock_bpod_25._trial_data.put(pl.LazyFrame({'trial': [0]}))
+
+        mock_bpod_25._read_thread = None
+        mock_bpod_25._event_thread = threading.Thread(target=finish)
+        mock_bpod_25._event_thread.start()
+        assert mock_bpod_25.get_data()['trial'].to_list() == [0]
+
+    def test_raises_without_data(self, mock_bpod_25):
+        """Without a trial running or being processed, there's nothing to wait for."""
+        with pytest.raises(BpodError, match='No trial data available'):
+            mock_bpod_25.get_data()
 
 
 class TestResettableActions:

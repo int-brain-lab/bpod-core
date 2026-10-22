@@ -1807,7 +1807,10 @@ class Bpod(SerialDevice, AbstractBpod):
 
     @override
     def get_data(self, *, concat=True, lazy=False):
-        if self._trial_data.empty() and not self.is_running:
+        # the EventThread queues a trial's data as it ends: check it before the queue
+        event_thread = self._event_thread
+        busy = self.is_running or (event_thread is not None and event_thread.is_alive())
+        if not busy and self._trial_data.empty():
             raise BpodError('No trial data available')
 
         frames = [self._trial_data.get()]
