@@ -24,11 +24,11 @@ from bpod_core.bpod.structs import (
     EventTrialEnd,
     EventTrialEndControl,
     EventTrialStart,
-    RawEvent,
     RawSoftcode,
     StateMachineLookup,
     TimeReferences,
     _InputEvents,
+    _RawEvents,
 )
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import STRUCT_UINT32_LE, STRUCT_UINT64_LE
@@ -69,8 +69,6 @@ _EVENT_DTYPE = np.dtype(
 class _EventID(IntEnum):
     """Enum for event codes."""
 
-    STOP_SENTINEL = -100
-    """Sentinel value for stopping threads."""
     EXIT = 255
     """Exit code for the Bpod."""
     START_FSM = auto()
@@ -78,6 +76,8 @@ class _EventID(IntEnum):
     END_STATE = auto()
     END_FSM_CYCLES = auto()
     END_FSM_MICROS = auto()
+    STOP_SENTINEL = auto()
+    """Sentinel value for stopping threads."""
 
 
 _SYNTHETIC_EVENT_TYPES: dict[_EventID, str] = {
@@ -179,9 +179,10 @@ class ReadThread(threading.Thread):
 
     - **Opcode 1** – hardware events: ``param`` event bytes followed by a 4-byte
       ``uInt32`` cycle count. Timestamps are derived as
-      ``start_micros_us + n_cycles * cycle_period_us`` and each event is pushed to
-      ``queue_events`` as a :class:`~bpod_core.bpod.structs.RawEvent`. An ``EXIT``
-      byte (255) marks the end of the trial.
+      ``start_micros_us + n_cycles * cycle_period_us``, and the packet's events (one
+      cycle) are pushed to ``queue_events`` as one
+      :class:`~bpod_core.bpod.structs._RawEvents`. An ``EXIT`` byte (255) marks the end
+      of the trial.
     - **Opcode 2** – softcodes: the ``param`` byte (1-indexed) is forwarded to
       ``queue_softcodes``.
 
@@ -218,7 +219,7 @@ class ReadThread(threading.Thread):
         Zero-based trial index.
     cycle_period_us : int
         The cycle period of the Bpod device in microseconds.
-    queue_events : SimpleQueue[RawEvent]
+    queue_events : SimpleQueue[_RawEvents]
         Queue for storing events.
     queue_softcodes : SimpleQueue[RawSoftcode]
         Queue for storing softcodes.
@@ -248,7 +249,7 @@ class ReadThread(threading.Thread):
         state_machine_hash: bytes,
         trial: int,
         cycle_period_us: int,
-        queue_events: SimpleQueue[RawEvent],
+        queue_events: SimpleQueue[_RawEvents],
         queue_softcodes: SimpleQueue[RawSoftcode],
         initial_bytes: bytes = b'',
         initial_received_ns: int = 0,
@@ -308,8 +309,8 @@ class ReadThread(threading.Thread):
             exit_event = int(_EventID.EXIT)
 
             # handle events: start of state machine, start of state
-            q_events.put(RawEvent(start_micros_us, _EventID.START_FSM))
-            q_events.put(RawEvent(start_micros_us, _EventID.START_STATE))
+            q_events.put(_RawEvents(start_micros_us, (_EventID.START_FSM,)))
+            q_events.put(_RawEvents(start_micros_us, (_EventID.START_STATE,)))
 
             # tracks the most recent Bpod cycle timestamp for softcode attribution
             last_micros_us = start_micros_us
@@ -338,12 +339,13 @@ class ReadThread(threading.Thread):
                             derived_micros_us = start_micros_us + n_cycles_us
                             last_micros_us = derived_micros_us
 
-                            # hand events over to the EventThread
-                            for event in buffer[pos + 2 : pos + 2 + param]:
-                                if event == exit_event:
-                                    trial_ended = True
-                                    break
-                                q_events.put(RawEvent(derived_micros_us, event))
+                            # hand the cycle's events over to the EventThread
+                            events = buffer[pos + 2 : pos + 2 + param]
+                            if (i_exit := events.find(exit_event)) >= 0:
+                                trial_ended = True
+                                events = events[:i_exit]
+                            if events:
+                                q_events.put(_RawEvents(derived_micros_us, events))
 
                         # HANDLE SOFTCODES
                         # note: while incoming softcodes do not carry a timestamp,
@@ -403,11 +405,11 @@ class ReadThread(threading.Thread):
 
             # enqueue end-of-trial event
             derived_micros = start_micros_us + duration_cycles_us
-            q_events.put(RawEvent(derived_micros, _EventID.END_FSM_CYCLES))
-            q_events.put(RawEvent(end_micros_us, _EventID.END_FSM_MICROS))
+            q_events.put(_RawEvents(derived_micros, (_EventID.END_FSM_CYCLES,)))
+            q_events.put(_RawEvents(end_micros_us, (_EventID.END_FSM_MICROS,)))
 
         finally:
-            self._queue_events.put(RawEvent(0, _EventID.STOP_SENTINEL))
+            self._queue_events.put(_RawEvents(0, (_EventID.STOP_SENTINEL,)))
             logger.debug(
                 'Exiting state machine %s / trial #%d', self._fsm_hash, self._trial
             )
@@ -422,9 +424,12 @@ class EventThread(threading.Thread):
     """Consumer thread that processes hardware events and builds the trial DataFrame.
 
     Runs for the duration of one trial. :class:`ReadThread` feeds raw
-    :class:`~bpod_core.bpod.structs.RawEvent` items into :attr:`queue`; ``EventThread``
-    drains that queue, advances the FSM state, and records every event — inputs, state
-    transitions, and output actions — into an internal buffer.
+    :class:`~bpod_core.bpod.structs._RawEvents` items into :attr:`queue`;
+    ``EventThread`` drains that queue, advances the FSM state, and records every event —
+    inputs, state transitions, and output actions — into an internal buffer.
+
+    All events of a cycle are evaluated in the state the cycle started in; the first
+    one leading elsewhere makes the transition.
 
     When the trial ends (``STOP_SENTINEL`` received), the buffer is converted to a
     :class:`polars.LazyFrame` and pushed onto *data_queue* for the caller to collect via
@@ -469,7 +474,7 @@ class EventThread(threading.Thread):
         the trial-start timestamp without going through the publish/IPC path.
     """
 
-    queue: SimpleQueue[RawEvent]
+    queue: SimpleQueue[_RawEvents]
     """Per-trial event queue shared with :class:`ReadThread`."""
 
     def __init__(
@@ -486,7 +491,7 @@ class EventThread(threading.Thread):
         on_trial_start: Callable[[int], None] | None = None,
     ) -> None:
         super().__init__(name='EventThread', daemon=True)
-        self.queue: SimpleQueue[RawEvent] = SimpleQueue()
+        self.queue: SimpleQueue[_RawEvents] = SimpleQueue()
         self._trial = trial
         self._data_queue = data_queue
         self._state_transition_matrix = fsm.state_transition_matrix
@@ -532,7 +537,7 @@ class EventThread(threading.Thread):
 
     def stop(self) -> None:
         """Signal the FSM thread to stop."""
-        self.queue.put(RawEvent(micros_us=0, event_id=_EventID.STOP_SENTINEL))
+        self.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.STOP_SENTINEL,)))
 
     def _append(
         self,
@@ -624,11 +629,6 @@ class EventThread(threading.Thread):
         use_back_op = self._use_back_op
         target_exit = len(state_transition_matrix)
         target_back = 255
-        stateless_events = (
-            _EventID.START_FSM,
-            _EventID.END_FSM_CYCLES,
-            _EventID.END_FSM_MICROS,
-        )
         current_state = 0
         previous_state = 0
         active_outputs: dict[int, int] = {}  # resettable outputs currently non-zero
@@ -641,42 +641,25 @@ class EventThread(threading.Thread):
                 if self._pending and event_queue.empty():
                     self._flush()
 
-                # get the next event
-                bpod_count_us, event_index = event_queue.get()
-
-                # check if we need to stop the thread
-                if event_index == _EventID.STOP_SENTINEL:
-                    break
+                # get the events of one cycle, or a synthetic event
+                bpod_count_us, event_ids = event_queue.get()
+                event_index = event_ids[0]
 
                 # convert relative timestamps to absolute timestamps
                 t_bpod_us = base_time_bpod_us + bpod_count_us
 
-                # implicitly end the current state and reset active outputs
-                # before the TrialEnd row
-                if event_index == _EventID.END_FSM_CYCLES:
-                    if current_state >= 0:
-                        self._append(
-                            t_bpod_us, _EventID.END_STATE, state_id=current_state
-                        )
-                    for idx in sorted(active_outputs):
-                        output_id = _OUTPUT_ID_OFFSET + idx
-                        self._append(t_bpod_us, output_id, state_id=-1, value=0)
-                    active_outputs.clear()
-
-                # append the event to the buffer
-                state = -1 if event_index in stateless_events else current_state
-                self._append(t_bpod_us, event_index, state_id=state)
-                if event_index == _EventID.START_STATE:
-                    self._check_trigger.set()
-
-                # handle state transitions
+                # hardware events of one cycle: the first leading elsewhere transitions
                 if event_index < 255:
-                    if current_state < 0:  # FSM already exited - record event only
+                    for event_id in event_ids:
+                        self._append(t_bpod_us, event_id, state_id=current_state)
+                    if current_state < 0:  # FSM already exited - record events only
                         continue
-                    # define the target state based on the state transition matrix
-                    target_state = state_transition_matrix[current_state][event_index]
-                    if target_state == current_state:  # no transition
-                        continue
+                    transitions = state_transition_matrix[current_state]
+                    for event_id in event_ids:
+                        if (target_state := transitions[event_id]) != current_state:
+                            break
+                    else:
+                        continue  # no transition
                     if target_state == target_exit:  # state exited without a successor
                         self._append(
                             t_bpod_us,
@@ -697,23 +680,47 @@ class EventThread(threading.Thread):
                     )
                     self._check_trigger.set()
 
+                # start of the initial state
+                elif event_index == _EventID.START_STATE:
+                    self._append(t_bpod_us, event_index, state_id=current_state)
+                    self._check_trigger.set()
+
+                # end of the thread
+                elif event_index == _EventID.STOP_SENTINEL:
+                    break
+
+                # trial start and end, which belong to no state
+                else:
+                    # implicitly end the current state and reset active outputs
+                    # before the TrialEnd row
+                    if event_index == _EventID.END_FSM_CYCLES:
+                        if current_state >= 0:
+                            self._append(
+                                t_bpod_us, _EventID.END_STATE, state_id=current_state
+                            )
+                        for idx in sorted(active_outputs):
+                            output_id = _OUTPUT_ID_OFFSET + idx
+                            self._append(t_bpod_us, output_id, state_id=-1, value=0)
+                        active_outputs.clear()
+                    self._append(t_bpod_us, event_index, state_id=-1)
+                    continue
+
                 # record output actions (initial state & after state transitions):
                 # absent channels are reset (0); others get their new value.
-                if event_index < 255 or event_index == _EventID.START_STATE:
-                    new_actions = state_action_indices[current_state]
-                    for idx in sorted(active_outputs.keys() | new_actions.keys()):
-                        val = new_actions.get(idx, 0)
-                        output_id = _OUTPUT_ID_OFFSET + idx
-                        self._append(
-                            t_bpod_us,
-                            output_id,
-                            state_id=current_state,
-                            value=val,
-                        )
-                    active_outputs.clear()
-                    for idx, val in new_actions.items():
-                        if idx in resettable_indices and val > 0:
-                            active_outputs[idx] = val  # noqa: PERF403
+                new_actions = state_action_indices[current_state]
+                for idx in sorted(active_outputs.keys() | new_actions.keys()):
+                    val = new_actions.get(idx, 0)
+                    output_id = _OUTPUT_ID_OFFSET + idx
+                    self._append(
+                        t_bpod_us,
+                        output_id,
+                        state_id=current_state,
+                        value=val,
+                    )
+                active_outputs.clear()
+                for idx, val in new_actions.items():
+                    if idx in resettable_indices and val > 0:
+                        active_outputs[idx] = val  # noqa: PERF403
         finally:
             if self._pending:
                 self._flush()

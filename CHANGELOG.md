@@ -118,6 +118,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   indices of 2 or more: the Bpod reads their values as one bit per timer, but they were
   sent as index plus one. Indices of global timers that haven't been set are now
   rejected.
+- events in the same state machine cycle as a transition were evaluated in the new
+  state, so trial data could attribute them to the wrong state or record transitions
+  the Bpod never made. All events of a cycle are now evaluated in the state it
+  started in.
 
 ## [0.1.0a14] - 2026-07-24
 
