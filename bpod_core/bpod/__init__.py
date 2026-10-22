@@ -888,6 +888,7 @@ class Bpod(SerialDevice, AbstractBpod):
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""
         self._actions = []
+        self._resettable_actions: list[str] = []  # reset by the Bpod at each state
 
         # compile actions for output channels
         counters = dict.fromkeys(CHANNEL_TYPES_OUTPUT, 0)
@@ -898,6 +899,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 name = CHANNEL_TYPES_OUTPUT[io_key]
             elif io_key in b'FVPBW':  # Flex, Valve, PWM, TTL, Wire
                 name = f'{CHANNEL_TYPES_OUTPUT[io_key]}{counters[io_key] + 1}'
+                self._resettable_actions.append(name)
             else:
                 continue
             self._actions.append(name)
@@ -1657,6 +1659,7 @@ class Bpod(SerialDevice, AbstractBpod):
             data_queue=self._trial_data,
             event_lookup=self._event_lookup,
             action_names=self._actions,
+            resettable_actions=self._resettable_actions,
             time_reference=self._time_reference,
             publish=self._zmq.publish,
             publish_gate=lambda: self._zmq.has_subscribers,

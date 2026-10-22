@@ -383,6 +383,7 @@ class TestEventThread:
             *,
             fsm: StateMachineLookup | None = None,
             action_names: list[str] | None = None,
+            resettable_actions: list[str] | None = None,
             event_names: list[str] | None = None,
             time_reference: TimeReferences | None = None,
             publish: Callable[[list[BpodEventUnion]], object] | None = None,
@@ -403,6 +404,9 @@ class TestEventThread:
                 data_queue=data_queue,
                 event_lookup=_build_event_lookup(input_events, action_names),
                 action_names=action_names,
+                resettable_actions=(
+                    action_names if resettable_actions is None else resettable_actions
+                ),
                 time_reference=time_reference or TimeReferences(0, 0, 0),
                 publish=publish if publish is not None else lambda _: None,
                 publish_gate=should_publish
@@ -718,6 +722,20 @@ class TestEventThread:
             (pl.col('type') == 'OutputAction') & (pl.col('channel') == 'TTL1')
         )
         assert 0 in ttl['value'].to_list()
+
+    def test_non_resettable_action_not_reset(self, make_thread):
+        """An action the Bpod doesn't reset, e.g. a module message, isn't reset."""
+        fsm = _make_fsm(transitions={(0, 0): 1}, state_actions=[{'Module1': 3}, {}])
+        thread, data_queue = make_thread(
+            fsm=fsm, action_names=['Module1'], resettable_actions=[]
+        )
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,)))
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(0,)))  # S0 → S1
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        module = df.filter(pl.col('channel') == 'Module1')
+        assert module['value'].to_list() == [3]
 
     def test_peek_data_mid_trial(self, make_thread):
         """peek_data returns a non-empty snapshot while the trial is running."""

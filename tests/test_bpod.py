@@ -512,6 +512,18 @@ class TestIsRunning:
         assert not mock_bpod_25.is_running
 
 
+class TestResettableActions:
+    def test_outputs_reset_by_the_bpod(self, mock_bpod_2p):
+        """Flex, BNC, PWM and valve outputs are reset at each state, nothing else."""
+        assert mock_bpod_2p._resettable_actions == [
+            *(f'Flex{i}' for i in range(1, 5)),
+            'TTLOut1',
+            'TTLOut2',
+            *(f'PWM{i}' for i in range(1, 6)),
+            *(f'Valve{i}' for i in range(1, 6)),
+        ]
+
+
 class TestRun:
     @pytest.fixture(autouse=True)
     def patch_run_state_machine(self, mocker):
