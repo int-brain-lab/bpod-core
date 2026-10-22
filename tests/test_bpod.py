@@ -1426,6 +1426,19 @@ class TestStopStateMachine:
         running.stop_state_machine()
         assert 'analog sampling' not in caplog.text
 
+    def test_get_analog_data_after_stop(self, running):
+        """After a stop, buffered samples are returned; then it raises, not waits."""
+        running._analog_reader_thread = MagicMock()
+        running._analog_recording = True
+        running._analog_channel_names = ('Flex1',)
+        running._analog_first_trial_time_us = 0
+        running._analog_sample_period_us = 1000
+        running._analog_buffer = [(0, 0, 2048)]  # not flushed yet
+        running.stop_state_machine()
+        assert running.get_analog_data()['Flex1'].to_list() == [2501]
+        with pytest.raises(BpodError, match='No FlexIO analog input is recording'):
+            running.get_analog_data()
+
 
 def test_missing_flexio_port_suggests_power_cycle(mock_bpod_2p, mocker):
     """A FlexIO port that can't be found suggests power-cycling the Bpod."""
@@ -1443,6 +1456,20 @@ def test_missing_flexio_port_suggests_power_cycle(mock_bpod_2p, mocker):
 
 class TestAnalogSessionBookkeeping:
     """Tests for analog-data bookkeeping tied to trial/session lifecycle."""
+
+    @pytest.mark.parametrize('clock_reset', [True, False])
+    def test_recording_resumes_after_clock_reset(
+        self, mock_bpod_2p, mocker, clock_reset
+    ):
+        """After a stop, analog inputs record again only after a session clock reset."""
+        mocker.patch.object(Bpod, '_run_state_machine')
+        mock_bpod_2p._state_machine_started = True  # stopped after an earlier trial
+        mock_bpod_2p._analog_reader_thread = MagicMock()
+        mock_bpod_2p._analog_first_trial_time_us = None if clock_reset else 0
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        mock_bpod_2p.run(fsm)
+        assert mock_bpod_2p._analog_recording is clock_reset
 
     def test_reset_session_clock_clears_analog_bookkeeping(self, mock_bpod_2p):
         """Resetting the session clock clears the analog anchor/trial mapping."""

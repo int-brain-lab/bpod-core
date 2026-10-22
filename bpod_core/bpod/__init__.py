@@ -220,6 +220,7 @@ class Bpod(SerialDevice, AbstractBpod):
     # FlexIO analog-input reader state; see _start_analog_reader/_on_analog_chunk
     _flexio_serial: ExtendedSerial | None = None
     _analog_reader_thread: ReaderThread | None = None
+    _analog_recording: bool = False  # the Bpod is sampling the analog inputs
     _analog_channel_names: tuple[str, ...] = ()
     _analog_struct: struct.Struct | None = None
     _analog_sample_period_us: int = 0
@@ -442,6 +443,7 @@ class Bpod(SerialDevice, AbstractBpod):
         if self._analog_reader_thread is not None:
             self._analog_reader_thread.stop()  # thread stopped, serial still open
             self._analog_reader_thread = None
+            self._analog_recording = False
             self._flush_analog_buffer()  # samples since the last periodic flush
         if self._flexio_serial is not None and self._flexio_serial.is_open:
             # discard any analog samples firmware sent (or was still sending) up to
@@ -2048,6 +2050,10 @@ class Bpod(SerialDevice, AbstractBpod):
             # FlexIO channel types and the sampling rate are fixed from here on,
             # and the Bpod streams analog samples from the first trial on
             self._start_analog_reader()
+        if self._analog_first_trial_time_us is None:
+            # the Bpod (re)starts analog sampling with the first trial after a
+            # session clock reset
+            self._analog_recording = self._analog_reader_thread is not None
         self._starting_state_machine = True
         self._state_machine_started = True
         # record the trial number before the Bpod can start the state machine: analog
@@ -2304,17 +2310,21 @@ class Bpod(SerialDevice, AbstractBpod):
         Raises
         ------
         BpodError
-            If the Bpod has no FlexIO channels, or if no data is available and no
-            analog input is recording: none is configured as ``ANALOG_INPUT``, or
-            no state machine has run yet.
+            If the Bpod has no FlexIO channels, or if no data is available and the
+            analog inputs aren't recording: none is configured as
+            ``ANALOG_INPUT``, no state machine has run yet, or
+            :meth:`stop_state_machine` stopped them.
         """
         if not self._hardware.n_flexio:
             raise BpodError(
                 f'Bpod Finite State Machine {self._version.machine_str} does not have '
                 f'FlexIO channels.'
             )
-        if self._analog_data.empty() and self._analog_reader_thread is None:
-            raise BpodError('No FlexIO analog input is recording')
+        if not self._analog_recording:
+            # no new samples arrive to trigger the periodic flush
+            self._flush_analog_buffer()
+            if self._analog_data.empty():
+                raise BpodError('No FlexIO analog input is recording')
         return self._drain_queue(
             self._analog_data,
             concat=concat,
@@ -2334,6 +2344,7 @@ class Bpod(SerialDevice, AbstractBpod):
             )
         logger.debug('Stopping state machine')
         self.serial0.write(b'X')
+        self._analog_recording = False  # the Bpod stops analog sampling on 'X'
         if self._read_thread is not None:
             self._read_thread.join()
 
