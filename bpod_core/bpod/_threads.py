@@ -456,6 +456,9 @@ class EventThread(threading.Thread):
         Pre-built event metadata lookup, see :func:`_build_event_lookup`.
     action_names : list of str
         Names of all output channels, indexed by action ID.
+    resettable_actions : Collection of str
+        Names of the actions driving outputs that the Bpod resets to 0 when a state
+        begins that doesn't set them.
     time_reference : TimeReferences
         Reference values for performance counters.
     publish : Callable
@@ -485,6 +488,7 @@ class EventThread(threading.Thread):
         data_queue: SimpleQueue[pl.LazyFrame],
         event_lookup: pl.DataFrame,
         action_names: list[str],
+        resettable_actions: Collection[str],
         time_reference: TimeReferences,
         publish: Callable[[list[BpodEventUnion]], object],
         publish_gate: Callable[[], bool],
@@ -514,9 +518,9 @@ class EventThread(threading.Thread):
         self._state_action_indices: list[dict[int, int]] = [
             {action_index_map[k]: v for k, v in d.items()} for d in fsm.state_actions
         ]
-        # TTL and PWM outputs are implicitly reset to 0 at each state transition
+        # these outputs are implicitly reset to 0 at each state transition
         self._resettable_indices: frozenset[int] = frozenset(
-            i for i, name in enumerate(action_names) if name.startswith(('TTL', 'PWM'))
+            i for i, name in enumerate(action_names) if name in resettable_actions
         )
 
         # pre-compute event metadata for resolving published messages in the hot

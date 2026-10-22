@@ -124,6 +124,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state, so trial data could attribute them to the wrong state or record transitions
   the Bpod never made. All events of a cycle are now evaluated in the state it
   started in.
+- trial data recorded only TTL and PWM outputs as switched off when a state began that
+  didn't set them: valves, wire and FlexIO outputs appeared to stay on, although the
+  Bpod switches them off as well.
 
 ## [0.1.0a14] - 2026-07-24
 
