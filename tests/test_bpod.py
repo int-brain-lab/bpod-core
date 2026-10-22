@@ -1057,21 +1057,6 @@ class TestFlexIOSettings:
         n_cycles = round(cycle_frequency / 500)
         assert mock_bpod_2p.serial0.last_write == struct.pack('<cI', b'^', n_cycles)
 
-    def test_flexio_analog_sampling_rate_refreshes_sample_period(
-        self, mock_bpod_2p, mocker
-    ):
-        """Changing the sampling rate live refreshes the cached analog sample period."""
-        cycle_frequency = mock_bpod_2p._hardware.cycle_frequency
-        cycle_period_us = mock_bpod_2p._hardware.cycle_period_us
-        mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial, is_open=False)
-        mocker.patch('bpod_core.bpod.ReaderThread')
-        mocker.patch('bpod_core.bpod.ChunkedSerialReader')
-        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
-        mock_bpod_2p.flex_io.analog_sampling_rate = 500
-        mock_bpod_2p.flex_io.analog_sampling_rate = 100
-        n_cycles = round(cycle_frequency / 100)
-        assert mock_bpod_2p._analog_sample_period_us == n_cycles * cycle_period_us
-
     def test_flexio_threshold_enabled_always_writes(self, mock_bpod_2p):
         """Re-enabling a threshold sends 'e' even if the cached state looks unchanged.
 
@@ -1333,7 +1318,7 @@ class TestAnalogChunk:
 
     def test_get_analog_data_raises_when_unavailable(self, mock_bpod_2p):
         """get_analog_data raises if no data exists and no reader is active."""
-        with pytest.raises(BpodError, match='No FlexIO channels configured'):
+        with pytest.raises(BpodError, match='No FlexIO analog input is recording'):
             mock_bpod_2p.get_analog_data()
 
     def test_get_analog_data_returns_data_after_reader_stopped(self, mock_bpod_2p):
@@ -1341,62 +1326,49 @@ class TestAnalogChunk:
         assert mock_bpod_2p._analog_reader_thread is None
         mock_bpod_2p._analog_data.put(pl.LazyFrame({'Flex1': [1, 2]}))
         assert mock_bpod_2p.get_analog_data()['Flex1'].to_list() == [1, 2]
-        with pytest.raises(BpodError, match='No FlexIO channels configured'):
+        with pytest.raises(BpodError, match='No FlexIO analog input is recording'):
             mock_bpod_2p.get_analog_data()
 
 
-class TestSyncAnalogReader:
-    """Tests for Bpod._sync_analog_reader."""
+class TestStartAnalogReader:
+    """Tests for Bpod._start_analog_reader."""
 
     def test_noop_without_flexio_serial(self, mock_bpod_2p):
         """No reader is started when the analog serial port wasn't detected."""
         mock_bpod_2p._flexio_serial = None
-        mock_bpod_2p._sync_analog_reader()
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        mock_bpod_2p._start_analog_reader()
         assert mock_bpod_2p._analog_reader_thread is None
 
     def test_noop_without_analog_input_channels(self, mock_bpod_2p):
         """No reader is started while no channel is configured as ANALOG_INPUT."""
         mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial)
-        mock_bpod_2p._sync_analog_reader()
+        mock_bpod_2p._start_analog_reader()
         assert mock_bpod_2p._analog_reader_thread is None
 
-    def test_starts_reader_when_channel_becomes_analog_input(
-        self, mock_bpod_2p, mocker
-    ):
-        """Configuring a channel as ANALOG_INPUT starts the analog reader thread."""
-        mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial, is_open=False)
-        mock_reader_thread_cls = mocker.patch('bpod_core.bpod.ReaderThread')
-        mocker.patch('bpod_core.bpod.ChunkedSerialReader')
-        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
-        assert mock_bpod_2p._analog_channel_names == ('Flex3',)
-        mock_reader_thread_cls.return_value.start.assert_called_once()
-
-    def test_stops_reader_when_no_channel_remains_analog_input(
-        self, mock_bpod_2p, mocker
-    ):
-        """Reconfiguring away from ANALOG_INPUT stops the analog reader thread."""
-        mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial, is_open=False)
-        mocker.patch('bpod_core.bpod.ReaderThread')
-        mocker.patch('bpod_core.bpod.ChunkedSerialReader')
-        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
-        reader_thread = mock_bpod_2p._analog_reader_thread
-        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.DIGITAL_INPUT
-        reader_thread.stop.assert_called_once()
-        assert mock_bpod_2p._analog_reader_thread is None
-        assert mock_bpod_2p._analog_channel_names == ()
-
-    def test_keeps_reader_when_analog_channels_unchanged(self, mock_bpod_2p, mocker):
-        """Unrelated changes don't restart the reader, which could start mid-frame."""
+    def test_starts_reader_for_analog_input_channels(self, mock_bpod_2p, mocker):
+        """The reader decodes the ANALOG_INPUT channels at the configured rate."""
         mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial, is_open=False)
         reader_thread_cls = mocker.patch('bpod_core.bpod.ReaderThread')
         mocker.patch('bpod_core.bpod.ChunkedSerialReader')
         mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
-        mock_bpod_2p._recompile_hardware_tables()  # as update_modules() does
-        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.DIGITAL_OUTPUT
         mock_bpod_2p.flex_io.analog_sampling_rate = 500
-        reader_thread_cls.assert_called_once()
-        reader_thread_cls.return_value.stop.assert_not_called()
+        mock_bpod_2p._start_analog_reader()
+        reader_thread_cls.return_value.start.assert_called_once()
+        assert mock_bpod_2p._analog_channel_names == ('Flex3',)
         assert mock_bpod_2p._analog_sample_period_us == 2000  # 500 Hz
+
+    @pytest.mark.parametrize('started', [False, True])
+    def test_starts_with_first_state_machine(self, mock_bpod_2p, mocker, started):
+        """The reader starts with the first state machine, not with later ones."""
+        start = mocker.patch.object(Bpod, '_start_analog_reader')
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        start.assert_not_called()
+        mock_bpod_2p._state_machine_started = started
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        mock_bpod_2p.run(fsm)
+        assert start.call_count == (0 if started else 1)
 
 
 class TestStopStateMachine:

@@ -70,15 +70,10 @@ class FlexIO(AbstractFlexIO):
         *,
         cycle_frequency: int,
         on_channel_types_changed: Callable[[], object],
-        on_analog_sampling_rate_changed: Callable[[], None],
         is_running: Callable[[], bool],
         configuration_locked: Callable[[], bool],
     ) -> None:
-        super().__init__(
-            n,
-            on_channel_types_changed=on_channel_types_changed,
-            on_analog_sampling_rate_changed=on_analog_sampling_rate_changed,
-        )
+        super().__init__(n, on_channel_types_changed=on_channel_types_changed)
         self._bpod_serial = bpod_serial
         self._cycle_frequency = cycle_frequency
         self._is_running = is_running
@@ -163,8 +158,6 @@ class FlexIO(AbstractFlexIO):
         self._state = state
         if channel_types_changed:
             self._on_channel_types_changed()
-        if analog_sampling_rate_changed:
-            self._on_analog_sampling_rate_changed()
 
     @override
     def _set_threshold_enabled(
