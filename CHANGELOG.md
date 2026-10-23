@@ -359,6 +359,8 @@ Just a quick bugfix release ...
 
 First alpha release. Nothing works.
 
+[0.1.0a15]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a15
+
 [0.1.0a14]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a14
 
 [0.1.0a13]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a13
