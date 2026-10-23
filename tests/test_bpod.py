@@ -934,6 +934,17 @@ class TestRun:
             mock_bpod_25.run(fsm_basic)
         assert mock_bpod_25._next_fsm_index == UINT32_MAX
 
+    def test_rejected_run_keeps_the_trial_number(self, fsm_basic, mock_bpod_25):
+        """A run() that raises before sending doesn't use up a trial number."""
+        invalid = StateMachine()
+        invalid.add_state('a', 1, {'Port1_Hgh': '>exit'})
+        with pytest.raises(RuntimeError, match='No state machine has been run yet'):
+            mock_bpod_25.run()
+        with pytest.raises(ValueError, match='Port1_Hgh'):
+            mock_bpod_25.run(invalid)
+        mock_bpod_25.run(fsm_basic)
+        assert mock_bpod_25._next_fsm_index == 0
+
     def test_run_repeat(self, fsm_basic, mock_bpod_25):
         """Calling run() without sma re-sends the same compiled bytes from cache."""
         mock_bpod_25.run(fsm_basic)

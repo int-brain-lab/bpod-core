@@ -1117,7 +1117,6 @@ class Bpod(SerialDevice, AbstractBpod):
             trial_number = self._next_fsm_index + 1
         if not 0 <= trial_number <= UINT32_MAX:
             raise ValueError(f'trial_number must be between 0 and {UINT32_MAX}')
-        self._next_fsm_index = trial_number
         debugging = logger.isEnabledFor(logging.DEBUG)
         self._disable_all_module_relays()
 
@@ -1177,6 +1176,9 @@ class Bpod(SerialDevice, AbstractBpod):
                 self._fsm_annotations,
                 self._compiler.hardware_hash,
             )
+
+        # count the trial only now, so that a rejected call doesn't use up its number
+        self._next_fsm_index = trial_number
 
         # Send state machine to Bpod; always queue for immediate back-to-back execution.
         # The Bpod may start it at any time from here on - count it as running until

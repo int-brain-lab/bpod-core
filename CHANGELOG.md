@@ -78,6 +78,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counter events and condition channels.
 - a trial number above 65535 or below 0 made `get_data()` fail, losing the collected
   trials. `run()` now rejects trial numbers outside 0 to 4,294,967,295.
+- a `run()` that raised before sending, e.g., for an invalid state machine, still used
+  up a trial number, so the next trial skipped one.
 - `run()` without a state machine reran the last one even after the hardware
   configuration had changed, e.g., through `update_modules()`. It now raises a
   `RuntimeError`.
