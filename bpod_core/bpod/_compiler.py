@@ -261,6 +261,13 @@ class StateMachineCompiler:
             global_counter_ends=range_global_counter_ends,
             conditions=range_conditions,
         )
+        # for each event but Tup: its range's position in _input_event_ranges, and
+        # its index relative to the range's first event
+        self._event_groups = {
+            event_idx: (group_idx, event_idx - index_range.start)
+            for group_idx, index_range in enumerate(self._input_event_ranges)
+            for event_idx in index_range
+        }
 
         modules = list(self._modules)
         input_channels = _name_channels(hw.input_description, CHANNEL_TYPES_INPUT)
@@ -723,44 +730,45 @@ class StateMachineCompiler:
         condition_channel_indices = self._condition_channel_indices
         timer_channel_indices = self._timer_channel_indices
 
+        # indexed transitions per state
+        state_transition_indices = [
+            [(event_indices[e], target_indices[t]) for e, t in s.transitions.items()]
+            for s in states
+        ]
+
         # build the state transition matrix (n_states x 255 events)
         state_transition_matrix = [[state_idx] * 255 for state_idx in range(n_states)]
-        for state_idx, state in enumerate(states):
-            for event, target in state.transitions.items():
-                state_transition_matrix[state_idx][event_indices[event]] = (
-                    target_indices[target]
-                )
+        for targets, transitions in zip(
+            state_transition_matrix, state_transition_indices, strict=True
+        ):
+            for event_idx, target_idx in transitions:
+                targets[event_idx] = target_idx
 
-        def _is_flexio_analog_output(action_name: str) -> bool:
-            return (
-                self._flexio_types.get(action_name) == FlexIOChannelType.ANALOG_OUTPUT
-            )
-
-        def _scale_action_value(action_name: str, value: int) -> int:
-            """Scale a FlexIO analog-output action value (0-5000 mV) into DAC counts.
-
-            Every other action value must already be an integer (enforced during
-            validation) and needs no further scaling.
-            """
-            if _is_flexio_analog_output(action_name):
-                return _mv_to_counts(value)
-            return int(value)
+        # FlexIO analog outputs take millivolts (0-5000), sent as DAC counts. Every
+        # other value must already be an integer (enforced during validation) and
+        # needs no further scaling.
+        analog_outputs = {
+            name
+            for name, channel_type in self._flexio_types.items()
+            if channel_type == FlexIOChannelType.ANALOG_OUTPUT
+        }
 
         # scale action values once, shared by the wire-encoding section further down
         # and (for non-FlexIO actions) the annotation below
         state_actions = [
-            {k: _scale_action_value(k, v) for k, v in s.actions.items()} for s in states
+            {
+                k: _mv_to_counts(v) if k in analog_outputs else int(v)
+                for k, v in s.actions.items()
+            }
+            for s in states
         ]
 
         # the annotation EventThread uses to record get_data()'s reported value
         # reports FlexIO ANALOG_OUTPUT in millivolts (what was actually applied to
         # the pin), not the wire's raw DAC count
         reported_state_actions = [
-            {
-                k: _counts_to_mv(v) if _is_flexio_analog_output(k) else v
-                for k, v in actions.items()
-            }
-            for actions in state_actions
+            {k: _counts_to_mv(v) if k in analog_outputs else v for k, v in a.items()}
+            for a in state_actions
         ]
 
         # build annotation data structure for event decoding in EventThread
@@ -780,33 +788,29 @@ class StateMachineCompiler:
         # at the very end of the compilation
         fsm_bytes = bytearray(3)
 
-        # Pre-build indexed transitions per state - for use in append_events closure
-        state_transition_indices = [
-            [(event_indices[e], target_indices[t]) for e, t in s.transitions.items()]
-            for s in states
+        # transitions per event range and state, as flat lists of relative event
+        # indices and target indices - for use in append_events closure
+        grouped_transitions: list[list[list[int]]] = [
+            [[] for _ in states] for _ in self._input_event_ranges
         ]
+        for state_idx, transitions in enumerate(state_transition_indices):
+            for event_idx, target_idx in transitions:
+                if (group := self._event_groups.get(event_idx)) is not None:
+                    group_idx, relative_idx = group
+                    grouped_transitions[group_idx][state_idx].extend(
+                        (relative_idx, target_idx)
+                    )
 
-        def append_events(index_range: range) -> None:
-            """Encode transitions for events in index_range into byte_array.
+        def append_events(transitions_per_state: list[list[int]]) -> None:
+            """Append each state's transitions for one range of events to fsm_bytes.
 
-            For each state, this closure appends: [count] [event_idx, target_idx] ...
-            where count is the number of transitions, event_idx is relative to event0,
+            For each state: [count] [event_idx, target_idx] ..., where count is the
+            number of transitions, event_idx is relative to the range's first event,
             and target_idx is the target state index.
-
-            Parameters
-            ----------
-            index_range : range
-                Range of events to encode.
             """
-            for transitions in state_transition_indices:
-                # add counter byte
-                counter_pos = len(fsm_bytes)
-                fsm_bytes.append(0)
-                # add transitions, increment counter
-                for event_idx, target_state_idx in transitions:
-                    if event_idx in index_range:
-                        fsm_bytes[counter_pos] += 1
-                        fsm_bytes.extend((event_idx - index_range[0], target_state_idx))
+            for transitions in transitions_per_state:
+                fsm_bytes.append(len(transitions) // 2)
+                fsm_bytes.extend(transitions)
 
         # COUNTERS (4 bytes):
         fsm_bytes.extend((n_states, n_global_timers, n_global_counters, n_conditions))
@@ -818,7 +822,8 @@ class StateMachineCompiler:
 
         # INPUT EVENTS (variable length, per state):
         #   [count] [event_idx, target_idx] ...  for events on physical input channels
-        append_events(self._input_event_ranges.input_channels)
+        input_channel_transitions, *remaining_transitions = grouped_transitions
+        append_events(input_channel_transitions)
 
         # ACTIONS (variable length, per state):
         #   [count] [action_idx, value] ...  (8-bit on Bpod 0.5-1, 16-bit on Bpod 2+)
@@ -837,12 +842,10 @@ class StateMachineCompiler:
             fsm_bytes, tmp_list, FMT_UINT16_LE if version.machine == 4 else FMT_UINT8
         )
 
-        # REMAINING EVENTS
+        # REMAINING EVENTS (global timer starts/ends, global counter ends, conditions)
         #   [count] [event_idx, target_idx] ...  for each event
-        append_events(self._input_event_ranges.global_timer_starts)
-        append_events(self._input_event_ranges.global_timer_ends)
-        append_events(self._input_event_ranges.global_counter_ends)
-        append_events(self._input_event_ranges.conditions)
+        for transitions_per_state in remaining_transitions:
+            append_events(transitions_per_state)
 
         if n_global_timers:
             # GLOBAL TIMER CHANNELS
@@ -859,8 +862,8 @@ class StateMachineCompiler:
                 extend_packed(
                     fsm_bytes,
                     [
-                        _scale_action_value(gt.channel, getattr(gt, field_name))
-                        if gt is not None and gt.channel is not None
+                        _mv_to_counts(getattr(gt, field_name))
+                        if gt is not None and gt.channel in analog_outputs
                         else getattr(gt, field_name, 0)
                         for gt in global_timers_list
                     ],
