@@ -185,7 +185,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
     _compiler: StateMachineCompiler  # rebuilt by _recompile_hardware_tables
     # the last compiled state machine, and the hardware hash it was compiled for
-    _last_compiled: tuple[bytearray, _StateMachineLookup, bytes] | None = None
+    _last_compiled: tuple[bytes, _StateMachineLookup, bytes] | None = None
 
     _softcode_thread: SoftcodeThread
     _softcode_slot: _HandlerSlot[Callable[[int], None] | None]
@@ -1094,7 +1094,7 @@ class Bpod(SerialDevice, AbstractBpod):
         if not (0 <= softcode < self._compiler.n_softcodes):
             raise ValueError(
                 f'Softcode {softcode} is out of range - hardware supports softcodes '
-                f'0..{self._compiler.n_softcodes}'
+                f'0..{self._compiler.n_softcodes - 1}'
             )
         if not self.is_running:
             logger.warning(

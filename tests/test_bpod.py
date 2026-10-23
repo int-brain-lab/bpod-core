@@ -561,6 +561,12 @@ class TestSendSoftcode:
         mock_bpod_25.send_softcode(3)
         assert 'softcode 3 not sent' in caplog.text
 
+    def test_out_of_range_names_the_valid_range(self, mock_bpod_25):
+        """A softcode beyond the hardware's range is rejected, naming the range."""
+        n_softcodes = mock_bpod_25._compiler.n_softcodes
+        with pytest.raises(ValueError, match=rf'0\.\.{n_softcodes - 1}$'):
+            mock_bpod_25.send_softcode(n_softcodes)
+
 
 class TestIsRunning:
     @pytest.fixture

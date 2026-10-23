@@ -2,6 +2,7 @@
 
 import logging
 import struct
+import threading
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from time import perf_counter_ns
@@ -88,8 +89,10 @@ class StateMachineCompiler:
         FIFOCache(maxsize=1024)
     )
     _compilation_cache: ClassVar[
-        FIFOCache[tuple[bytes, bytes, bool], tuple[bytearray, _StateMachineLookup]]
+        FIFOCache[tuple[bytes, bytes, bool], tuple[bytes, _StateMachineLookup]]
     ] = FIFOCache(maxsize=1024)
+    # all compilers share the caches, possibly from several threads
+    _cache_lock: ClassVar[threading.Lock] = threading.Lock()
 
     input_event_names: tuple[str, ...]
     """Names of all input events a state machine can transition on."""
@@ -340,6 +343,8 @@ class StateMachineCompiler:
             msgspec.msgpack.encode(
                 (
                     self._hardware,
+                    self._version.firmware,  # compile() depends on these two
+                    self._version.machine,
                     self._input_events.names,
                     self.actions,
                     flexio_channel_types,
@@ -380,13 +385,15 @@ class StateMachineCompiler:
         # skip validation if the state machine has been validated before
         fsm_hash = known_hash or state_machine.hash
         cache_key = (self.hardware_hash, fsm_hash)
-        if cache_key in self._validation_cache:
+        with self._cache_lock:
+            cached = self._validation_cache.get(cache_key)
+        if cached is not None:
             if debugging:
                 logger.debug(
                     'Skipped validation of known valid state machine (%s μs)',
                     (perf_counter_ns() - t0) // 1000,
                 )
-            return self._validation_cache[cache_key]
+            return cached
 
         # run hardware independent checks
         check_data = state_machine._check(known_hash=fsm_hash)  # noqa: SLF001
@@ -622,7 +629,8 @@ class StateMachineCompiler:
             use_back_operator=use_back_op,
             state_names=state_names,
         )
-        self._validation_cache[cache_key] = validation_data
+        with self._cache_lock:
+            self._validation_cache[cache_key] = validation_data
 
         # report benchmarking results
         if debugging:
@@ -641,13 +649,13 @@ class StateMachineCompiler:
         state_machine: StateMachine,
         known_hash: bytes | None = None,
         validate: bool = True,
-    ) -> tuple[bytearray, _StateMachineLookup]:
+    ) -> tuple[bytes, _StateMachineLookup]:
         """Compile a state machine into its binary wire format and annotation data.
 
         Builds the state transition matrix, encodes states, transitions, actions,
-        global timers, global counters, and conditions into a bytearray compatible
-        with the Bpod firmware, and returns annotation data for post-trial decoding
-        by :class:`~bpod_core.bpod.threads.EventThread`.
+        global timers, global counters, and conditions into bytes compatible with
+        the Bpod firmware, and returns annotation data for post-trial decoding by
+        :class:`~bpod_core.bpod._threads.EventThread`.
 
         Parameters
         ----------
@@ -676,15 +684,16 @@ class StateMachineCompiler:
 
         # use cached results if they are available
         cache_key = (self.hardware_hash, state_machine_hash, validate)
-        if cache_key in self._compilation_cache:
-            compiled_fsm, fsm_lookup = self._compilation_cache[cache_key]
+        with self._cache_lock:
+            cached = self._compilation_cache.get(cache_key)
+        if cached is not None:
             if debugging:
                 logger.debug(
                     'Retrieved compiled, %s state machine from cache (%d μs)',
                     'validated' if validate else 'unvalidated',
                     (perf_counter_ns() - t0) // 1000,
                 )
-            return compiled_fsm, fsm_lookup
+            return cached
 
         # validate the state machine,
         if validate:
@@ -964,8 +973,10 @@ class StateMachineCompiler:
         # HEADER
         struct.pack_into('<?H', fsm_bytes, 0, use_back_op, len(fsm_bytes) - 3)
 
-        # store the compiled state machine for future use
-        self._compilation_cache[cache_key] = (fsm_bytes, annotations)
+        # store the compiled state machine for future use, as immutable bytes
+        compiled = (bytes(fsm_bytes), annotations)
+        with self._cache_lock:
+            self._compilation_cache[cache_key] = compiled
 
         # report benchmarking results
         if debugging:
@@ -976,4 +987,4 @@ class StateMachineCompiler:
             )
 
         # Return the compiled state machine and annotations
-        return fsm_bytes, annotations
+        return compiled

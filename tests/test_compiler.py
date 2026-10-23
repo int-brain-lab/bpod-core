@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 
+import msgspec
 import polars as pl
 import pytest
 
@@ -43,11 +44,12 @@ AI, DI, DO, AO, OFF = (
 def make_compiler(
     flexio_channel_types: Sequence[FlexIOChannelType] = (OFF, OFF, OFF, OFF),
     threshold_voltages: Mapping[str, Sequence[int]] | None = None,
+    version: VersionInfo = VERSION,
 ) -> StateMachineCompiler:
     names = [f'Flex{i + 1}' for i in range(len(flexio_channel_types))]
     return StateMachineCompiler(
         HARDWARE,
-        VERSION,
+        version,
         MODULES,
         flexio_channel_types=dict(zip(names, flexio_channel_types, strict=True)),
         threshold_voltages=threshold_voltages or {},
@@ -91,6 +93,13 @@ class TestTables:
         assert other_voltages.hardware_hash == base.hardware_hash
         assert other_types.hardware_hash != base.hardware_hash
 
+    def test_hardware_hash_follows_firmware(self):
+        """Compiled state machines aren't shared between firmware versions."""
+        newer = make_compiler(
+            version=msgspec.structs.replace(VERSION, firmware=(24, 0))
+        )
+        assert newer.hardware_hash != make_compiler().hardware_hash
+
 
 class TestValidateAndCompile:
     def test_unknown_event_is_rejected_with_a_suggestion(self):
@@ -118,12 +127,13 @@ class TestValidateAndCompile:
             make_compiler().validate(fsm)
 
     def test_compiled_state_machines_are_shared_across_instances(self):
-        """Compilers for the same hardware reuse each other's results."""
+        """Compilers for the same hardware reuse each other's immutable results."""
         fsm = StateMachine()
         fsm.add_state('a', 0.5, {'Port1_High': '>exit'}, {'PWM1': 255})
         first, _ = make_compiler().compile(state_machine=fsm)
         second, _ = make_compiler().compile(state_machine=fsm)
         assert second is first
+        assert isinstance(first, bytes)
 
     @pytest.mark.parametrize(
         ('setup', 'match'),

@@ -80,6 +80,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AnalogThreshDisable` bits for FlexIO channels that don't exist, `GlobalCounterReset`
   values for global counters that aren't set, onset triggers for global timers that
   aren't set, and global counter events and condition channels that don't exist.
+- validating or compiling state machines in several threads at once, e.g., for two
+  Bpods in one process or for a `RemoteBpod` while the host's own script runs trials,
+  could fail or corrupt the caches they share.
 - starting a service could fail with `FileNotFoundError` while another process on the
   same machine closed its last service.
 - `RemoteBpod.get_data` raised a `DeprecationWarning` with polars 1.43.2 or newer.

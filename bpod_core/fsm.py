@@ -2,6 +2,7 @@
 
 import datetime as dt
 import re
+import threading
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, cast
@@ -498,6 +499,9 @@ class StateMachine(BaseModel, title='State Machine'):
 
     _validation_cache: ClassVar[FIFOCache[bytes, _CheckData]] = FIFOCache(maxsize=1024)
     """Cache holding hashes of successfully validated state machine instances."""
+
+    _validation_lock: ClassVar[threading.Lock] = threading.Lock()
+    """Guards the cache, which all state machines share, possibly across threads."""
 
     def __repr__(self) -> str:
         fields = [f for f in StateMachine.model_fields if f != 'name']
@@ -1100,8 +1104,10 @@ class StateMachine(BaseModel, title='State Machine'):
 
     def _check(self, *, known_hash: bytes) -> _CheckData:
         # Shortcut if we already know that the state machine is valid
-        if known_hash in self._validation_cache:
-            return self._validation_cache[known_hash]
+        with self._validation_lock:
+            cached = self._validation_cache.get(known_hash)
+        if cached is not None:
+            return cached
 
         # Check for empty state machine
         if len(self.states) == 0:
@@ -1140,7 +1146,8 @@ class StateMachine(BaseModel, title='State Machine'):
             all_state_names=all_state_names,
             transition_targets=transition_targets,
         )
-        self._validation_cache[known_hash] = data
+        with self._validation_lock:
+            self._validation_cache[known_hash] = data
 
         # returning expensive transition_targets for further use by caller
         return data
