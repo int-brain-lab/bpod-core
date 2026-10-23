@@ -53,7 +53,7 @@ class _InputEventRanges(NamedTuple):
     """Index range for condition events."""
 
 
-class StateMachineLookup(NamedTuple):
+class _StateMachineLookup(NamedTuple):
     """Lookup data to decode the raw event stream during a state machine trial."""
 
     fsm_hash: bytes
@@ -70,7 +70,7 @@ class StateMachineLookup(NamedTuple):
     """Mapping from state index to state name."""
 
 
-class TimeReferences(NamedTuple):
+class _TimeReferences(NamedTuple):
     """Reference values for performance counters."""
 
     init_system_time_ns: int
@@ -90,7 +90,7 @@ class _RawEvents(NamedTuple):
     """Indices of the events, in the order the Bpod evaluates them."""
 
 
-class RawSoftcode(NamedTuple):
+class _RawSoftcode(NamedTuple):
     """Raw softcode data from the Bpod device."""
 
     softcode: int
@@ -99,21 +99,6 @@ class RawSoftcode(NamedTuple):
     """``time.perf_counter_ns()`` captured immediately after the serial read."""
     micros_us: int
     """Bpod session clock at the time of softcode firing (microseconds)."""
-
-
-class BpodSettings(msgspec.Struct):
-    """Settings for a specific Bpod device."""
-
-    serial_number: str
-    """Serial number of the device."""
-    name: str = ''
-    """User-defined name of the device."""
-    location: str = ''
-    """User-defined location of the device."""
-    zmq_port_pub: int | None = None
-    """Port number for the ZeroMQ PUB service."""
-    zmq_port_rep: int | None = None
-    """Port number for the ZeroMQ REP service."""
 
 
 class BpodInfo(msgspec.Struct):
@@ -152,18 +137,18 @@ class BpodMessage(msgspec.Struct, array_like=True, tag_field='kind'):
     """Base Envelope for a Bpod IPC message."""
 
 
-class RequestHello(BpodMessage, tag='h'):
+class _RequestHello(BpodMessage, tag='h'):
     """Envelope for a handshake request."""
 
     bpod_core_version: str
     """The version of bpod-core that the client is using."""
 
 
-class RequestBye(BpodMessage, tag='b'):
+class _RequestBye(BpodMessage, tag='b'):
     """Envelope for a disconnect notice."""
 
 
-class RequestCall(BpodMessage, tag='c'):
+class _RequestCall(BpodMessage, tag='c'):
     """Envelope for a method call request."""
 
     method_name: str
@@ -174,21 +159,21 @@ class RequestCall(BpodMessage, tag='c'):
     """Keyword arguments to be passed to the method."""
 
 
-class RequestData(RequestCall, tag='rd'):
+class _RequestData(_RequestCall, tag='rd'):
     """Envelope for a data request."""
 
     compression: Literal['uncompressed', 'lz4', 'zstd'] = 'uncompressed'
     """The compression method to be used for the data."""
 
 
-class ReplyGeneric(BpodMessage, tag='g'):
+class _ReplyGeneric(BpodMessage, tag='g'):
     """Envelope for a generic reply."""
 
     value: Any = None
     """The content of the reply."""
 
 
-class ReplyWelcome(BpodMessage, tag='w'):
+class _ReplyWelcome(BpodMessage, tag='w'):
     """Envelope for a handshake reply."""
 
     version: 'VersionInfo'
@@ -337,10 +322,10 @@ class EventTrialEndControl(BpodMessage, tag=_EventTag.TrialEndControl.value):
     """Total number of messages published for the trial (completeness check)."""
 
 
-BpodReplyUnion: TypeAlias = ReplyGeneric | ReplyWelcome
+_BpodReplyUnion: TypeAlias = _ReplyGeneric | _ReplyWelcome  # noqa: PYI047
 """Tagged union of all concrete :class:`BpodMessage` subclasses used for replies."""
 
-BpodRequestUnion: TypeAlias = RequestHello | RequestBye | RequestCall | RequestData
+_BpodRequestUnion: TypeAlias = _RequestHello | _RequestBye | _RequestCall | _RequestData  # noqa: PYI047
 """Tagged union of all concrete :class:`BpodMessage` subclasses used for requests."""
 
 BpodEventUnion: TypeAlias = (
@@ -370,7 +355,7 @@ class VersionInfo(msgspec.Struct, frozen=True):
     """bpod-core version"""
 
 
-class HardwareConfiguration(msgspec.Struct, frozen=True):
+class _HardwareConfiguration(msgspec.Struct, frozen=True):
     """Represents the Bpod's on-board hardware configuration."""
 
     max_states: int
@@ -403,7 +388,7 @@ class HardwareConfiguration(msgspec.Struct, frozen=True):
     """Number of FlexIO channels."""
 
 
-class HardwareState(msgspec.Struct):
+class _HardwareState(msgspec.Struct):
     """Represents the Bpod's current hardware state."""
 
     status_led: bool | None = None

@@ -28,11 +28,11 @@ from bpod_core.bpod.flexio import (
     is_flexio_threshold_ambiguous,
 )
 from bpod_core.bpod.structs import (
-    HardwareConfiguration,
-    StateMachineLookup,
     VersionInfo,
+    _HardwareConfiguration,
     _InputEventRanges,
     _InputEvents,
+    _StateMachineLookup,
     _ValidationData,
 )
 from bpod_core.constants import (
@@ -69,7 +69,7 @@ class StateMachineCompiler:
 
     Parameters
     ----------
-    hardware : HardwareConfiguration
+    hardware : _HardwareConfiguration
         The Bpod's hardware configuration.
     version : VersionInfo
         The Bpod's version information.
@@ -88,7 +88,7 @@ class StateMachineCompiler:
         FIFOCache(maxsize=1024)
     )
     _compilation_cache: ClassVar[
-        FIFOCache[tuple[bytes, bytes, bool], tuple[bytearray, StateMachineLookup]]
+        FIFOCache[tuple[bytes, bytes, bool], tuple[bytearray, _StateMachineLookup]]
     ] = FIFOCache(maxsize=1024)
 
     input_event_names: tuple[str, ...]
@@ -117,7 +117,7 @@ class StateMachineCompiler:
 
     def __init__(
         self,
-        hardware: HardwareConfiguration,
+        hardware: _HardwareConfiguration,
         version: VersionInfo,
         modules: Mapping[str, Sequence[str]],
         *,
@@ -641,7 +641,7 @@ class StateMachineCompiler:
         state_machine: StateMachine,
         known_hash: bytes | None = None,
         validate: bool = True,
-    ) -> tuple[bytearray, StateMachineLookup]:
+    ) -> tuple[bytearray, _StateMachineLookup]:
         """Compile a state machine into its binary wire format and annotation data.
 
         Builds the state transition matrix, encodes states, transitions, actions,
@@ -662,7 +662,7 @@ class StateMachineCompiler:
         -------
         bytes
             Binary payload ready to be sent to the Bpod device.
-        StateMachineLookup
+        _StateMachineLookup
             Annotation data for post-trial event stream decoding.
         """
         debugging = logger.isEnabledFor(logging.DEBUG)
@@ -772,7 +772,7 @@ class StateMachineCompiler:
         ]
 
         # build annotation data structure for event decoding in EventThread
-        annotations = StateMachineLookup(
+        annotations = _StateMachineLookup(
             fsm_hash=state_machine_hash,
             state_names=state_names,
             state_transition_matrix=state_transition_matrix,

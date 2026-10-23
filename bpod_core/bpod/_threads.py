@@ -24,11 +24,11 @@ from bpod_core.bpod.structs import (
     EventTrialEnd,
     EventTrialEndControl,
     EventTrialStart,
-    RawSoftcode,
-    StateMachineLookup,
-    TimeReferences,
     _InputEvents,
     _RawEvents,
+    _RawSoftcode,
+    _StateMachineLookup,
+    _TimeReferences,
 )
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import STRUCT_UINT32_LE, STRUCT_UINT64_LE
@@ -45,11 +45,11 @@ _INITIAL_BUFFER_SIZE = 2048
 _OUTPUT_ID_OFFSET = 1000
 """Event ID offset for output action events."""
 
-_SOFTCODE_STOP = RawSoftcode(-1, 0, 0)
+_SOFTCODE_STOP = _RawSoftcode(-1, 0, 0)
 """Sentinel that ends :class:`SoftcodeThread` once the softcodes before it are done."""
 
 
-class _DrainMarker(RawSoftcode):
+class _DrainMarker(_RawSoftcode):
     """Queued by :meth:`SoftcodeThread.drain`; ``done`` is set once it is reached."""
 
     done: threading.Event
@@ -221,7 +221,7 @@ class ReadThread(threading.Thread):
         The cycle period of the Bpod device in microseconds.
     queue_events : SimpleQueue[_RawEvents]
         Queue for storing events.
-    queue_softcodes : SimpleQueue[RawSoftcode]
+    queue_softcodes : SimpleQueue[_RawSoftcode]
         Queue for storing softcodes.
     initial_bytes : bytes, default: b''
         Bytes of this trial that were already read from the serial port, i.e., the
@@ -250,7 +250,7 @@ class ReadThread(threading.Thread):
         trial: int,
         cycle_period_us: int,
         queue_events: SimpleQueue[_RawEvents],
-        queue_softcodes: SimpleQueue[RawSoftcode],
+        queue_softcodes: SimpleQueue[_RawSoftcode],
         initial_bytes: bytes = b'',
         initial_received_ns: int = 0,
     ) -> None:
@@ -354,7 +354,7 @@ class ReadThread(threading.Thread):
                         elif opcode == 2:
                             softcode = param - 1  # subtract 1 for zero-based indexing
                             q_softcodes.put(
-                                RawSoftcode(softcode, received_ns, last_micros_us)
+                                _RawSoftcode(softcode, received_ns, last_micros_us)
                             )
 
                         # HANDLE UNKNOWN OPCODES
@@ -448,7 +448,7 @@ class EventThread(threading.Thread):
     ----------
     trial : int
         Zero-based trial index, used to populate the ``trial`` column.
-    fsm : StateMachineLookup
+    fsm : _StateMachineLookup
         Compiled state machine data for this trial.
     data_queue : SimpleQueue of LazyFrame
         Queue to push the completed trial DataFrame into.
@@ -459,7 +459,7 @@ class EventThread(threading.Thread):
     resettable_actions : Collection of str
         Names of the actions driving outputs that the Bpod resets to 0 when a state
         begins that doesn't set them.
-    time_reference : TimeReferences
+    time_reference : _TimeReferences
         Reference values for performance counters.
     publish : Callable
         Called with a list of :class:`~bpod_core.bpod.structs.BpodEventUnion`
@@ -484,12 +484,12 @@ class EventThread(threading.Thread):
         self,
         *,
         trial: int,
-        fsm: StateMachineLookup,
+        fsm: _StateMachineLookup,
         data_queue: SimpleQueue[pl.LazyFrame],
         event_lookup: pl.DataFrame,
         action_names: list[str],
         resettable_actions: Collection[str],
-        time_reference: TimeReferences,
+        time_reference: _TimeReferences,
         publish: Callable[[list[BpodEventUnion]], object],
         publish_gate: Callable[[], bool],
         on_trial_start: Callable[[int], None] | None = None,
@@ -816,7 +816,7 @@ class EventThread(threading.Thread):
 class SoftcodeThread(threading.Thread):
     """Consumer thread that executes softcode handlers sent from the Bpod.
 
-    :class:`ReadThread` feeds :class:`~bpod_core.bpod.structs.RawSoftcode` items into
+    :class:`ReadThread` feeds :class:`~bpod_core.bpod.structs._RawSoftcode` items into
     :attr:`queue`; ``SoftcodeThread`` drains that queue and calls the registered handler
     for each softcode.
 
@@ -828,7 +828,7 @@ class SoftcodeThread(threading.Thread):
     Handler exceptions are caught, logged, and execution continues.
     """
 
-    queue: SimpleQueue[RawSoftcode]
+    queue: SimpleQueue[_RawSoftcode]
     """Softcode queue shared with :class:`ReadThread`."""
 
     def __init__(
@@ -837,7 +837,7 @@ class SoftcodeThread(threading.Thread):
         handler_slot: _HandlerSlot[Callable[[int], None] | None],
     ) -> None:
         super().__init__(name='SoftcodeThread', daemon=True)
-        self.queue: SimpleQueue[RawSoftcode] = SimpleQueue()
+        self.queue: SimpleQueue[_RawSoftcode] = SimpleQueue()
         self._handler_slot = weakref.ref(handler_slot)
         self._pc_base_ns: int = 0  # perf_counter_ns equivalent of session clock t=0
 
@@ -863,7 +863,7 @@ class SoftcodeThread(threading.Thread):
         if self.is_alive():
             logger.warning('Softcode thread did not terminate')
 
-    def set_time_reference(self, time_ref: TimeReferences) -> None:
+    def set_time_reference(self, time_ref: _TimeReferences) -> None:
         """Update the session clock reference used for Bpod-relative latency logging."""
         self._pc_base_ns = (
             time_ref.reset_system_time_ns

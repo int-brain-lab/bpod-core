@@ -34,9 +34,9 @@ from bpod_core.bpod.constants import (
 from bpod_core.bpod.structs import (
     BpodEventUnion,
     EventTrialStart,
-    RawSoftcode,
-    RequestCall,
-    RequestData,
+    _RawSoftcode,
+    _RequestCall,
+    _RequestData,
 )
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import STRUCT_INT16_LE, STRUCT_UINT8, UINT32_MAX
@@ -1541,8 +1541,8 @@ class TestRemoteCall:
     @pytest.mark.parametrize(
         'req',
         [
-            pytest.param(RequestCall('very_illegal'), id='illegal call request'),
-            pytest.param(RequestData('very_illegal'), id='illegal data request'),
+            pytest.param(_RequestCall('very_illegal'), id='illegal call request'),
+            pytest.param(_RequestData('very_illegal'), id='illegal data request'),
         ],
     )
     def test_disallowed_method_raises(self, mock_bpod, req):
@@ -1552,7 +1552,7 @@ class TestRemoteCall:
 
     def test_allowed_method_is_called(self, mock_bpod):
         """Allowlisted method names resolve to the bound method."""
-        Bpod._request_handler(mock_bpod, RequestCall('set_status_led', (False,)))
+        Bpod._request_handler(mock_bpod, _RequestCall('set_status_led', (False,)))
         mock_bpod.set_status_led.assert_called_once_with(False)
 
     @pytest.mark.parametrize(
@@ -1638,7 +1638,7 @@ def test_dropped_task_cleans_up(real_ipc, assert_collected):
             self.bpod.set_softcode_handler(on_softcode)
 
     task = Task()
-    task.bpod._softcode_thread.queue.put(RawSoftcode(1, 0, 0))
+    task.bpod._softcode_thread.queue.put(_RawSoftcode(1, 0, 0))
     assert task.handled.wait(timeout=2)
     with RemoteBpod(address=task.bpod.address):  # requests for the IPC service
         pass

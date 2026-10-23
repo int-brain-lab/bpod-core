@@ -31,11 +31,11 @@ from bpod_core.bpod.structs import (
     EventTrialEnd,
     EventTrialEndControl,
     EventTrialStart,
-    RawSoftcode,
-    StateMachineLookup,
-    TimeReferences,
     _InputEvents,
     _RawEvents,
+    _RawSoftcode,
+    _StateMachineLookup,
+    _TimeReferences,
 )
 from bpod_core.constants import STRUCT_UINT32_LE, STRUCT_UINT64_LE
 from bpod_core.misc import _HandlerSlot
@@ -119,7 +119,7 @@ class TestReadThread:
         ):
             mock_ext_serial.response_buffer.extend(data)
             q_events: SimpleQueue[_RawEvents] = SimpleQueue()
-            q_softcodes: SimpleQueue[RawSoftcode] = SimpleQueue()
+            q_softcodes: SimpleQueue[_RawSoftcode] = SimpleQueue()
             thread = ReadThread(
                 serial=serial or mock_ext_serial,
                 state_machine_hash=b'',
@@ -357,13 +357,13 @@ def _make_fsm(
     n_states: int = 2,
     transitions: dict[tuple[int, int], int] | None = None,
     state_actions: list[dict[str, int]] | None = None,
-) -> StateMachineLookup:
+) -> _StateMachineLookup:
     """Build a minimal CompiledStateMachine for testing."""
     mat = [[state] * 255 for state in range(n_states)]
     for (state, event), target in (transitions or {}).items():
         mat[state][event] = target
     state_names = [f'S{i}' for i in range(n_states)]
-    return StateMachineLookup(
+    return _StateMachineLookup(
         fsm_hash=b'',
         state_names=state_names,
         state_transition_matrix=mat,
@@ -381,11 +381,11 @@ class TestEventThread:
 
         def _make(
             *,
-            fsm: StateMachineLookup | None = None,
+            fsm: _StateMachineLookup | None = None,
             action_names: list[str] | None = None,
             resettable_actions: list[str] | None = None,
             event_names: list[str] | None = None,
-            time_reference: TimeReferences | None = None,
+            time_reference: _TimeReferences | None = None,
             publish: Callable[[list[BpodEventUnion]], object] | None = None,
             should_publish: Callable[[], bool] | None = None,
             on_trial_start: Callable[[int], None] | None = None,
@@ -408,7 +408,7 @@ class TestEventThread:
                 resettable_actions=(
                     action_names if resettable_actions is None else resettable_actions
                 ),
-                time_reference=time_reference or TimeReferences(0, 0, 0),
+                time_reference=time_reference or _TimeReferences(0, 0, 0),
                 publish=publish if publish is not None else lambda _: None,
                 publish_gate=should_publish
                 if should_publish is not None
@@ -462,7 +462,7 @@ class TestEventThread:
         """on_trial_start fires with the absolute time even when publish_gate=False."""
         captured = []
         thread, _data_queue = make_thread(
-            time_reference=TimeReferences(0, 0, 5_000_000),  # +5000 us offset
+            time_reference=_TimeReferences(0, 0, 5_000_000),  # +5000 us offset
             should_publish=lambda: False,
             on_trial_start=captured.append,
         )
@@ -599,7 +599,7 @@ class TestEventThread:
 
     def test_event_timestamp(self, make_thread):
         """Event timestamp equals reset_system_time_ns // 1000 + micros_us."""
-        time_ref = TimeReferences(0, 0, reset_system_time_ns=5_000_000)
+        time_ref = _TimeReferences(0, 0, reset_system_time_ns=5_000_000)
         thread, data_queue = make_thread(
             event_names=['Ev0', 'Tup'], time_reference=time_ref
         )
@@ -830,7 +830,7 @@ class TestSoftcodeThread:
             done.set()
 
         thread = make_thread(handler=handler)
-        thread.queue.put(RawSoftcode(7, 0, 0))
+        thread.queue.put(_RawSoftcode(7, 0, 0))
         assert done.wait(timeout=2)
         assert received == [7]
 
@@ -838,7 +838,7 @@ class TestSoftcodeThread:
         """stop() handles the queued softcodes first, then ends the thread."""
         received = []
         thread = make_thread(handler=received.append)
-        thread.queue.put(RawSoftcode(3, 0, 0))
+        thread.queue.put(_RawSoftcode(3, 0, 0))
         thread.stop()
         assert received == [3]
         assert not thread.is_alive()
@@ -852,7 +852,7 @@ class TestSoftcodeThread:
             done.set()
 
         thread = make_thread(handler=handler)
-        thread.queue.put(RawSoftcode(1, 0, 0))
+        thread.queue.put(_RawSoftcode(1, 0, 0))
         assert done.wait(timeout=2)
         thread.join(timeout=2)
         assert not thread.is_alive()
@@ -869,7 +869,7 @@ class TestSoftcodeThread:
 
         thread = make_thread(handler=handler)
         for code in [1, 5, 3]:
-            thread.queue.put(RawSoftcode(code, 0, 0))
+            thread.queue.put(_RawSoftcode(code, 0, 0))
         assert done.wait(timeout=2)
         assert received == [1, 5, 3]
 
@@ -877,7 +877,7 @@ class TestSoftcodeThread:
         """A warning is logged when no handler is defined."""
         thread = make_thread(handler=None)
         with caplog.at_level(logging.WARNING):
-            thread.queue.put(RawSoftcode(4, 0, 0))
+            thread.queue.put(_RawSoftcode(4, 0, 0))
             # give the thread time to process and log
             deadline = time.time() + 1
             while (time.time() < deadline) and len(caplog.text) == 0:
@@ -897,8 +897,8 @@ class TestSoftcodeThread:
 
         thread = make_thread(handler=handler)
         with caplog.at_level(logging.ERROR):
-            thread.queue.put(RawSoftcode(0, 0, 0))
-            thread.queue.put(RawSoftcode(9, 0, 0))
+            thread.queue.put(_RawSoftcode(0, 0, 0))
+            thread.queue.put(_RawSoftcode(9, 0, 0))
             assert done.wait(timeout=2)
         assert received == [9]
         assert 'bad softcode' in caplog.text
@@ -915,7 +915,7 @@ class TestSoftcodeThread:
         slot = _HandlerSlot(lambda code: received.append(('a', code)))
         thread = make_thread(slot=slot)
         slot.handler = handler_b
-        thread.queue.put(RawSoftcode(3, 0, 0))
+        thread.queue.put(_RawSoftcode(3, 0, 0))
         assert done.wait(timeout=2)
         assert received == [('b', 3)]
 
@@ -924,7 +924,7 @@ class TestSoftcodeThread:
         slot = _HandlerSlot(None)
         thread = make_thread(slot=slot)
         del slot
-        thread.queue.put(RawSoftcode(1, 0, 0))
+        thread.queue.put(_RawSoftcode(1, 0, 0))
         thread.stop()
         assert 'no handler' not in caplog.text
 
@@ -942,7 +942,7 @@ class TestSoftcodeThread:
         thread = SoftcodeThread(handler_slot=slot)
         thread.queue = GatedQueue()
         thread.start()
-        thread.queue.put(RawSoftcode(5, 0, 0))
+        thread.queue.put(_RawSoftcode(5, 0, 0))
         drainer = threading.Thread(target=thread.drain, daemon=True)
         drainer.start()
         drainer.join(timeout=0.05)
@@ -957,7 +957,7 @@ class TestSoftcodeThread:
         """drain() returns once the thread stops, even before reaching its marker."""
         release = threading.Event()
         thread = make_thread(handler=lambda _: release.wait())
-        thread.queue.put(RawSoftcode(1, 0, 0))
+        thread.queue.put(_RawSoftcode(1, 0, 0))
         thread.queue.put(_SOFTCODE_STOP)  # as stop() does, without waiting
         drainer = threading.Thread(target=thread.drain, daemon=True)
         drainer.start()
@@ -976,5 +976,5 @@ class TestSoftcodeThread:
             done.set()
 
         thread = make_thread(handler=handler)
-        thread.queue.put(RawSoftcode(1, 0, 0))
+        thread.queue.put(_RawSoftcode(1, 0, 0))
         assert done.wait(timeout=2)

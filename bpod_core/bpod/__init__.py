@@ -63,19 +63,19 @@ from bpod_core.bpod.flexio import (
 from bpod_core.bpod.structs import (
     BpodEventUnion,
     BpodInfo,
-    BpodReplyUnion,
-    BpodRequestUnion,
     EventTrialStart,
-    HardwareConfiguration,
-    ReplyGeneric,
-    ReplyWelcome,
-    RequestBye,
-    RequestCall,
-    RequestData,
-    RequestHello,
-    StateMachineLookup,
-    TimeReferences,
     VersionInfo,
+    _BpodReplyUnion,
+    _BpodRequestUnion,
+    _HardwareConfiguration,
+    _ReplyGeneric,
+    _ReplyWelcome,
+    _RequestBye,
+    _RequestCall,
+    _RequestData,
+    _RequestHello,
+    _StateMachineLookup,
+    _TimeReferences,
 )
 from bpod_core.com import (
     ChunkedSerialReader,
@@ -179,13 +179,13 @@ class Bpod(SerialDevice, AbstractBpod):
     _event_thread: EventThread | None = None
     _starting_state_machine: bool = False
     _state_machine_started: bool = False  # fixes FlexIO channel types and rate
-    _zmq: ServiceHost[BpodRequestUnion, list[BpodEventUnion]]
+    _zmq: ServiceHost[_BpodRequestUnion, list[BpodEventUnion]]
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
     _compiler: StateMachineCompiler  # rebuilt by _recompile_hardware_tables
     # the last compiled state machine, and the hardware hash it was compiled for
-    _last_compiled: tuple[bytearray, StateMachineLookup, bytes] | None = None
+    _last_compiled: tuple[bytearray, _StateMachineLookup, bytes] | None = None
 
     _softcode_thread: SoftcodeThread
     _softcode_slot: _HandlerSlot[Callable[[int], None] | None]
@@ -240,7 +240,7 @@ class Bpod(SerialDevice, AbstractBpod):
             remote = os.getenv('BPOD_OVERRIDE_REMOTE') in ('True', 'true', '1')
 
         # initialize members
-        self._fsm_annotations: StateMachineLookup | None = None
+        self._fsm_annotations: _StateMachineLookup | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
         self._analog_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
         self._analog_buffer = []
@@ -259,7 +259,7 @@ class Bpod(SerialDevice, AbstractBpod):
             self._serial_number = self._port_info.serial_number or 'unknown'
 
             # record reference system time
-            self._time_reference = TimeReferences(
+            self._time_reference = _TimeReferences(
                 init_system_time_ns=time_ns(),
                 init_perf_counter_ns=perf_counter_ns(),
                 reset_system_time_ns=0,
@@ -478,10 +478,10 @@ class Bpod(SerialDevice, AbstractBpod):
         """Primary serial device for communication with the Bpod."""
         return self._serial
 
-    def _request_handler(self, request: BpodRequestUnion) -> Any:
+    def _request_handler(self, request: _BpodRequestUnion) -> Any:
         reply: Any
         match request:
-            case RequestHello():
+            case _RequestHello():
                 # Handle connection requests
                 if request.bpod_core_version != bpod_core_version:
                     raise RuntimeError(
@@ -493,14 +493,14 @@ class Bpod(SerialDevice, AbstractBpod):
                     address = self._zmq.get_metadata('Peer-Address', 'unknown address')
                     hostname = self._zmq.get_metadata('X-Hostname', 'unknown hostname')
                     logger.info('Client connected: %s (%s)', address, hostname)
-                reply = ReplyWelcome(
+                reply = _ReplyWelcome(
                     version=self._version,
                     serial_number=self._serial_number,
                     name=self.name,
                     location=self.location,
                 )
 
-            case RequestData():
+            case _RequestData():
                 # Handle data requests
                 if request.method_name not in _REMOTE_DATA_METHODS:
                     raise BpodError(
@@ -510,7 +510,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 data: pl.DataFrame = method(*request.args, **request.kwargs)
                 reply = data.write_ipc(None, compression=request.compression).getvalue()
 
-            case RequestCall():
+            case _RequestCall():
                 # Handle method call requests
                 if request.method_name not in _REMOTE_CALL_METHODS:
                     raise BpodError(
@@ -518,9 +518,9 @@ class Bpod(SerialDevice, AbstractBpod):
                     )
                 method = getattr(self, request.method_name)
                 return_value = method(*request.args, **request.kwargs)
-                reply = ReplyGeneric(value=return_value)
+                reply = _ReplyGeneric(value=return_value)
 
-            case RequestBye():
+            case _RequestBye():
                 # Handle disconnect notice
                 if logger.isEnabledFor(logging.INFO):
                     address = self._zmq.get_metadata('Peer-Address', 'unknown address')
@@ -555,7 +555,7 @@ class Bpod(SerialDevice, AbstractBpod):
             properties=properties,
             uuid=uuid5(BPOD_UUID_NAMESPACE, self._serial_number),
             request_handler=self._request_handler,
-            request_type=BpodRequestUnion,
+            request_type=_BpodRequestUnion,
             remote=use_zeroconf,
         )
 
@@ -672,7 +672,7 @@ class Bpod(SerialDevice, AbstractBpod):
         hw_conf.append(1_000_000 // hw_conf[1])  # cycle_frequency; cycle_period_us @ 1
         hw_conf.append(input_description.count(b'U'))  # n_modules
         hw_conf.append(input_description.count(b'F'))  # n_flexio
-        self._hardware = HardwareConfiguration(*hw_conf)
+        self._hardware = _HardwareConfiguration(*hw_conf)
 
     def _configure_flex_io(self) -> None:
         """Construct the FlexIO subsystem, if the hardware has FlexIO channels."""
@@ -846,7 +846,7 @@ class Bpod(SerialDevice, AbstractBpod):
         start_system_time_ns = self._time_reference.init_system_time_ns
         start_perf_counter_ns = self._time_reference.init_perf_counter_ns
         reset_time_ns = start_system_time_ns + (perf_count_ns - start_perf_counter_ns)
-        self._time_reference = TimeReferences(
+        self._time_reference = _TimeReferences(
             init_system_time_ns=start_system_time_ns,
             init_perf_counter_ns=start_perf_counter_ns,
             reset_system_time_ns=reset_time_ns,
@@ -1220,7 +1220,7 @@ class Bpod(SerialDevice, AbstractBpod):
             self._analog_first_trial_time_us = time_us
 
     def _run_state_machine(self) -> None:
-        state_machine_lookup = cast('StateMachineLookup', self._fsm_annotations)
+        state_machine_lookup = cast('_StateMachineLookup', self._fsm_annotations)
 
         # initialize new threads
         event_thread = EventThread(
@@ -1907,7 +1907,7 @@ class RemoteBpod(AbstractBpod):
         If no matching remote Bpod is found within `timeout` seconds.
     """
 
-    _zmq: ServiceClient[BpodRequestUnion, BpodReplyUnion, list[BpodEventUnion]]
+    _zmq: ServiceClient[_BpodRequestUnion, _BpodReplyUnion, list[BpodEventUnion]]
     _name: str | None = None
     _location: str | None = None
     _event_callback: Callable[[BpodEventUnion], object] | None = None
@@ -1939,7 +1939,7 @@ class RemoteBpod(AbstractBpod):
                     'serial_number': serial_number,
                     'location': location,
                 },
-                default_reply_type=BpodReplyUnion,
+                default_reply_type=_BpodReplyUnion,
                 event_type=list[BpodEventUnion] if subscribe else Any,
             )
         except TimeoutError as e:
@@ -1981,7 +1981,7 @@ class RemoteBpod(AbstractBpod):
 
     def close(self) -> None:
         """Close the connection to the remote Bpod."""
-        self._zmq.request(request_data=RequestBye(), reply_type=str)
+        self._zmq.request(request_data=_RequestBye(), reply_type=str)
         self._zmq.close()
 
     def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any:
@@ -2004,8 +2004,8 @@ class RemoteBpod(AbstractBpod):
         """
         try:
             return self._zmq.request(
-                request_data=RequestCall(method_name=method, args=args, kwargs=kwargs),
-                reply_type=ReplyGeneric,
+                request_data=_RequestCall(method_name=method, args=args, kwargs=kwargs),
+                reply_type=_ReplyGeneric,
             ).value
         except RemoteError as e:
             match e.original_error.name:
@@ -2017,8 +2017,8 @@ class RemoteBpod(AbstractBpod):
 
     def _handshake(self) -> None:
         reply = self._zmq.request(
-            request_data=RequestHello(bpod_core_version=bpod_core_version),
-            reply_type=ReplyWelcome,
+            request_data=_RequestHello(bpod_core_version=bpod_core_version),
+            reply_type=_ReplyWelcome,
         )
         self._version = reply.version
         self._serial_number = reply.serial_number
@@ -2059,7 +2059,7 @@ class RemoteBpod(AbstractBpod):
     def get_data(self, *, concat=True, lazy=False):
         try:
             reply = self._zmq.request(
-                request_data=RequestData(
+                request_data=_RequestData(
                     method_name='get_data',
                     kwargs={'concat': concat},
                     compression='uncompressed' if self._zmq.is_local else 'lz4',

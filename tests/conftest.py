@@ -6,7 +6,8 @@ from unittest.mock import PropertyMock
 import pytest
 
 from bpod_core import ipc
-from bpod_core.bpod import Bpod, TimeReferences
+from bpod_core.bpod import Bpod
+from bpod_core.bpod.structs import _TimeReferences
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import VID_TEENSY, TeensyPID
 
@@ -190,7 +191,7 @@ def mock_ports_file(tmp_path, mocker):
 def mock_bpod(mocker, mock_ext_serial, mock_settings):
     mock_bpod = mocker.MagicMock(spec=Bpod)
     mock_bpod.is_running = False
-    mock_bpod._time_reference = mocker.MagicMock(spec=TimeReferences)
+    mock_bpod._time_reference = mocker.MagicMock(spec=_TimeReferences)
     mock_bpod._softcode_thread = mocker.MagicMock()
     mock_bpod.serial0 = mock_ext_serial
     mock_bpod._identify_bpod.side_effect = lambda *args, **kwargs: Bpod._identify_bpod(

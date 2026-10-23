@@ -20,10 +20,10 @@ from bpod_core.bpod.constants import (
     FlexIOThresholdVoltage,
 )
 from bpod_core.bpod.structs import (
-    HardwareConfiguration,
-    HardwareState,
     VersionInfo,
     _FlexIOState,
+    _HardwareConfiguration,
+    _HardwareState,
 )
 from bpod_core.fsm import StateMachine
 from bpod_core.misc import SuggestionMapping
@@ -33,8 +33,8 @@ class AbstractBpod(AbstractContextManager):
     """Abstract base class for Bpod objects."""
 
     _version: VersionInfo
-    _hardware: HardwareConfiguration
-    _state: HardwareState
+    _hardware: _HardwareConfiguration
+    _state: _HardwareState
     _serial_number: str
     _flex_io: 'AbstractFlexIO | None' = None
 

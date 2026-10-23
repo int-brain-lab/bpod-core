@@ -7,10 +7,10 @@ import pytest
 
 from bpod_core.bpod._compiler import StateMachineCompiler
 from bpod_core.bpod.constants import FlexIOChannelType
-from bpod_core.bpod.structs import HardwareConfiguration, VersionInfo
+from bpod_core.bpod.structs import VersionInfo, _HardwareConfiguration
 from bpod_core.fsm import StateMachine
 
-HARDWARE = HardwareConfiguration(  # a Bpod Finite State Machine 2+ r1.0
+HARDWARE = _HardwareConfiguration(  # a Bpod Finite State Machine 2+ r1.0
     max_states=256,
     cycle_period_us=100,
     max_serial_events=75,

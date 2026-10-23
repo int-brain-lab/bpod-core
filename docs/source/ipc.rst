@@ -297,8 +297,8 @@ The machinery underneath is generic and not tied to the Bpod itself. The
 :class:`~bpod_core.ipc.ServiceClient`, which implement the two channels, the discovery,
 the handshake and the transport upgrade described above; the message types being
 exchanged are supplied by the caller as `msgspec`_ tagged unions. The Bpod service
-is simply one instantiation of that pair, using the request, reply and event unions
-defined in :mod:`bpod_core.bpod.structs`.
+is simply one instantiation of that pair, with its own request, reply and event
+unions.
 
 .. seealso::
 
