@@ -475,7 +475,7 @@ class StateMachineCompiler:
                 else:
                     detail = suggest_similar(bad_action, self.actions)
                 raise ValueError(
-                    f"Invalid action '{bad_action}' in state '{state_name}' {detail}"
+                    f"Invalid action '{bad_action}' in state '{state_name}'{detail}"
                 )
 
             # validate action values

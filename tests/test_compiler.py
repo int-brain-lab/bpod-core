@@ -116,6 +116,13 @@ class TestValidateAndCompile:
         with pytest.raises(ValueError, match="did you mean '>exit'"):
             make_compiler().validate(fsm)
 
+    def test_unknown_action_is_rejected_with_a_suggestion(self):
+        """A misspelled action is rejected, suggesting the closest valid one."""
+        fsm = StateMachine()
+        fsm.add_state('a', 1, actions={'PWM_1': 255})
+        with pytest.raises(ValueError, match="in state 'a' - did you mean 'PWM1'"):
+            make_compiler().validate(fsm)
+
     def test_too_many_global_timers_are_rejected(self):
         """A global timer index beyond the hardware's limit is rejected."""
         fsm = StateMachine()
