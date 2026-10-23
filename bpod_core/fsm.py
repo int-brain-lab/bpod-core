@@ -1102,7 +1102,8 @@ class StateMachine(BaseModel, title='State Machine'):
         initial_state_name = next(iter(self.states))
         transition_targets = self.states.transition_targets
         all_state_names = list(self.states)
-        unreachable_states = set(all_state_names).difference(
+        state_name_set = set(all_state_names)
+        unreachable_states = state_name_set.difference(
             transition_targets | {initial_state_name}
         )
         if unreachable_states:
@@ -1118,11 +1119,11 @@ class StateMachine(BaseModel, title='State Machine'):
         # Check transitions for invalid target states
         for state_name, state in self.states.items():
             for condition_name, target in state.transitions.items():
-                if target not in all_state_names and not target.startswith('>'):
+                if target not in state_name_set and not target.startswith('>'):
                     raise ValueError(
                         f"Invalid target state '{target}' for transition condition"
                         f"'{condition_name}' in state '{state_name}'"
-                        + suggest_similar(target, set(all_state_names) - {state_name})
+                        + suggest_similar(target, state_name_set - {state_name})
                     )
 
         # add state machine's hash to cache, along with some data
