@@ -1144,19 +1144,16 @@ class Bpod(SerialDevice, AbstractBpod):
                 fsm_hash = state_machine.hash
 
             # 2) VALIDATE AND COMPILE
-            fsm_was_validated = False
             try:
-                fsm_bytes, self._fsm_annotations, fsm_was_validated = (
-                    self._compiler.compile(
-                        state_machine=state_machine,
-                        known_hash=fsm_hash,
-                        validate=validate,
-                    )
+                fsm_bytes, self._fsm_annotations = self._compiler.compile(
+                    state_machine=state_machine,
+                    known_hash=fsm_hash,
+                    validate=validate,
                 )
             except Exception as e1:
                 # if compilation failed after bypassing validation, validate post-mortem
                 # to get a more informative error message
-                if not fsm_was_validated:
+                if not validate:
                     try:
                         with suppress_logging():
                             self._compiler.validate(

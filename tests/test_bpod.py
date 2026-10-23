@@ -938,6 +938,22 @@ class TestRun:
         mock_bpod_25.run()
         assert mock_bpod_25.serial0.last_write == first_write
 
+    def test_invalid_state_machine_is_validated_once(self, mock_bpod_25):
+        """A state machine failing validation raises one error, not a chained copy."""
+        fsm = StateMachine()
+        fsm.add_state('a', 1, {'Port1_Hgh': '>exit'})
+        with pytest.raises(ValueError, match='Port1_Hgh') as error:
+            mock_bpod_25.run(fsm)
+        assert error.value.__cause__ is None
+
+    def test_unvalidated_state_machine_is_validated_after_failing(self, mock_bpod_25):
+        """Without validation, a failing compilation is explained by validating."""
+        fsm = StateMachine()
+        fsm.add_state('a', 1, {'Port1_Hgh': '>exit'})
+        with pytest.raises(ValueError, match='Port1_Hgh') as error:
+            mock_bpod_25.run(fsm, validate=False)
+        assert isinstance(error.value.__cause__, KeyError)
+
     def test_run_no_prior_sma(self, mock_bpod_25):
         """Calling run() without a prior run raises RuntimeError."""
         with pytest.raises(RuntimeError, match='No state machine has been run yet'):
@@ -1017,7 +1033,7 @@ class TestFlexIOSettings:
         mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.ANALOG_OUTPUT
         fsm = StateMachine()
         fsm.add_state('a', 0, {'Tup': '>exit'}, {'Flex4': 1000})
-        fsm_bytes, annotations, _ = mock_bpod_2p._compiler.compile(state_machine=fsm)
+        fsm_bytes, annotations = mock_bpod_2p._compiler.compile(state_machine=fsm)
         # the wire still carries the raw 12-bit DAC count...
         idx = mock_bpod_2p._compiler.actions.index('Flex4')
         assert struct.pack('<HHH', 1, idx, 819) in fsm_bytes

@@ -601,7 +601,7 @@ class StateMachineCompiler:
         state_machine: StateMachine,
         known_hash: bytes | None = None,
         validate: bool = True,
-    ) -> tuple[bytearray, StateMachineLookup, bool]:
+    ) -> tuple[bytearray, StateMachineLookup]:
         """Compile a state machine into its binary wire format and annotation data.
 
         Builds the state transition matrix, encodes states, transitions, actions,
@@ -624,8 +624,6 @@ class StateMachineCompiler:
             Binary payload ready to be sent to the Bpod device.
         StateMachineLookup
             Annotation data for post-trial event stream decoding.
-        bool
-            Whether the state machine was validated
         """
         debugging = logger.isEnabledFor(logging.DEBUG)
 
@@ -646,7 +644,7 @@ class StateMachineCompiler:
                     'validated' if validate else 'unvalidated',
                     (perf_counter_ns() - t0) // 1000,
                 )
-            return compiled_fsm, fsm_lookup, validate
+            return compiled_fsm, fsm_lookup
 
         # validate the state machine,
         if validate:
@@ -942,4 +940,4 @@ class StateMachineCompiler:
             )
 
         # Return the compiled state machine and annotations
-        return fsm_bytes, annotations, validate
+        return fsm_bytes, annotations

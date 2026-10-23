@@ -114,6 +114,6 @@ class TestValidateAndCompile:
         """Compilers for the same hardware reuse each other's results."""
         fsm = StateMachine()
         fsm.add_state('a', 0.5, {'Port1_High': '>exit'}, {'PWM1': 255})
-        first, _, _ = make_compiler().compile(state_machine=fsm)
-        second, _, _ = make_compiler().compile(state_machine=fsm)
+        first, _ = make_compiler().compile(state_machine=fsm)
+        second, _ = make_compiler().compile(state_machine=fsm)
         assert second is first
