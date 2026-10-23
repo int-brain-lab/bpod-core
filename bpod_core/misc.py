@@ -8,6 +8,7 @@ import re
 import socket
 import struct
 from collections.abc import (
+    Collection,
     Hashable,
     ItemsView,
     Iterable,
@@ -23,7 +24,7 @@ from enum import IntEnum
 from os import PathLike, strerror
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar, cast, overload
 
 import msgspec
 from filelock import FileLock
@@ -36,6 +37,8 @@ K = TypeVar('K', bound=Hashable)
 """Key type variable for generic mappings such as :class:`ValidatedDict`."""
 V = TypeVar('V')
 """Value type variable for generic mappings such as :class:`ValidatedDict`."""
+T = TypeVar('T')
+"""Value type variable for :data:`Filter`."""
 _H = TypeVar('_H')
 _D = TypeVar('_D')
 
@@ -171,6 +174,57 @@ def suggest_similar(
     """
     matches = difflib.get_close_matches(invalid_string, valid_strings, 1, cutoff)
     return format_string.format(matches[0]) if len(matches) > 0 else ''
+
+
+Filter: TypeAlias = T | re.Pattern[str] | Collection[T | re.Pattern[str]]
+"""A criterion for matching values, e.g., when looking for serial ports or services.
+
+- a value matches equal values;
+- a compiled regular expression matches strings it finds a match in;
+- a collection of those matches if any of its items does. It must not contain
+  ``None``.
+"""
+
+
+def _match_filter(value: object, criterion: Filter[Any] | None) -> bool:
+    r"""
+    Check whether a value satisfies a filter criterion.
+
+    Parameters
+    ----------
+    value : object
+        The value to check.
+    criterion : Filter or None
+        The criterion to check against, see :data:`Filter`. ``None`` matches any
+        value.
+
+    Returns
+    -------
+    bool
+        True if the value satisfies the criterion, False otherwise.
+
+    Examples
+    --------
+    >>> _match_filter('COM3', None)
+    True
+    >>> _match_filter('COM3', 'COM3')
+    True
+    >>> _match_filter('/dev/ttyACM0', re.compile(r'ttyACM\d+'))
+    True
+    >>> _match_filter(0x16C0, [0x16C0, 0x0483])
+    True
+    >>> _match_filter(None, 'COM3')
+    False
+    """
+
+    def matches(item: Filter[Any]) -> bool:
+        if isinstance(item, Collection) and not isinstance(item, str):
+            return any(matches(i) for i in item)
+        if isinstance(item, re.Pattern):
+            return isinstance(value, str) and item.search(value) is not None
+        return bool(value == item)
+
+    return criterion is None or matches(criterion)
 
 
 class SuggestionMapping(Mapping[str, V]):

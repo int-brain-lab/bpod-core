@@ -38,11 +38,12 @@ from zeroconf import (
 )
 
 from bpod_core.constants import IPV4_LOOPBACK, IPV4_WILDCARD
-from bpod_core.filtering import Filter, match_filter
 from bpod_core.misc import (
     _RE_NON_ALPHANUMERIC,
     ByteEnum,
+    Filter,
     _HandlerSlot,
+    _match_filter,
     get_local_ipv4,
     prune_empty_parent_directories,
     to_snake_case,
@@ -422,7 +423,7 @@ class LocalServiceAdvertisement:
             The service type to discover.
         properties : Mapping, optional
             Filters to match against the service's properties, see
-            :func:`~bpod_core.filtering.match_filter`. ``None`` values are ignored.
+            :data:`~bpod_core.misc.Filter`. ``None`` values are ignored.
 
         Yields
         ------
@@ -449,7 +450,7 @@ class LocalServiceAdvertisement:
 
                 # Check if properties match
                 if all(
-                    match_filter(info.properties.get(k), v)
+                    _match_filter(info.properties.get(k), v)
                     for k, v in properties.items()
                 ):
                     yield info
@@ -1771,7 +1772,7 @@ class _ServiceListenerIterator(ServiceListener):
 
         # check if the service matches the requested properties
         txt = info.decoded_properties
-        if not all(match_filter(txt.get(k), v) for k, v in self._properties.items()):
+        if not all(_match_filter(txt.get(k), v) for k, v in self._properties.items()):
             return
 
         # add event to the queue
@@ -1810,7 +1811,7 @@ class ServiceIterator(Iterator[ServiceEvent]):
         The service type to discover, e.g., ``'bpod'``.
     properties : Mapping, optional
         Filters to match against the service properties, see
-        :func:`~bpod_core.filtering.match_filter`. ``None`` values are ignored.
+        :data:`~bpod_core.misc.Filter`. ``None`` values are ignored.
     timeout : float or None, default: 10.0
         How many seconds to monitor.
         Pass ``None`` to monitor indefinitely until the iterator is closed.
@@ -2041,7 +2042,7 @@ def iter_services(
         The service type to discover, e.g., 'bpod'.
     properties : Mapping, optional
         Filters to match against the service properties, see
-        :func:`~bpod_core.filtering.match_filter`. ``None`` values are ignored.
+        :data:`~bpod_core.misc.Filter`. ``None`` values are ignored.
     timeout : float or None, default: 10.0
         How many seconds to monitor.
         Pass ``None`` to monitor indefinitely until the iterator is closed.
@@ -2096,7 +2097,7 @@ def discover(
         The service type to discover, e.g., 'bpod'
     properties : Mapping, optional
         Filters to match against the service properties, see
-        :func:`~bpod_core.filtering.match_filter`. ``None`` values are ignored.
+        :data:`~bpod_core.misc.Filter`. ``None`` values are ignored.
     timeout : float, default: 10.0
         How many seconds to wait for a matching service before timing out.
     poll_interval : float, default: 1.0

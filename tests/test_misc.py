@@ -3,6 +3,7 @@
 import errno
 import logging
 import os
+import re
 import struct
 
 import pytest
@@ -122,6 +123,33 @@ class TestSuggestSimilar:
         """Returns suggestion even if input equals a valid string."""
         result = misc.suggest_similar('banana', fruits, cutoff=0.6)
         assert result == " - did you mean 'banana'?"
+
+
+class TestMatchFilter:
+    @pytest.mark.parametrize(
+        ('value', 'criterion', 'expected'),
+        [
+            ('a', None, True),
+            (None, None, True),
+            ('a', 'a', True),
+            ('a', 'b', False),
+            (None, 'a', False),
+            (1, 1, True),
+            ('abc', 'ab', False),
+            ('abc', re.compile('^ab'), True),
+            ('abc', re.compile('^b'), False),
+            (1, re.compile('1'), False),
+            (2, [1, 2], True),
+            (3, [1, 2], False),
+            ('xyz', ['a', re.compile('y')], True),
+            ('a', [], False),
+            (2, {1, 2}, True),
+            ('xyz', frozenset({'a', re.compile('y')}), True),
+        ],
+    )
+    def test_match_filter(self, value, criterion, expected):
+        """Values are matched by equality, regex search or any item of a collection."""
+        assert misc._match_filter(value, criterion) is expected
 
 
 class TestSuggestionMapping:

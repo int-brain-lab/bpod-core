@@ -25,7 +25,7 @@ from bpod_core.constants import (
     STRUCT_UINT32_LE,
     STRUCT_UINT64_LE,
 )
-from bpod_core.filtering import Filter, match_filter
+from bpod_core.misc import Filter, _match_filter
 
 logger = logging.getLogger(__name__)
 
@@ -811,7 +811,7 @@ def find_ports(
 
     See Also
     --------
-    bpod_core.filtering.match_filter : Semantics of the individual filter values.
+    bpod_core.misc.Filter : Semantics of the individual filter values.
 
     Examples
     --------
@@ -835,7 +835,7 @@ def find_ports(
     return [
         port
         for port in sorted(comports())
-        if all(match_filter(getattr(port, k), v) for k, v in filters.items())
+        if all(_match_filter(getattr(port, k), v) for k, v in filters.items())
     ]
 
 
