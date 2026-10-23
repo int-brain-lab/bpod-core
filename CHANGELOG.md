@@ -6,139 +6,106 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## UNRELEASED
+## [0.1.0a15] - 2026-10-23
 
 ### Added
 
-- support for FlexIO channels (Bpod Finite State Machine r2+): `Bpod.flex_io`
-  configures each channel as digital or analog input or output, along with analog
-  thresholds and the sampling rate; `Bpod.get_analog_data` returns the continuously
-  sampled analog input in millivolts. Flex channel events and analog-output actions
-  can be used in state machines, and global timers can drive Flex outputs. Analog
-  threshold events record their threshold's voltage as their value.
-- `Bpod.action_names`: names of all actions a state machine can currently set,
-  mirroring `Bpod.input_event_names`.
-- state machine validation rejects non-integer action values before compilation.
-- `ExtendedSerial.temporary_timeout`: context manager for temporarily setting a timeout
-  for serial reads.
-- Optimizations for agentic development (`AGENTS.md`, `.mcp.json`, `llms.txt`, etc.)
-- `filtering.match_filter` for matching values against scalar, regex or collection
-  criteria.
+- FlexIO channels (Bpod Finite State Machine r2+): `Bpod.flex_io` configures each
+  channel as digital or analog input or output, with analog thresholds and the
+  sampling rate, and `Bpod.get_analog_data` returns the sampled analog input in
+  millivolts. State machines can use Flex events and outputs, and global timers can
+  drive Flex outputs.
+- `Bpod.action_names`: the actions a state machine can currently set, like
+  `Bpod.input_event_names` for events.
+- `ExtendedSerial.temporary_timeout`: a context manager that changes the read timeout
+  temporarily.
 - `ipc.iter_services`, `ipc.discover` and `ipc.ServiceIterator` accept regex and
-  collection criteria for `properties`.
+  collection criteria for `properties`, like `com.find_ports` (see `misc.Filter`).
 - `misc.SuggestionMapping`: a read-only mapping that suggests similar keys on failed
-  lookup, for fixed sets of keys (e.g. hardware channels) that should never be mutated
-  after construction.
+  lookups.
 
 ### Changed
 
-- `com.find_ports` takes explicit keyword-only filters instead of `**filters`;
-  unknown filter names now raise `TypeError` instead of silently matching nothing.
-- `com.find_ports` and service discovery ignore filters set to `None` instead of
-  matching only `None`-valued or missing attributes.
-- `Bpod.inputs`/`Bpod.outputs`/`Bpod.modules` are now read-only `misc.SuggestionMapping`
-  instead of mutable dicts, preventing accidental corruption.
-- Module-not-found errors now suggest the closest matching module name, matching the
-  error style already used for input/output channels.
+- `com.find_ports` takes explicit keyword-only filters instead of `**filters` and
+  raises a `TypeError` for unknown ones. It and service discovery ignore filters set to
+  `None`.
+- `Bpod.inputs`, `Bpod.outputs` and `Bpod.modules` are read-only
+  `misc.SuggestionMapping`s, so misspelled module names get a suggestion, too.
+- FlexIO channels are no longer listed in `Bpod.inputs` and `Bpod.outputs`; use
+  `Bpod.flex_io`.
 - methods that query or reconfigure the Bpod (e.g., `set_status_led`, `update_modules`,
   `Input.read`, `Module.load_serial_message`) raise a `BpodError` while a state machine
   is running, instead of corrupting the trial's data.
-- FlexIO channels are no longer listed in `Bpod.inputs` and `Bpod.outputs`, since the
-  Bpod can't read or override them directly; use `Bpod.flex_io` instead.
-- `send_softcode` no longer sends a softcode while no state machine is running, since
-  the Bpod ignores it then; it still logs a warning.
+- `send_softcode` and `Input.override` send nothing while no state machine is running,
+  since the Bpod would ignore it; they log a warning instead.
 - trial data columns are named in title case (`Time`, `Trial`, `State Machine`,
-  `State`, `Type`, `Event`, `Channel`, `Value`), like channel and event names.
-- the `Trial` column of trial data is `UInt32` instead of `UInt16`.
-- the `Value` column of trial data is `UInt16` instead of `UInt8`, to hold FlexIO
-  analog-output values in millivolts (0 to 5000). All other action values still range
-  from 0 to 255.
-- trial data is read from the Bpod in chunks rather than message by message, which
-  lowers the CPU load at high event and softcode rates.
-- live trial events are published in batches rather than one message per event,
-  lowering the CPU load while a client is subscribed. `RemoteBpod`'s `event_callback`
-  still receives single events.
-- polars 2 is supported (`polars>=1.32.3,<3`).
-- lowered the minimum versions of most dependencies to the oldest ones tested to work.
-  pydantic now requires 2.8 or newer: older 2.x versions could be installed but failed
-  on import.
+  `State`, `Type`, `Event`, `Channel`, `Value`). `Trial` is `UInt32` instead of
+  `UInt16`, and `Value` is `UInt16` instead of `UInt8`, to hold FlexIO analog-output
+  values in millivolts.
+- lower CPU load: trial data is read from the Bpod in chunks, and live trial events are
+  published in batches. `RemoteBpod`'s `event_callback` still receives single events.
+- building, validating and compiling state machines is faster, and takes about half
+  the time for large ones.
+- polars 2 is supported (`polars>=1.32.3,<3`), and most dependencies accept versions
+  down to the oldest ones tested. pydantic requires 2.8 or newer, since older 2.x
+  versions failed on import.
 
 ### Removed
 
-- `misc.SuggestionDict`, superseded by `misc.SuggestionMapping` (no longer used anywhere
-  in the library).
-- `com.FilterValue`, superseded by `filtering.Filter`.
+- `misc.SuggestionDict` (use `misc.SuggestionMapping`) and `com.FilterValue` (use
+  `misc.Filter`).
 - the `rechunk` parameter of `get_data`: call `.rechunk()` on the result instead.
-- the unused `qtpy` dependency.
 - `Bpod.serial2`: the FlexIO serial connection is now private.
+- the unused `qtpy` dependency.
 
 ### Fixed
 
-- state machine validation now rejects values the Bpod can't receive, which used to
-  fail later with unhelpful errors or be cut to one byte: action values above 255 on
-  Bpod r2+ (except FlexIO analog outputs), softcodes above 254, `AnalogThreshEnable` and
-  `AnalogThreshDisable` bits for FlexIO channels that don't exist, `GlobalCounterReset`
-  values for global counters that aren't set, onset triggers for global timers that
-  aren't set, and global counter events and condition channels that don't exist.
-- validating or compiling state machines in several threads at once, e.g., for two
-  Bpods in one process or for a `RemoteBpod` while the host's own script runs trials,
-  could fail or corrupt the caches they share.
-- starting a service could fail with `FileNotFoundError` while another process on the
-  same machine closed its last service.
-- `RemoteBpod.get_data` raised a `DeprecationWarning` with polars 1.43.2 or newer.
-- leaving a `Bpod` context did not close its IPC service, so its sockets stayed bound
-  until garbage collection and reconnecting right away fell back to random ports.
-- leaving a `Bpod` context did not end its softcode thread, so every connection left
-  an idle thread behind.
-- a `Bpod` that failed to connect, e.g., due to unsupported firmware, kept its serial
-  port open until garbage collection and left its softcode thread behind.
-- a `Bpod` or subscribed `RemoteBpod` dropped without closing it, an unfinished
-  `iter_services` iterator, e.g., after a `break`, and any object whose handler for a
-  `ServiceHost`, `ServiceClient` or `Bpod.set_softcode_handler` referred back to it
-  were never garbage-collected, so their connections and threads ran until Python
-  exited.
-- a failed `RemoteBpod` handshake, e.g., due to a version mismatch, or a failed
-  Zeroconf start in `iter_services` left connections or threads running.
-- closing a `Bpod`, `ServiceHost` or `ServiceClient` from within its own handler hung
-  or raised a `RuntimeError`.
-- closing a `ServiceHost` or `LocalServiceAdvertisement` could remove the files of a
-  newer one with the same UUID.
-- unplugging the Bpod during a trial went unnoticed: `wait()` returned as if the trial
-  had ended normally. It now raises a `BpodError`, and `close()` tolerates the
-  vanished port.
-- a blocking `Bpod.peek_data()` could, rarely, hang when its trial ended without
-  reaching a trigger state.
-- closing a `Bpod` could disconnect before the last softcodes were handled.
-- module events and softcodes never reached the state machine. Serial events are
-  now allocated to modules as in Bpod's MATLAB software and sent to the state
-  machine when modules are updated. This also fixes misnumbered input events with
-  modules requesting a non-default number of events.
-- `Input.override` didn't send the input's index, so the Bpod took the first byte of
-  the next command as the override state. While no state machine is running, the
-  override is no longer sent, since the Bpod would ignore it; a warning is logged
-  instead.
-- `is_running` was briefly `False` while a queued state machine was starting, although
-  the Bpod was already running it; `stop_state_machine()` then did nothing.
-- closing a `Bpod` checked the reply to its disconnect request against the wrong value
-  and could wait forever for it. It now waits at most 0.2 s and logs a warning if the
-  Bpod doesn't confirm.
-- the `TrialEnd` time of a queued trial was one state machine cycle late (100 µs on a
-  Bpod 2+), because it was derived from a firmware cycle count that also includes the
-  cycle in which the previous trial ended. It now comes from the trial's exit event,
-  like all other event times.
-- a trial number above 65535 or below 0 made `get_data()` fail, losing the trials it
-  had collected. `run()` now rejects trial numbers outside 0 to 4,294,967,295.
-- `GlobalTimerTrig` and `GlobalTimerCancel` acted on the wrong global timers for
-  indices of 2 or more: the Bpod reads their values as one bit per timer, but they were
-  sent as index plus one. Indices of global timers that haven't been set are now
-  rejected.
+- module events and softcodes never reached the state machine. Serial events are now
+  allocated to modules as in Bpod's MATLAB software, which also fixes misnumbered input
+  events with modules requesting a non-default number of events.
 - events in the same state machine cycle as a transition were evaluated in the new
   state, so trial data could attribute them to the wrong state or record transitions
-  the Bpod never made. All events of a cycle are now evaluated in the state it
-  started in.
-- trial data recorded only TTL and PWM outputs as switched off when a state began that
-  didn't set them: valves, wire and FlexIO outputs appeared to stay on, although the
-  Bpod switches them off as well.
+  the Bpod never made.
+- `GlobalTimerTrig` and `GlobalTimerCancel` acted on the wrong global timers for
+  indices of 2 or more.
+- trial data showed valves and wire outputs as staying on when a state began that
+  didn't set them, although the Bpod switches them off.
+- the `TrialEnd` time of a queued trial was one state machine cycle late (100 µs on a
+  Bpod 2+).
+- state machine validation missed values the Bpod can't receive: softcodes above 254,
+  references to global timers and counters that haven't been set (`GlobalTimerTrig`,
+  `GlobalTimerCancel`, `GlobalCounterReset`, onset triggers), and unknown global
+  counter events and condition channels.
+- a trial number above 65535 or below 0 made `get_data()` fail, losing the collected
+  trials. `run()` now rejects trial numbers outside 0 to 4,294,967,295.
+- `run()` without a state machine reran the last one even after the hardware
+  configuration had changed, e.g., through `update_modules()`. It now raises a
+  `RuntimeError`.
+- `get_data()` right after `stop_state_machine()` could raise "No trial data available"
+  while the stopped trial was still being processed.
+- `Input.override` didn't send the input's index, so the Bpod took the next command's
+  first byte as the override state.
+- `is_running` was briefly `False` while a queued state machine was starting, so
+  `stop_state_machine()` could do nothing.
+- unplugging the Bpod during a trial went unnoticed. `wait()` now raises a `BpodError`.
+- a blocking `peek_data()` could, rarely, hang when its trial ended without reaching a
+  trigger state.
+- closing a `Bpod` could wait forever for the Bpod to confirm the disconnect, or
+  disconnect before the last softcodes were handled.
+- leaving a `Bpod` context didn't close its IPC service or end its softcode thread, and
+  a `Bpod` that failed to connect kept its serial port open. Objects dropped without
+  closing (a `Bpod`, a subscribed `RemoteBpod`, an unfinished `iter_services` iterator,
+  or anything a handler refers back to), a failed `RemoteBpod` handshake and a failed
+  Zeroconf start left connections and threads running.
+- closing a `Bpod`, `ServiceHost` or `ServiceClient` from within its own handler hung or
+  raised a `RuntimeError`.
+- starting a service could fail with `FileNotFoundError` while another process closed
+  its last service, and closing a `ServiceHost` or `LocalServiceAdvertisement` could
+  remove the files of a newer one with the same UUID.
+- validating or compiling state machines in several threads at once (e.g., two Bpods
+  in one process, or a `RemoteBpod` next to the host's own script) could fail or
+  corrupt the caches they share.
+- `RemoteBpod.get_data` raised a `DeprecationWarning` with polars 1.43.2 or newer.
 
 ## [0.1.0a14] - 2026-07-24
 
