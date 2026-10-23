@@ -1307,7 +1307,7 @@ class TestAnalogChunk:
         assert mock_bpod_2p._analog_buffer == []
         frame = mock_bpod_2p.get_analog_data()
         cycle_period_us = mock_bpod_2p._hardware.cycle_period_us
-        assert frame['time'].dt.epoch('us').to_list() == [1_000_000 + cycle_period_us]
+        assert frame['Time'].dt.epoch('us').to_list() == [1_000_000 + cycle_period_us]
 
     def test_buffers_and_flushes_decoded_samples(self, mock_bpod_2p):
         """Decoded samples are buffered and flushed as a LazyFrame with timing."""
@@ -1324,16 +1324,16 @@ class TestAnalogChunk:
         mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 4095)))
         mock_bpod_2p._flush_analog_buffer()  # flush the second sample too
         frame = mock_bpod_2p.get_analog_data()
-        assert frame.columns == ['time', 'trial', 'Flex3']
+        assert frame.columns == ['Time', 'Trial', 'Flex3']
         assert frame.schema['Flex3'] == pl.UInt16
-        assert frame.schema['trial'] == pl.UInt32
-        assert frame['trial'].to_list() == [7, 7]
+        assert frame.schema['Trial'] == pl.UInt32
+        assert frame['Trial'].to_list() == [7, 7]
         # 2048/4095 counts -> round(count * 5000/4095) mV, exact integer math
         assert frame['Flex3'].to_list() == [2501, 5000]
         # firmware's sample clock is preloaded, so the first sample fires one
         # state-machine cycle (not a full sample period) after trial start
         cycle_period_us = mock_bpod_2p._hardware.cycle_period_us
-        assert frame['time'].dt.epoch('us').to_list() == [
+        assert frame['Time'].dt.epoch('us').to_list() == [
             1_000_000 + cycle_period_us,
             1_000_000 + cycle_period_us + 1000,
         ]
@@ -1348,7 +1348,7 @@ class TestAnalogChunk:
         mock_bpod_2p._analog_last_flush_ns = 0
         mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 5, 0)))
         frame = mock_bpod_2p.get_analog_data()
-        assert frame['trial'][0] == 5
+        assert frame['Trial'][0] == 5
 
     def test_get_analog_data_raises_when_unavailable(self, mock_bpod_2p):
         """get_analog_data raises if no data exists and no reader is active."""

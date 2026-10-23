@@ -27,8 +27,8 @@ FlexIO Channels
        """Analog data recorded for an example."""
        analog_data = pl.read_parquet(_DOCS_DATA / 'flexio' / f'{name}_analog.pqt')
        assert dict(analog_data.schema) == {
-           'time': pl.Datetime('us', 'UTC'),
-           'trial': pl.UInt32,
+           'Time': pl.Datetime('us', 'UTC'),
+           'Trial': pl.UInt32,
            'Flex1': pl.UInt16,
        }
        return analog_data
@@ -476,7 +476,7 @@ second:
       >>> analog_data
       shape: (2_519, 3)
       ┌────────────────────────────────┬───────┬───────┐
-      │ time                           ┆ trial ┆ Flex1 │
+      │ Time                           ┆ Trial ┆ Flex1 │
       │ ---                            ┆ ---   ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ u16   │
       ╞════════════════════════════════╪═══════╪═══════╡
@@ -505,9 +505,9 @@ The data returned by :meth:`~bpod_core.bpod.Bpod.get_analog_data` is a Polars
 
    * - Column
      - Content
-   * - ``time``
+   * - ``Time``
      - When the measurement was taken.
-   * - ``trial``
+   * - ``Trial``
      - The trial during which it was taken. Measurements between trials belong to the
        trial before.
    * - ``Flex{N}``

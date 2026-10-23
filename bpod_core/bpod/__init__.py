@@ -1290,7 +1290,7 @@ class Bpod(SerialDevice, AbstractBpod):
         buffer, self._analog_buffer = self._analog_buffer, []
         if not buffer or not self._analog_channel_names:
             return
-        columns = ['k', 'trial', *self._analog_channel_names]
+        columns = ['k', 'Trial', *self._analog_channel_names]
         # firmware preloads its sample clock so the first sample fires one
         # state-machine cycle after trial start, not a full sample period
         anchor_us = self._analog_first_trial_time_us + self._hardware.cycle_period_us
@@ -1300,13 +1300,13 @@ class Bpod(SerialDevice, AbstractBpod):
             .with_columns(
                 pl.from_epoch(anchor_us + pl.col('k') * period_us, time_unit='us')
                 .dt.replace_time_zone('UTC')
-                .alias('time'),
-                pl.col('trial').cast(pl.UInt32),
+                .alias('Time'),
+                pl.col('Trial').cast(pl.UInt32),
                 _counts_to_mv(pl.col(self._analog_channel_names).cast(pl.UInt32)).cast(
                     pl.UInt16
                 ),
             )
-            .select('time', 'trial', *self._analog_channel_names)
+            .select('Time', 'Trial', *self._analog_channel_names)
         )
         self._analog_data.put(frame)
 
@@ -2303,8 +2303,8 @@ class Bpod(SerialDevice, AbstractBpod):
         DataFrame or LazyFrame
             One row per sample, with the columns:
 
-            - ``time`` (``Datetime``, µs, UTC): absolute time of the sample;
-            - ``trial`` (``UInt32``): zero-based index of the trial the sample was
+            - ``Time`` (``Datetime``, µs, UTC): absolute time of the sample;
+            - ``Trial`` (``UInt32``): zero-based index of the trial the sample was
               taken in; samples taken between trials belong to the preceding trial;
             - ``Flex{N}`` (``UInt16``): voltage in millivolts (0-5000), one column per
               channel configured as ``ANALOG_INPUT``.
