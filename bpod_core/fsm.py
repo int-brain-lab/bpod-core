@@ -476,16 +476,24 @@ class StateMachine(BaseModel, title='State Machine'):
     name: StateMachineName = 'State Machine'
     """The name of the state machine."""
 
-    states: States = States()
+    # default factories, since pydantic deep-copies default instances for every new
+    # state machine; json_schema_extra keeps the defaults in the JSON schema
+    states: States = Field(default_factory=States, json_schema_extra={'default': {}})
     """A dictionary of states."""
 
-    global_timers: GlobalTimers = GlobalTimers()
+    global_timers: GlobalTimers = Field(
+        default_factory=GlobalTimers, json_schema_extra={'default': {}}
+    )
     """A dictionary of global timers."""
 
-    global_counters: GlobalCounters = GlobalCounters()
+    global_counters: GlobalCounters = Field(
+        default_factory=GlobalCounters, json_schema_extra={'default': {}}
+    )
     """A dictionary of global counters."""
 
-    conditions: Conditions = Conditions()
+    conditions: Conditions = Field(
+        default_factory=Conditions, json_schema_extra={'default': {}}
+    )
     """A dictionary of conditions."""
 
     _validation_cache: ClassVar[FIFOCache[bytes, _CheckData]] = FIFOCache(maxsize=1024)
