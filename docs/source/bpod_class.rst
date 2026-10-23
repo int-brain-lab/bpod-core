@@ -255,7 +255,7 @@ before queuing it—with no idle time between the two runs. The final
            runtime_data = bpod.peek_data(trigger_states=['pause'])
 
            # calculate duration of 'Port0_High'
-           d = runtime_data.filter(pl.col("channel") == "Port0")['time'].diff().last()
+           d = runtime_data.filter(pl.col("Channel") == "Port0")['Time'].diff().last()
 
            # set state timer and run second state machine
            fsm2.states['echo'].timer = d

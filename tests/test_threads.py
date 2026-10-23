@@ -447,7 +447,7 @@ class TestEventThread:
         thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,)))
         thread.stop()
         thread.join(timeout=2)
-        assert self._collect(data_queue)['trial'].unique().to_list() == [70_000]
+        assert self._collect(data_queue)['Trial'].unique().to_list() == [70_000]
 
     def test_data_enqueued_on_stop(self, make_thread):
         """A LazyFrame is pushed to data_queue when the thread exits."""
@@ -495,10 +495,10 @@ class TestEventThread:
             'InputEvent': EventInput,
             'OutputAction': EventOutput,
         }
-        rows = df.filter(pl.col('type').cast(pl.String).is_in(list(struct_by_type)))
-        types = rows['type'].cast(pl.String).to_list()
+        rows = df.filter(pl.col('Type').cast(pl.String).is_in(list(struct_by_type)))
+        types = rows['Type'].cast(pl.String).to_list()
         assert [type(m) for m in events] == [struct_by_type[t] for t in types]
-        times = rows['time'].dt.epoch(time_unit='us').to_list()
+        times = rows['Time'].dt.epoch(time_unit='us').to_list()
         assert [m.time_us for m in events] == times
 
     def test_should_publish_gates_all_messages(self, make_thread):
@@ -537,10 +537,10 @@ class TestEventThread:
         assert not any('publish' in record.message for record in caplog.records)
 
         # the DataFrame records the post-exit event without an active state
-        assert df.filter(pl.col('type') == 'StateStart').height == 1
-        assert df.filter(pl.col('type') == 'StateEnd').height == 1
-        post_exit = df.filter(pl.col('time').dt.epoch(time_unit='us') == 20)
-        assert post_exit['state'].to_list() == [None]
+        assert df.filter(pl.col('Type') == 'StateStart').height == 1
+        assert df.filter(pl.col('Type') == 'StateEnd').height == 1
+        post_exit = df.filter(pl.col('Time').dt.epoch(time_unit='us') == 20)
+        assert post_exit['State'].to_list() == [None]
 
     def test_aborted_trial_publishes_no_trial_end(self, make_thread):
         """Without a hardware exit packet, no end messages are published."""
@@ -579,7 +579,7 @@ class TestEventThread:
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        assert 'Ev0' in df.filter(pl.col('type') == 'InputEvent')['event'].to_list()
+        assert 'Ev0' in df.filter(pl.col('Type') == 'InputEvent')['Event'].to_list()
 
     def test_event_timestamp(self, make_thread):
         """Event timestamp equals reset_system_time_ns // 1000 + micros_us."""
@@ -591,9 +591,9 @@ class TestEventThread:
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        ev = df.filter(pl.col('event') == 'Ev0')
+        ev = df.filter(pl.col('Event') == 'Ev0')
         assert (
-            ev['time'][0]
+            ev['Time'][0]
             == pl.Series([5100], dtype=pl.Datetime('us', time_zone='UTC'))[0]
         )  # 5000 + 100 µs
 
@@ -606,7 +606,7 @@ class TestEventThread:
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        types = df['type'].cast(pl.String).to_list()
+        types = df['Type'].cast(pl.String).to_list()
         assert 'StateEnd' in types
         assert 'StateStart' in types
 
@@ -618,7 +618,7 @@ class TestEventThread:
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        states = df['state'].drop_nulls().cast(pl.String).to_list()
+        states = df['State'].drop_nulls().cast(pl.String).to_list()
         assert 'S0' in states
         assert 'S1' in states
 
@@ -641,9 +641,9 @@ class TestEventThread:
         thread.join(timeout=2)
         df = self._collect(data_queue)
         rows = df.select(
-            pl.col('type').cast(pl.String),
-            pl.col('event').cast(pl.String),
-            pl.col('state').cast(pl.String),
+            pl.col('Type').cast(pl.String),
+            pl.col('Event').cast(pl.String),
+            pl.col('State').cast(pl.String),
         ).rows()
         assert rows == [
             ('InputEvent', 'Ev0', 'S0'),
@@ -663,10 +663,10 @@ class TestEventThread:
         thread.join(timeout=2)
         df = self._collect(data_queue)
         rows = df.select(
-            pl.col('time').dt.epoch(time_unit='us'),
-            pl.col('type').cast(pl.String),
-            pl.col('state').cast(pl.String),
-        ).filter(pl.col('type') != 'StateStart')
+            pl.col('Time').dt.epoch(time_unit='us'),
+            pl.col('Type').cast(pl.String),
+            pl.col('State').cast(pl.String),
+        ).filter(pl.col('Type') != 'StateStart')
         assert rows.rows() == [
             (10, 'InputEvent', 'S0'),
             (10, 'InputEvent', 'S0'),
@@ -684,7 +684,7 @@ class TestEventThread:
         thread.join(timeout=2)
         df = self._collect(data_queue)
         rows = df.select(
-            pl.col('type').cast(pl.String), pl.col('state').cast(pl.String)
+            pl.col('Type').cast(pl.String), pl.col('State').cast(pl.String)
         ).rows()
         assert rows == [
             ('InputEvent', 'S0'),
@@ -701,8 +701,8 @@ class TestEventThread:
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        output = df.filter(pl.col('type') == 'OutputAction')
-        assert 'PWM1' in output['channel'].cast(pl.String).to_list()
+        output = df.filter(pl.col('Type') == 'OutputAction')
+        assert 'PWM1' in output['Channel'].cast(pl.String).to_list()
 
     def test_ttl_reset_on_state_transition(self, make_thread):
         """TTL output is reset to 0."""
@@ -719,9 +719,9 @@ class TestEventThread:
         thread.join(timeout=2)
         df = self._collect(data_queue)
         ttl = df.filter(
-            (pl.col('type') == 'OutputAction') & (pl.col('channel') == 'TTL1')
+            (pl.col('Type') == 'OutputAction') & (pl.col('Channel') == 'TTL1')
         )
-        assert 0 in ttl['value'].to_list()
+        assert 0 in ttl['Value'].to_list()
 
     def test_non_resettable_action_not_reset(self, make_thread):
         """An action the Bpod doesn't reset, e.g. a module message, isn't reset."""
@@ -734,8 +734,8 @@ class TestEventThread:
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        module = df.filter(pl.col('channel') == 'Module1')
-        assert module['value'].to_list() == [3]
+        module = df.filter(pl.col('Channel') == 'Module1')
+        assert module['Value'].to_list() == [3]
 
     def test_peek_data_mid_trial(self, make_thread):
         """peek_data returns a non-empty snapshot while the trial is running."""
@@ -774,7 +774,7 @@ class TestEventThread:
         thread.join(timeout=2)
         assert len(thread._buffer) == init_buffer_size * 2
         df = self._collect(data_queue)
-        assert len(df.filter(pl.col('event') == 'Ev0')) == n
+        assert len(df.filter(pl.col('Event') == 'Ev0')) == n
 
 
 class TestSoftcodeThread:

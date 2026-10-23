@@ -36,7 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is running, instead of corrupting the trial's data.
 - `send_softcode` no longer sends a softcode while no state machine is running, since
   the Bpod ignores it then; it still logs a warning.
-- the `trial` column of trial data is `UInt32` instead of `UInt16`.
+- trial data columns are named in title case (`Time`, `Trial`, `State Machine`,
+  `State`, `Type`, `Event`, `Channel`, `Value`), like channel and event names.
+- the `Trial` column of trial data is `UInt32` instead of `UInt16`.
 - trial data is read from the Bpod in chunks rather than message by message, which
   lowers the CPU load at high event and softcode rates.
 - live trial events are published in batches rather than one message per event,
