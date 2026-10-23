@@ -532,10 +532,11 @@ class StateMachine(BaseModel, title='State Machine'):
         if name in self.states:
             raise ValueError(f"A state named '{name}' is already registered")
 
+        # the arguments have already been validated by validate_call
         self.states[name] = State.model_construct(
             timer=timer,
-            transitions=Transitions(transitions or {}),
-            actions=Actions(actions or {}),
+            transitions=Transitions.model_construct(transitions or {}),
+            actions=Actions.model_construct(actions or {}),
             comment=comment,
         )
 
