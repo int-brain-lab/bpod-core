@@ -343,8 +343,7 @@ at creation and assignment:
       ...
    pydantic_core._pydantic_core.ValidationError: 1 validation error for StateMachine.add_state
    timer
-     Input should be greater than or equal to 0 [type=greater_than_equal, input_value=-1, input_type=int]
-       For further information visit https://errors.pydantic.dev/2.11/v/greater_than_equal
+     Invalid State Timer - cannot be negative [type=greater_than_equal, input_value=-1, input_type=int]
 
 .. testsetup:: pydantic-validation-2
 
@@ -362,7 +361,7 @@ at creation and assignment:
    pydantic_core._pydantic_core.ValidationError: 1 validation error for State
    actions
      Input should be a valid dictionary [type=dict_type, input_value=42, input_type=int]
-       For further information visit https://errors.pydantic.dev/2.11/v/dict_type
+       For further information visit https://errors.pydantic.dev/2.14/v/dict_type
 
 
 
