@@ -74,7 +74,7 @@ class TestcodeCodeBlockDirective(BaseCodeBlockDirective):
 
 def setup(app):
     app.add_directive('doctest-code-block', DoctestCodeBlockDirective)
-    app.add_directive('testcode-code-block', DoctestCodeBlockDirective)
+    app.add_directive('testcode-code-block', TestcodeCodeBlockDirective)
     return {
         'version': '1.0',
         'parallel_read_safe': True,
