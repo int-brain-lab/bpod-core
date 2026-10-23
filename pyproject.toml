@@ -107,6 +107,9 @@ ci = [
   "coveralls>=4.0.1",
   "pytest-github-actions-annotate-failures>=0.3.0",
 ]
+publish = [
+  "pypi-attestations>=0.0.30",
+]
 
 [project.urls]
 Changelog = "https://github.com/int-brain-lab/bpod-core/blob/main/CHANGELOG.md"
