@@ -427,7 +427,6 @@ class StateMachineCompiler:
             pass  # TODO: remove condition events from valid_input_events
 
         # validate states
-        valid_targets = set(state_names).union(VALID_OPERATORS)
         max_time_uint32 = UINT32_MAX / self._hardware.cycle_frequency
         for state_name, state in state_machine.states.items():
             if state.timer > max_time_uint32:
@@ -438,12 +437,6 @@ class StateMachineCompiler:
                 )
             for condition_name, target in state.transitions.items():
                 if target.startswith('>') and target not in VALID_OPERATORS:
-                    raise ValueError(
-                        f"Invalid operator '{target}' for transition condition "
-                        f"'{condition_name}' in state '{state_name}'"
-                        + suggest_similar(target, VALID_OPERATORS),
-                    )
-                if target not in valid_targets and target.startswith('>'):
                     raise ValueError(
                         f"Invalid operator '{target}' for transition condition "
                         f"'{condition_name}' in state '{state_name}'"

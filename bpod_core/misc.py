@@ -9,18 +9,21 @@ import socket
 import struct
 from collections.abc import (
     Hashable,
+    ItemsView,
     Iterable,
     Iterator,
+    KeysView,
     Mapping,
     MutableMapping,
     Sequence,
+    ValuesView,
 )
 from contextlib import contextmanager
 from enum import IntEnum
 from os import PathLike, strerror
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
 
 import msgspec
 from filelock import FileLock
@@ -34,6 +37,7 @@ K = TypeVar('K', bound=Hashable)
 V = TypeVar('V')
 """Value type variable for generic mappings such as :class:`ValidatedDict`."""
 _H = TypeVar('_H')
+_D = TypeVar('_D')
 
 _MISSING = object()
 """Sentinel for distinguishing a missing key from a key set to None."""
@@ -537,6 +541,31 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V]):
     @override
     def __len__(self) -> int:
         return len(self.root)
+
+    # the mixins of Mapping would look up one key at a time via __getitem__
+    @override
+    def __contains__(self, key: object) -> bool:
+        return key in self.root
+
+    @overload
+    def get(self, key: K, /) -> V | None: ...
+    @overload
+    def get(self, key: K, default: V | _D, /) -> V | _D: ...
+    @override
+    def get(self, key: K, default: object = None, /) -> object:
+        return self.root.get(key, default)
+
+    @override
+    def keys(self) -> KeysView[K]:
+        return self.root.keys()
+
+    @override
+    def items(self) -> ItemsView[K, V]:
+        return self.root.items()
+
+    @override
+    def values(self) -> ValuesView[V]:
+        return self.root.values()
 
     @override
     def __repr__(self) -> str:
