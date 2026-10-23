@@ -1,3 +1,6 @@
+.. meta::
+   :description: The tabular data format of trial data returned by bpod-core.
+
 Data Format
 ===========
 
@@ -8,7 +11,7 @@ Data Format
    from pathlib import Path
    from bpod_core.bpod._threads import _TRIAL_DATA_SCHEMA
 
-   pqt_file = Path(_DOCS_STATIC) / "example_dataframe.pqt"
+   pqt_file = Path(_DOCS_DATA) / "example_dataframe.pqt"
    data = pl.read_parquet(pqt_file)
    assert dict(data.schema) == _TRIAL_DATA_SCHEMA
    pl.Config.set_tbl_width_chars(200)
@@ -24,29 +27,29 @@ Polars :class:`~polars.DataFrame` with the following columns:
    * - Name
      - Datatype
      - Description
-   * - ``time``
+   * - ``Time``
      - :class:`~polars.datatypes.Datetime`
      - absolute UTC timestamp, see section `Timestamps`_ below.
-   * - ``trial``
-     - :class:`~polars.datatypes.UInt16`
+   * - ``Trial``
+     - :class:`~polars.datatypes.UInt32`
      - zero-based trial index.
-   * - ``state machine``
+   * - ``State Machine``
      - :class:`~polars.datatypes.Categorical`
      - state machine hash, see :meth:`~bpod_core.fsm.StateMachine.hash`.
-   * - ``state``
+   * - ``State``
      - :class:`~polars.datatypes.Categorical`
      - name of the current :class:`~bpod_core.fsm.State`.
-   * - ``type``
+   * - ``Type``
      - :class:`~polars.datatypes.Enum`
      - type of the current event.
-   * - ``event``
+   * - ``Event``
      - :class:`~polars.datatypes.Categorical`
      - input event name; only for events of type ``InputEvent``.
-   * - ``channel``
+   * - ``Channel``
      - :class:`~polars.datatypes.Categorical`
      - name of the respective input or output channel.
-   * - ``value``
-     - :class:`~polars.datatypes.UInt8`
+   * - ``Value``
+     - :class:`~polars.datatypes.UInt16`
      - value of the channel.
 
 For the state machine in :numref:`on_the_fly_fsm` the returned
@@ -59,9 +62,9 @@ For the state machine in :numref:`on_the_fly_fsm` the returned
    >>> data
    shape: (1_100, 8)
    ┌────────────────────────────────┬───────┬──────────────────┬───────┬─────────────────┬───────┬─────────┬───────┐
-   │ time                           ┆ trial ┆ state machine    ┆ state ┆ type            ┆ event ┆ channel ┆ value │
+   │ Time                           ┆ Trial ┆ State Machine    ┆ State ┆ Type            ┆ Event ┆ Channel ┆ Value │
    │ ---                            ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
-   │ datetime[μs, UTC]              ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u8    │
+   │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
    ╞════════════════════════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
    │ 2026-07-22 12:57:29.766633 UTC ┆ 0     ┆ 3725de06508951c9 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
    │ 2026-07-22 12:57:29.766633 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
@@ -72,7 +75,7 @@ For the state machine in :numref:`on_the_fly_fsm` the returned
    │ 2026-07-22 12:57:45.100633 UTC ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
    │ 2026-07-22 12:57:45.200633 UTC ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
    │ 2026-07-22 12:57:45.200633 UTC ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-   │ 2026-07-22 12:57:45.200733 UTC ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 12:57:45.200633 UTC ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
    │ 2026-07-22 12:57:45.200635 UTC ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
    └────────────────────────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
 
@@ -96,12 +99,12 @@ Displaying the timestamps in a different timezone is a one-liner:
 .. doctest-code-block::
    :group: polars
 
-   >>> data.with_columns(pl.col("time").dt.convert_time_zone("Europe/Berlin"))
+   >>> data.with_columns(pl.col("Time").dt.convert_time_zone("Europe/Berlin"))
    shape: (1_100, 8)
    ┌─────────────────────────────────┬───────┬──────────────────┬───────┬─────────────────┬───────┬─────────┬───────┐
-   │ time                            ┆ trial ┆ state machine    ┆ state ┆ type            ┆ event ┆ channel ┆ value │
+   │ Time                            ┆ Trial ┆ State Machine    ┆ State ┆ Type            ┆ Event ┆ Channel ┆ Value │
    │ ---                             ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
-   │ datetime[μs, Europe/Berlin]     ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u8    │
+   │ datetime[μs, Europe/Berlin]     ┆ u32   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
    ╞═════════════════════════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
    │ 2026-07-22 14:57:29.766633 CES… ┆ 0     ┆ 3725de06508951c9 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
    │ 2026-07-22 14:57:29.766633 CES… ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
@@ -112,7 +115,7 @@ Displaying the timestamps in a different timezone is a one-liner:
    │ 2026-07-22 14:57:45.100633 CES… ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
    │ 2026-07-22 14:57:45.200633 CES… ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
    │ 2026-07-22 14:57:45.200633 CES… ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-   │ 2026-07-22 14:57:45.200733 CES… ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+   │ 2026-07-22 14:57:45.200633 CES… ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
    │ 2026-07-22 14:57:45.200635 CES… ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
    └─────────────────────────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
 
@@ -124,12 +127,12 @@ the result automatically takes on the :class:`~polars.datatypes.Duration` type:
 .. doctest-code-block::
    :group: polars
 
-   >>> data.with_columns(pl.col("time") - pl.col("time").first())
+   >>> data.with_columns(pl.col("Time") - pl.col("Time").first())
    shape: (1_100, 8)
    ┌──────────────┬───────┬──────────────────┬───────┬─────────────────┬───────┬─────────┬───────┐
-   │ time         ┆ trial ┆ state machine    ┆ state ┆ type            ┆ event ┆ channel ┆ value │
+   │ Time         ┆ Trial ┆ State Machine    ┆ State ┆ Type            ┆ Event ┆ Channel ┆ Value │
    │ ---          ┆ ---   ┆ ---              ┆ ---   ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
-   │ duration[μs] ┆ u16   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u8    │
+   │ duration[μs] ┆ u32   ┆ cat              ┆ cat   ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
    ╞══════════════╪═══════╪══════════════════╪═══════╪═════════════════╪═══════╪═════════╪═══════╡
    │ 0µs          ┆ 0     ┆ 3725de06508951c9 ┆ null  ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
    │ 0µs          ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
@@ -140,7 +143,7 @@ the result automatically takes on the :class:`~polars.datatypes.Duration` type:
    │ 15s 334ms    ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
    │ 15s 434ms    ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
    │ 15s 434ms    ┆ 99    ┆ 855928477a81a140 ┆ s2    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-   │ 15s 434100µs ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+   │ 15s 434ms    ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
    │ 15s 434002µs ┆ 99    ┆ 855928477a81a140 ┆ null  ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
    └──────────────┴───────┴──────────────────┴───────┴─────────────────┴───────┴─────────┴───────┘
 
@@ -156,12 +159,12 @@ filter the table like so:
    :group: polars
 
    >>> import polars as pl
-   >>> data.filter(pl.col("channel") == "PWM1")
+   >>> data.filter(pl.col("Channel") == "PWM1")
    shape: (200, 8)
    ┌────────────────────────────────┬───────┬──────────────────┬───────┬──────────────┬───────┬─────────┬───────┐
-   │ time                           ┆ trial ┆ state machine    ┆ state ┆ type         ┆ event ┆ channel ┆ value │
+   │ Time                           ┆ Trial ┆ State Machine    ┆ State ┆ Type         ┆ Event ┆ Channel ┆ Value │
    │ ---                            ┆ ---   ┆ ---              ┆ ---   ┆ ---          ┆ ---   ┆ ---     ┆ ---   │
-   │ datetime[μs, UTC]              ┆ u16   ┆ cat              ┆ cat   ┆ enum         ┆ cat   ┆ cat     ┆ u8    │
+   │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat   ┆ enum         ┆ cat   ┆ cat     ┆ u16   │
    ╞════════════════════════════════╪═══════╪══════════════════╪═══════╪══════════════╪═══════╪═════════╪═══════╡
    │ 2026-07-22 12:57:29.766633 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s1    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 153   │
    │ 2026-07-22 12:57:29.844833 UTC ┆ 0     ┆ 3725de06508951c9 ┆ s2    ┆ OutputAction ┆ null  ┆ PWM1    ┆ 0     │
@@ -191,7 +194,7 @@ by the state machines in :numref:`on_the_fly_fsm` to produce a stairstep graph o
    from pathlib import Path
    from bpod_core.bpod._threads import _TRIAL_DATA_SCHEMA
 
-   pqt_file = Path(_DOCS_STATIC) / "example_dataframe.pqt"
+   pqt_file = Path(_DOCS_DATA) / "example_dataframe.pqt"
    data = pl.read_parquet(pqt_file)
 
 .. plot::
@@ -203,13 +206,13 @@ by the state machines in :numref:`on_the_fly_fsm` to produce a stairstep graph o
 
    # filter data to values of the 'PWM1' channel across the first 10 trials
    filtered = data.filter(
-       (pl.col("channel") == "PWM1") &
-       (pl.col("trial") <= 10)
+       (pl.col("Channel") == "PWM1") &
+       (pl.col("Trial") <= 10)
    )
 
-   # extract two columns, relative 'time' and 'value'
-   x = filtered['time'] - filtered['time'].first()
-   y = filtered['value']
+   # extract two columns, relative 'Time' and 'Value'
+   x = filtered['Time'] - filtered['Time'].first()
+   y = filtered['Value']
 
    # matplotlib doesn't play nice with timedelta values, so we convert them to float
    x = x.dt.total_seconds(fractional=True)
@@ -261,7 +264,7 @@ If you prefer `Pandas <https://pandas.pydata.org/>`__ over
    :group: polars
 
    >>> data.to_pandas()
-                                    time  trial     state machine state             type event channel  value
+                                    Time  Trial     State Machine State             Type Event Channel  Value
    0    2026-07-22 12:57:29.766633+00:00      0  3725de06508951c9   NaN       TrialStart   NaN     NaN    NaN
    1    2026-07-22 12:57:29.766633+00:00      0  3725de06508951c9    s1       StateStart   NaN     NaN    NaN
    2    2026-07-22 12:57:29.766633+00:00      0  3725de06508951c9    s1     OutputAction   NaN    PWM1  153.0
@@ -271,7 +274,7 @@ If you prefer `Pandas <https://pandas.pydata.org/>`__ over
    1095 2026-07-22 12:57:45.100633+00:00     99  855928477a81a140    s2     OutputAction   NaN    PWM1    0.0
    1096 2026-07-22 12:57:45.200633+00:00     99  855928477a81a140    s2       InputEvent   Tup     NaN    NaN
    1097 2026-07-22 12:57:45.200633+00:00     99  855928477a81a140    s2         StateEnd   NaN     NaN    NaN
-   1098 2026-07-22 12:57:45.200733+00:00     99  855928477a81a140   NaN         TrialEnd   NaN     NaN    NaN
+   1098 2026-07-22 12:57:45.200633+00:00     99  855928477a81a140   NaN         TrialEnd   NaN     NaN    NaN
    1099 2026-07-22 12:57:45.200635+00:00     99  855928477a81a140   NaN  TrialEndControl   NaN     NaN    NaN
    <BLANKLINE>
    [1100 rows x 8 columns]

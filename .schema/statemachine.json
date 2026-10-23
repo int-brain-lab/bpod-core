@@ -3,7 +3,7 @@
     "Actions": {
       "additionalProperties": {
         "description": "The integer value of the output action",
-        "maximum": 255,
+        "maximum": 65535,
         "minimum": 0,
         "type": "integer"
       },
@@ -120,7 +120,7 @@
         "value_on": {
           "default": 0,
           "description": "The value a channel is set to",
-          "maximum": 255,
+          "maximum": 65535,
           "minimum": 0,
           "title": "Channel Value",
           "type": "integer"
@@ -128,7 +128,7 @@
         "value_off": {
           "default": 0,
           "description": "The value a channel is set to",
-          "maximum": 255,
+          "maximum": 65535,
           "minimum": 0,
           "title": "Channel Value",
           "type": "integer"

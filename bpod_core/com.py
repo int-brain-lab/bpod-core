@@ -2,9 +2,8 @@
 
 import contextlib
 import logging
-import re
 import weakref
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterator
 from contextlib import AbstractContextManager
 from struct import Struct
 from types import TracebackType
@@ -26,6 +25,7 @@ from bpod_core.constants import (
     STRUCT_UINT32_LE,
     STRUCT_UINT64_LE,
 )
+from bpod_core.misc import Filter, _match_filter
 
 logger = logging.getLogger(__name__)
 
@@ -613,7 +613,12 @@ class ExtendedSerial(Serial):
         s = fmt if isinstance(fmt, Struct) else Struct(fmt)
         return s.unpack(self.query(query, s.size))
 
-    def verify(self, query: Buffer = b'', expected_response: bytes = b'\x01') -> bool:
+    def verify(
+        self,
+        query: Buffer = b'',
+        expected_response: bytes = b'\x01',
+        timeout: float | None = None,
+    ) -> bool:
         r"""
         Verify the response of the serial port.
 
@@ -625,12 +630,18 @@ class ExtendedSerial(Serial):
         query : Buffer, default: b''
             The query to be sent to the serial port.
         expected_response : bytes, default: b'\x01'
-            The expected response from the serial port.
+            The expected response from the serial port. Its length determines the
+            number of bytes read from the serial port. An empty value reads no bytes
+            and always compares equal.
+        timeout : float or None, optional
+            Read timeout in seconds, applied to this call only. If ``None``, the
+            port's configured timeout is used.
 
         Returns
         -------
         bool
             ``True`` if the response matches the expected response, ``False`` otherwise.
+            A timeout yields a short response and hence returns ``False``.
 
         Examples
         --------
@@ -639,7 +650,33 @@ class ExtendedSerial(Serial):
             if not serial_port.verify(b'\x48'):
                 raise RuntimeError('Device did not acknowledge handshake')
         """
-        return self.query(query) == expected_response
+        with self.temporary_timeout(timeout):
+            return self.query(query, len(expected_response)) == expected_response
+
+    @contextlib.contextmanager
+    def temporary_timeout(self, timeout: float | None) -> Iterator[None]:
+        """
+        Temporarily override the port's read timeout.
+
+        Parameters
+        ----------
+        timeout : float or None
+            Read timeout in seconds to apply within the context. If ``None``, the
+            port's current timeout is left unchanged.
+
+        Yields
+        ------
+        None
+        """
+        if timeout is None:
+            yield
+            return
+        original_timeout = self.timeout
+        self.timeout = timeout
+        try:
+            yield
+        finally:
+            self.timeout = original_timeout
 
 
 class ChunkedSerialReader(Protocol):
@@ -721,29 +758,60 @@ class ChunkedSerialReader(Protocol):
             del self._buffer[: self._chunk_size]
 
 
-FilterValue = str | int | re.Pattern[str] | None | Sequence['FilterValue']
-"""Type for filter values used in :func:`find_ports`."""
-
-
-def find_ports(**filters: FilterValue) -> list[ListPortInfo]:
+def find_ports(
+    *,
+    device: Filter[str] | None = None,
+    name: Filter[str] | None = None,
+    description: Filter[str] | None = None,
+    hwid: Filter[str] | None = None,
+    vid: int | Collection[int] | None = None,
+    pid: int | Collection[int] | None = None,
+    serial_number: Filter[str] | None = None,
+    location: Filter[str] | None = None,
+    manufacturer: Filter[str] | None = None,
+    product: Filter[str] | None = None,
+    interface: Filter[str] | None = None,
+) -> list[ListPortInfo]:
     r"""
     Find serial ports matching specified criteria.
 
-    Multiple filters use AND logic. Iterables within a single filter use OR logic.
+    Each parameter filters on the :class:`~serial.tools.list_ports_common.ListPortInfo`
+    attribute of the same name. Multiple filters use AND logic. Collections within a
+    single filter use OR logic. Filters set to ``None`` are ignored.
 
     Parameters
     ----------
-    **filters : FilterValue
-        Port attributes to filter by. Values can be:
-
-        - Scalar: exact match
-        - Sequence: match any item (OR logic)
-        - re.Pattern: regex match (use :func:`re.compile`)
+    device : Filter, optional
+        Full device path, e.g., ``'/dev/ttyACM0'`` or ``'COM3'``.
+    name : Filter, optional
+        Short device name.
+    description : Filter, optional
+        Human-readable description.
+    hwid : Filter, optional
+        Hardware ID.
+    vid : int or Collection of int, optional
+        USB vendor ID.
+    pid : int or Collection of int, optional
+        USB product ID.
+    serial_number : Filter, optional
+        USB serial number.
+    location : Filter, optional
+        USB location.
+    manufacturer : Filter, optional
+        USB manufacturer.
+    product : Filter, optional
+        USB product.
+    interface : Filter, optional
+        USB interface.
 
     Returns
     -------
     list of ListPortInfo
         Ports matching all criteria.
+
+    See Also
+    --------
+    bpod_core.misc.Filter : Semantics of the individual filter values.
 
     Examples
     --------
@@ -762,23 +830,12 @@ def find_ports(**filters: FilterValue) -> list[ListPortInfo]:
     Combine filters::
 
         find_ports(vid=0x16C0, device=re.compile(r'/dev/ttyACM\d+'))
-
-    Notes
-    -----
-    Strings use exact matching. Use :func:`re.compile` for regex patterns.
     """
-
-    def matches(key: object, value: FilterValue) -> bool:
-        if isinstance(value, Sequence) and not isinstance(value, str):
-            return any(matches(key, v) for v in value)
-        if isinstance(value, re.Pattern):
-            return isinstance(key, str) and value.search(key) is not None
-        return key == value
-
+    filters = {k: v for k, v in locals().items() if v is not None}
     return [
         port
         for port in sorted(comports())
-        if all(matches(getattr(port, k, None), v) for k, v in filters.items())
+        if all(_match_filter(getattr(port, k), v) for k, v in filters.items())
     ]
 
 

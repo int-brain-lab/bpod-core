@@ -1,3 +1,6 @@
+.. meta::
+   :description: Using the Bpod class to connect to a device and run state machines.
+
 Using the Bpod Class
 ====================
 
@@ -20,32 +23,62 @@ serial connection is closed and any running trial is allowed to finish on exit.
 .. testsetup:: bpod-context-manager
 
    import atexit
-   import types
-   from unittest.mock import patch
+   import datetime as dt
    from types import SimpleNamespace
-   from bpod_core.bpod import Bpod
-   from unittest.mock import MagicMock
+   from unittest.mock import MagicMock, patch
 
-   original_run = Bpod.run
-   original_validate = Bpod.validate_state_machine
+   import polars as pl
+
+   from bpod_core.bpod import Bpod
+   from bpod_core.bpod._compiler import StateMachineCompiler
+   from bpod_core.bpod.constants import FlexIOChannelType
+   from bpod_core.bpod.structs import VersionInfo, _HardwareConfiguration
+
+   # a Bpod Finite State Machine 2+ with three module ports and FlexIO disabled
+   compiler = StateMachineCompiler(
+       _HardwareConfiguration(
+           max_states=256,
+           cycle_period_us=100,
+           max_serial_events=75,
+           max_bytes_per_serial_message=5,
+           n_global_timers=16,
+           n_global_counters=8,
+           n_conditions=16,
+           n_inputs=16,
+           input_description=b'UUUXZFFFFBBPPPPP',
+           n_outputs=21,
+           output_description=b'UUUXZFFFFBBPPPPPVVVVV',
+           cycle_frequency=10000,
+           n_modules=3,
+           n_flexio=4,
+       ),
+       VersionInfo(
+           firmware=(23, 0), machine=4, machine_str='2+ r1.0', pcb=1, bpod_core=''
+       ),
+       {f'Serial{i}': [f'Serial{i}_{j}' for j in range(15)] for i in (1, 2, 3)},
+       flexio_channel_types=dict.fromkeys(
+           ('Flex1', 'Flex2', 'Flex3', 'Flex4'), FlexIOChannelType.DISABLED
+       ),
+       threshold_voltages={},
+   )
+   trial_data = pl.read_parquet(_DOCS_DATA / 'example_dataframe.pqt')
+   t0 = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+   port1_press = pl.DataFrame(
+       {'Time': [t0, t0 + dt.timedelta(seconds=0.25)], 'Channel': ['Port1', 'Port1']}
+   )
 
    def fake_init(self, *args, **kwargs):
-       self._disable_all_module_relays = lambda: None
-       self._hardware = SimpleNamespace(
-           max_states=256,
-           n_global_timers=16,
-           n_global_counters=16,
-           n_conditions=64,
-           cycle_frequency=1000,
-       )
        self._bpod_finalizer = SimpleNamespace(detach=lambda: None)
        self._serial_device_finalizer = SimpleNamespace(detach=lambda: None)
        self._softcode_thread = MagicMock()
-       self._hardware_hash = b''
        self._serial = None
        self._serial_number = '14260000'
-       self.run = types.MethodType(original_run, self)
-       self.validate_state_machine = types.MethodType(original_validate, self)
+       # validate and compile like the real Bpod, without sending to hardware
+       self.run = lambda state_machine, **kwargs: compiler.compile(
+           state_machine=state_machine
+       )
+       self.get_data = lambda **kwargs: trial_data
+       self.peek_data = lambda *args, **kwargs: port1_press
 
    patcher = patch.object(Bpod, "__init__", fake_init)
    patcher.start()
@@ -120,8 +153,11 @@ collected data as a Polars :class:`~polars.DataFrame` (see :doc:`/data_format`).
 
 .. seealso::
 
-   Refer to :doc:`../state_machines/index` for the full reference of the
-   :class:`~bpod_core.fsm.StateMachine` object.
+   Refer to :doc:`/state_machines/index` for the full reference of the
+   :class:`~bpod_core.fsm.StateMachine` object, including how to check which event
+   and action names are currently valid via
+   :attr:`~bpod_core.bpod.Bpod.input_event_names` and
+   :attr:`~bpod_core.bpod.Bpod.action_names`.
 
 
 Zero-Downtime Execution
@@ -134,7 +170,7 @@ away if no trial is running, or as soon as the preceding trial ends—enabling
 back-to-back execution of state machines with zero inter-trial downtime and continuous
 acquisition.
 
-.. dark-light-figure:: /_static/bpod_run
+.. dark-light-figure:: bpod_run
 
    Timeline of four consecutive :meth:`~bpod_core.bpod.Bpod.run` calls across the Host
    PC and Bpod.
@@ -195,6 +231,17 @@ trial, yielding randomized state timers and action values:
 
    data = bpod.get_data()
 
+.. note::
+
+   While a state machine is running, the Bpod's serial connection carries the trial's
+   events. Methods that query or reconfigure the hardware, such as
+   :meth:`~bpod_core.bpod.Bpod.set_status_led`,
+   :meth:`~bpod_core.bpod.Bpod.update_modules`,
+   :meth:`~bpod_core.bpod.Bpod.reset_session_clock` or reading an input, raise a
+   :exc:`~bpod_core.bpod.errors.BpodError` until it has finished. Queuing the next state
+   machine with :meth:`~bpod_core.bpod.Bpod.run`, sending softcodes, overriding outputs,
+   stopping the state machine and retrieving data all work during a trial.
+
 Retrieval of Partial Data
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -204,8 +251,8 @@ without waiting for it to finish. It blocks until one of the specified
 point.
 
 The example below uses two state machines per trial: the first measures the duration of
-an event on ``Port0``; the second plays back an output of that same duration on
-``PWM0``. After starting ``fsm1``, :meth:`~bpod_core.bpod.Bpod.peek_data` blocks until
+an event on ``Port1``; the second plays back an output of that same duration on
+``PWM1``. After starting ``fsm1``, :meth:`~bpod_core.bpod.Bpod.peek_data` blocks until
 the ``pause`` state is reached, extracts the timing, and uses it to configure ``fsm2``
 before queuing it—with no idle time between the two runs. The final
 :meth:`~bpod_core.bpod.Bpod.get_data` call collects data across all trials.
@@ -224,13 +271,13 @@ before queuing it—with no idle time between the two runs. The final
 
    # construct first state machine (identical across all trials)
    fsm1 = StateMachine()
-   fsm1.add_state('wait', transitions={'Port0_High': 'measure'})
-   fsm1.add_state('measure', transitions={'Port0_Low': 'pause'})
+   fsm1.add_state('wait', transitions={'Port1_High': 'measure'})
+   fsm1.add_state('measure', transitions={'Port1_Low': 'pause'})
    fsm1.add_state('pause', timer=0.5, transitions={'Tup': '>exit'})
 
    # construct second state machine (will be modified within each trial)
    fsm2 = StateMachine()
-   fsm2.add_state('echo', transitions={'Tup': '>exit'}, actions={'PWM0': 255})
+   fsm2.add_state('echo', transitions={'Tup': '>exit'}, actions={'PWM1': 255})
 
    with Bpod() as bpod:
        for i in range(10):
@@ -240,8 +287,8 @@ before queuing it—with no idle time between the two runs. The final
            # peek at data once 'pause' state has been reached
            runtime_data = bpod.peek_data(trigger_states=['pause'])
 
-           # calculate duration of 'Port0_High'
-           d = runtime_data.filter(pl.col("channel") == "Port0")['time'].diff().last()
+           # calculate duration of 'Port1_High'
+           d = runtime_data.filter(pl.col("Channel") == "Port1")['Time'].diff().last()
 
            # set state timer and run second state machine
            fsm2.states['echo'].timer = d

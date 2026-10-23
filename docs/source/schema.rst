@@ -1,3 +1,6 @@
+.. meta::
+   :description: The JSON Schema of bpod-core's state machine definition.
+
 JSON Schema
 ===========
 

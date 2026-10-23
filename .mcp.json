@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "bpod-core-docs": {
+      "type": "http",
+      "url": "https://int-brain-lab.gitmcp.io/bpod-core"
+    }
+  }
+}

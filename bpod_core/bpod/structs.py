@@ -1,17 +1,25 @@
 """Data structures used by the bpod module."""
 
+from collections.abc import Sequence
 from enum import IntEnum
 from typing import Any, Literal, NamedTuple, TypeAlias
 
 import msgspec
-import numpy as np
-import numpy.typing as npt
+from typing_extensions import Self
 
+from bpod_core.bpod.constants import (
+    FlexIOChannelType,
+    FlexIOThresholdMode,
+    FlexIOThresholdPolarity,
+)
 from bpod_core.misc import ByteEnum
 
 
 class _ValidationData(NamedTuple):
-    """Data returned by :meth:`Bpod._validate_state_machine`."""
+    """Data returned by the state machine compiler's validation.
+
+    See :meth:`~bpod_core.bpod._compiler.StateMachineCompiler.validate`.
+    """
 
     use_back_operator: bool
     """Whether the state machine uses the ``>back`` operator."""
@@ -45,15 +53,15 @@ class _InputEventRanges(NamedTuple):
     """Index range for condition events."""
 
 
-class StateMachineLookup(NamedTuple):
+class _StateMachineLookup(NamedTuple):
     """Lookup data to decode the raw event stream during a state machine trial."""
 
     fsm_hash: bytes
     """The state machine's hash value."""
     state_names: list[str]
     """Names of all states, indexed by state index."""
-    state_transition_matrix: npt.NDArray[np.uint8]
-    """Transition matrix of shape ``(n_states, 255)``."""
+    state_transition_matrix: list[list[int]]
+    """Target state per state and event: ``n_states`` lists of 255 state indices."""
     state_actions: list[dict[str, int]]
     """Per-state mapping of action name to value."""
     use_back_op: bool
@@ -62,7 +70,7 @@ class StateMachineLookup(NamedTuple):
     """Mapping from state index to state name."""
 
 
-class TimeReferences(NamedTuple):
+class _TimeReferences(NamedTuple):
     """Reference values for performance counters."""
 
     init_system_time_ns: int
@@ -73,16 +81,16 @@ class TimeReferences(NamedTuple):
     """System time when Bpod's session clock was last reset (nanoseconds)."""
 
 
-class RawEvent(NamedTuple):
-    """Raw event data from the Bpod device."""
+class _RawEvents(NamedTuple):
+    """Raw events of one state machine cycle, or a single synthetic event."""
 
     micros_us: int
-    """Time of the event relative to the Bpod's session clock (microseconds)."""
-    event_id: int
-    """Index of the event."""
+    """Time of the events relative to the Bpod's session clock (microseconds)."""
+    event_ids: Sequence[int]
+    """Indices of the events, in the order the Bpod evaluates them."""
 
 
-class RawSoftcode(NamedTuple):
+class _RawSoftcode(NamedTuple):
     """Raw softcode data from the Bpod device."""
 
     softcode: int
@@ -91,21 +99,6 @@ class RawSoftcode(NamedTuple):
     """``time.perf_counter_ns()`` captured immediately after the serial read."""
     micros_us: int
     """Bpod session clock at the time of softcode firing (microseconds)."""
-
-
-class BpodSettings(msgspec.Struct):
-    """Settings for a specific Bpod device."""
-
-    serial_number: str
-    """Serial number of the device."""
-    name: str = ''
-    """User-defined name of the device."""
-    location: str = ''
-    """User-defined location of the device."""
-    zmq_port_pub: int | None = None
-    """Port number for the ZeroMQ PUB service."""
-    zmq_port_rep: int | None = None
-    """Port number for the ZeroMQ REP service."""
 
 
 class BpodInfo(msgspec.Struct):
@@ -144,18 +137,18 @@ class BpodMessage(msgspec.Struct, array_like=True, tag_field='kind'):
     """Base Envelope for a Bpod IPC message."""
 
 
-class RequestHello(BpodMessage, tag='h'):
+class _RequestHello(BpodMessage, tag='h'):
     """Envelope for a handshake request."""
 
     bpod_core_version: str
     """The version of bpod-core that the client is using."""
 
 
-class RequestBye(BpodMessage, tag='b'):
+class _RequestBye(BpodMessage, tag='b'):
     """Envelope for a disconnect notice."""
 
 
-class RequestCall(BpodMessage, tag='c'):
+class _RequestCall(BpodMessage, tag='c'):
     """Envelope for a method call request."""
 
     method_name: str
@@ -166,21 +159,21 @@ class RequestCall(BpodMessage, tag='c'):
     """Keyword arguments to be passed to the method."""
 
 
-class RequestData(RequestCall, tag='rd'):
+class _RequestData(_RequestCall, tag='rd'):
     """Envelope for a data request."""
 
     compression: Literal['uncompressed', 'lz4', 'zstd'] = 'uncompressed'
     """The compression method to be used for the data."""
 
 
-class ReplyGeneric(BpodMessage, tag='g'):
+class _ReplyGeneric(BpodMessage, tag='g'):
     """Envelope for a generic reply."""
 
     value: Any = None
     """The content of the reply."""
 
 
-class ReplyWelcome(BpodMessage, tag='w'):
+class _ReplyWelcome(BpodMessage, tag='w'):
     """Envelope for a handshake reply."""
 
     version: 'VersionInfo'
@@ -314,8 +307,8 @@ class EventTrialEndControl(BpodMessage, tag=_EventTag.TrialEndControl.value):
     Message terminating a trial's stream with timing-verification data.
 
     Trails :class:`EventTrialEnd` and carries the hardware's independent
-    end-of-trial microsecond count - the same clock pair compared by the
-    reader's timing-violation warning.
+    end-of-trial microsecond count, which the reader's timing-violation warning
+    compares with :class:`EventTrialEnd`.
     """
 
     time_us: int
@@ -329,10 +322,10 @@ class EventTrialEndControl(BpodMessage, tag=_EventTag.TrialEndControl.value):
     """Total number of messages published for the trial (completeness check)."""
 
 
-BpodReplyUnion: TypeAlias = ReplyGeneric | ReplyWelcome
+_BpodReplyUnion: TypeAlias = _ReplyGeneric | _ReplyWelcome  # noqa: PYI047
 """Tagged union of all concrete :class:`BpodMessage` subclasses used for replies."""
 
-BpodRequestUnion: TypeAlias = RequestHello | RequestBye | RequestCall | RequestData
+_BpodRequestUnion: TypeAlias = _RequestHello | _RequestBye | _RequestCall | _RequestData  # noqa: PYI047
 """Tagged union of all concrete :class:`BpodMessage` subclasses used for requests."""
 
 BpodEventUnion: TypeAlias = (
@@ -362,7 +355,7 @@ class VersionInfo(msgspec.Struct, frozen=True):
     """bpod-core version"""
 
 
-class HardwareConfiguration(msgspec.Struct, frozen=True):
+class _HardwareConfiguration(msgspec.Struct, frozen=True):
     """Represents the Bpod's on-board hardware configuration."""
 
     max_states: int
@@ -391,10 +384,47 @@ class HardwareConfiguration(msgspec.Struct, frozen=True):
     """Frequency of the state machine's refresh cycle during a trial in Hertz."""
     n_modules: int
     """Number of modules supported by the state machine."""
+    n_flexio: int
+    """Number of FlexIO channels."""
 
 
-class HardwareState(msgspec.Struct):
+class _HardwareState(msgspec.Struct):
     """Represents the Bpod's current hardware state."""
 
     status_led: bool | None = None
     """The current state of the Bpod's status LED. None if unknown."""
+
+
+class _FlexIOState(msgspec.Struct):
+    """Represents the state of the FlexIO subsystem."""
+
+    channel_types: tuple[FlexIOChannelType, ...]
+    threshold_modes: tuple[FlexIOThresholdMode, ...]
+    threshold_enabled: tuple[tuple[bool, ...], ...]
+    threshold_voltages: tuple[tuple[int, ...], ...]
+    threshold_polarities: tuple[tuple[FlexIOThresholdPolarity, ...], ...]
+    analog_sampling_rate: int
+    n_reads_per_sample: int
+
+    @classmethod
+    def create_default(cls, n_channels: int, n_thresholds: int = 2) -> Self:
+        """
+        Create a new FlexIOState instance with default values.
+
+        Parameters
+        ----------
+        n_channels : int
+            The number of FlexIO channels.
+        n_thresholds : int, default: 2
+            The number of analog thresholds per channel.
+        """
+        return cls(
+            channel_types=n_channels * (FlexIOChannelType.DISABLED,),
+            threshold_modes=n_channels * (FlexIOThresholdMode.MANUAL,),
+            threshold_enabled=n_channels * ((False,) * n_thresholds,),
+            threshold_voltages=n_channels * ((5000,) * n_thresholds,),
+            threshold_polarities=n_channels
+            * ((FlexIOThresholdPolarity.RISING,) * n_thresholds,),
+            analog_sampling_rate=1000,
+            n_reads_per_sample=3,
+        )

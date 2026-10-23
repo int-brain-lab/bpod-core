@@ -1,6 +1,11 @@
 name: unit tests
 on:
   workflow_call:
+    inputs:
+      release:
+        description: Run the release checks (lockfile, version and changelog)
+        type: boolean
+        default: false
   workflow_dispatch:
   push:
     branches:
@@ -17,10 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    if: (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.base_ref == 'main') || github.event_name == 'workflow_call'
+    if: (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.base_ref == 'main') || inputs.release
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - name: Verify lockfile
         run: |
           uv lock --check || (echo "::error file=uv.lock::uv.lock is not up to date" && exit 1)
@@ -42,7 +49,26 @@ jobs:
             echo "::error file=CHANGELOG.md::CHANGELOG must have version $PKG_VERSION with today's date ($TODAY)"
             exit 1
           fi
+  quality:
+    name: "ruff & mypy"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
+        with:
+          version-file: uv.lock
+      - run: ruff format --check
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: true
+          prune-cache: true
+      - name: sync dependencies
+        run: uv sync --no-default-groups --group tox
+      - run: uv run tox -m 'typing' --fail-fast -p --parallel-no-spinner
   tox:
+    needs: [quality]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -50,24 +76,27 @@ jobs:
     steps:
       - name: Install libegl1 (Ubuntu only)
         if: matrix.os == 'ubuntu-latest'
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        run: sudo apt-get install -y libegl1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          packages: libegl1
-          version: 1.0
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: true
+          prune-cache: true
       - name: sync dependencies
-        run: uv sync --no-default-groups --group test --group ci
+        run: uv sync --no-default-groups --group tox --group ci
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: uv run tox --fail-fast --parallel-no-spinner -- -ci
+        run: uv run tox --skip-env 'linting|formatting|typing' --fail-fast -p --parallel-no-spinner -- -ci
   finish:
     needs: tox
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - uses: coverallsapp/github-action@v2
+      - uses: coverallsapp/github-action@8d6379e14d29928660c4ba802d8e85393440b329 # v2.3.8
         continue-on-error: true
         with:
           parallel-finished: true
+          coverage-reporter-version: v0.6.22

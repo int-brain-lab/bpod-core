@@ -8,6 +8,7 @@ from bpod_core.bpod import structs
 
 def _all_subclasses(cls: type) -> Iterator[type]:
     """Yield all direct and indirect subclasses of a class."""
+    subclass: type
     for subclass in cls.__subclasses__():
         yield subclass
         yield from _all_subclasses(subclass)
@@ -16,8 +17,8 @@ def _all_subclasses(cls: type) -> Iterator[type]:
 def test_bpod_message_union_is_complete():
     """Union TypeAliases cover every concrete BpodMessage subclass."""
     assert {
-        *get_args(structs.BpodRequestUnion),
-        *get_args(structs.BpodReplyUnion),
+        *get_args(structs._BpodRequestUnion),
+        *get_args(structs._BpodReplyUnion),
         *get_args(structs.BpodEventUnion),
     } == set(_all_subclasses(structs.BpodMessage))
 

@@ -1,6 +1,9 @@
+.. meta::
+   :description: A modern Python interface for Bpod Finite State Machines.
+
 .. include:: ../../README.md
    :parser: myst_parser.sphinx_
-   :end-before: ## Links
+   :end-before: ## Installation
 
 .. toctree::
    :caption: User Guide
@@ -9,7 +12,8 @@
 
    installation
    state_machines/index
-   bpod/index
+   bpod_class/index
+   flexio/index
    data_format
    faq
    changelog
@@ -19,6 +23,7 @@
    :hidden:
 
    contributing
+   ipc
    schema
    api
 

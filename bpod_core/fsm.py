@@ -1,7 +1,8 @@
 """Module defining classes and types for creating and managing state machines."""
 
-import datetime
+import datetime as dt
 import re
+import threading
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, cast
@@ -25,7 +26,7 @@ from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 from pydantic_extra_types.color import Color, ColorType
 from xxhash import xxh3_64 as _xxh3_64
 
-from bpod_core.constants import UINT32_MAX
+from bpod_core.constants import UINT16_MAX, UINT32_MAX
 from bpod_core.misc import ValidatedDict, suggest_similar
 
 
@@ -52,7 +53,7 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
     raise NotImplementedError(f'Objects of type {type} are not supported')
 
 
-_timedelta_adapter = TypeAdapter(datetime.timedelta)
+_timedelta_adapter = TypeAdapter(dt.timedelta)
 
 
 def _validate_seconds(v: Any, h: ValidatorFunctionWrapHandler) -> float:
@@ -194,7 +195,7 @@ GlobalTimerChannelValue = Annotated[
         description='The value a channel is set to',
         default=0,
         ge=0,
-        le=255,
+        le=UINT16_MAX,
     ),
 ]
 
@@ -297,7 +298,7 @@ OutputActionValue = Annotated[
         title='Output Action Value',
         description='The integer value of the output action',
         ge=0,
-        le=255,
+        le=UINT16_MAX,
     ),
 ]
 
@@ -476,20 +477,31 @@ class StateMachine(BaseModel, title='State Machine'):
     name: StateMachineName = 'State Machine'
     """The name of the state machine."""
 
-    states: States = States()
+    # default factories, since pydantic deep-copies default instances for every new
+    # state machine; json_schema_extra keeps the defaults in the JSON schema
+    states: States = Field(default_factory=States, json_schema_extra={'default': {}})
     """A dictionary of states."""
 
-    global_timers: GlobalTimers = GlobalTimers()
+    global_timers: GlobalTimers = Field(
+        default_factory=GlobalTimers, json_schema_extra={'default': {}}
+    )
     """A dictionary of global timers."""
 
-    global_counters: GlobalCounters = GlobalCounters()
+    global_counters: GlobalCounters = Field(
+        default_factory=GlobalCounters, json_schema_extra={'default': {}}
+    )
     """A dictionary of global counters."""
 
-    conditions: Conditions = Conditions()
+    conditions: Conditions = Field(
+        default_factory=Conditions, json_schema_extra={'default': {}}
+    )
     """A dictionary of conditions."""
 
     _validation_cache: ClassVar[FIFOCache[bytes, _CheckData]] = FIFOCache(maxsize=1024)
     """Cache holding hashes of successfully validated state machine instances."""
+
+    _validation_lock: ClassVar[threading.Lock] = threading.Lock()
+    """Guards the cache, which all state machines share, possibly across threads."""
 
     def __repr__(self) -> str:
         fields = [f for f in StateMachine.model_fields if f != 'name']
@@ -532,10 +544,11 @@ class StateMachine(BaseModel, title='State Machine'):
         if name in self.states:
             raise ValueError(f"A state named '{name}' is already registered")
 
+        # the arguments have already been validated by validate_call
         self.states[name] = State.model_construct(
             timer=timer,
-            transitions=Transitions(transitions or {}),
-            actions=Actions(actions or {}),
+            transitions=Transitions.model_construct(transitions or {}),
+            actions=Actions.model_construct(actions or {}),
             comment=comment,
         )
 
@@ -1091,8 +1104,10 @@ class StateMachine(BaseModel, title='State Machine'):
 
     def _check(self, *, known_hash: bytes) -> _CheckData:
         # Shortcut if we already know that the state machine is valid
-        if known_hash in self._validation_cache:
-            return self._validation_cache[known_hash]
+        with self._validation_lock:
+            cached = self._validation_cache.get(known_hash)
+        if cached is not None:
+            return cached
 
         # Check for empty state machine
         if len(self.states) == 0:
@@ -1102,7 +1117,8 @@ class StateMachine(BaseModel, title='State Machine'):
         initial_state_name = next(iter(self.states))
         transition_targets = self.states.transition_targets
         all_state_names = list(self.states)
-        unreachable_states = set(all_state_names).difference(
+        state_name_set = set(all_state_names)
+        unreachable_states = state_name_set.difference(
             transition_targets | {initial_state_name}
         )
         if unreachable_states:
@@ -1118,11 +1134,11 @@ class StateMachine(BaseModel, title='State Machine'):
         # Check transitions for invalid target states
         for state_name, state in self.states.items():
             for condition_name, target in state.transitions.items():
-                if target not in all_state_names and not target.startswith('>'):
+                if target not in state_name_set and not target.startswith('>'):
                     raise ValueError(
                         f"Invalid target state '{target}' for transition condition"
                         f"'{condition_name}' in state '{state_name}'"
-                        + suggest_similar(target, set(all_state_names) - {state_name})
+                        + suggest_similar(target, state_name_set - {state_name})
                     )
 
         # add state machine's hash to cache, along with some data
@@ -1130,7 +1146,8 @@ class StateMachine(BaseModel, title='State Machine'):
             all_state_names=all_state_names,
             transition_targets=transition_targets,
         )
-        self._validation_cache[known_hash] = data
+        with self._validation_lock:
+            self._validation_cache[known_hash] = data
 
         # returning expensive transition_targets for further use by caller
         return data

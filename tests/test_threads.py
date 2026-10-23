@@ -9,11 +9,12 @@ import time
 from queue import SimpleQueue
 from typing import TYPE_CHECKING
 
-import numpy as np
 import polars as pl
 import pytest
+from serial import SerialException
 
 from bpod_core.bpod._threads import (
+    _SOFTCODE_STOP,
     _TRIAL_DATA_SCHEMA,
     EventThread,
     ReadThread,
@@ -30,13 +31,14 @@ from bpod_core.bpod.structs import (
     EventTrialEnd,
     EventTrialEndControl,
     EventTrialStart,
-    RawEvent,
-    RawSoftcode,
-    StateMachineLookup,
-    TimeReferences,
     _InputEvents,
+    _RawEvents,
+    _RawSoftcode,
+    _StateMachineLookup,
+    _TimeReferences,
 )
 from bpod_core.constants import STRUCT_UINT32_LE, STRUCT_UINT64_LE
+from bpod_core.misc import _HandlerSlot
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -46,7 +48,7 @@ _CONFIRM_FAIL = b'\x00'
 
 
 def _start(micros_us: int = 0) -> bytes:
-    """Encode start_micros_us as read by read_uint64."""
+    """Encode the start time the Bpod sends at the beginning of a trial."""
     return STRUCT_UINT64_LE.pack(micros_us)
 
 
@@ -65,6 +67,31 @@ def _exit_data(n_cycles: int, end_micros_us: int) -> bytes:
     return struct.pack('<IQ', n_cycles, end_micros_us)
 
 
+class _TrickleSerial:
+    """Fake serial port that hands out its data one byte per read."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = bytearray(data)
+
+    @property
+    def in_waiting(self) -> int:
+        return min(1, len(self._data))
+
+    def read(self, size: int = 1) -> bytes:
+        chunk = bytes(self._data[:1])
+        del self._data[:1]
+        return chunk
+
+
+class _UnpluggedSerial(_TrickleSerial):
+    """Fake serial port that fails once its data is used up, like an unplugged one."""
+
+    def read(self, size: int = 1) -> bytes:
+        if not self._data:
+            raise SerialException('device disconnected')
+        return super().read(size)
+
+
 def _drain(q: SimpleQueue) -> list:
     items = []
     while not q.empty():
@@ -72,22 +99,36 @@ def _drain(q: SimpleQueue) -> list:
     return items
 
 
+def _timed_events(q: SimpleQueue[_RawEvents]) -> list[tuple[int, int]]:
+    """Drain an event queue into one (time, event index) pair per event."""
+    return [(item.micros_us, i) for item in _drain(q) for i in item.event_ids]
+
+
 class TestReadThread:
     @pytest.fixture
     def make_thread(self, mock_ext_serial):
         """Factory: loads raw bytes into the mock serial and returns a ReadThread."""
 
-        def _make(data: bytes, *, cycle_period_us: int = 1):
+        def _make(
+            data: bytes,
+            *,
+            cycle_period_us: int = 1,
+            serial=None,
+            initial_bytes: bytes = b'',
+            initial_received_ns: int = 0,
+        ):
             mock_ext_serial.response_buffer.extend(data)
-            q_events: SimpleQueue[RawEvent] = SimpleQueue()
-            q_softcodes: SimpleQueue[RawSoftcode] = SimpleQueue()
+            q_events: SimpleQueue[_RawEvents] = SimpleQueue()
+            q_softcodes: SimpleQueue[_RawSoftcode] = SimpleQueue()
             thread = ReadThread(
-                serial=mock_ext_serial,
+                serial=serial or mock_ext_serial,
                 state_machine_hash=b'',
                 trial=0,
                 cycle_period_us=cycle_period_us,
                 queue_events=q_events,
                 queue_softcodes=q_softcodes,
+                initial_bytes=initial_bytes,
+                initial_received_ns=initial_received_ns,
             )
             return thread, q_events, q_softcodes
 
@@ -99,9 +140,8 @@ class TestReadThread:
         thread, q_events, _ = make_thread(data)
         thread.start()
         thread.join(timeout=2)
-        events = _drain(q_events)
-        assert events[0].event_id == _EventID.START_FSM
-        assert events[1].event_id == _EventID.START_STATE
+        events = [i for _, i in _timed_events(q_events)]
+        assert events[:2] == [_EventID.START_FSM, _EventID.START_STATE]
 
     def test_hardware_event_enqueued(self, make_thread):
         """A hardware event in an opcode-1 packet is placed on the event queue."""
@@ -115,8 +155,26 @@ class TestReadThread:
         thread, q_events, _ = make_thread(data)
         thread.start()
         thread.join(timeout=2)
-        event_indices = [e.event_id for e in _drain(q_events)]
+        event_indices = [i for _, i in _timed_events(q_events)]
         assert 42 in event_indices
+
+    def test_events_of_one_cycle_enqueued_together(self, make_thread):
+        """The events of one packet - one cycle - are enqueued as one item."""
+        data = (
+            _CONFIRM_OK
+            + _start()
+            + _opcode1([42, 43, 44], n_cycles=5)
+            + _opcode1([45], n_cycles=6)
+            + _opcode1([46, 255], n_cycles=10)  # EXIT isn't enqueued
+            + _exit_data(10, 10)
+        )
+        thread, q_events, _ = make_thread(data)
+        thread.start()
+        thread.join(timeout=2)
+        cycles = [
+            list(e.event_ids) for e in _drain(q_events) if 0 <= e.event_ids[0] < 255
+        ]
+        assert cycles == [[42, 43, 44], [45], [46]]
 
     def test_event_timestamp(self, make_thread):
         """Event bpod_count_us equals start_micros + n_cycles * cycle_period."""
@@ -130,8 +188,8 @@ class TestReadThread:
         thread, q_events, _ = make_thread(data, cycle_period_us=2)
         thread.start()
         thread.join(timeout=2)
-        event = next(e for e in _drain(q_events) if e.event_id == 10)
-        assert event.micros_us == 110  # 100 + 5 * 2
+        events = {i: t for t, i in _timed_events(q_events)}
+        assert events[10] == 110  # 100 + 5 * 2
 
     def test_softcode_enqueued(self, make_thread):
         """Opcode-2 packet places zero-based softcode on the softcode queue."""
@@ -147,16 +205,119 @@ class TestReadThread:
         thread.join(timeout=2)
         assert [item.softcode for item in _drain(q_softcodes)] == [3]
 
+    @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
+    def test_error_is_kept(self, make_thread):
+        """A lost connection ends the trial, keeping the error and the events so far."""
+        data = _CONFIRM_OK + _start(100) + _opcode1([42], n_cycles=5)
+        thread, q_events, _ = make_thread(b'', serial=_UnpluggedSerial(data))
+        thread.start()
+        thread.join(timeout=2)
+        assert isinstance(thread.error, SerialException)
+        events = [i for _, i in _timed_events(q_events)]
+        assert 42 in events
+        assert events[-1] == _EventID.STOP_SENTINEL
+
+    def test_packets_split_across_reads(self, make_thread):
+        """Packets that arrive one byte at a time are reassembled correctly."""
+        data = (
+            _CONFIRM_OK
+            + _start(100)
+            + _opcode1([42, 43], n_cycles=5)
+            + _opcode2(3)
+            + _opcode1([255], n_cycles=10)
+            + _exit_data(10, 110)
+        )
+        thread, q_events, q_softcodes = make_thread(b'', serial=_TrickleSerial(data))
+        thread.start()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        events = _timed_events(q_events)
+        assert (105, 42) in events
+        assert (105, 43) in events
+        assert [item.softcode for item in _drain(q_softcodes)] == [3]
+        assert thread.leftover == b''
+
+    def test_leftover_is_handed_to_next_trial(self, make_thread):
+        """Bytes read beyond a trial's end start the next reader's trial."""
+        next_trial = _CONFIRM_OK + _start(200) + _opcode2(4)
+        data = (
+            _CONFIRM_OK
+            + _start()
+            + _opcode1([255], n_cycles=1)
+            + _exit_data(1, 1)
+            + next_trial
+        )
+        thread, _, _ = make_thread(data)
+        thread.start()
+        thread.join(timeout=2)
+        assert thread.leftover == next_trial
+        assert thread.leftover_received_ns > 0
+
+        # the next reader starts from the leftover and reads the rest from the port;
+        # the softcode in the leftover keeps the time it was received at
+        next_thread, q_events, q_softcodes = make_thread(
+            _opcode1([255], n_cycles=1) + _exit_data(1, 201),
+            initial_bytes=thread.leftover,
+            initial_received_ns=thread.leftover_received_ns,
+        )
+        next_thread.start()
+        next_thread.join(timeout=2)
+        assert not next_thread.is_alive()
+        assert _timed_events(q_events)[0] == (200, _EventID.START_FSM)
+        softcode = _drain(q_softcodes)[0]
+        assert softcode.softcode == 4
+        assert softcode.received_ns == thread.leftover_received_ns
+
     def test_end_events_enqueued(self, make_thread):
         """END_FSM_CYCLES, END_FSM_MICROS, and STOP_SENTINEL are enqueued after exit."""
         data = _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(0, 0)
         thread, q_events, _ = make_thread(data)
         thread.start()
         thread.join(timeout=2)
-        event_indices = [e.event_id for e in _drain(q_events)]
+        event_indices = [i for _, i in _timed_events(q_events)]
         assert _EventID.END_FSM_CYCLES in event_indices
         assert _EventID.END_FSM_MICROS in event_indices
         assert event_indices[-1] == _EventID.STOP_SENTINEL
+
+    def test_trial_end_timed_by_exit_packet(self, make_thread, caplog):
+        """TrialEnd uses the exit packet's cycle count, like every other event.
+
+        For a queued trial, the firmware's end-of-trial cycle count is one higher
+        than the exit packet's, since it also counts the cycle in which the previous
+        trial ended.
+        """
+        data = (
+            _CONFIRM_OK
+            + _start(micros_us=1000)
+            + _opcode1([255], n_cycles=10)
+            + _exit_data(11, 2000)
+        )
+        thread, q_events, _ = make_thread(data, cycle_period_us=100)
+        with caplog.at_level(logging.WARNING):
+            thread.start()
+            thread.join(timeout=2)
+        events = {i: t for t, i in _timed_events(q_events)}
+        assert events[_EventID.END_FSM_CYCLES] == 2000  # 1000 + 10 * 100
+        assert events[_EventID.END_FSM_MICROS] == 2000
+        assert 'timing' not in caplog.text.lower()
+
+    def test_timing_check_uses_exit_packet(self, make_thread, caplog):
+        """The timing check compares the reported TrialEnd, not the end-of-trial count.
+
+        The exit packet's 10 cycles match the 1000 µs the trial took; the end-of-trial
+        count (30 cycles) would suggest a 2 ms discrepancy.
+        """
+        data = (
+            _CONFIRM_OK
+            + _start(micros_us=1000)
+            + _opcode1([255], n_cycles=10)
+            + _exit_data(30, 2000)
+        )
+        thread, _, _ = make_thread(data, cycle_period_us=100)
+        with caplog.at_level(logging.WARNING):
+            thread.start()
+            thread.join(timeout=2)
+        assert 'timing' not in caplog.text.lower()
 
     def test_fsm_confirmation_success(self, make_thread):
         """Proceeds normally when Bpod responds with a truthy confirmation byte."""
@@ -165,7 +326,7 @@ class TestReadThread:
         thread.start()
         thread.join(timeout=2)
         assert not thread.is_alive()
-        event_indices = [e.event_id for e in _drain(q_events)]
+        event_indices = [i for _, i in _timed_events(q_events)]
         assert _EventID.START_FSM in event_indices
 
     @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
@@ -176,14 +337,14 @@ class TestReadThread:
         thread.start()
         thread.join(timeout=2)
         assert not thread.is_alive()
-        event_indices = [e.event_id for e in _drain(q_events)]
+        event_indices = [i for _, i in _timed_events(q_events)]
         assert event_indices == [_EventID.STOP_SENTINEL]
 
     def test_timing_violation_warning(self, make_thread, caplog):
         """Logs a WARNING when cycle/micros discrepancy exceeds 1 ms."""
         # cycle-based duration: 5 * 1 = 5 µs; actual: 2000 µs; discrepancy: 1995 > 1000
         data = (
-            _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(5, 2000)
+            _CONFIRM_OK + _start() + _opcode1([255], n_cycles=5) + _exit_data(5, 2000)
         )
         thread, _, _ = make_thread(data, cycle_period_us=1)
         with caplog.at_level(logging.WARNING):
@@ -196,13 +357,13 @@ def _make_fsm(
     n_states: int = 2,
     transitions: dict[tuple[int, int], int] | None = None,
     state_actions: list[dict[str, int]] | None = None,
-) -> StateMachineLookup:
+) -> _StateMachineLookup:
     """Build a minimal CompiledStateMachine for testing."""
-    mat = np.arange(n_states, dtype=np.uint8)[:, np.newaxis].repeat(255, axis=1)
+    mat = [[state] * 255 for state in range(n_states)]
     for (state, event), target in (transitions or {}).items():
         mat[state][event] = target
     state_names = [f'S{i}' for i in range(n_states)]
-    return StateMachineLookup(
+    return _StateMachineLookup(
         fsm_hash=b'',
         state_names=state_names,
         state_transition_matrix=mat,
@@ -220,12 +381,15 @@ class TestEventThread:
 
         def _make(
             *,
-            fsm: StateMachineLookup | None = None,
+            fsm: _StateMachineLookup | None = None,
             action_names: list[str] | None = None,
+            resettable_actions: list[str] | None = None,
             event_names: list[str] | None = None,
-            time_reference: TimeReferences | None = None,
-            publish: Callable[[BpodEventUnion], object] | None = None,
+            time_reference: _TimeReferences | None = None,
+            publish: Callable[[list[BpodEventUnion]], object] | None = None,
             should_publish: Callable[[], bool] | None = None,
+            on_trial_start: Callable[[int], None] | None = None,
+            trial: int = 0,
         ) -> tuple[EventThread, SimpleQueue[pl.LazyFrame]]:
             action_names = action_names or []
             event_names = event_names or ['Ev0', 'Tup']
@@ -236,16 +400,20 @@ class TestEventThread:
             )
             data_queue: SimpleQueue[pl.LazyFrame] = SimpleQueue()
             thread = EventThread(
-                trial=0,
+                trial=trial,
                 fsm=fsm or _make_fsm(),
                 data_queue=data_queue,
                 event_lookup=_build_event_lookup(input_events, action_names),
                 action_names=action_names,
-                time_reference=time_reference or TimeReferences(0, 0, 0),
+                resettable_actions=(
+                    action_names if resettable_actions is None else resettable_actions
+                ),
+                time_reference=time_reference or _TimeReferences(0, 0, 0),
                 publish=publish if publish is not None else lambda _: None,
                 publish_gate=should_publish
                 if should_publish is not None
                 else (lambda: True),
+                on_trial_start=on_trial_start,
             )
             thread.start()
             threads.append(thread)
@@ -275,6 +443,14 @@ class TestEventThread:
         df = self._collect(data_queue)
         assert dict(df.schema) == _TRIAL_DATA_SCHEMA
 
+    def test_trial_number_beyond_uint16(self, make_thread):
+        """Trial numbers above 65535 are kept, not rejected when collecting."""
+        thread, data_queue = make_thread(trial=70_000)
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,)))
+        thread.stop()
+        thread.join(timeout=2)
+        assert self._collect(data_queue)['Trial'].unique().to_list() == [70_000]
+
     def test_data_enqueued_on_stop(self, make_thread):
         """A LazyFrame is pushed to data_queue when the thread exits."""
         thread, data_queue = make_thread()
@@ -282,20 +458,34 @@ class TestEventThread:
         thread.join(timeout=2)
         assert not data_queue.empty()
 
+    def test_on_trial_start_fires_regardless_of_publish_gate(self, make_thread):
+        """on_trial_start fires with the absolute time even when publish_gate=False."""
+        captured = []
+        thread, _data_queue = make_thread(
+            time_reference=_TimeReferences(0, 0, 5_000_000),  # +5000 us offset
+            should_publish=lambda: False,
+            on_trial_start=captured.append,
+        )
+        thread.queue.put(_RawEvents(micros_us=100, event_ids=(_EventID.START_FSM,)))
+        thread.queue.put(_RawEvents(micros_us=100, event_ids=(_EventID.START_STATE,)))
+        thread.stop()
+        thread.join(timeout=2)
+        assert captured == [5100]
+
     @staticmethod
     def _put_full_trial(thread: EventThread) -> None:
         """Enqueue a complete trial: start, one state transition, hardware exit."""
-        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_FSM))
-        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
-        thread.queue.put(RawEvent(micros_us=10, event_id=0))
-        thread.queue.put(RawEvent(micros_us=20, event_id=_EventID.END_FSM_CYCLES))
-        thread.queue.put(RawEvent(micros_us=25, event_id=_EventID.END_FSM_MICROS))
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_FSM,)))
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,)))
+        thread.queue.put(_RawEvents(micros_us=10, event_ids=(0,)))
+        thread.queue.put(_RawEvents(micros_us=20, event_ids=(_EventID.END_FSM_CYCLES,)))
+        thread.queue.put(_RawEvents(micros_us=25, event_ids=(_EventID.END_FSM_MICROS,)))
 
     def test_published_events_match_dataframe(self, make_thread):
         """Published messages mirror the trial DataFrame's event rows in order."""
-        published: list[BpodEventUnion] = []
+        published = []
         fsm = _make_fsm(transitions={(0, 0): 1})
-        thread, data_queue = make_thread(fsm=fsm, publish=published.append)
+        thread, data_queue = make_thread(fsm=fsm, publish=published.extend)
         self._put_full_trial(thread)
         thread.stop()
         thread.join(timeout=2)
@@ -321,17 +511,17 @@ class TestEventThread:
             'InputEvent': EventInput,
             'OutputAction': EventOutput,
         }
-        rows = df.filter(pl.col('type').cast(pl.String).is_in(list(struct_by_type)))
-        types = rows['type'].cast(pl.String).to_list()
+        rows = df.filter(pl.col('Type').cast(pl.String).is_in(list(struct_by_type)))
+        types = rows['Type'].cast(pl.String).to_list()
         assert [type(m) for m in events] == [struct_by_type[t] for t in types]
-        times = rows['time'].dt.epoch(time_unit='us').to_list()
+        times = rows['Time'].dt.epoch(time_unit='us').to_list()
         assert [m.time_us for m in events] == times
 
     def test_should_publish_gates_all_messages(self, make_thread):
         """should_publish=False skips publishing entirely; trial data remains."""
-        published: list[BpodEventUnion] = []
+        published = []
         thread, data_queue = make_thread(
-            publish=published.append, should_publish=lambda: False
+            publish=published.extend, should_publish=lambda: False
         )
         self._put_full_trial(thread)
         thread.stop()
@@ -342,14 +532,14 @@ class TestEventThread:
 
     def test_events_after_fsm_exit_trigger_no_transitions(self, make_thread, caplog):
         """Events arriving after an exit without successor are recorded but inert."""
-        published: list[BpodEventUnion] = []
+        published = []
         # event 0 in S0 exits without a successor (target == n_states)
         fsm = _make_fsm(transitions={(0, 0): 2})
         with caplog.at_level(logging.ERROR, logger='bpod_core.bpod._threads'):
-            thread, data_queue = make_thread(fsm=fsm, publish=published.append)
-            thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
-            thread.queue.put(RawEvent(micros_us=10, event_id=0))  # S0 -> exit
-            thread.queue.put(RawEvent(micros_us=20, event_id=0))  # after exit
+            thread, data_queue = make_thread(fsm=fsm, publish=published.extend)
+            thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,)))
+            thread.queue.put(_RawEvents(micros_us=10, event_ids=(0,)))  # S0 -> exit
+            thread.queue.put(_RawEvents(micros_us=20, event_ids=(0,)))  # after exit
             thread.stop()
             thread.join(timeout=2)
         df = self._collect(data_queue)
@@ -363,17 +553,17 @@ class TestEventThread:
         assert not any('publish' in record.message for record in caplog.records)
 
         # the DataFrame records the post-exit event without an active state
-        assert df.filter(pl.col('type') == 'StateStart').height == 1
-        assert df.filter(pl.col('type') == 'StateEnd').height == 1
-        post_exit = df.filter(pl.col('time').dt.epoch(time_unit='us') == 20)
-        assert post_exit['state'].to_list() == [None]
+        assert df.filter(pl.col('Type') == 'StateStart').height == 1
+        assert df.filter(pl.col('Type') == 'StateEnd').height == 1
+        post_exit = df.filter(pl.col('Time').dt.epoch(time_unit='us') == 20)
+        assert post_exit['State'].to_list() == [None]
 
     def test_aborted_trial_publishes_no_trial_end(self, make_thread):
         """Without a hardware exit packet, no end messages are published."""
-        published: list[BpodEventUnion] = []
-        thread, data_queue = make_thread(publish=published.append)
-        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_FSM))
-        thread.queue.put(RawEvent(micros_us=0, event_id=0))
+        published = []
+        thread, data_queue = make_thread(publish=published.extend)
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_FSM,)))
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(0,)))
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
@@ -386,12 +576,12 @@ class TestEventThread:
     def test_publish_failure_does_not_interrupt_recording(self, make_thread, caplog):
         """A raising publish callable is logged but does not affect the trial data."""
 
-        def broken_publish(_: BpodEventUnion) -> None:
+        def broken_publish(_: list[BpodEventUnion]) -> None:
             raise RuntimeError('boom')
 
         with caplog.at_level(logging.ERROR, logger='bpod_core.bpod._threads'):
             thread, data_queue = make_thread(publish=broken_publish)
-            thread.queue.put(RawEvent(micros_us=0, event_id=0))
+            thread.queue.put(_RawEvents(micros_us=0, event_ids=(0,)))
             thread.stop()
             thread.join(timeout=2)
         df = self._collect(data_queue)
@@ -401,25 +591,25 @@ class TestEventThread:
     def test_hardware_event_recorded(self, make_thread):
         """Hardware event appears in output with correct event name."""
         thread, data_queue = make_thread(event_names=['Ev0', 'Tup'])
-        thread.queue.put(RawEvent(micros_us=0, event_id=0))
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(0,)))
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        assert 'Ev0' in df.filter(pl.col('type') == 'InputEvent')['event'].to_list()
+        assert 'Ev0' in df.filter(pl.col('Type') == 'InputEvent')['Event'].to_list()
 
     def test_event_timestamp(self, make_thread):
         """Event timestamp equals reset_system_time_ns // 1000 + micros_us."""
-        time_ref = TimeReferences(0, 0, reset_system_time_ns=5_000_000)
+        time_ref = _TimeReferences(0, 0, reset_system_time_ns=5_000_000)
         thread, data_queue = make_thread(
             event_names=['Ev0', 'Tup'], time_reference=time_ref
         )
-        thread.queue.put(RawEvent(micros_us=100, event_id=0))
+        thread.queue.put(_RawEvents(micros_us=100, event_ids=(0,)))
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        ev = df.filter(pl.col('event') == 'Ev0')
+        ev = df.filter(pl.col('Event') == 'Ev0')
         assert (
-            ev['time'][0]
+            ev['Time'][0]
             == pl.Series([5100], dtype=pl.Datetime('us', time_zone='UTC'))[0]
         )  # 5000 + 100 µs
 
@@ -428,11 +618,11 @@ class TestEventThread:
         # event 0 triggers S0 → S1
         fsm = _make_fsm(transitions={(0, 0): 1})
         thread, data_queue = make_thread(fsm=fsm)
-        thread.queue.put(RawEvent(micros_us=0, event_id=0))
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(0,)))
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        types = df['type'].cast(pl.String).to_list()
+        types = df['Type'].cast(pl.String).to_list()
         assert 'StateEnd' in types
         assert 'StateStart' in types
 
@@ -440,25 +630,106 @@ class TestEventThread:
         """State column contains the correct state names after a transition."""
         fsm = _make_fsm(transitions={(0, 0): 1})
         thread, data_queue = make_thread(fsm=fsm)
-        thread.queue.put(RawEvent(micros_us=0, event_id=0))
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(0,)))
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        states = df['state'].drop_nulls().cast(pl.String).to_list()
+        states = df['State'].drop_nulls().cast(pl.String).to_list()
         assert 'S0' in states
         assert 'S1' in states
+
+    @pytest.mark.parametrize(
+        ('transitions', 'target'),
+        [
+            # in S0, Ev0 leads to S1 and Ev1 to S2; in S1, Ev1 would lead to S2 too
+            ({(0, 0): 1, (0, 1): 2, (1, 1): 2}, 'S1'),
+            # in S0, only Ev1 leads elsewhere
+            ({(0, 1): 2}, 'S2'),
+        ],
+        ids=['first event', 'second event'],
+    )
+    def test_one_transition_per_cycle(self, make_thread, transitions, target):
+        """Only the first of a cycle's events leading elsewhere makes a transition."""
+        fsm = _make_fsm(n_states=3, transitions=transitions)
+        thread, data_queue = make_thread(fsm=fsm, event_names=['Ev0', 'Ev1', 'Tup'])
+        thread.queue.put(_RawEvents(micros_us=10, event_ids=(0, 1)))
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        rows = df.select(
+            pl.col('Type').cast(pl.String),
+            pl.col('Event').cast(pl.String),
+            pl.col('State').cast(pl.String),
+        ).rows()
+        assert rows == [
+            ('InputEvent', 'Ev0', 'S0'),
+            ('InputEvent', 'Ev1', 'S0'),
+            ('StateEnd', None, 'S0'),
+            ('StateStart', None, target),
+        ]
+
+    def test_same_cycle_event_does_not_act_on_next_state(self, make_thread):
+        """An event in the cycle of a transition can't end the state it leads to."""
+        # in S0, Ev0 leads to S1; in S1, Tup leads to >exit
+        fsm = _make_fsm(transitions={(0, 0): 1, (1, 1): 2})
+        thread, data_queue = make_thread(fsm=fsm)
+        thread.queue.put(_RawEvents(micros_us=10, event_ids=(0, 1)))  # Tup ignored
+        thread.queue.put(_RawEvents(micros_us=20, event_ids=(1,)))  # S1's Tup, exits
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        rows = df.select(
+            pl.col('Time').dt.epoch(time_unit='us'),
+            pl.col('Type').cast(pl.String),
+            pl.col('State').cast(pl.String),
+        ).filter(pl.col('Type') != 'StateStart')
+        assert rows.rows() == [
+            (10, 'InputEvent', 'S0'),
+            (10, 'InputEvent', 'S0'),
+            (10, 'StateEnd', 'S0'),
+            (20, 'InputEvent', 'S1'),
+            (20, 'StateEnd', 'S1'),
+        ]
+
+    def test_exit_waits_for_end_of_cycle(self, make_thread):
+        """Events in the cycle of an exit are recorded in the state that exits."""
+        fsm = _make_fsm(transitions={(0, 0): 2})  # in S0, Ev0 leads to >exit
+        thread, data_queue = make_thread(fsm=fsm)
+        thread.queue.put(_RawEvents(micros_us=10, event_ids=(0, 1)))  # Ev0, then Tup
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        rows = df.select(
+            pl.col('Type').cast(pl.String), pl.col('State').cast(pl.String)
+        ).rows()
+        assert rows == [
+            ('InputEvent', 'S0'),
+            ('InputEvent', 'S0'),
+            ('StateEnd', 'S0'),
+        ]
 
     def test_output_action_recorded(self, make_thread):
         """Output actions for the current state are recorded on START_STATE."""
         fsm = _make_fsm(state_actions=[{'PWM1': 128}, {}])
         thread, data_queue = make_thread(fsm=fsm, action_names=['PWM1'])
         # START_STATE triggers initial output recording for S0
-        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,)))
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
-        output = df.filter(pl.col('type') == 'OutputAction')
-        assert 'PWM1' in output['channel'].cast(pl.String).to_list()
+        output = df.filter(pl.col('Type') == 'OutputAction')
+        assert 'PWM1' in output['Channel'].cast(pl.String).to_list()
+
+    def test_output_action_value_above_uint8_range(self, make_thread):
+        """Output values above 255 (e.g. scaled FlexIO analog-output counts) survive."""
+        fsm = _make_fsm(state_actions=[{'Flex4': 2048}, {}])
+        thread, data_queue = make_thread(fsm=fsm, action_names=['Flex4'])
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,)))
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        output = df.filter(pl.col('Channel') == 'Flex4')
+        assert output['Value'].to_list() == [2048]
 
     def test_ttl_reset_on_state_transition(self, make_thread):
         """TTL output is reset to 0."""
@@ -469,25 +740,53 @@ class TestEventThread:
         )
         thread, data_queue = make_thread(fsm=fsm, action_names=['TTL1'])
         # START_STATE seeds active_outputs with TTL1=1 for S0
-        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_STATE))
-        thread.queue.put(RawEvent(micros_us=0, event_id=0))  # S0 → S1
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,)))
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(0,)))  # S0 → S1
         thread.stop()
         thread.join(timeout=2)
         df = self._collect(data_queue)
         ttl = df.filter(
-            (pl.col('type') == 'OutputAction') & (pl.col('channel') == 'TTL1')
+            (pl.col('Type') == 'OutputAction') & (pl.col('Channel') == 'TTL1')
         )
-        assert 0 in ttl['value'].to_list()
+        assert 0 in ttl['Value'].to_list()
+
+    def test_non_resettable_action_not_reset(self, make_thread):
+        """An action the Bpod doesn't reset, e.g. a module message, isn't reset."""
+        fsm = _make_fsm(transitions={(0, 0): 1}, state_actions=[{'Module1': 3}, {}])
+        thread, data_queue = make_thread(
+            fsm=fsm, action_names=['Module1'], resettable_actions=[]
+        )
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,)))
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(0,)))  # S0 → S1
+        thread.stop()
+        thread.join(timeout=2)
+        df = self._collect(data_queue)
+        module = df.filter(pl.col('Channel') == 'Module1')
+        assert module['Value'].to_list() == [3]
 
     def test_peek_data_mid_trial(self, make_thread):
         """peek_data returns a non-empty snapshot while the trial is running."""
         thread, _ = make_thread()
-        thread.queue.put(RawEvent(micros_us=0, event_id=_EventID.START_FSM))
+        thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_FSM,)))
         deadline = time.monotonic() + 2.0
         while thread._n_events == 0 and time.monotonic() < deadline:
             time.sleep(0.001)
         df = thread.peek_data().collect()
         assert len(df) > 0
+
+    def test_peek_data_after_last_wake_up(self, mocker, make_thread):
+        """A blocking peek_data() returns once the thread is done, while still alive."""
+        thread, _ = make_thread()
+        thread.stop()
+        thread.join(timeout=2)
+        mocker.patch.object(thread, 'is_alive', return_value=True)  # just after set()
+        snapshots = []
+        peek = threading.Thread(
+            target=lambda: snapshots.append(thread.peek_data(['S1'])), daemon=True
+        )
+        peek.start()
+        peek.join(timeout=1)
+        assert snapshots
 
     def test_buffer_growth(self, mocker, make_thread):
         """Buffer doubles correctly."""
@@ -497,21 +796,25 @@ class TestEventThread:
         thread, data_queue = make_thread(event_names=['Ev0', 'Tup'])
         assert len(thread._buffer) == init_buffer_size
         for _ in range(n):
-            thread.queue.put(RawEvent(micros_us=0, event_id=0))
+            thread.queue.put(_RawEvents(micros_us=0, event_ids=(0,)))
         thread.stop()
         thread.join(timeout=2)
         assert len(thread._buffer) == init_buffer_size * 2
         df = self._collect(data_queue)
-        assert len(df.filter(pl.col('event') == 'Ev0')) == n
+        assert len(df.filter(pl.col('Event') == 'Ev0')) == n
 
 
 class TestSoftcodeThread:
     @pytest.fixture
     def make_thread(self):
         """Factory: returns a started SoftcodeThread (daemon)."""
+        slots = []  # the thread references its handler slot only weakly
 
-        def _make(handler=None):
-            thread = SoftcodeThread(softcode_handler=handler)
+        def _make(handler=None, *, slot=None):
+            if slot is None:
+                slot = _HandlerSlot(handler)
+                slots.append(slot)
+            thread = SoftcodeThread(handler_slot=slot)
             thread.start()
             return thread
 
@@ -527,9 +830,32 @@ class TestSoftcodeThread:
             done.set()
 
         thread = make_thread(handler=handler)
-        thread.queue.put(RawSoftcode(7, 0, 0))
+        thread.queue.put(_RawSoftcode(7, 0, 0))
         assert done.wait(timeout=2)
         assert received == [7]
+
+    def test_stop(self, make_thread):
+        """stop() handles the queued softcodes first, then ends the thread."""
+        received = []
+        thread = make_thread(handler=received.append)
+        thread.queue.put(_RawSoftcode(3, 0, 0))
+        thread.stop()
+        assert received == [3]
+        assert not thread.is_alive()
+
+    def test_stop_from_handler(self, make_thread):
+        """stop() called from within a handler ends the thread without raising."""
+        done = threading.Event()
+
+        def handler(_):
+            thread.stop()
+            done.set()
+
+        thread = make_thread(handler=handler)
+        thread.queue.put(_RawSoftcode(1, 0, 0))
+        assert done.wait(timeout=2)
+        thread.join(timeout=2)
+        assert not thread.is_alive()
 
     def test_handler_called_in_order(self, make_thread):
         """Handler is called once per softcode in the order received."""
@@ -543,7 +869,7 @@ class TestSoftcodeThread:
 
         thread = make_thread(handler=handler)
         for code in [1, 5, 3]:
-            thread.queue.put(RawSoftcode(code, 0, 0))
+            thread.queue.put(_RawSoftcode(code, 0, 0))
         assert done.wait(timeout=2)
         assert received == [1, 5, 3]
 
@@ -551,7 +877,7 @@ class TestSoftcodeThread:
         """A warning is logged when no handler is defined."""
         thread = make_thread(handler=None)
         with caplog.at_level(logging.WARNING):
-            thread.queue.put(RawSoftcode(4, 0, 0))
+            thread.queue.put(_RawSoftcode(4, 0, 0))
             # give the thread time to process and log
             deadline = time.time() + 1
             while (time.time() < deadline) and len(caplog.text) == 0:
@@ -571,14 +897,14 @@ class TestSoftcodeThread:
 
         thread = make_thread(handler=handler)
         with caplog.at_level(logging.ERROR):
-            thread.queue.put(RawSoftcode(0, 0, 0))
-            thread.queue.put(RawSoftcode(9, 0, 0))
+            thread.queue.put(_RawSoftcode(0, 0, 0))
+            thread.queue.put(_RawSoftcode(9, 0, 0))
             assert done.wait(timeout=2)
         assert received == [9]
         assert 'bad softcode' in caplog.text
 
-    def test_set_handler(self, make_thread):
-        """set_handler() swaps the handler; subsequent softcodes use the new one."""
+    def test_swap_handler(self, make_thread):
+        """A new handler in the slot is used for subsequent softcodes."""
         received = []
         done = threading.Event()
 
@@ -586,8 +912,69 @@ class TestSoftcodeThread:
             received.append(('b', code))
             done.set()
 
-        thread = make_thread(handler=lambda code: received.append(('a', code)))
-        thread.set_handler(handler_b)
-        thread.queue.put(RawSoftcode(3, 0, 0))
+        slot = _HandlerSlot(lambda code: received.append(('a', code)))
+        thread = make_thread(slot=slot)
+        slot.handler = handler_b
+        thread.queue.put(_RawSoftcode(3, 0, 0))
         assert done.wait(timeout=2)
         assert received == [('b', 3)]
+
+    def test_softcodes_dropped_without_slot(self, make_thread, caplog):
+        """Once the handler slot is gone, softcodes are dropped without warnings."""
+        slot = _HandlerSlot(None)
+        thread = make_thread(slot=slot)
+        del slot
+        thread.queue.put(_RawSoftcode(1, 0, 0))
+        thread.stop()
+        assert 'no handler' not in caplog.text
+
+    def test_drain_waits_for_queued_softcodes(self):
+        """drain() returns only once the softcodes queued before it are handled."""
+        received = []
+        gate = threading.Event()
+
+        class GatedQueue(SimpleQueue):  # a thread slow to pick up its next softcode
+            def get(self, *args, **kwargs):
+                gate.wait()
+                return super().get(*args, **kwargs)
+
+        slot = _HandlerSlot(received.append)
+        thread = SoftcodeThread(handler_slot=slot)
+        thread.queue = GatedQueue()
+        thread.start()
+        thread.queue.put(_RawSoftcode(5, 0, 0))
+        drainer = threading.Thread(target=thread.drain, daemon=True)
+        drainer.start()
+        drainer.join(timeout=0.05)
+        assert drainer.is_alive()  # still waiting for softcode 5
+        gate.set()
+        drainer.join(timeout=2)
+        assert not drainer.is_alive()
+        assert received == [5]
+        thread.stop()
+
+    def test_drain_after_stop(self, make_thread):
+        """drain() returns once the thread stops, even before reaching its marker."""
+        release = threading.Event()
+        thread = make_thread(handler=lambda _: release.wait())
+        thread.queue.put(_RawSoftcode(1, 0, 0))
+        thread.queue.put(_SOFTCODE_STOP)  # as stop() does, without waiting
+        drainer = threading.Thread(target=thread.drain, daemon=True)
+        drainer.start()
+        drainer.join(timeout=0.05)
+        assert drainer.is_alive()  # its marker is queued behind the stop sentinel
+        release.set()
+        drainer.join(timeout=2)
+        assert not drainer.is_alive()
+
+    def test_drain_from_handler(self, make_thread):
+        """drain() called from within a handler returns instead of waiting forever."""
+        done = threading.Event()
+
+        def handler(_):
+            thread.drain()
+            done.set()
+
+        thread = make_thread(handler=handler)
+        thread.queue.put(_RawSoftcode(1, 0, 0))
+        assert done.wait(timeout=2)

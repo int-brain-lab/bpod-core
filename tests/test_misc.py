@@ -3,6 +3,7 @@
 import errno
 import logging
 import os
+import re
 import struct
 
 import pytest
@@ -124,12 +125,39 @@ class TestSuggestSimilar:
         assert result == " - did you mean 'banana'?"
 
 
-class TestSuggestionDict:
-    """Tests for SuggestionDict."""
+class TestMatchFilter:
+    @pytest.mark.parametrize(
+        ('value', 'criterion', 'expected'),
+        [
+            ('a', None, True),
+            (None, None, True),
+            ('a', 'a', True),
+            ('a', 'b', False),
+            (None, 'a', False),
+            (1, 1, True),
+            ('abc', 'ab', False),
+            ('abc', re.compile('^ab'), True),
+            ('abc', re.compile('^b'), False),
+            (1, re.compile('1'), False),
+            (2, [1, 2], True),
+            (3, [1, 2], False),
+            ('xyz', ['a', re.compile('y')], True),
+            ('a', [], False),
+            (2, {1, 2}, True),
+            ('xyz', frozenset({'a', re.compile('y')}), True),
+        ],
+    )
+    def test_match_filter(self, value, criterion, expected):
+        """Values are matched by equality, regex search or any item of a collection."""
+        assert misc._match_filter(value, criterion) is expected
+
+
+class TestSuggestionMapping:
+    """Tests for SuggestionMapping."""
 
     @pytest.fixture
     def ports(self):
-        return misc.SuggestionDict({'Port1': 1, 'Port2': 2}, name='channel')
+        return misc.SuggestionMapping({'Port1': 1, 'Port2': 2}, name='channel')
 
     def test_existing_key(self, ports):
         """Returns value for a valid key."""
@@ -147,15 +175,36 @@ class TestSuggestionDict:
 
     def test_custom_error_class(self):
         """Raises the specified error_class instead of KeyError."""
-        d = misc.SuggestionDict({'a': 1}, name='item', error_class=ValueError)
+        d = misc.SuggestionMapping({'a': 1}, name='item', error_class=ValueError)
         with pytest.raises(ValueError, match="No such item: 'x'"):
             _ = d['x']
 
     def test_default_name(self):
         """Uses 'key' as the name when none is provided."""
-        d = misc.SuggestionDict({'a': 1})
+        d = misc.SuggestionMapping({'a': 1})
         with pytest.raises(KeyError, match='No such key'):
             _ = d['b']
+
+    def test_iteration_and_length(self, ports):
+        """Supports iteration and len() like a regular mapping."""
+        assert len(ports) == 2
+        assert set(ports) == {'Port1', 'Port2'}
+        assert dict(ports.items()) == {'Port1': 1, 'Port2': 2}
+
+    def test_no_setitem(self, ports):
+        """Item assignment is not supported."""
+        with pytest.raises(TypeError):
+            ports['Port1'] = 99
+
+    def test_no_delitem(self, ports):
+        """Item deletion is not supported."""
+        with pytest.raises(TypeError):
+            del ports['Port1']
+
+    def test_no_mutating_methods(self, ports):
+        """dict-only mutating methods (clear, update, pop, ...) do not exist."""
+        with pytest.raises(AttributeError):
+            ports.clear()
 
 
 class TestSetNested:

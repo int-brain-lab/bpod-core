@@ -12,6 +12,8 @@ Handles the following cases:
 - Artifacts from mocked modules (e.g. ``serial.threaded.ReaderThread.typing.Self``)
   are remapped to their public API entry.
 - A small set of targets absent from all inventories are mapped directly to URLs.
+- Methods of ``collections.abc`` mappings (e.g. ``Mapping.get``), which have no
+  inventory entries of their own, link to their class, whose page lists them.
 """
 
 import re
@@ -40,6 +42,20 @@ _DATA_TARGET_REMAP = {
 """Private aliases remapped to public ``py:data`` targets in the fallback below."""
 
 
+def _set_contnode_text(contnode, text):
+    """Replace ``contnode``'s displayed text in place, where possible.
+
+    ``contnode`` is normally a single-child container (e.g. a ``literal`` node
+    wrapping a ``Text`` node), but for some references - notably inherited members
+    with a generic type hint - it can be a bare ``Text`` node instead, which
+    doesn't support item assignment. In that case there's nothing sensible to
+    mutate, so the reference keeps its original (unstripped) display text rather
+    than crashing the build.
+    """
+    if isinstance(contnode, nodes.Element):
+        contnode[0] = nodes.Text(text)
+
+
 def _resolve(app, env, node, contnode):
     """Resolve missing cross-references not covered by intersphinx inventories."""
 
@@ -52,7 +68,7 @@ def _resolve(app, env, node, contnode):
 
     # Remap platform-specific Serial implementations to the public API entry
     if re.fullmatch(r'serial\.serial(posix|win32|java|cli)\.Serial', target):
-        contnode[0] = nodes.Text('Serial')
+        _set_contnode_text(contnode, 'Serial')
         node['reftarget'] = 'serial.Serial'
         return None
 
@@ -63,13 +79,13 @@ def _resolve(app, env, node, contnode):
 
     # Fix artifact from the mocked serial module (ReaderThread[Self] annotation)
     if target == 'serial.threaded.ReaderThread.typing.Self':
-        contnode[0] = nodes.Text('ReaderThread[Self]')
+        _set_contnode_text(contnode, 'ReaderThread[Self]')
         node['reftarget'] = 'serial.threaded.ReaderThread'
         return None
 
     # Remap fully-parameterized ValidatedDict generics
     if re.match(r'^bpod_core\.misc\.ValidatedDict\[', target):
-        contnode[0] = nodes.Text('ValidatedDict')
+        _set_contnode_text(contnode, 'ValidatedDict')
         node['reftarget'] = 'bpod_core.misc.ValidatedDict'
         return env.get_domain('py').resolve_xref(
             env,
@@ -86,7 +102,7 @@ def _resolve(app, env, node, contnode):
         node['reftarget'] = target[: target.index('[')]
         text = contnode.astext()
         if '[' in text:
-            contnode[0] = nodes.Text(text[: text.index('[')])
+            _set_contnode_text(contnode, text[: text.index('[')])
         return None
 
     # Direct URL fallbacks for targets absent from all inventories
@@ -94,6 +110,14 @@ def _resolve(app, env, node, contnode):
         ref = nodes.reference('', '', internal=False, refuri=_REFERENCE_URL_MAP[target])
         ref += contnode
         return ref
+
+    # Link methods of collections.abc mappings to their class
+    if match := re.fullmatch(r'(collections\.abc\.\w*Mapping)\.\w+', target):
+        for inv in InventoryAdapter(env).named_inventory.values():
+            if entry := inv.get('py:class', {}).get(match[1]):
+                ref = nodes.reference('', '', internal=False, refuri=entry.uri)
+                ref += contnode
+                return ref
 
     # For failed py:class lookups, retry as py:data or py:attribute. Targets
     # rendered as typing.* but absent from the stdlib docs (e.g. backported

@@ -8,18 +8,23 @@ import re
 import socket
 import struct
 from collections.abc import (
+    Collection,
     Hashable,
+    ItemsView,
     Iterable,
     Iterator,
+    KeysView,
     Mapping,
     MutableMapping,
     Sequence,
+    ValuesView,
 )
 from contextlib import contextmanager
 from enum import IntEnum
 from os import PathLike, strerror
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar, cast, overload
 
 import msgspec
 from filelock import FileLock
@@ -32,6 +37,10 @@ K = TypeVar('K', bound=Hashable)
 """Key type variable for generic mappings such as :class:`ValidatedDict`."""
 V = TypeVar('V')
 """Value type variable for generic mappings such as :class:`ValidatedDict`."""
+T = TypeVar('T')
+"""Value type variable for :data:`Filter`."""
+_H = TypeVar('_H')
+_D = TypeVar('_D')
 
 _MISSING = object()
 """Sentinel for distinguishing a missing key from a key set to None."""
@@ -167,16 +176,70 @@ def suggest_similar(
     return format_string.format(matches[0]) if len(matches) > 0 else ''
 
 
-class SuggestionDict(dict[str, V]):
-    """A dictionary that suggests similar keys on failed lookup.
+Filter: TypeAlias = T | re.Pattern[str] | Collection[T | re.Pattern[str]]
+"""A criterion for matching values, e.g., when looking for serial ports or services.
 
-    On :class:`KeyError`, raises ``error_class`` with a message that includes the
-    closest match from the existing keys via :func:`suggest_similar`, making typos and
-    near-misses easier to diagnose.
+- a value matches equal values;
+- a compiled regular expression matches strings it finds a match in;
+- a collection of those matches if any of its items does. It must not contain
+  ``None``.
+"""
+
+
+def _match_filter(value: object, criterion: Filter[Any] | None) -> bool:
+    r"""
+    Check whether a value satisfies a filter criterion.
 
     Parameters
     ----------
-    dictionary : MutableMapping
+    value : object
+        The value to check.
+    criterion : Filter or None
+        The criterion to check against, see :data:`Filter`. ``None`` matches any
+        value.
+
+    Returns
+    -------
+    bool
+        True if the value satisfies the criterion, False otherwise.
+
+    Examples
+    --------
+    >>> _match_filter('COM3', None)
+    True
+    >>> _match_filter('COM3', 'COM3')
+    True
+    >>> _match_filter('/dev/ttyACM0', re.compile(r'ttyACM\d+'))
+    True
+    >>> _match_filter(0x16C0, [0x16C0, 0x0483])
+    True
+    >>> _match_filter(None, 'COM3')
+    False
+    """
+
+    def matches(item: Filter[Any]) -> bool:
+        if isinstance(item, Collection) and not isinstance(item, str):
+            return any(matches(i) for i in item)
+        if isinstance(item, re.Pattern):
+            return isinstance(value, str) and item.search(value) is not None
+        return bool(value == item)
+
+    return criterion is None or matches(criterion)
+
+
+class SuggestionMapping(Mapping[str, V]):
+    """A read-only mapping that suggests similar keys on failed lookup.
+
+    On :class:`KeyError`, raises ``error_class`` with a message that includes the
+    closest match from the existing keys via :func:`suggest_similar`, making typos and
+    near-misses easier to diagnose. Implementing only the :class:`Mapping` interface
+    means there is no ``__setitem__``/``__delitem__``/``update``/etc. to guard against,
+    appropriate for a fixed set of keys (e.g. hardware channels discovered once at
+    connect time) that should never be mutated after construction.
+
+    Parameters
+    ----------
+    dictionary : Mapping
         Initial key-value pairs.
     name : str, default: 'key'
         Human-readable label for the key type used in the error message.
@@ -185,7 +248,7 @@ class SuggestionDict(dict[str, V]):
 
     Examples
     --------
-    >>> d = SuggestionDict({'Port1': 1, 'Port2': 2}, name='channel')
+    >>> d = SuggestionMapping({'Port1': 1, 'Port2': 2}, name='channel')
     >>> d['Port1']
     1
     >>> d['Prot1']
@@ -194,25 +257,39 @@ class SuggestionDict(dict[str, V]):
     KeyError: "No such channel: 'Prot1' - did you mean 'Port1'?"
     """
 
+    __slots__ = ('_data', '_error_class', '_name')
+
     def __init__(
         self,
-        dictionary: MutableMapping[str, V],
+        dictionary: Mapping[str, V],
         *,
         name: str | None = None,
         error_class: type[Exception] = KeyError,
     ) -> None:
-        super().__init__(dictionary)
+        self._data = MappingProxyType(dict(dictionary))
         self._name = name or 'key'
         self._error_class = error_class
 
     @override
     def __getitem__(self, key: str) -> V:
         try:
-            return super().__getitem__(key)
+            return self._data[key]
         except KeyError as e:
             raise self._error_class(
-                f"No such {self._name}: '{key}'" + suggest_similar(key, self.keys())
+                f"No such {self._name}: '{key}'"
+                + suggest_similar(key, self._data.keys())
             ) from e
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    @override
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __repr__(self) -> str:
+        return f'{type(self).__name__}({dict(self._data)!r})'
 
 
 def set_nested(d: MutableMapping, keys: Sequence[Hashable], value: Any) -> None:
@@ -519,6 +596,31 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V]):
     def __len__(self) -> int:
         return len(self.root)
 
+    # the mixins of Mapping would look up one key at a time via __getitem__
+    @override
+    def __contains__(self, key: object) -> bool:
+        return key in self.root
+
+    @overload
+    def get(self, key: K, /) -> V | None: ...
+    @overload
+    def get(self, key: K, default: V | _D, /) -> V | _D: ...
+    @override
+    def get(self, key: K, default: object = None, /) -> object:
+        return self.root.get(key, default)
+
+    @override
+    def keys(self) -> KeysView[K]:
+        return self.root.keys()
+
+    @override
+    def items(self) -> ItemsView[K, V]:
+        return self.root.items()
+
+    @override
+    def values(self) -> ValuesView[V]:
+        return self.root.values()
+
     @override
     def __repr__(self) -> str:
         return repr(self.root)
@@ -671,3 +773,18 @@ def suppress_logging(level: int = logging.CRITICAL) -> Iterator[None]:
         yield
     finally:
         logging.disable(previous)
+
+
+class _HandlerSlot(Generic[_H]):
+    """Holds a handler for a thread, which references only the slot, and only weakly.
+
+    A running thread is never garbage-collected, and neither is anything it references.
+    If a thread referenced its handler, and the handler referred back to the thread's
+    owner - as a bound method, lambda or closure might - the owner could never be
+    collected. Instead, the owner holds the slot and the thread looks the handler up
+    through a weak reference to the slot. The cycle owner → slot → handler → owner is
+    then an ordinary one, which the garbage collector frees.
+    """
+
+    def __init__(self, handler: _H) -> None:
+        self.handler = handler

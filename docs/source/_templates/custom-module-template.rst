@@ -1,3 +1,6 @@
+.. meta::
+   :description: API reference for {{ fullname }}.
+
 {{ fullname | escape | underline}}
 
 .. currentmodule:: {{ fullname }}
@@ -35,6 +38,8 @@
    :members:
 {%- if item in ["RemoteBpod", "Bpod"] %}
    :inherited-members:
+{% elif item in ["FlexIO"] %}
+   :inherited-members: Mapping
 {% elif item in ["SerialDevice"] %}
    :private-members: _serial, _port_info, _serial_device_name, _rename_serial_device
 {%- endif %}

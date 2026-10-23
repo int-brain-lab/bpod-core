@@ -84,8 +84,39 @@ class TestExtendedSerial:
         mock_serial.super_read.return_value = b'\x01\x02\x00\x03\x00\x00\x00'
         result = mock_serial.verify(b'x', b'\x01\x02\x00\x03\x00\x00\x00')
         assert result is True
+        mock_serial.super_write.assert_called_with(b'x')
+        mock_serial.super_read.assert_called_with(7)
         result = mock_serial.verify(b'x', b'\x01')
         assert result is False
+        mock_serial.super_read.assert_called_with(1)
+
+    def test_verify_timeout(self, mock_serial):
+        """Verify applies the given timeout for the duration of the call only."""
+        mock_serial.timeout = 5
+        mock_serial.super_read.side_effect = lambda _: bytes([mock_serial.timeout])
+        assert mock_serial.verify(b'x', b'\x02', timeout=2) is True
+        assert mock_serial.timeout == 5
+
+    def test_temporary_timeout(self, mock_serial):
+        """Temporary timeout is applied within the context and restored after."""
+        mock_serial.timeout = 5
+        with mock_serial.temporary_timeout(2):
+            assert mock_serial.timeout == 2
+        assert mock_serial.timeout == 5
+
+    def test_temporary_timeout_none(self, mock_serial):
+        """A timeout of None leaves the port's timeout untouched."""
+        mock_serial.timeout = 5
+        with mock_serial.temporary_timeout(None):
+            assert mock_serial.timeout == 5
+        assert mock_serial.timeout == 5
+
+    def test_temporary_timeout_exception(self, mock_serial):
+        """The original timeout is restored even if the context body raises."""
+        mock_serial.timeout = 5
+        with pytest.raises(RuntimeError), mock_serial.temporary_timeout(2):
+            raise RuntimeError
+        assert mock_serial.timeout == 5
 
     @pytest.mark.parametrize(
         'fcn',
@@ -413,15 +444,15 @@ class TestFindPorts:
         assert len(result) == 1
         assert mock_ports[0] in result
 
-    def test_nonexistent_attribute(self, mock_ports):
-        """Filter on missing attribute matches None values."""
-        result = com.find_ports(nonexistent_attr='value')
-        assert result == []
+    def test_none_filter_ignored(self, mock_ports):
+        """Filters set to None do not constrain the result."""
+        result = com.find_ports(vid=0x16C0, serial_number=None)
+        assert len(result) == 2
 
-    def test_regex_on_non_string(self, mock_ports):
-        """Regex filter on non-string attribute returns no match."""
-        result = com.find_ports(vid=re.compile(r'16C0'))
-        assert result == []
+    def test_unknown_filter_raises(self, mock_ports):
+        """Unknown filter names raise instead of silently matching nothing."""
+        with pytest.raises(TypeError):
+            com.find_ports(nonexistent_attr='value')
 
     def test_list_with_regex(self, mock_ports):
         """List can contain regex patterns."""

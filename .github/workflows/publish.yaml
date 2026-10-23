@@ -7,15 +7,23 @@ on:
 
 permissions: {}
 
+# never run two releases at once
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
 jobs:
   check:
     name: Verify package version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: false # no shared cache in the release workflow
       - name: Verify tag matches package version
-        if: github.event_name != 'workflow_dispatch'
         run: |
           PKG_VERSION=$(uv version --short)
           if [ "$PKG_VERSION" != "${GITHUB_REF_NAME}" ]; then
@@ -26,7 +34,9 @@ jobs:
   test:
     name: Run CI
     needs: check
-    uses: ./.github/workflows/main.yaml
+    uses: $/.github/workflows/main.yaml
+    with:
+      release: true
     permissions:
       contents: read
 
@@ -38,12 +48,18 @@ jobs:
       name: pypi
       url: https://pypi.org/p/bpod-core
     permissions:
-      id-token: write
+      id-token: write # for trusted publishing and signing the attestations
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: false # no shared cache in a job that can publish
       - run: uv build
-      - run: uv publish
+      - name: Create attestations (PEP 740 provenance)
+        run: uv run --frozen --only-group publish pypi-attestations sign dist/*
+      - run: uv publish # uploads the attestations along with the distributions
 
   release:
     name: Create GitHub Release
@@ -51,15 +67,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: |
           # Define variables
-          PRERELEASE_FLAG=$([[ "${GITHUB_REF_NAME}" =~ (a|b|rc) ]] && echo "--prerelease")
+          PRERELEASE_FLAG=''
+          if [[ "${GITHUB_REF_NAME}" =~ (a|b|rc) ]]; then PRERELEASE_FLAG='--prerelease'; fi
           REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
           PREV_VERSION=$(gh release list --limit 2 | tail -1 | awk '{print $1}')
 

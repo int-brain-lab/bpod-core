@@ -40,8 +40,9 @@ def _generate(app):
 
         # Generate state machine diagram and save as SVG
         state_machine = module.fsm
-        fn_light = examples_target_path / (fn.stem + '__light.svg')
-        fn_dark = examples_target_path / (fn.stem + '__dark.svg')
+        stem = f'fsm_examples_{fn.stem}'
+        fn_light = examples_target_path / f'{stem}__light.svg'
+        fn_dark = examples_target_path / f'{stem}__dark.svg'
         digraph_light = state_machine.to_digraph(**app.config.fsm_light_colors)
         digraph_dark = state_machine.to_digraph(**app.config.fsm_dark_colors)
         digraph_light.render(outfile=fn_light, cleanup=True, quiet=True)
@@ -57,6 +58,9 @@ def _generate(app):
 
         page_path = examples_target_path.joinpath(f'{fn.stem}.rst')
         page_lines = [
+            '.. meta::',
+            f'   :description: Exemplary Finite-State Machine: {page_title}',
+            '',
             page_title,
             '-' * len(page_title),
             '',
