@@ -1395,6 +1395,7 @@ class TestStartAnalogReader:
     @pytest.mark.parametrize('started', [False, True])
     def test_starts_with_first_state_machine(self, mock_bpod_2p, mocker, started):
         """The reader starts with the first state machine, not with later ones."""
+        mocker.patch.object(Bpod, '_run_state_machine')  # no threads outliving the test
         start = mocker.patch.object(Bpod, '_start_analog_reader')
         mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
         start.assert_not_called()
