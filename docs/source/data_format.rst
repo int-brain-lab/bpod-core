@@ -11,7 +11,7 @@ Data Format
    from pathlib import Path
    from bpod_core.bpod._threads import _TRIAL_DATA_SCHEMA
 
-   pqt_file = Path(_DOCS_STATIC) / "example_dataframe.pqt"
+   pqt_file = Path(_DOCS_DATA) / "example_dataframe.pqt"
    data = pl.read_parquet(pqt_file)
    assert dict(data.schema) == _TRIAL_DATA_SCHEMA
    pl.Config.set_tbl_width_chars(200)
@@ -194,7 +194,7 @@ by the state machines in :numref:`on_the_fly_fsm` to produce a stairstep graph o
    from pathlib import Path
    from bpod_core.bpod._threads import _TRIAL_DATA_SCHEMA
 
-   pqt_file = Path(_DOCS_STATIC) / "example_dataframe.pqt"
+   pqt_file = Path(_DOCS_DATA) / "example_dataframe.pqt"
    data = pl.read_parquet(pqt_file)
 
 .. plot::

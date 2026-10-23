@@ -140,7 +140,7 @@ away if no trial is running, or as soon as the preceding trial ends—enabling
 back-to-back execution of state machines with zero inter-trial downtime and continuous
 acquisition.
 
-.. dark-light-figure:: /_static/bpod_run
+.. dark-light-figure:: bpod_run
 
    Timeline of four consecutive :meth:`~bpod_core.bpod.Bpod.run` calls across the Host
    PC and Bpod.
@@ -208,7 +208,7 @@ trial, yielding randomized state timers and action values:
    :meth:`~bpod_core.bpod.Bpod.set_status_led`,
    :meth:`~bpod_core.bpod.Bpod.update_modules`,
    :meth:`~bpod_core.bpod.Bpod.reset_session_clock` or reading an input, raise a
-   :exc:`~bpod_core.bpod.BpodError` until it has finished. Queuing the next state
+   :exc:`~bpod_core.bpod.errors.BpodError` until it has finished. Queuing the next state
    machine with :meth:`~bpod_core.bpod.Bpod.run`, sending softcodes, overriding outputs,
    stopping the state machine and retrieving data all work during a trial.
 

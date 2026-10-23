@@ -233,7 +233,14 @@ class AbstractBpod(AbstractContextManager):
 
 @dataclass(slots=True)
 class FlexIOThreshold:
-    """Class representing a FlexIO analog threshold."""
+    """Class representing a FlexIO analog threshold.
+
+    The Bpod compares each analog sample with the threshold's voltage, rather than
+    watching for a crossing: an enabled threshold fires as soon as a sample is past it
+    (above for ``RISING``, below for ``FALLING``), so its event can follow the voltage
+    change by up to one sampling interval, and it fires right after being enabled if the
+    signal is already past it. A threshold disables itself when it fires.
+    """
 
     _state_getter: Callable[[], _FlexIOState] = field(repr=False)
     _state_setter: Callable[[_FlexIOState], None] = field(repr=False)
@@ -243,7 +250,12 @@ class FlexIOThreshold:
 
     @property
     def voltage(self) -> FlexIOThresholdVoltage:
-        """The voltage of the threshold, in millivolts (0-5000)."""
+        """The voltage of the threshold, in millivolts (0-5000).
+
+        The Bpod compares samples with the nearest 12-bit ADC code,
+        ``round(millivolts * 4095 / 5000)``, so a value read from
+        :meth:`~bpod_core.bpod.Bpod.get_analog_data` maps to exactly the code compared.
+        """
         state = self._state_getter()
         return state.threshold_voltages[self._channel_index][self._threshold_index]
 
@@ -407,7 +419,13 @@ class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
 
     @property
     def analog_sampling_rate(self) -> FlexIOAnalogSamplingRate:
-        """Sampling rate for channels configured as analog input, in Hz."""
+        """Sampling rate for channels configured as analog input, in Hz (1-1000).
+
+        The interval between samples is a whole number of state machine cycles (100 µs
+        on a Bpod 2+), so other rates are rounded: 300 Hz, for example, becomes
+        303.03 Hz. Analog timestamps are based on the actual rate. The rate is fixed
+        from the first trial until the Bpod is closed and reopened.
+        """
         return self._get_state().analog_sampling_rate
 
     @analog_sampling_rate.setter
@@ -418,7 +436,11 @@ class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
 
     @property
     def n_reads_per_sample(self) -> FlexIONReadsPerSample:
-        """Number of ADC reads averaged per analog sample."""
+        """Number of ADC reads averaged per analog sample (1-4).
+
+        More reads reduce noise. The Bpod takes all reads of a sample within a single
+        state machine cycle, so they don't limit the sampling rate.
+        """
         return self._get_state().n_reads_per_sample
 
     @n_reads_per_sample.setter

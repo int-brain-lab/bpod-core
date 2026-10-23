@@ -2301,11 +2301,17 @@ class Bpod(SerialDevice, AbstractBpod):
         Returns
         -------
         DataFrame or LazyFrame
-            One ``UInt16`` column of millivolts (0-5000) per FlexIO channel currently
-            configured as ``ANALOG_INPUT``, plus ``time`` and ``trial`` columns. The
-            set of channel columns reflects whatever configuration was active when the
-            data was recorded, and may differ across concatenated batches if channels
-            were reconfigured in between.
+            One row per sample, with the columns:
+
+            - ``time`` (``Datetime``, µs, UTC): absolute time of the sample;
+            - ``trial`` (``UInt32``): zero-based index of the trial the sample was
+              taken in; samples taken between trials belong to the preceding trial;
+            - ``Flex{N}`` (``UInt16``): voltage in millivolts (0-5000), one column per
+              channel configured as ``ANALOG_INPUT``.
+
+            Data recorded before closing and reopening the Bpod with other analog
+            inputs has other ``Flex{N}`` columns; concatenating fills the missing ones
+            with nulls.
 
         Raises
         ------
@@ -2314,6 +2320,17 @@ class Bpod(SerialDevice, AbstractBpod):
             analog inputs aren't recording: none is configured as
             ``ANALOG_INPUT``, no state machine has run yet, or
             :meth:`stop_state_machine` stopped them.
+
+        Notes
+        -----
+        While the analog inputs are recording and no samples are available, this
+        waits for new ones. Recording starts with the first state machine;
+        :meth:`stop_state_machine` stops it until the first state machine after
+        :meth:`reset_session_clock`.
+
+        Voltages are stored as integer millivolts, which hold the 12-bit ADC readings
+        losslessly. The original ADC codes are ``round(millivolts * 4095 / 5000)``,
+        which correspond to ``adc_code * 5 / 4095`` volts.
         """
         if not self._hardware.n_flexio:
             raise BpodError(

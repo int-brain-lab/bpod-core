@@ -82,10 +82,10 @@ myst_enable_extensions = ['alert']
 # -- Code blocks ---------------------------------------------------------------
 
 doctest_global_setup = f"""
-_DOCS_STATIC = __import__('pathlib').Path({str(docs_source_path / '_static')!r})
+_DOCS_DATA = __import__('pathlib').Path({str(docs_source_path / '_data')!r})
 """
 plot_pre_code = f"""
-_DOCS_STATIC = __import__('pathlib').Path({str(docs_source_path / '_static')!r})
+_DOCS_DATA = __import__('pathlib').Path({str(docs_source_path / '_data')!r})
 """
 
 copybutton_prompt_text = r'>>> |\.\.\. |\$ |In \[\d*\]: | {2,5}\.\.\.: | {5,8}: '

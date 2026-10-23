@@ -166,7 +166,7 @@ object and adding states with its :meth:`~bpod_core.fsm.StateMachine.add_state` 
 .. fsm_codeblock::
    :caption: Let's create a state machine ...
    :group: hello_world
-   :filename: hello_world_01.svg
+   :filename: fsm_state_machines_hello_world_01.svg
    :linenos:
 
    from bpod_core.fsm import StateMachine
@@ -181,7 +181,7 @@ used to generate timer-based events. By default, this timer is set to 0 s, meani
 state will immediately trigger a timeout event. The created state machine can be
 visualized using the following state diagram:
 
-.. dark-light-figure:: hello_world_01
+.. dark-light-figure:: fsm_state_machines_hello_world_01
 
    Well hello!
 
@@ -195,7 +195,7 @@ our state machine's :attr:`~bpod_core.fsm.StateMachine.states` dictionary.
 .. fsm_codeblock::
    :caption: Another way of adding a state.
    :group: hello_world
-   :filename: hello_world_02.svg
+   :filename: fsm_state_machines_hello_world_02.svg
    :linenos:
    :lineno-start: 5
 
@@ -204,7 +204,7 @@ our state machine's :attr:`~bpod_core.fsm.StateMachine.states` dictionary.
 Now our state machine contains two states: `Hello` and `World`. However, they are not
 yet connected, which is obvious in the state diagram below:
 
-.. dark-light-figure:: hello_world_02
+.. dark-light-figure:: fsm_state_machines_hello_world_02
 
    That doesn't look right.
 
@@ -218,7 +218,7 @@ Finally, we'll add a transition from `World` to the special exit state:
 .. fsm_codeblock::
    :caption: Modifying existing states.
    :group: hello_world
-   :filename: hello_world_03.svg
+   :filename: fsm_state_machines_hello_world_03.svg
    :linenos:
    :lineno-start: 6
 
@@ -231,7 +231,7 @@ A state's transitions are defined in a Python :class:`dict`, where keys are the
 triggering events (e.g. `Tup`), and values are the transition targets (either another
 state's name or an operator such as ``>exit`` or ``>back``).
 
-.. dark-light-figure:: hello_world_03
+.. dark-light-figure:: fsm_state_machines_hello_world_03
 
    Getting there.
 
@@ -244,7 +244,7 @@ turning on an output channel:
 .. fsm_codeblock::
    :caption: Adding actions to our states.
    :group: hello_world
-   :filename: hello_world_04.svg
+   :filename: fsm_state_machines_hello_world_04.svg
    :linenos:
    :lineno-start: 9
 
@@ -253,7 +253,7 @@ turning on an output channel:
 
 And with that, our `Hello, World!` example is complete:
 
-.. dark-light-figure:: hello_world_04
+.. dark-light-figure:: fsm_state_machines_hello_world_04
 
    Our finite-state machine is complete.
 
