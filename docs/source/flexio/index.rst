@@ -18,7 +18,7 @@ FlexIO Channels
        """Trial data recorded for an example, checked against the example's code."""
        data = pl.read_parquet(_DOCS_DATA / 'flexio' / f'{name}.pqt')
        assert dict(data.schema) == _TRIAL_DATA_SCHEMA
-       hashes = data['state machine'].cast(pl.String).unique().to_list()
+       hashes = data['State Machine'].cast(pl.String).unique().to_list()
        assert hashes == [fsm.hash.hex()]
        return data
 
@@ -163,7 +163,7 @@ picture, right before port 1 lights up:
       >>> data
       shape: (13, 8)
       ┌────────────────────────────────┬───────┬──────────────────┬───────────────┬─────────────────┬───────┬─────────┬───────┐
-      │ time                           ┆ trial ┆ state machine    ┆ state         ┆ type            ┆ event ┆ channel ┆ value │
+      │ Time                           ┆ Trial ┆ State Machine    ┆ State         ┆ Type            ┆ Event ┆ Channel ┆ Value │
       │ ---                            ┆ ---   ┆ ---              ┆ ---           ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat           ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪═══════════════╪═════════════════╪═══════╪═════════╪═══════╡
@@ -247,7 +247,7 @@ light beam, and then lights up port 1 for a second:
       >>> data
       shape: (12, 8)
       ┌────────────────────────────────┬───────┬──────────────────┬──────────────────┬─────────────────┬────────────┬─────────┬───────┐
-      │ time                           ┆ trial ┆ state machine    ┆ state            ┆ type            ┆ event      ┆ channel ┆ value │
+      │ Time                           ┆ Trial ┆ State Machine    ┆ State            ┆ Type            ┆ Event      ┆ Channel ┆ Value │
       │ ---                            ┆ ---   ┆ ---              ┆ ---              ┆ ---             ┆ ---        ┆ ---     ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat              ┆ enum            ┆ cat        ┆ cat     ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪══════════════════╪═════════════════╪════════════╪═════════╪═══════╡
@@ -335,7 +335,7 @@ output. The LED is dim, brighter and fully bright, one second each:
       >>> data
       shape: (16, 8)
       ┌────────────────────────────────┬───────┬──────────────────┬─────────────┬─────────────────┬───────┬─────────┬───────┐
-      │ time                           ┆ trial ┆ state machine    ┆ state       ┆ type            ┆ event ┆ channel ┆ value │
+      │ Time                           ┆ Trial ┆ State Machine    ┆ State       ┆ Type            ┆ Event ┆ Channel ┆ Value │
       │ ---                            ┆ ---   ┆ ---              ┆ ---         ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat         ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪═════════════╪═════════════════╪═══════╪═════════╪═══════╡
@@ -448,7 +448,7 @@ second:
       >>> data
       shape: (8, 8)
       ┌────────────────────────────────┬───────┬──────────────────┬─────────┬─────────────────┬───────┬─────────┬───────┐
-      │ time                           ┆ trial ┆ state machine    ┆ state   ┆ type            ┆ event ┆ channel ┆ value │
+      │ Time                           ┆ Trial ┆ State Machine    ┆ State   ┆ Type            ┆ Event ┆ Channel ┆ Value │
       │ ---                            ┆ ---   ┆ ---              ┆ ---     ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat     ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪═════════╪═════════════════╪═══════╪═════════╪═══════╡
@@ -636,7 +636,7 @@ rises when the subject presses the lever, so ``Flex1`` gets a rising threshold a
       >>> data
       shape: (11, 8)
       ┌────────────────────────────────┬───────┬──────────────────┬──────────────┬─────────────────┬─────────────┬─────────┬───────┐
-      │ time                           ┆ trial ┆ state machine    ┆ state        ┆ type            ┆ event       ┆ channel ┆ value │
+      │ Time                           ┆ Trial ┆ State Machine    ┆ State        ┆ Type            ┆ Event       ┆ Channel ┆ Value │
       │ ---                            ┆ ---   ┆ ---              ┆ ---          ┆ ---             ┆ ---         ┆ ---     ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat          ┆ enum            ┆ cat         ┆ cat     ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪══════════════╪═════════════════╪═════════════╪═════════╪═══════╡
@@ -742,7 +742,7 @@ as before, but left disabled: the state machine enables it.
       >>> data
       shape: (15, 8)
       ┌────────────────────────────────┬───────┬──────────────────┬──────────────┬─────────────────┬─────────────┬────────────────────┬───────┐
-      │ time                           ┆ trial ┆ state machine    ┆ state        ┆ type            ┆ event       ┆ channel            ┆ value │
+      │ Time                           ┆ Trial ┆ State Machine    ┆ State        ┆ Type            ┆ Event       ┆ Channel            ┆ Value │
       │ ---                            ┆ ---   ┆ ---              ┆ ---          ┆ ---             ┆ ---         ┆ ---                ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat          ┆ enum            ┆ cat         ┆ cat                ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪══════════════╪═════════════════╪═════════════╪════════════════════╪═══════╡

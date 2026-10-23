@@ -96,14 +96,14 @@ Built from :data:`~bpod_core.bpod.structs.BpodEventType`.
 """
 
 _TRIAL_DATA_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
-    'time': pl.Datetime('us', time_zone='UTC'),
-    'trial': pl.UInt32,
-    'state machine': pl.Categorical,
-    'state': pl.Categorical,
-    'type': _EVENT_TYPE_ENUM,
-    'event': pl.Categorical,
-    'channel': pl.Categorical,
-    'value': pl.UInt16,
+    'Time': pl.Datetime('us', time_zone='UTC'),
+    'Trial': pl.UInt32,
+    'State Machine': pl.Categorical,
+    'State': pl.Categorical,
+    'Type': _EVENT_TYPE_ENUM,
+    'Event': pl.Categorical,
+    'Channel': pl.Categorical,
+    'Value': pl.UInt16,
 }
 """Column schema for trial DataFrames returned by :meth:`~bpod_core.bpod.Bpod.get_data`
 and :meth:`~bpod_core.bpod.Bpod.peek_data`."""
@@ -762,7 +762,8 @@ class EventThread(threading.Thread):
                 .cast(pl.UInt16)
                 .alias('value'),
             )
-            .select(list(_TRIAL_DATA_SCHEMA))
+            # the columns above are named in lowercase; the output uses title case
+            .select(pl.col(name.lower()).alias(name) for name in _TRIAL_DATA_SCHEMA)
         )
 
     def peek_data(

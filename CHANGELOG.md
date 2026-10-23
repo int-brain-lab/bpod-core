@@ -47,9 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Bpod can't read or override them directly; use `Bpod.flex_io` instead.
 - `send_softcode` no longer sends a softcode while no state machine is running, since
   the Bpod ignores it then; it still logs a warning.
-- the `trial` column of trial data is `UInt32` instead of `UInt16`.
+- trial data columns are named in title case (`Time`, `Trial`, `State Machine`,
+  `State`, `Type`, `Event`, `Channel`, `Value`), like channel and event names.
+- the `Trial` column of trial data is `UInt32` instead of `UInt16`.
 - state machine action values can be up to 65535 on Bpod r2+ (still 255 on earlier
-  models), and the `value` column of trial data is `UInt16` instead of `UInt8`, to hold
+  models), and the `Value` column of trial data is `UInt16` instead of `UInt8`, to hold
   FlexIO analog-output values in millivolts.
 - trial data is read from the Bpod in chunks rather than message by message, which
   lowers the CPU load at high event and softcode rates.
