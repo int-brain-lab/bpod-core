@@ -25,6 +25,8 @@ jobs:
     if: (github.event_name == 'pull_request' && !github.event.pull_request.draft && github.base_ref == 'main') || inputs.release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Verify lockfile
         run: |
@@ -52,6 +54,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
         with:
           version-file: uv.lock
@@ -72,11 +76,10 @@ jobs:
     steps:
       - name: Install libegl1 (Ubuntu only)
         if: matrix.os == 'ubuntu-latest'
-        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
-        with:
-          packages: libegl1
-          version: 1.0
+        run: sudo apt-get install -y libegl1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
@@ -96,3 +99,4 @@ jobs:
         continue-on-error: true
         with:
           parallel-finished: true
+          coverage-reporter-version: v0.6.22
