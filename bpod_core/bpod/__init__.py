@@ -184,7 +184,8 @@ class Bpod(SerialDevice, AbstractBpod):
     _serial_buffer = bytearray()  # buffer for TrialReader thread
 
     _compiler: StateMachineCompiler  # rebuilt by _recompile_hardware_tables
-    _last_compiled: tuple[bytearray, StateMachineLookup] | None = None
+    # the last compiled state machine, and the hardware hash it was compiled for
+    _last_compiled: tuple[bytearray, StateMachineLookup, bytes] | None = None
 
     _softcode_thread: SoftcodeThread
     _softcode_slot: _HandlerSlot[Callable[[int], None] | None]
@@ -1124,8 +1125,14 @@ class Bpod(SerialDevice, AbstractBpod):
         if state_machine is None:
             if self._last_compiled is None:
                 raise RuntimeError('No state machine has been run yet')
-            fsm_bytes, self._fsm_annotations = self._last_compiled
-            fsm_hash = self._fsm_annotations.fsm_hash
+            fsm_bytes, annotations, hardware_hash = self._last_compiled
+            if hardware_hash != self._compiler.hardware_hash:
+                raise RuntimeError(
+                    'The hardware configuration has changed since the last state '
+                    'machine ran - pass it to run() again'
+                )
+            self._fsm_annotations = annotations
+            fsm_hash = annotations.fsm_hash
             if debugging:
                 logger.debug('Running state machine %s again', fsm_hash.hex())
 
@@ -1165,7 +1172,11 @@ class Bpod(SerialDevice, AbstractBpod):
                 raise
 
             # 3) KEEP THE COMPILED STATE MACHINE FOR REPEAT CALLS
-            self._last_compiled = (fsm_bytes, self._fsm_annotations)
+            self._last_compiled = (
+                fsm_bytes,
+                self._fsm_annotations,
+                self._compiler.hardware_hash,
+            )
 
         # Send state machine to Bpod; always queue for immediate back-to-back execution.
         # The Bpod may start it at any time from here on - count it as running until

@@ -180,8 +180,8 @@ class AbstractBpod(AbstractContextManager):
         If the Bpod is currently running a state machine, the new one is queued to run
         as soon as the current one finishes, with no inter-trial gap.
 
-        If called without an argument, the previously sent state machine is re-sent
-        from the compilation cache and queued for immediate back-to-back execution.
+        If called without an argument, the previously sent state machine is sent again
+        and queued for immediate back-to-back execution.
 
         Parameters
         ----------
@@ -200,7 +200,9 @@ class AbstractBpod(AbstractContextManager):
         Raises
         ------
         RuntimeError
-            If called without an argument and no state machine has been run yet.
+            If called without an argument and no state machine has been run yet, or
+            the hardware configuration has changed since (e.g. through
+            :meth:`update_modules`).
         ValueError
             If the state machine is invalid or exceeds hardware limitations, or if
             ``trial_number`` is out of range.

@@ -954,6 +954,16 @@ class TestRun:
             mock_bpod_25.run(fsm, validate=False)
         assert isinstance(error.value.__cause__, KeyError)
 
+    def test_rerun_refused_after_hardware_change(self, mock_bpod_25, mocker):
+        """run() without a state machine refuses bytes compiled for other hardware."""
+        mocker.patch.object(Bpod, '_run_state_machine')
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        mock_bpod_25.run(fsm)
+        mock_bpod_25._compiler.hardware_hash = b'changed'  # e.g. new modules
+        with pytest.raises(RuntimeError, match='hardware configuration has changed'):
+            mock_bpod_25.run()
+
     def test_run_no_prior_sma(self, mock_bpod_25):
         """Calling run() without a prior run raises RuntimeError."""
         with pytest.raises(RuntimeError, match='No state machine has been run yet'):
