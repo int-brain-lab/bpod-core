@@ -259,9 +259,10 @@ class TestUpdateModules:
         assert mock_bpod_2p.serial0.last_write == b'%' + bytes((24, 15, 6, 15, 15))
         event_names = mock_bpod_2p.modules['DIO_12Ch_Stream1'].event_names
         assert event_names[:2] == ['DIO_12Ch_Stream1_Lick', 'DIO_12Ch_Stream1_1']
-        assert mock_bpod_2p._event_indices['DIO_12Ch_Stream1_Lick'] == 0
-        assert mock_bpod_2p._event_indices['Flex1_0'] == 75  # max_serial_events
-        assert mock_bpod_2p._n_softcodes == 15
+        compiler = mock_bpod_2p._compiler
+        assert compiler._event_indices['DIO_12Ch_Stream1_Lick'] == 0
+        assert compiler._event_indices['Flex1_0'] == 75  # max_serial_events
+        assert compiler.n_softcodes == 15
 
     def test_unacknowledged_allocation_raises(self, mock_bpod_2p):
         """A state machine that does not acknowledge the allocation is an error."""
@@ -615,7 +616,7 @@ class TestGetData:
 class TestResettableActions:
     def test_outputs_reset_by_the_bpod(self, mock_bpod_2p):
         """Flex, BNC, PWM and valve outputs are reset at each state, nothing else."""
-        assert mock_bpod_2p._resettable_actions == [
+        assert mock_bpod_2p._compiler.resettable_actions == [
             *(f'Flex{i}' for i in range(1, 5)),
             'TTLOut1',
             'TTLOut2',
@@ -874,7 +875,7 @@ class TestRun:
         fsm = StateMachine()
         fsm.add_state('a', 0, {'Tup': '>exit'}, {'Flex4': 1000})
         mock_bpod_2p.run(fsm)
-        idx = mock_bpod_2p._actions.index('Flex4')
+        idx = mock_bpod_2p._compiler.actions.index('Flex4')
         assert struct.pack('<HHH', 1, idx, 1000) in mock_bpod_2p.serial0.last_write
 
         mock_bpod_2p._state_machine_started = False  # as after reconnecting
@@ -983,7 +984,7 @@ class TestFlexIOSettings:
         flex1.thresholds[0].voltage = 2500
         mock_bpod_2p._state_machine_started = True  # voltages stay changeable
         flex1.thresholds[1].voltage = 1000
-        lookup = mock_bpod_2p._event_lookup.filter(
+        lookup = mock_bpod_2p._compiler.event_lookup.filter(
             pl.col('event').cast(pl.String).str.starts_with('Flex1_Trig')
         )
         values = dict(
@@ -1016,11 +1017,9 @@ class TestFlexIOSettings:
         mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.ANALOG_OUTPUT
         fsm = StateMachine()
         fsm.add_state('a', 0, {'Tup': '>exit'}, {'Flex4': 1000})
-        fsm_bytes, annotations, _ = mock_bpod_2p._compile_state_machine(
-            state_machine=fsm
-        )
+        fsm_bytes, annotations, _ = mock_bpod_2p._compiler.compile(state_machine=fsm)
         # the wire still carries the raw 12-bit DAC count...
-        idx = mock_bpod_2p._actions.index('Flex4')
+        idx = mock_bpod_2p._compiler.actions.index('Flex4')
         assert struct.pack('<HHH', 1, idx, 819) in fsm_bytes
         # ...while the annotation used to build get_data()'s value is millivolts
         assert annotations.state_actions[0]['Flex4'] == 1000

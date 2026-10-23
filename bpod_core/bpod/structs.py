@@ -16,7 +16,10 @@ from bpod_core.misc import ByteEnum
 
 
 class _ValidationData(NamedTuple):
-    """Data returned by :meth:`Bpod._validate_state_machine`."""
+    """Data returned by the state machine compiler's validation.
+
+    See :meth:`~bpod_core.bpod._compiler.StateMachineCompiler.validate`.
+    """
 
     use_back_operator: bool
     """Whether the state machine uses the ``>back`` operator."""

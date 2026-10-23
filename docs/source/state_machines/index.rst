@@ -377,6 +377,7 @@ hardware are known:
    from unittest.mock import patch
    from types import SimpleNamespace
    from bpod_core.bpod import Bpod
+   from bpod_core.bpod._compiler import StateMachineCompiler
    from unittest.mock import MagicMock
 
    original_run = Bpod.run
@@ -384,19 +385,20 @@ hardware are known:
 
    def fake_init(self, *args, **kwargs):
        self._disable_all_module_relays = lambda: None
-       self._hardware = SimpleNamespace(
+       compiler = object.__new__(StateMachineCompiler)  # only what validation needs
+       compiler._hardware = SimpleNamespace(
            max_states=256,
            n_global_timers=16,
            n_global_counters=16,
            n_conditions=64,
            cycle_frequency=1000,
        )
+       compiler.hardware_hash = b''
+       compiler._version = SimpleNamespace(machine_str='R2.0-2.5')
+       self._compiler = compiler
        self._bpod_finalizer = SimpleNamespace(detach=lambda: None)
        self._serial_device_finalizer = SimpleNamespace(detach=lambda: None)
        self._softcode_thread = MagicMock()
-       self._hardware_hash = b''
-       self._serial_device_name = 'Bpod'
-       self._version = SimpleNamespace(machine_str='Finite State Machine R2.0-2.5')
        self.run = types.MethodType(original_run, self)
        self.validate_state_machine = types.MethodType(original_validate, self)
 

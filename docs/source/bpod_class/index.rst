@@ -44,7 +44,6 @@ serial connection is closed and any running trial is allowed to finish on exit.
        self._bpod_finalizer = SimpleNamespace(detach=lambda: None)
        self._serial_device_finalizer = SimpleNamespace(detach=lambda: None)
        self._softcode_thread = MagicMock()
-       self._hardware_hash = b''
        self._serial = None
        self._serial_number = '14260000'
        self.run = types.MethodType(original_run, self)
