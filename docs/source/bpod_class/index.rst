@@ -124,7 +124,10 @@ collected data as a Polars :class:`~polars.DataFrame` (see :doc:`/data_format`).
 .. seealso::
 
    Refer to :doc:`/state_machines/index` for the full reference of the
-   :class:`~bpod_core.fsm.StateMachine` object.
+   :class:`~bpod_core.fsm.StateMachine` object, including how to check which event
+   and action names are currently valid via
+   :attr:`~bpod_core.bpod.Bpod.input_event_names` and
+   :attr:`~bpod_core.bpod.Bpod.action_names`.
 
 
 Zero-Downtime Execution
@@ -137,7 +140,7 @@ away if no trial is running, or as soon as the preceding trial ends—enabling
 back-to-back execution of state machines with zero inter-trial downtime and continuous
 acquisition.
 
-.. dark-light-figure:: /_static/bpod_run
+.. dark-light-figure:: bpod_run
 
    Timeline of four consecutive :meth:`~bpod_core.bpod.Bpod.run` calls across the Host
    PC and Bpod.
@@ -205,7 +208,7 @@ trial, yielding randomized state timers and action values:
    :meth:`~bpod_core.bpod.Bpod.set_status_led`,
    :meth:`~bpod_core.bpod.Bpod.update_modules`,
    :meth:`~bpod_core.bpod.Bpod.reset_session_clock` or reading an input, raise a
-   :exc:`~bpod_core.bpod.BpodError` until it has finished. Queuing the next state
+   :exc:`~bpod_core.bpod.errors.BpodError` until it has finished. Queuing the next state
    machine with :meth:`~bpod_core.bpod.Bpod.run`, sending softcodes, overriding outputs,
    stopping the state machine and retrieving data all work during a trial.
 
@@ -255,7 +258,7 @@ before queuing it—with no idle time between the two runs. The final
            runtime_data = bpod.peek_data(trigger_states=['pause'])
 
            # calculate duration of 'Port0_High'
-           d = runtime_data.filter(pl.col("channel") == "Port0")['time'].diff().last()
+           d = runtime_data.filter(pl.col("Channel") == "Port0")['Time'].diff().last()
 
            # set state timer and run second state machine
            fsm2.states['echo'].timer = d

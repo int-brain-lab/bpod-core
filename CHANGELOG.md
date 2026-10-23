@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- support for FlexIO channels (Bpod Finite State Machine r2+): `Bpod.flex_io`
+  configures each channel as digital or analog input or output, along with analog
+  thresholds and the sampling rate; `Bpod.get_analog_data` returns the continuously
+  sampled analog input in millivolts. Flex channel events and analog-output actions
+  can be used in state machines, and global timers can drive Flex outputs. Analog
+  threshold events record their threshold's voltage as their value.
+- `Bpod.action_names`: names of all actions a state machine can currently set,
+  mirroring `Bpod.input_event_names`.
+- state machine validation rejects non-integer action values before compilation.
 - `ExtendedSerial.temporary_timeout`: context manager for temporarily setting a timeout
   for serial reads.
 - Optimizations for agentic development (`AGENTS.md`, `.mcp.json`, `llms.txt`, etc.)
@@ -34,9 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - methods that query or reconfigure the Bpod (e.g., `set_status_led`, `update_modules`,
   `Input.read`, `Module.load_serial_message`) raise a `BpodError` while a state machine
   is running, instead of corrupting the trial's data.
+- FlexIO channels are no longer listed in `Bpod.inputs` and `Bpod.outputs`, since the
+  Bpod can't read or override them directly; use `Bpod.flex_io` instead.
 - `send_softcode` no longer sends a softcode while no state machine is running, since
   the Bpod ignores it then; it still logs a warning.
-- the `trial` column of trial data is `UInt32` instead of `UInt16`.
+- trial data columns are named in title case (`Time`, `Trial`, `State Machine`,
+  `State`, `Type`, `Event`, `Channel`, `Value`), like channel and event names.
+- the `Trial` column of trial data is `UInt32` instead of `UInt16`.
+- state machine action values can be up to 65535 on Bpod r2+ (still 255 on earlier
+  models), and the `Value` column of trial data is `UInt16` instead of `UInt8`, to hold
+  FlexIO analog-output values in millivolts.
 - trial data is read from the Bpod in chunks rather than message by message, which
   lowers the CPU load at high event and softcode rates.
 - live trial events are published in batches rather than one message per event,
@@ -54,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `com.FilterValue`, superseded by `filtering.Filter`.
 - the `rechunk` parameter of `get_data`: call `.rechunk()` on the result instead.
 - the unused `qtpy` dependency.
+- `Bpod.serial2`: the FlexIO serial connection is now private.
 
 ### Fixed
 

@@ -30,6 +30,7 @@ import polars as pl
 from cachetools import FIFOCache
 from pydantic import ConfigDict, validate_call
 from serial import SerialException
+from serial.threaded import ReaderThread
 from typing_extensions import override
 from xxhash import xxh3_64 as _xxh3_64
 
@@ -61,6 +62,14 @@ from bpod_core.bpod.constants import (
     PIDS_BPOD,
     VALID_OPERATORS,
     VIDS_BPOD,
+    FlexIOChannelType,
+)
+from bpod_core.bpod.errors import BpodError, BpodKeyError
+from bpod_core.bpod.flexio import (
+    FlexIO,
+    _counts_to_mv,
+    _mv_to_counts,
+    is_flexio_threshold_ambiguous,
 )
 from bpod_core.bpod.structs import (
     BpodEventUnion,
@@ -83,6 +92,7 @@ from bpod_core.bpod.structs import (
     _ValidationData,
 )
 from bpod_core.com import (
+    ChunkedSerialReader,
     ExtendedSerial,
     SerialDevice,
     find_ports,
@@ -92,6 +102,8 @@ from bpod_core.constants import (
     FMT_UINT8,
     FMT_UINT16_LE,
     FMT_UINT32_LE,
+    UINT8_MAX,
+    UINT16_MAX,
     UINT32_MAX,
     TeensyPID,
 )
@@ -114,13 +126,11 @@ from bpod_core.misc import (
 
 logger = logging.getLogger(__name__)
 
-
-class BpodError(Exception):
-    """Raised for errors specific to Bpod device operations."""
-
-
-class BpodKeyError(BpodError, KeyError):
-    """Exception class for Bpod-related key errors."""
+_ANALOG_FLUSH_INTERVAL_NS = 100_000_000  # 100 ms
+# while idle, the Bpod answers 'X' with a trial-end report: opcode 1, one event, event
+# code 255 (end of trial), then 2 x uInt32 cycle counts and a uInt64 timestamp
+_IDLE_STOP_REPLY_HEADER = b'\x01\x01\xff'
+_IDLE_STOP_REPLY_SIZE = len(_IDLE_STOP_REPLY_HEADER) + 16
 
 
 _S = TypeVar('_S')
@@ -187,6 +197,7 @@ class Bpod(SerialDevice, AbstractBpod):
     _read_thread: ReadThread | None = None
     _event_thread: EventThread | None = None
     _starting_state_machine: bool = False
+    _state_machine_started: bool = False  # fixes FlexIO channel types and rate
     _zmq: ServiceHost[BpodRequestUnion, list[BpodEventUnion]]
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
@@ -206,14 +217,29 @@ class Bpod(SerialDevice, AbstractBpod):
     serial1: ExtendedSerial | None = None
     """Secondary serial device for communication with the Bpod."""
 
-    serial2: ExtendedSerial | None = None
-    """Tertiary serial device for communication with the Bpod - used by Bpod 2+ only."""
+    # FlexIO analog-input reader state; see _start_analog_reader/_on_analog_chunk
+    _flexio_serial: ExtendedSerial | None = None
+    _analog_reader_thread: ReaderThread | None = None
+    _analog_recording: bool = False  # the Bpod is sampling the analog inputs
+    _analog_channel_names: tuple[str, ...] = ()
+    _analog_struct: struct.Struct | None = None
+    _analog_sample_period_us: int = 0
+    _analog_data: SimpleQueue[pl.LazyFrame]
+    _analog_buffer: list[tuple[int, ...]]
+    _analog_first_trial_time_us: int | None = None
+    _analog_trial_number_by_sequence: list[int]
+    _analog_sample_index: int = 0
+    _analog_last_flush_ns: int = 0
 
     inputs: Mapping[str, 'Input']
-    """Read-only mapping of available input channels, keyed by name."""
+    """Read-only mapping of available input channels, keyed by name.
+
+    FlexIO channels are accessed through :attr:`flex_io` instead."""
 
     outputs: Mapping[str, 'Output']
-    """Read-only mapping of available output channels, keyed by name."""
+    """Read-only mapping of available output channels, keyed by name.
+
+    FlexIO channels are accessed through :attr:`flex_io` instead."""
 
     modules: Mapping[str, 'Module']
     """Dictionary of available modules, keyed by name."""
@@ -241,11 +267,18 @@ class Bpod(SerialDevice, AbstractBpod):
         self._input_events: _InputEvents = _InputEvents(
             names=[], channels=[], values=[]
         )
+        self._input_event_names: tuple[str, ...] = ()
         self._actions: list[str] = []
+        self._action_names: tuple[str, ...] = ()
         self._event_lookup: pl.DataFrame = pl.DataFrame()
         self._fsm_annotations: StateMachineLookup | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
         self._hardware_hash: bytes = b''
+        self._analog_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
+        self._analog_buffer = []
+        self._analog_trial_number_by_sequence = []
+        self._analog_sample_index = 0
+        self._analog_last_flush_ns = perf_counter_ns()
 
         self._n_softcodes = 0
         self._softcode_slot = _HandlerSlot(None)
@@ -272,14 +305,21 @@ class Bpod(SerialDevice, AbstractBpod):
             # get the Bpod's onboard hardware configuration
             self._get_hardware_configuration()
 
+            # detect additional serial ports
+            self.serial1, self._flexio_serial = self._detect_additional_serial_ports()
+
             # configure input and output channels
             self._configure_io()
-
-            # detect additional serial ports
-            self._detect_additional_serial_ports()
+            self._configure_flex_io()
 
             # update modules
             self.update_modules()
+
+            # sync the FlexIO subsystem to its default settings; must run after
+            # _configure_io()/update_modules() since it recompiles the hardware
+            # tables, which depend on self.inputs/outputs/modules being set
+            if self._flex_io is not None:
+                self._flex_io.reset()
 
             # log hardware information
             logger.info(
@@ -287,6 +327,11 @@ class Bpod(SerialDevice, AbstractBpod):
                 self.version.machine_str,
                 self.port,
             )
+            if self.serial1 is not None:
+                logger.info(
+                    'Secondary serial port available for connections on %s',
+                    self.serial1.portstr,
+                )
             logger.info(
                 'Firmware Version %d.%d, Serial Number %s, PCB Revision %d',
                 *self.version.firmware,
@@ -380,12 +425,55 @@ class Bpod(SerialDevice, AbstractBpod):
             If the port could not be closed.
         """
         self.wait()
+        serial0_open = hasattr(self, '_serial') and getattr(
+            self._serial, 'is_open', False
+        )
+        if serial0_open and self._analog_reader_thread is not None:
+            # firmware keeps streaming FlexIO analog samples on its own serial port
+            # until explicitly told to stop - even after a trial ends naturally via
+            # '>exit' - so the next connection's discovery handshake would race stray
+            # bytes. Read the Bpod's reply, so it isn't taken for stray bytes below.
+            with contextlib.suppress(SerialException):  # the Bpod may be unplugged
+                self._serial.write(b'X')
+                with self._serial.temporary_timeout(0.2):
+                    reply = self._serial.read(_IDLE_STOP_REPLY_SIZE)
+                if not reply.startswith(_IDLE_STOP_REPLY_HEADER):
+                    logger.warning('Unexpected reply to stop command: %s', reply.hex())
         self._softcode_thread.drain()
+        if self._analog_reader_thread is not None:
+            self._analog_reader_thread.stop()  # thread stopped, serial still open
+            self._analog_reader_thread = None
+            self._analog_recording = False
+            self._flush_analog_buffer()  # samples since the last periodic flush
+        if self._flexio_serial is not None and self._flexio_serial.is_open:
+            # discard any analog samples firmware sent (or was still sending) up to
+            # the 'X' above, so a stale byte can't be misread as the next
+            # connection's discovery-handshake response
+            with contextlib.suppress(SerialException):  # the Bpod may be unplugged
+                self._discard_stray_bytes(self._flexio_serial, 'the FlexIO serial port')
+            self._flexio_serial.close()
         if hasattr(self, 'serial0'):
             # the Bpod may have been unplugged
             with contextlib.suppress(SerialException):
                 self._request_disconnect(self.serial0)
+        if serial0_open:
+            # discard anything unread at this point - we're about to abandon the
+            # connection either way, so this just keeps a straggler byte from
+            # confusing the next connection's own handshake on this port
+            with contextlib.suppress(SerialException):
+                self._discard_stray_bytes(self._serial, 'serial0')
         super().close()
+
+    @staticmethod
+    def _discard_stray_bytes(serial: ExtendedSerial, name: str) -> None:
+        """Read and discard any bytes waiting on `serial`, logging how many."""
+        discarded = serial.read_all()
+        if discarded:
+            logger.warning(
+                'Discarded %d stray byte(s) from %s before closing it',
+                len(discarded),
+                name,
+            )
 
     @staticmethod
     def _request_disconnect(serial: ExtendedSerial) -> None:
@@ -409,9 +497,14 @@ class Bpod(SerialDevice, AbstractBpod):
                 logger.warning('Bpod did not confirm the disconnect request')
 
     @property
-    def input_event_names(self) -> list[str]:
-        """Names of all hardware input events."""
-        return self._input_events.names
+    def input_event_names(self) -> tuple[str, ...]:
+        """Names of all input events a state machine can transition on."""
+        return self._input_event_names
+
+    @property
+    def action_names(self) -> tuple[str, ...]:
+        """Names of all actions a state machine can set."""
+        return self._action_names
 
     @property
     def serial0(self) -> ExtendedSerial:
@@ -600,20 +693,33 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # retrieve hardware configuration from Bpod
         if self.version.firmware > (22, 0):
-            hardware_conf = list(self.serial0.query_struct(b'H', '<2H6B'))
+            hw_conf = list(self.serial0.query_struct(b'H', '<2H6B'))
         else:
-            hardware_conf = list(self.serial0.query_struct(b'H', '<2H5B'))
-            hardware_conf.insert(-4, 3)  # max bytes per serial msg always = 3
-        hardware_conf.extend(self.serial0.read_struct(f'<{hardware_conf[-1]}sB'))
-        hardware_conf.append(self.serial0.read(hardware_conf[-1]))
+            hw_conf = list(self.serial0.query_struct(b'H', '<2H5B'))
+            hw_conf.insert(-4, 3)  # max bytes per serial msg always = 3
+        hw_conf.extend(self.serial0.read_struct(f'<{hw_conf[-1]}sB'))
+        hw_conf.append(self.serial0.read(hw_conf[-1]))
 
-        # compute additional fields
-        cycle_frequency = 1_000_000 // hardware_conf[1]  # cycle_period_us is at index 1
-        n_modules = hardware_conf[-3].count(b'U')  # input_description is third to last
-        hardware_conf.extend([cycle_frequency, n_modules])
+        # create Struct for hardware configuration
+        input_description = hw_conf[-3]  # input_description is third to last
+        hw_conf.append(1_000_000 // hw_conf[1])  # cycle_frequency; cycle_period_us @ 1
+        hw_conf.append(input_description.count(b'U'))  # n_modules
+        hw_conf.append(input_description.count(b'F'))  # n_flexio
+        self._hardware = HardwareConfiguration(*hw_conf)
 
-        # create NamedTuple for hardware configuration
-        self._hardware = HardwareConfiguration(*hardware_conf)
+    def _configure_flex_io(self) -> None:
+        """Construct the FlexIO subsystem, if the hardware has FlexIO channels."""
+        # default FlexIO channel configuration (one entry per Flex channel)
+        # TODO: replace with the device query once the opcode is available
+        if self._hardware.n_flexio > 0:
+            self._flex_io = FlexIO(
+                bpod_serial=self.serial0,
+                n=self._hardware.n_flexio,
+                cycle_frequency=self._hardware.cycle_frequency,
+                on_input_events_changed=self._recompile_hardware_tables,
+                is_running=lambda: self.is_running,
+                configuration_locked=lambda: self._state_machine_started,
+            )
 
     def _configure_io(self) -> None:
         """Configure the input and output channels of the Bpod."""
@@ -626,13 +732,16 @@ class Bpod(SerialDevice, AbstractBpod):
             io_class = f'{channel_class.__name__.lower()}s'
             channels: dict[str, Any] = {}
 
-            # loop over the description array and create channels
-            for idx, io_key in enumerate(struct.unpack(f'<{n_channels}c', description)):
+            # loop over the description array and create channels - except for FlexIO
+            # channels, which are accessed through flex_io
+            for io_key in struct.unpack(f'<{n_channels}c', description):
                 if io_key not in channel_names:
                     raise RuntimeError(f'Unknown {io_class[:-1]} type: {io_key}')
-                n = description[:idx].count(io_key) + 1
-                name = f'{channel_names[io_key]}{n}'
-                channels[name] = channel_class(self, name, io_key, idx)
+            for idx, (io_key, name) in enumerate(
+                _name_channels(description, channel_names)
+            ):
+                if io_key != b'F':
+                    channels[name] = channel_class(self, name, io_key, idx)
 
             # store channels to typed dict and set as a class attribute
             name = 'input channel' if channel_class is Input else 'output channel'
@@ -645,8 +754,18 @@ class Bpod(SerialDevice, AbstractBpod):
         # set the enabled state of the input channels
         self._set_enable_inputs()
 
-    def _detect_additional_serial_ports(self) -> None:
-        """Detect additional USB-serial ports."""
+    def _detect_additional_serial_ports(
+        self,
+    ) -> tuple[ExtendedSerial | None, ExtendedSerial | None]:
+        """
+        Detect additional USB-serial ports.
+
+        Returns
+        -------
+        tuple of (ExtendedSerial or None, ExtendedSerial or None)
+            The secondary "app" serial port and the tertiary FlexIO serial port.
+            Either is None if not applicable for this device.
+        """
         logger.debug('Detecting additional USB-serial ports')
 
         # First, assemble a list of candidate ports
@@ -658,6 +777,7 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
         # Then, try to find the secondary USB-serial port
+        serial1 = None
         if self._version.firmware >= (23, 0):
             for port in candidate_ports:
                 if verify_serial_discovery(
@@ -666,15 +786,16 @@ class Bpod(SerialDevice, AbstractBpod):
                     timeout=DISCOVERY_TIMEOUT,
                     trigger=lambda: self.serial0.write(b'{'),
                 ):
-                    self.serial1 = ExtendedSerial()
-                    self.serial1.port = port.device
+                    serial1 = ExtendedSerial()
+                    serial1.port = port.device
                     candidate_ports.remove(port)
-                    logger.debug('Detected secondary USB-serial port: %s', port.device)
+                    logger.debug('Detected secondary serial port: %s', port.device)
                     break
-            if self.serial1 is None:
+            if serial1 is None:
                 raise BpodError('Could not detect secondary serial port')
 
         # State Machine 2+ uses a third USB-serial port for FlexIO
+        flexio_serial = None
         if self.version.machine == 4:
             for port in candidate_ports:
                 if verify_serial_discovery(
@@ -683,12 +804,18 @@ class Bpod(SerialDevice, AbstractBpod):
                     timeout=DISCOVERY_TIMEOUT,
                     trigger=lambda: self.serial0.write(b'}'),
                 ):
-                    self.serial2 = ExtendedSerial()
-                    self.serial2.port = port.device
-                    logger.debug('Detected tertiary USB-serial port: %s', port.device)
+                    flexio_serial = ExtendedSerial()
+                    flexio_serial.port = port.device
+                    logger.debug('Detected FlexIO serial port: %s', port.device)
                     break
-            if self.serial2 is None:
-                raise BpodError('Could not detect tertiary serial port')
+            if flexio_serial is None:
+                raise BpodError(
+                    'Could not detect FlexIO serial port. If another program left '
+                    'FlexIO analog sampling running (e.g., after a crash), power-cycle '
+                    'the Bpod.'
+                )
+
+        return serial1, flexio_serial
 
     def _handshake(self) -> None:
         """
@@ -728,7 +855,10 @@ class Bpod(SerialDevice, AbstractBpod):
 
     def _set_enable_inputs(self) -> bool:
         logger.debug('Updating enabled state of input channels')
-        enable = [i.enabled for i in self.inputs.values()]
+        # the Bpod expects a value for each of its inputs: FlexIO inputs, which aren't
+        # in self.inputs, stay enabled, as their channel type determines their events
+        enabled = {i.index: i.enabled for i in self.inputs.values()}
+        enable = [enabled.get(idx, True) for idx in range(self._hardware.n_inputs)]
         self.serial0.write_struct(f'<c{self._hardware.n_inputs}?', b'E', *enable)
         return self.serial0.read(1) == b'\x01'
 
@@ -755,6 +885,13 @@ class Bpod(SerialDevice, AbstractBpod):
             reset_system_time_ns=reset_time_ns,
         )
         self._softcode_thread.set_time_reference(self._time_reference)
+
+        # firmware resets its trial counter alongside the session clock (same opcode);
+        # mirror that here so the analog data pipeline's bookkeeping stays in sync
+        self._flush_analog_buffer()
+        self._analog_first_trial_time_us = None
+        self._analog_trial_number_by_sequence = []
+        self._analog_sample_index = 0
         return True
 
     def _disable_all_module_relays(self) -> None:
@@ -783,6 +920,12 @@ class Bpod(SerialDevice, AbstractBpod):
         event_names: list[str] = []
         event_channels: list[str | None] = []
         event_values: list[int | None] = []
+        non_bindable_events: list[str] = []
+        flexio_types = (
+            tuple(c.channel_type for c in self._flex_io.values())
+            if self._flex_io is not None
+            else ()
+        )
 
         # physical input channel events
         counters = dict.fromkeys(CHANNEL_TYPES_INPUT, 0)
@@ -803,9 +946,27 @@ class Bpod(SerialDevice, AbstractBpod):
                 ev_values = list(range(n_app_softcodes))
             elif io_key == b'F':  # Flex
                 channel = f'{channel_name}{counters[io_key] + 1}'
-                ev_names = [f'{channel}_{i}' for i in range(2)]
+                match self.flex_io[channel].channel_type:
+                    case FlexIOChannelType.DIGITAL_INPUT:
+                        ev_names = [f'{channel}_{s}' for s in ('High', 'Low')]
+                        ev_values = [1, 0]
+                    case FlexIOChannelType.ANALOG_INPUT:
+                        ev_names = [f'{channel}_{s}' for s in ('Trig0', 'Trig1')]
+                        ev_values = [
+                            t.voltage for t in self.flex_io[channel].thresholds
+                        ]
+                        if is_flexio_threshold_ambiguous(
+                            flexio_types, counters[io_key]
+                        ):
+                            non_bindable_events.extend(ev_names)
+                    case _:
+                        # every physical Flex channel reserves 2 event slots
+                        # unconditionally, matching firmware layout; channels not
+                        # configured as an input can never actually trigger them
+                        ev_names = [f'{channel}_{i}' for i in range(2)]
+                        ev_values = [0, 1]
+                        non_bindable_events.extend(ev_names)
                 ev_channels = [channel] * 2
-                ev_values = [0, 1]
             elif io_key in b'PBW':  # Port, TTL, Wire
                 channel = f'{channel_name}{counters[io_key] + 1}'
                 ev_names = [f'{channel}_{s}' for s in ('High', 'Low')]
@@ -864,6 +1025,9 @@ class Bpod(SerialDevice, AbstractBpod):
             names=event_names, channels=event_channels, values=event_values
         )
         self._event_indices = {k: v for v, k in enumerate(event_names)}
+        self._input_event_names = tuple(
+            n for n in event_names if n not in non_bindable_events
+        )
         self._input_event_ranges = _InputEventRanges(
             input_channels=range_input,
             global_timer_starts=range_global_timer_starts,
@@ -873,8 +1037,9 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
         modules = list(self.modules)
+        input_channels = _name_channels(hw.input_description, CHANNEL_TYPES_INPUT)
         physical_input_channels = [
-            i.name for i in self.inputs.values() if i.io_type != b'U'
+            name for io_key, name in input_channels if io_key != b'U'
         ]
         global_timers = [
             f'{_CHANNEL_BASE_NAME_GLOBAL_TIMER}{i}' for i in range(hw.n_global_timers)
@@ -888,6 +1053,7 @@ class Bpod(SerialDevice, AbstractBpod):
     def _compile_output_actions(self) -> None:
         """Compile the list of output actions supported by the Bpod hardware."""
         self._actions = []
+        non_bindable_actions: list[str] = []
         self._resettable_actions: list[str] = []  # reset by the Bpod at each state
 
         # compile actions for output channels
@@ -900,6 +1066,11 @@ class Bpod(SerialDevice, AbstractBpod):
             elif io_key in b'FVPBW':  # Flex, Valve, PWM, TTL, Wire
                 name = f'{CHANNEL_TYPES_OUTPUT[io_key]}{counters[io_key] + 1}'
                 self._resettable_actions.append(name)
+                if io_key == b'F' and self.flex_io[name].channel_type not in (
+                    FlexIOChannelType.DIGITAL_OUTPUT,
+                    FlexIOChannelType.ANALOG_OUTPUT,
+                ):
+                    non_bindable_actions.append(name)
             else:
                 continue
             self._actions.append(name)
@@ -913,9 +1084,16 @@ class Bpod(SerialDevice, AbstractBpod):
         if self.version.machine == 4:
             self._actions.extend(['AnalogThreshEnable', 'AnalogThreshDisable'])
 
+        self._action_names = tuple(
+            n for n in self._actions if n not in non_bindable_actions
+        )
         self._action_indices = {k: v for v, k in enumerate(self._actions)}
         self._physical_output_channels = list(self.modules) + [
-            o.name for o in self.outputs.values() if o.io_type != b'U'
+            name
+            for io_key, name in _name_channels(
+                self._hardware.output_description, CHANNEL_TYPES_OUTPUT
+            )
+            if io_key != b'U'
         ]
         self._timer_channel_indices: dict[str | None, int] = {
             k: v for v, k in enumerate(self._physical_output_channels)
@@ -998,27 +1176,139 @@ class Bpod(SerialDevice, AbstractBpod):
             {m.name: m for m in modules}, name='module', error_class=BpodKeyError
         )
 
-        # update event names and output actions
-        serial_event_allocation = self._compile_input_events()
-        self._compile_output_actions()
-        self._event_lookup = _build_event_lookup(self._input_events, self._actions)
-
-        # tell the state machine how many events each serial channel may report -
-        # until then, it drops all module events and softcodes
+        # update event names and output actions, then tell the state machine how many
+        # events each serial channel may report - until then, it drops all module
+        # events and softcodes
+        serial_event_allocation = self._recompile_hardware_tables()
         if not self.serial0.verify(b'%' + serial_event_allocation):
             raise BpodError('State machine did not acknowledge serial event allocation')
         logger.debug('Serial event allocation sent: %s', list(serial_event_allocation))
 
-        # compute hardware identity hash for cache keying
+    def _recompile_hardware_tables(self) -> bytes:
+        """Recompile input events and output actions, and refresh the hardware hash.
+
+        Must be called whenever anything that affects event/action naming or event
+        values changes after the initial connection (e.g. module discovery, FlexIO
+        channel types or threshold voltages), so that compiled state machines and
+        recorded events reflect the current hardware configuration and stale cache
+        entries aren't served.
+
+        Returns
+        -------
+        bytes
+            The number of events per serial channel, see
+            :meth:`_compile_input_events`.
+        """
+        serial_event_allocation = self._compile_input_events()
+        self._compile_output_actions()
+        self._event_lookup = _build_event_lookup(self._input_events, self._actions)
         self._hardware_hash = self._compute_hardware_hash()
+        return serial_event_allocation
 
     def _compute_hardware_hash(self) -> bytes:
         """Compute a hash for the current hardware configuration."""
+        flexio_channel_types = (
+            tuple(c.channel_type for c in self._flex_io.values())
+            if self._flex_io is not None
+            else ()
+        )
         return _xxh3_64(
-            msgspec.msgpack.encode(self._hardware, order='deterministic')
-            + msgspec.msgpack.encode(self._input_events.names, order='deterministic')
-            + msgspec.msgpack.encode(self._actions, order='deterministic')
+            msgspec.msgpack.encode(
+                (
+                    self._hardware,
+                    self._input_events.names,
+                    self._actions,
+                    flexio_channel_types,
+                ),
+                order='deterministic',
+            )
         ).digest()
+
+    def _start_analog_reader(self) -> None:
+        """Start the FlexIO analog reader if any channel is an ANALOG_INPUT."""
+        if self._flexio_serial is None or self._flex_io is None:
+            return
+        names = tuple(
+            name
+            for name, channel in self._flex_io.items()
+            if channel.channel_type == FlexIOChannelType.ANALOG_INPUT
+        )
+        if not names:
+            return  # firmware transmits nothing until >=1 channel is ANALOG_INPUT
+        n_cycles_per_sample = round(
+            self._hardware.cycle_frequency / self._flex_io.analog_sampling_rate
+        )
+        self._analog_sample_period_us = (
+            n_cycles_per_sample * self._hardware.cycle_period_us
+        )
+        self._analog_channel_names = names
+        n = len(names)
+        serial = self._flexio_serial
+        if not serial.is_open:
+            serial.open()
+        self._analog_struct = struct.Struct(f'<{1 + n}H')  # trial_counter + n samples
+        chunk_size = self._analog_struct.size
+        self._analog_reader_thread = ReaderThread(
+            serial,
+            lambda: ChunkedSerialReader(chunk_size, callback=self._on_analog_chunk),
+        )
+        self._analog_reader_thread.start()
+
+    def _on_analog_chunk(self, chunk: bytearray) -> None:
+        """Decode one FlexIO analog sample block and buffer it for `get_analog_data`."""
+        if self._analog_struct is None:
+            return  # reader was stopped mid-flight
+        trial_counter, *raw_counts = self._analog_struct.unpack(chunk)
+        if trial_counter < 1:
+            return  # firmware hasn't started sampling yet (pre-trial idle state)
+        # firmware's trial_counter increments before first use, so the first trial of
+        # a session reports 1, not 0 - convert to a 0-based sequence-position index
+        sequence_index = trial_counter - 1
+        if 0 <= sequence_index < len(self._analog_trial_number_by_sequence):
+            trial_number = self._analog_trial_number_by_sequence[sequence_index]
+        else:
+            trial_number = trial_counter
+
+        # buffer the sample's ordinal index rather than a computed timestamp: the
+        # anchor may not be known yet (the analog reader thread and the EventThread
+        # that sets it run on independent serial ports), and counting must not be
+        # coupled to knowing it - see _flush_analog_buffer
+        self._analog_buffer.append(
+            (self._analog_sample_index, trial_number, *raw_counts)
+        )
+        self._analog_sample_index += 1
+
+        now = perf_counter_ns()
+        if now - self._analog_last_flush_ns >= _ANALOG_FLUSH_INTERVAL_NS:
+            self._flush_analog_buffer()
+
+    def _flush_analog_buffer(self) -> None:
+        """Flush any buffered analog samples onto the analog data queue."""
+        self._analog_last_flush_ns = perf_counter_ns()
+        if self._analog_first_trial_time_us is None:
+            return  # anchor not known yet; keep buffering until it is
+        buffer, self._analog_buffer = self._analog_buffer, []
+        if not buffer or not self._analog_channel_names:
+            return
+        columns = ['k', 'Trial', *self._analog_channel_names]
+        # firmware preloads its sample clock so the first sample fires one
+        # state-machine cycle after trial start, not a full sample period
+        anchor_us = self._analog_first_trial_time_us + self._hardware.cycle_period_us
+        period_us = self._analog_sample_period_us
+        frame = (
+            pl.LazyFrame(buffer, schema=columns, orient='row')
+            .with_columns(
+                pl.from_epoch(anchor_us + pl.col('k') * period_us, time_unit='us')
+                .dt.replace_time_zone('UTC')
+                .alias('Time'),
+                pl.col('Trial').cast(pl.UInt32),
+                _counts_to_mv(pl.col(self._analog_channel_names).cast(pl.UInt32)).cast(
+                    pl.UInt16
+                ),
+            )
+            .select('Time', 'Trial', *self._analog_channel_names)
+        )
+        self._analog_data.put(frame)
 
     def validate_state_machine(self, state_machine: StateMachine) -> None:
         """
@@ -1110,8 +1400,8 @@ class Bpod(SerialDevice, AbstractBpod):
                 )
 
         # define valid input events and actions
-        valid_input_events = set(self._input_events.names)
-        valid_actions = set(self._actions)
+        valid_input_events = set(self.input_event_names)
+        valid_actions = set(self.action_names)
         if not global_timer_ids:
             # TODO: remove global timer events from valid_input_events
             valid_actions -= set(self._global_timer_actions)
@@ -1124,6 +1414,8 @@ class Bpod(SerialDevice, AbstractBpod):
         # validate states
         valid_targets = set(state_names).union(VALID_OPERATORS)
         max_time_uint32 = UINT32_MAX / self._hardware.cycle_frequency
+        # Bpod r2+ receives action values as 16-bit integers, older models as 8-bit
+        max_action_value = UINT16_MAX if self._version.machine == 4 else UINT8_MAX
         for state_name, state in state_machine.states.items():
             if state.timer > max_time_uint32:
                 max_timedelta = timedelta(seconds=max_time_uint32)
@@ -1165,6 +1457,57 @@ class Bpod(SerialDevice, AbstractBpod):
                 raise ValueError(
                     f"Invalid action '{bad_action}' in state '{state_name}' {detail}"
                 )
+
+            # validate action values
+            for action_name, action_value in state.actions.items():
+                flex_channel = self._flex_io.get(action_name) if self._flex_io else None
+                is_flexio_analog_output = (
+                    flex_channel is not None
+                    and flex_channel.channel_type == FlexIOChannelType.ANALOG_OUTPUT
+                )
+                if action_value != int(action_value):
+                    raise ValueError(
+                        f"Invalid value {action_value!r} for action '{action_name}' "
+                        f"in state '{state_name}' - must be an integer"
+                    )
+                if action_value > max_action_value:
+                    raise ValueError(
+                        f"Invalid value {action_value!r} for action '{action_name}' "
+                        f"in state '{state_name}' - must not exceed {max_action_value} "
+                        f'on this Bpod'
+                    )
+                if is_flexio_analog_output and not 0 <= action_value <= 5000:
+                    raise ValueError(
+                        f'Invalid value {action_value!r} for action '
+                        f"'{action_name}' in state '{state_name}' - FlexIO analog "
+                        f'output actions must be between 0 and 5000 (mV)'
+                    )
+                if (
+                    action_name in ('AnalogThreshEnable', 'AnalogThreshDisable')
+                    and self._flex_io is not None
+                ):
+                    channel_types = [c.channel_type for c in self._flex_io.values()]
+                    for bit, channel_type in enumerate(channel_types):
+                        if not int(action_value) & (1 << bit):
+                            continue
+                        if channel_type != FlexIOChannelType.ANALOG_INPUT:
+                            raise ValueError(
+                                f'Invalid value {action_value!r} for action '
+                                f"'{action_name}' in state '{state_name}' - "
+                                f'channel {bit + 1} is not configured as '
+                                'ANALOG_INPUT'
+                            )
+                        if (
+                            action_name == 'AnalogThreshEnable'
+                            and is_flexio_threshold_ambiguous(channel_types, bit)
+                        ):
+                            raise ValueError(
+                                f'Invalid value {action_value!r} for action '
+                                f"'{action_name}' in state '{state_name}' - arms "
+                                f"channel {bit + 1}'s threshold, whose "
+                                'analog-threshold events cannot be reliably '
+                                'attributed (upstream firmware quirk)'
+                            )
             for key in self._global_timer_actions:
                 if (value := state.actions.get(key)) not in (None, *global_timer_ids):
                     raise ValueError(
@@ -1182,6 +1525,33 @@ class Bpod(SerialDevice, AbstractBpod):
                             timer.channel or '', self._physical_output_channels
                         ),
                     )
+                flex_channel = (
+                    self._flex_io.get(timer.channel)
+                    if self._flex_io is not None and timer.channel is not None
+                    else None
+                )
+                if flex_channel is not None and flex_channel.channel_type not in (
+                    FlexIOChannelType.DIGITAL_OUTPUT,
+                    FlexIOChannelType.ANALOG_OUTPUT,
+                ):
+                    raise ValueError(
+                        f"Invalid channel '{timer.channel}' for Global Timer "
+                        f'{timer_id} - it is not configured as an output'
+                    )
+                # FlexIO analog outputs take millivolts; every other channel uses at
+                # most 8 bits of a timer's value (PWM level, message index, softcode)
+                is_flexio_analog_output = (
+                    flex_channel is not None
+                    and flex_channel.channel_type == FlexIOChannelType.ANALOG_OUTPUT
+                )
+                max_value = 5000 if is_flexio_analog_output else UINT8_MAX
+                for key in ('value_on', 'value_off'):
+                    if (value := getattr(timer, key)) > max_value:
+                        unit = ' mV' if is_flexio_analog_output else ''
+                        raise ValueError(
+                            f'Invalid {key} {value} for Global Timer {timer_id} - '
+                            f"must not exceed {max_value}{unit} on '{timer.channel}'"
+                        )
                 for key in ('duration', 'onset_delay', 'loop_interval'):
                     if getattr(timer, key) > max_time_uint32:
                         max_timedelta = timedelta(seconds=max_time_uint32)
@@ -1351,12 +1721,46 @@ class Bpod(SerialDevice, AbstractBpod):
                     target_indices[target]
                 )
 
+        def _is_flexio_analog_output(action_name: str) -> bool:
+            flexio_channel = self._flex_io.get(action_name) if self._flex_io else None
+            return (
+                flexio_channel is not None
+                and flexio_channel.channel_type == FlexIOChannelType.ANALOG_OUTPUT
+            )
+
+        def _scale_action_value(action_name: str, value: int) -> int:
+            """Scale a FlexIO analog-output action value (0-5000 mV) into DAC counts.
+
+            Every other action value must already be an integer (enforced during
+            validation) and needs no further scaling.
+            """
+            if _is_flexio_analog_output(action_name):
+                return _mv_to_counts(value)
+            return int(value)
+
+        # scale action values once, shared by the wire-encoding section further down
+        # and (for non-FlexIO actions) the annotation below
+        state_actions = [
+            {k: _scale_action_value(k, v) for k, v in s.actions.items()} for s in states
+        ]
+
+        # the annotation EventThread uses to record get_data()'s reported value
+        # reports FlexIO ANALOG_OUTPUT in millivolts (what was actually applied to
+        # the pin), not the wire's raw DAC count
+        reported_state_actions = [
+            {
+                k: _counts_to_mv(v) if _is_flexio_analog_output(k) else v
+                for k, v in actions.items()
+            }
+            for actions in state_actions
+        ]
+
         # build annotation data structure for event decoding in EventThread
         annotations = StateMachineLookup(
             fsm_hash=state_machine_hash,
             state_names=state_names,
             state_transition_matrix=state_transition_matrix,
-            state_actions=[dict(s.actions) for s in states],
+            state_actions=reported_state_actions,
             use_back_op=use_back_op,
             state_lookup=dict(enumerate(state_names)),
         )
@@ -1412,10 +1816,10 @@ class Bpod(SerialDevice, AbstractBpod):
         #   [count] [action_idx, value] ...  (8-bit on Bpod 0.5-1, 16-bit on Bpod 2+)
         i1 = action_indices['GlobalTimerTrig']
         tmp_list: list[int] = []
-        for state in states:
+        for actions in state_actions:
             counter_pos = len(tmp_list)
             tmp_list.append(0)
-            for action_name, action_value in state.actions.items():
+            for action_name, action_value in actions.items():
                 if (key_idx := action_indices[action_name]) < i1:
                     tmp_list[counter_pos] += 1
                     tmp_list.extend(
@@ -1440,12 +1844,18 @@ class Bpod(SerialDevice, AbstractBpod):
             )
 
             # GLOBAL TIMER ON & OFF VALUES
-            # Bpod 2+ uses 16-bit values for value_on and value_off
+            # Bpod 2+ uses 16-bit values for value_on and value_off; values for FlexIO
+            # analog outputs are millivolts, sent as DAC counts like action values
             format_string = FMT_UINT16_LE if version.machine == 4 else FMT_UINT8
             for field_name in ('value_on', 'value_off'):
                 extend_packed(
                     fsm_bytes,
-                    [getattr(gt, field_name, 0) for gt in global_timers_list],
+                    [
+                        _scale_action_value(gt.channel, getattr(gt, field_name))
+                        if gt is not None and gt.channel is not None
+                        else getattr(gt, field_name, 0)
+                        for gt in global_timers_list
+                    ],
                     format_string,
                 )
 
@@ -1471,20 +1881,26 @@ class Bpod(SerialDevice, AbstractBpod):
 
         if version.firmware < (23, 0):
             fsm_bytes.extend(
-                s.actions.get('GlobalCounterReset', -1) + 1 for s in states
+                actions.get('GlobalCounterReset', -1) + 1 for actions in state_actions
             )
         else:
             counter_idx = len(fsm_bytes)
             fsm_bytes.append(0)
-            for state_idx, state in enumerate(states):
-                if (value := state.actions.get('GlobalCounterReset', -1)) >= 0:
+            for state_idx, actions in enumerate(state_actions):
+                if (value := actions.get('GlobalCounterReset', -1)) >= 0:
                     fsm_bytes[counter_idx] += 1
                     fsm_bytes.extend([state_idx, value + 1])
 
-        # ANALOG THRESHOLDS
-        # TODO: this is just a placeholder for now
+        # ANALOG THRESHOLDS (variable length, per action):
+        #   [count] [state_idx, bitmask] ...  for states that arm/disarm thresholds
         if version.machine == 4:
-            fsm_bytes.extend([0, 0])
+            for key in ('AnalogThreshEnable', 'AnalogThreshDisable'):
+                count_pos = len(fsm_bytes)
+                fsm_bytes.append(0)
+                for state_idx, actions in enumerate(state_actions):
+                    if bitmask := actions.get(key, 0):
+                        fsm_bytes[count_pos] += 1
+                        fsm_bytes.extend([state_idx, bitmask])
 
         # Timer trigger/cancel bitmasks need enough bits to address all timers.
         # Use the smallest integer type that fits n_global_timers bits.
@@ -1630,7 +2046,20 @@ class Bpod(SerialDevice, AbstractBpod):
         # The Bpod may start it at any time from here on - count it as running until
         # the threads reading it are registered, so that is_running doesn't drop out
         # while the previous state machine's threads finish.
+        if not self._state_machine_started:
+            # FlexIO channel types and the sampling rate are fixed from here on,
+            # and the Bpod streams analog samples from the first trial on
+            self._start_analog_reader()
+        if self._analog_first_trial_time_us is None:
+            # the Bpod (re)starts analog sampling with the first trial after a
+            # session clock reset
+            self._analog_recording = self._analog_reader_thread is not None
         self._starting_state_machine = True
+        self._state_machine_started = True
+        # record the trial number before the Bpod can start the state machine: analog
+        # samples only carry the firmware's positional trial counter, so decoding looks
+        # the number up by position from the trial's first sample on
+        self._analog_trial_number_by_sequence.append(self._next_fsm_index)
         try:
             message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
             if debugging:
@@ -1649,6 +2078,11 @@ class Bpod(SerialDevice, AbstractBpod):
         finally:
             self._starting_state_machine = False
 
+    def _capture_analog_anchor(self, time_us: int) -> None:
+        """Capture the first trial's start time as the FlexIO analog-sample anchor."""
+        if self._analog_first_trial_time_us is None:
+            self._analog_first_trial_time_us = time_us
+
     def _run_state_machine(self) -> None:
         state_machine_lookup = cast('StateMachineLookup', self._fsm_annotations)
 
@@ -1663,6 +2097,7 @@ class Bpod(SerialDevice, AbstractBpod):
             time_reference=self._time_reference,
             publish=self._zmq.publish,
             publish_gate=lambda: self._zmq.has_subscribers,
+            on_trial_start=self._capture_analog_anchor,
         )
         # wait for the previous trial's reader to finish, then resume reading the serial
         # stream without further delay (softcodes and raw events must not wait for the
@@ -1812,15 +2247,25 @@ class Bpod(SerialDevice, AbstractBpod):
         busy = self.is_running or (event_thread is not None and event_thread.is_alive())
         if not busy and self._trial_data.empty():
             raise BpodError('No trial data available')
+        return self._drain_queue(self._trial_data, concat=concat, lazy=lazy)
 
-        frames = [self._trial_data.get()]
+    @staticmethod
+    def _drain_queue(
+        queue: SimpleQueue[pl.LazyFrame],
+        *,
+        concat: bool,
+        lazy: bool,
+        how: Literal['vertical', 'diagonal_relaxed'] = 'vertical',
+    ) -> pl.DataFrame | pl.LazyFrame:
+        """Pop one or more LazyFrames from a queue, optionally concatenating them."""
+        frames = [queue.get()]
         if concat:
-            while True:
-                try:
-                    frames.append(self._trial_data.get(block=False))
-                except Empty:  # noqa: PERF203
-                    break
-            data = pl.concat(frames)
+            try:
+                while True:
+                    frames.append(queue.get(block=False))
+            except Empty:
+                pass
+            data = pl.concat(frames, how=how)
         else:
             data = frames[0]
 
@@ -1828,12 +2273,95 @@ class Bpod(SerialDevice, AbstractBpod):
         # start-up cost (polars 2 picks streaming by default)
         return data if lazy else data.collect(engine='in-memory')
 
+    @overload
+    def get_analog_data(
+        self, *, concat: bool = ..., lazy: Literal[False] = False
+    ) -> pl.DataFrame: ...
+
+    @overload
+    def get_analog_data(
+        self, *, concat: bool = ..., lazy: Literal[True]
+    ) -> pl.LazyFrame: ...
+
+    def get_analog_data(self, *, concat=True, lazy=False):
+        """
+        Return FlexIO analog-input data from the data queue.
+
+        Parameters
+        ----------
+        concat : bool, default: True
+            If ``True``, pop and concatenate all DataFrames currently in the queue into
+            a single DataFrame, blocking until at least one is available.
+            If ``False``, pop and return one DataFrame, blocking until one is
+            available.
+        lazy : bool, default: False
+            If ``True``, return a :class:`polars.LazyFrame`.
+            If ``False``, return a :class:`polars.DataFrame`.
+
+        Returns
+        -------
+        DataFrame or LazyFrame
+            One row per sample, with the columns:
+
+            - ``Time`` (``Datetime``, µs, UTC): absolute time of the sample;
+            - ``Trial`` (``UInt32``): zero-based index of the trial the sample was
+              taken in; samples taken between trials belong to the preceding trial;
+            - ``Flex{N}`` (``UInt16``): voltage in millivolts (0-5000), one column per
+              channel configured as ``ANALOG_INPUT``.
+
+            Data recorded before closing and reopening the Bpod with other analog
+            inputs has other ``Flex{N}`` columns; concatenating fills the missing ones
+            with nulls.
+
+        Raises
+        ------
+        BpodError
+            If the Bpod has no FlexIO channels, or if no data is available and the
+            analog inputs aren't recording: none is configured as
+            ``ANALOG_INPUT``, no state machine has run yet, or
+            :meth:`stop_state_machine` stopped them.
+
+        Notes
+        -----
+        While the analog inputs are recording and no samples are available, this
+        waits for new ones. Recording starts with the first state machine;
+        :meth:`stop_state_machine` stops it until the first state machine after
+        :meth:`reset_session_clock`.
+
+        Voltages are stored as integer millivolts, which hold the 12-bit ADC readings
+        losslessly. The original ADC codes are ``round(millivolts * 4095 / 5000)``,
+        which correspond to ``adc_code * 5 / 4095`` volts.
+        """
+        if not self._hardware.n_flexio:
+            raise BpodError(
+                f'Bpod Finite State Machine {self._version.machine_str} does not have '
+                f'FlexIO channels.'
+            )
+        if not self._analog_recording:
+            # no new samples arrive to trigger the periodic flush
+            self._flush_analog_buffer()
+            if self._analog_data.empty():
+                raise BpodError('No FlexIO analog input is recording')
+        return self._drain_queue(
+            self._analog_data,
+            concat=concat,
+            lazy=lazy,
+            how='diagonal_relaxed',
+        )
+
     @override
     def stop_state_machine(self) -> None:
         if not self.is_running:
             return
+        if self._analog_channel_names:
+            logger.warning(
+                'Stopping the state machine also stops FlexIO analog sampling and '
+                'threshold detection until reset_session_clock() is called and the '
+                'next state machine starts'
+            )
         logger.debug('Stopping state machine')
         self.serial0.write(b'X')
+        self._analog_recording = False  # the Bpod stops analog sampling on 'X'
         if self._read_thread is not None:
             self._read_thread.join()
 
@@ -1917,7 +2445,7 @@ class Input(Channel):
     def __init__(self, bpod: Bpod, name: str, io_key: bytes, index: int) -> None:
         super().__init__(bpod, name, io_key, index)
         self._set_enable_inputs = bpod._set_enable_inputs  # noqa: SLF001
-        self._enabled = io_key in (b'PBWF')  # Enable Port, TTL, Wire and FlexIO inputs
+        self._enabled = io_key in (b'PBW')  # Enable Port, TTL and Wire inputs
 
     @_requires_idle
     def read(self) -> bool:
@@ -1967,7 +2495,7 @@ class Input(Channel):
         bool
             True if the operation was successful, False otherwise.
         """
-        if self.io_type not in b'FDBWVP':
+        if self.io_type not in b'DBWVP':
             logger.warning(
                 '%sabling input `%s` has no effect',
                 'En' if enable else 'Dis',
@@ -2142,6 +2670,17 @@ class Module:
         names = self._custom_event_names[: self.n_events]
         names += [str(idx) for idx in range(len(names), self.n_events)]
         return [f'{self.name}_{name}' for name in names]
+
+
+def _name_channels(
+    description: bytes, channel_types: Mapping[bytes, str]
+) -> list[tuple[bytes, str]]:
+    """Pair each channel of a hardware I/O description with its name, e.g. 'Port1'."""
+    io_keys = [bytes([io_key]) for io_key in description]
+    return [
+        (io_key, f'{channel_types[io_key]}{io_keys[:idx].count(io_key) + 1}')
+        for idx, io_key in enumerate(io_keys)
+    ]
 
 
 def _allocate_module_events(modules: list[Module], n_requested: list[int]) -> list[int]:

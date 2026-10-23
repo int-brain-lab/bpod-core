@@ -96,14 +96,14 @@ Built from :data:`~bpod_core.bpod.structs.BpodEventType`.
 """
 
 _TRIAL_DATA_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
-    'time': pl.Datetime('us', time_zone='UTC'),
-    'trial': pl.UInt32,
-    'state machine': pl.Categorical,
-    'state': pl.Categorical,
-    'type': _EVENT_TYPE_ENUM,
-    'event': pl.Categorical,
-    'channel': pl.Categorical,
-    'value': pl.UInt8,
+    'Time': pl.Datetime('us', time_zone='UTC'),
+    'Trial': pl.UInt32,
+    'State Machine': pl.Categorical,
+    'State': pl.Categorical,
+    'Type': _EVENT_TYPE_ENUM,
+    'Event': pl.Categorical,
+    'Channel': pl.Categorical,
+    'Value': pl.UInt16,
 }
 """Column schema for trial DataFrames returned by :meth:`~bpod_core.bpod.Bpod.get_data`
 and :meth:`~bpod_core.bpod.Bpod.peek_data`."""
@@ -117,7 +117,7 @@ _SYNTHETIC_EVENT_LOOKUP = pl.DataFrame(
         'event': pl.Series([None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.Null),
         'channel': pl.Series([None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.Null),
         'default_value': pl.Series(
-            [None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.UInt8
+            [None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.UInt16
         ),
     }
 )
@@ -141,7 +141,7 @@ def _build_event_lookup(
     pl.DataFrame
         DataFrame with columns ``event_id`` (Int16), ``type`` (Enum),
         ``event`` (Categorical), ``channel`` (Categorical), and
-        ``default_value`` (UInt8, null if no pre-defined value),
+        ``default_value`` (UInt16, null if no pre-defined value),
         covering input events, synthetic events, and output actions.
     """
     output_ids = [_OUTPUT_ID_OFFSET + i for i in range(len(action_names))]
@@ -153,7 +153,7 @@ def _build_event_lookup(
             ),
             'event': pl.Series(input_events.names, dtype=pl.Categorical),
             'channel': pl.Series(input_events.channels, dtype=pl.Categorical),
-            'default_value': pl.Series(input_events.values, dtype=pl.UInt8),
+            'default_value': pl.Series(input_events.values, dtype=pl.UInt16),
         }
     )
     output_lookup = pl.DataFrame(
@@ -164,7 +164,7 @@ def _build_event_lookup(
             ),
             'event': pl.Series([None] * len(action_names), dtype=pl.Categorical),
             'channel': pl.Series(action_names, dtype=pl.Categorical),
-            'default_value': pl.Series([None] * len(action_names), dtype=pl.UInt8),
+            'default_value': pl.Series([None] * len(action_names), dtype=pl.UInt16),
         }
     )
     return pl.concat([input_lookup, _SYNTHETIC_EVENT_LOOKUP, output_lookup])
@@ -470,6 +470,11 @@ class EventThread(threading.Thread):
         Zero-argument callable consulted before resolving each message; returning False
         skips that work entirely. Checked per message, so a subscriber appearing
         mid-trial picks up the stream from there.
+    on_trial_start : Callable, optional
+        Called once, with the trial's absolute start time (microseconds since epoch),
+        when the synthetic ``TrialStart`` event is recorded. Unlike ``publish``, this
+        always fires regardless of ``publish_gate`` - use it for bookkeeping that needs
+        the trial-start timestamp without going through the publish/IPC path.
     """
 
     queue: SimpleQueue[_RawEvents]
@@ -487,6 +492,7 @@ class EventThread(threading.Thread):
         time_reference: TimeReferences,
         publish: Callable[[list[BpodEventUnion]], object],
         publish_gate: Callable[[], bool],
+        on_trial_start: Callable[[int], None] | None = None,
     ) -> None:
         super().__init__(name='EventThread', daemon=True)
         self.queue: SimpleQueue[_RawEvents] = SimpleQueue()
@@ -497,6 +503,7 @@ class EventThread(threading.Thread):
         self._time_reference = time_reference
         self._publish = publish
         self._publish_gate = publish_gate
+        self._on_trial_start = on_trial_start
         self._buffer: npt.NDArray = np.empty(_INITIAL_BUFFER_SIZE, dtype=_EVENT_DTYPE)
         self._n_events: int = 0
         self._check_trigger = threading.Event()
@@ -555,6 +562,9 @@ class EventThread(threading.Thread):
             value,
         )
         self._n_events += 1
+
+        if event_index == _EventID.START_FSM and self._on_trial_start is not None:
+            self._on_trial_start(time_bpod_us)
 
         # queue the event's message for _flush()
         try:
@@ -749,10 +759,11 @@ class EventThread(threading.Thread):
                     pl.col('value').replace(-1, None),
                     pl.col('default_value'),
                 )
-                .cast(pl.UInt8)
+                .cast(pl.UInt16)
                 .alias('value'),
             )
-            .select(list(_TRIAL_DATA_SCHEMA))
+            # the columns above are named in lowercase; the output uses title case
+            .select(pl.col(name.lower()).alias(name) for name in _TRIAL_DATA_SCHEMA)
         )
 
     def peek_data(

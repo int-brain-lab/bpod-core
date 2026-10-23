@@ -12,7 +12,8 @@
 
    installation
    state_machines/index
-   bpod_class
+   bpod_class/index
+   flexio/index
    data_format
    faq
    changelog

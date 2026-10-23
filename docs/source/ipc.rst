@@ -216,9 +216,9 @@ remote instance:
      - Obtained once during the handshake; reading them involves no round-trip.
 
 Only this set of methods is callable remotely — the host rejects requests for anything
-else with a :exc:`~bpod_core.bpod.BpodError`. Exceptions raised on the host are
+else with a :exc:`~bpod_core.bpod.errors.BpodError`. Exceptions raised on the host are
 serialized and re-raised on the client: :exc:`RuntimeError` and :exc:`ValueError` keep
-their type, as does :exc:`~bpod_core.bpod.BpodError` for
+their type, as does :exc:`~bpod_core.bpod.errors.BpodError` for
 :meth:`~bpod_core.bpod.RemoteBpod.get_data` and
 :meth:`~bpod_core.bpod.RemoteBpod.reset_session_clock`. Everything else arrives as a
 :exc:`~bpod_core.ipc.RemoteError` carrying the remote type name, message and traceback.

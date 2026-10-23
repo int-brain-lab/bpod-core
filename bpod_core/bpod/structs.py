@@ -5,7 +5,13 @@ from enum import IntEnum
 from typing import Any, Literal, NamedTuple, TypeAlias
 
 import msgspec
+from typing_extensions import Self
 
+from bpod_core.bpod.constants import (
+    FlexIOChannelType,
+    FlexIOThresholdMode,
+    FlexIOThresholdPolarity,
+)
 from bpod_core.misc import ByteEnum
 
 
@@ -390,6 +396,8 @@ class HardwareConfiguration(msgspec.Struct, frozen=True):
     """Frequency of the state machine's refresh cycle during a trial in Hertz."""
     n_modules: int
     """Number of modules supported by the state machine."""
+    n_flexio: int
+    """Number of FlexIO channels."""
 
 
 class HardwareState(msgspec.Struct):
@@ -397,3 +405,38 @@ class HardwareState(msgspec.Struct):
 
     status_led: bool | None = None
     """The current state of the Bpod's status LED. None if unknown."""
+
+
+class _FlexIOState(msgspec.Struct):
+    """Represents the state of the FlexIO subsystem."""
+
+    channel_types: tuple[FlexIOChannelType, ...]
+    threshold_modes: tuple[FlexIOThresholdMode, ...]
+    threshold_enabled: tuple[tuple[bool, ...], ...]
+    threshold_voltages: tuple[tuple[int, ...], ...]
+    threshold_polarities: tuple[tuple[FlexIOThresholdPolarity, ...], ...]
+    analog_sampling_rate: int
+    n_reads_per_sample: int
+
+    @classmethod
+    def create_default(cls, n_channels: int, n_thresholds: int = 2) -> Self:
+        """
+        Create a new FlexIOState instance with default values.
+
+        Parameters
+        ----------
+        n_channels : int
+            The number of FlexIO channels.
+        n_thresholds : int, default: 2
+            The number of analog thresholds per channel.
+        """
+        return cls(
+            channel_types=n_channels * (FlexIOChannelType.DISABLED,),
+            threshold_modes=n_channels * (FlexIOThresholdMode.MANUAL,),
+            threshold_enabled=n_channels * ((False,) * n_thresholds,),
+            threshold_voltages=n_channels * ((5000,) * n_thresholds,),
+            threshold_polarities=n_channels
+            * ((FlexIOThresholdPolarity.RISING,) * n_thresholds,),
+            analog_sampling_rate=1000,
+            n_reads_per_sample=3,
+        )
