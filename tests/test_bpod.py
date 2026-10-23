@@ -873,30 +873,27 @@ class TestRun:
         """
         mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.DIGITAL_OUTPUT
         fsm = StateMachine()
-        fsm.add_state('a', 0, {'Tup': '>exit'}, {'Flex4': 1000})
+        fsm.add_state('a', 0, {'Tup': '>exit'}, {'Flex4': 200})
         mock_bpod_2p.run(fsm)
         idx = mock_bpod_2p._compiler.actions.index('Flex4')
-        assert struct.pack('<HHH', 1, idx, 1000) in mock_bpod_2p.serial0.last_write
+        assert struct.pack('<HHH', 1, idx, 200) in mock_bpod_2p.serial0.last_write
 
         mock_bpod_2p._state_machine_started = False  # as after reconnecting
         mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.ANALOG_OUTPUT
         mock_bpod_2p.run(fsm)
-        # 1000 mV -> round(1000 * 4095/5000) = 819 DAC counts
-        assert struct.pack('<HHH', 1, idx, 819) in mock_bpod_2p.serial0.last_write
+        # 200 mV -> round(200 * 4095/5000) = 164 DAC counts
+        assert struct.pack('<HHH', 1, idx, 164) in mock_bpod_2p.serial0.last_write
 
-    @pytest.mark.parametrize(
-        ('bpod', 'largest'), [('mock_bpod_25', 255), ('mock_bpod_2p', 65535)]
-    )
-    def test_action_value_fits_the_bpod(self, bpod, largest, request):
-        """Action values fit the Bpod's 8-bit (before r2+) or 16-bit values."""
+    @pytest.mark.parametrize('bpod', ['mock_bpod_25', 'mock_bpod_2p'])
+    def test_action_value_fits_one_byte(self, bpod, request):
+        """Action values other than FlexIO analog outputs fit one byte."""
         bpod = request.getfixturevalue(bpod)
         fsm = StateMachine()
-        fsm.add_state('a', 0, {'Tup': '>exit'}, {'PWM1': largest})
+        fsm.add_state('a', 0, {'Tup': '>exit'}, {'PWM1': 255})
         bpod.validate_state_machine(fsm)
-        if largest < 65535:  # 65536 is already rejected by the state machine model
-            fsm.states['a'].actions['PWM1'] = largest + 1
-            with pytest.raises(ValueError, match=f'must not exceed {largest} on this'):
-                bpod.validate_state_machine(fsm)
+        fsm.states['a'].actions['PWM1'] = 256
+        with pytest.raises(ValueError, match='must not exceed 255'):
+            bpod.validate_state_machine(fsm)
 
     def test_run_while_running(self, fsm_basic, mock_bpod_25, mocker):
         """A state machine can be queued while another one is running."""

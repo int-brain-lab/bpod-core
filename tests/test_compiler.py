@@ -117,3 +117,80 @@ class TestValidateAndCompile:
         first, _ = make_compiler().compile(state_machine=fsm)
         second, _ = make_compiler().compile(state_machine=fsm)
         assert second is first
+
+    @pytest.mark.parametrize(
+        ('setup', 'match'),
+        [
+            pytest.param(
+                lambda fsm: fsm.add_state('a', 1, actions={'PWM1': 256}),
+                'must not exceed 255',
+                id='action value beyond one byte',
+            ),
+            pytest.param(
+                lambda fsm: fsm.add_state('a', 1, actions={'SoftCode': 255}),
+                'must not exceed 254',
+                id='softcode beyond one byte',
+            ),
+            pytest.param(
+                lambda fsm: fsm.add_state('a', 1, actions={'AnalogThreshEnable': 17}),
+                'has only 4 FlexIO channels',
+                id='threshold bit for a fifth FlexIO channel',
+            ),
+            pytest.param(
+                lambda fsm: (
+                    fsm.set_global_counter(index=0, event='Port1_High', threshold=5),
+                    fsm.add_state('a', 1, actions={'GlobalCounterReset': 1}),
+                ),
+                'Global Counter 1 has not been set',
+                id='reset of an unset global counter',
+            ),
+            pytest.param(
+                lambda fsm: (
+                    fsm.set_global_timer(index=0, duration=1, onset_trigger=0b10),
+                    fsm.add_state('a', 1),
+                ),
+                'Global Timer 1 has not been set',
+                id='onset trigger of an unset global timer',
+            ),
+            pytest.param(
+                lambda fsm: (
+                    fsm.set_global_counter(index=0, event='Port1_Hgh', threshold=5),
+                    fsm.add_state('a', 1),
+                ),
+                "did you mean 'Port1_High'",
+                id='unknown global counter event',
+            ),
+            pytest.param(
+                lambda fsm: (
+                    fsm.set_condition(index=0, channel='Prot1', value=True),
+                    fsm.add_state('a', 1),
+                ),
+                "did you mean 'Port1'",
+                id='unknown condition channel',
+            ),
+        ],
+    )
+    def test_values_compilation_cannot_encode_are_rejected(self, setup, match):
+        """Values the Bpod can't receive are rejected during validation."""
+        fsm = StateMachine()
+        setup(fsm)
+        compiler = make_compiler((AI, OFF, OFF, OFF), {'Flex1': [2500, 2500]})
+        with pytest.raises(ValueError, match=match):
+            compiler.validate(fsm)
+
+    def test_values_at_the_limits_are_compiled(self):
+        """The valid counterparts of the rejected values compile."""
+        fsm = StateMachine()
+        fsm.set_global_timer(index=0, duration=1, onset_trigger=0b10)
+        fsm.set_global_timer(index=1, duration=1)
+        fsm.set_global_counter(index=0, event='Port1_High', threshold=5)
+        fsm.set_condition(index=0, channel='Port1', value=True)
+        actions = {
+            'SoftCode': 254,
+            'AnalogThreshEnable': 1,
+            'GlobalCounterReset': 0,
+            'GlobalTimerTrig': 0,
+        }
+        fsm.add_state('a', 1, actions=actions)
+        compiler = make_compiler((AI, OFF, OFF, OFF), {'Flex1': [2500, 2500]})
+        compiler.compile(state_machine=fsm)

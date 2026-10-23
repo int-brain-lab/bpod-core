@@ -50,9 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - trial data columns are named in title case (`Time`, `Trial`, `State Machine`,
   `State`, `Type`, `Event`, `Channel`, `Value`), like channel and event names.
 - the `Trial` column of trial data is `UInt32` instead of `UInt16`.
-- state machine action values can be up to 65535 on Bpod r2+ (still 255 on earlier
-  models), and the `Value` column of trial data is `UInt16` instead of `UInt8`, to hold
-  FlexIO analog-output values in millivolts.
+- the `Value` column of trial data is `UInt16` instead of `UInt8`, to hold FlexIO
+  analog-output values in millivolts (0 to 5000). All other action values still range
+  from 0 to 255.
 - trial data is read from the Bpod in chunks rather than message by message, which
   lowers the CPU load at high event and softcode rates.
 - live trial events are published in batches rather than one message per event,
@@ -74,6 +74,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- state machine validation now rejects values the Bpod can't receive, which used to
+  fail later with unhelpful errors or be cut to one byte: action values above 255 on
+  Bpod r2+ (except FlexIO analog outputs), softcodes above 254, `AnalogThreshEnable` and
+  `AnalogThreshDisable` bits for FlexIO channels that don't exist, `GlobalCounterReset`
+  values for global counters that aren't set, onset triggers for global timers that
+  aren't set, and global counter events and condition channels that don't exist.
 - starting a service could fail with `FileNotFoundError` while another process on the
   same machine closed its last service.
 - `RemoteBpod.get_data` raised a `DeprecationWarning` with polars 1.43.2 or newer.

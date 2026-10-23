@@ -40,7 +40,6 @@ from bpod_core.constants import (
     FMT_UINT16_LE,
     FMT_UINT32_LE,
     UINT8_MAX,
-    UINT16_MAX,
     UINT32_MAX,
 )
 from bpod_core.fsm import StateMachine
@@ -430,8 +429,6 @@ class StateMachineCompiler:
         # validate states
         valid_targets = set(state_names).union(VALID_OPERATORS)
         max_time_uint32 = UINT32_MAX / self._hardware.cycle_frequency
-        # Bpod r2+ receives action values as 16-bit integers, older models as 8-bit
-        max_action_value = UINT16_MAX if self._version.machine == 4 else UINT8_MAX
         for state_name, state in state_machine.states.items():
             if state.timer > max_time_uint32:
                 max_timedelta = timedelta(seconds=max_time_uint32)
@@ -485,11 +482,18 @@ class StateMachineCompiler:
                         f"Invalid value {action_value!r} for action '{action_name}' "
                         f"in state '{state_name}' - must be an integer"
                     )
-                if action_value > max_action_value:
+                # the Bpod uses one byte of each action value, except for FlexIO
+                # analog outputs (millivolts, checked below)
+                if not is_flexio_analog_output and action_value > UINT8_MAX:
                     raise ValueError(
                         f"Invalid value {action_value!r} for action '{action_name}' "
-                        f"in state '{state_name}' - must not exceed {max_action_value} "
-                        f'on this Bpod'
+                        f"in state '{state_name}' - must not exceed {UINT8_MAX}"
+                    )
+                # the Bpod sends softcodes as one byte, and bpod-core sends them +1
+                if 'SoftCode' in action_name and action_value >= UINT8_MAX:
+                    raise ValueError(
+                        f"Invalid value {action_value!r} for action '{action_name}' "
+                        f"in state '{state_name}' - must not exceed {UINT8_MAX - 1}"
                     )
                 if is_flexio_analog_output and not 0 <= action_value <= 5000:
                     raise ValueError(
@@ -502,6 +506,12 @@ class StateMachineCompiler:
                     and self._flexio_types
                 ):
                     channel_types = list(self._flexio_types.values())
+                    if int(action_value) >> len(channel_types):
+                        raise ValueError(
+                            f'Invalid value {action_value!r} for action '
+                            f"'{action_name}' in state '{state_name}' - this Bpod "
+                            f'has only {len(channel_types)} FlexIO channels'
+                        )
                     for bit, channel_type in enumerate(channel_types):
                         if not int(action_value) & (1 << bit):
                             continue
@@ -524,10 +534,18 @@ class StateMachineCompiler:
                                 'attributed (upstream firmware quirk)'
                             )
             for key in self._global_timer_actions:
-                if (value := state.actions.get(key)) not in (None, *global_timer_ids):
+                value = state.actions.get(key)
+                if value is not None and value not in global_timer_ids:
                     raise ValueError(
                         f"Invalid value {value} for action '{key}' in state "
                         f"'{state_name}' - Global Timer {value} has not been set"
+                    )
+            for key in self._global_counter_actions:
+                value = state.actions.get(key)
+                if value is not None and value not in global_counter_ids:
+                    raise ValueError(
+                        f"Invalid value {value} for action '{key}' in state "
+                        f"'{state_name}' - Global Counter {value} has not been set"
                     )
 
         # validate global timers
@@ -560,6 +578,15 @@ class StateMachineCompiler:
                             f'Invalid {key} {value} for Global Timer {timer_id} - '
                             f"must not exceed {max_value}{unit} on '{timer.channel}'"
                         )
+                for index in range(timer.onset_trigger.bit_length()):
+                    if (
+                        timer.onset_trigger >> index & 1
+                        and index not in global_timer_ids
+                    ):
+                        raise ValueError(
+                            f'Invalid onset trigger for Global Timer {timer_id} - '
+                            f'Global Timer {index} has not been set'
+                        )
                 for key in ('duration', 'onset_delay', 'loop_interval'):
                     if getattr(timer, key) > max_time_uint32:
                         max_timedelta = timedelta(seconds=max_time_uint32)
@@ -569,11 +596,24 @@ class StateMachineCompiler:
                             f'{timer_id} - {name} must not exceed {max_timedelta}'
                         )
 
-        if global_counter_ids:
-            pass  # TODO: validate global counters
+        # validate global counters
+        for counter_id, counter in state_machine.global_counters.items():
+            if counter.event not in valid_input_events:
+                raise ValueError(
+                    f"Invalid event '{counter.event}' for Global Counter {counter_id}"
+                    + suggest_similar(counter.event, self.input_event_names),
+                )
 
-        if condition_ids:
-            pass  # TODO: validate conditions
+        # validate conditions
+        for condition_id, condition in state_machine.conditions.items():
+            if condition.channel not in self._condition_channel_indices:
+                raise ValueError(
+                    f"Invalid channel '{condition.channel}' for Condition "
+                    f'{condition_id}'
+                    + suggest_similar(
+                        condition.channel, list(self._condition_channel_indices)
+                    ),
+                )
 
         # TODO: Check that sync channel is not used as state output
 
