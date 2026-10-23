@@ -37,52 +37,17 @@ FlexIO Channels
 
    pl.Config.restore_defaults()
 
-The `Bpod State Machine r2+ <https://sanworks.io/shop/viewproduct?productID=1036>`_
-has four connectors labeled ``Flex1`` to ``Flex4``. Unlike the BNC connectors or the
-behavior ports, which have a fixed purpose, each FlexIO connector can do one of four
-jobs, which you choose at the start of a session:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 22 38 40
-
-   * - Job
-     - What it does
-     - Typical uses
-   * - Digital input
-     - Detects on/off signals and reports when they change.
-     - A beam-break sensor, a TTL signal from another device.
-   * - Digital output
-     - Sends on/off signals.
-     - Triggering a camera, a stimulus, or another device.
-   * - Analog input
-     - Measures a voltage, continuously and as often as 1000 times per second.
-     - A lick sensor, a photodiode, a pressure sensor.
-   * - Analog output
-     - Produces a voltage that you choose.
-     - The brightness of an LED driver, the power of a laser.
-
-.. admonition:: Key Concepts
-   :class: tip
-
-   Digital and analog
-      A digital signal is either *off* (0 V) or *on* (5 V). An analog signal can take
-      any voltage in between.
-
-   Inputs and outputs
-      An input brings a signal *into* the Bpod, where it can trigger state transitions.
-      An output sends a signal *out*, controlled by the states of your state machine.
-
-   Millivolts
-      bpod-core expresses all FlexIO voltages in millivolts, from 0 to 5000: a value of
-      2500 means 2.5 V.
+`Bpod State Machine r2+ <https://sanworks.io/shop/viewproduct?productID=1036>`_ devices
+expose a bank of four *FlexIO* channels, ``Flex1`` to ``Flex4``: general-purpose I/O
+pins that can each be independently configured as a digital input, digital output,
+analog input, or analog output.
 
 
 Setting Up the Channels
 -----------------------
 
-You choose a channel's job through :attr:`~bpod_core.bpod.Bpod.flex_io`, before
-running the first state machine:
+You choose a channel's identity through :class:`~bpod_core.bpod.Bpod`'s
+:attr:`~bpod_core.bpod.Bpod.flex_io` attribute, before running the first state machine:
 
 .. code-block:: python
    :caption: Making ``Flex1`` a digital input.
@@ -94,12 +59,31 @@ running the first state machine:
        bpod.flex_io['Flex1'].channel_type = FlexIOChannelType.DIGITAL_INPUT
 
 Channels you don't set up stay off. Once the first state machine has run, the channels
-keep their jobs until you close the connection to the Bpod. A channel's job also
-decides which names it adds to your state machines (see :doc:`/state_machines/index`
-for how to list all valid names).
+keep their identities until you close the connection to the Bpod. A channel's identity
+also decides which :attr:`~bpod_core.bpod.Bpod.input_event_names` and
+:attr:`~bpod_core.bpod.Bpod.action_names` it adds to your state machines (see
+:doc:`/state_machines/index`).
 
-FlexIO channels are used through state machines only: unlike the behavior ports, you
-can't read or set them directly from Python.
+.. admonition:: Known Firmware Issues
+   :class: warning
+
+   The current Bpod firmware has a few issues with FlexIO channels. Fixes exist, but
+   they aren't part of an official firmware release yet:
+
+   - Every state change switches FlexIO outputs to the new state's value, even while a
+     global timer controls them (fix:
+     `#6 <https://github.com/sanworks/Bpod_StateMachine_Firmware/pull/6>`__).
+   - A state that doesn't use ``AnalogThreshEnable`` or ``AnalogThreshDisable`` can
+     still enable or disable thresholds, if a state at the same position in an earlier
+     state machine did. This lasts until the Bpod is switched off (fix:
+     `#7 <https://github.com/sanworks/Bpod_StateMachine_Firmware/pull/7>`__).
+   - A digital input that is already on when a trial starts reports a ``Flex{N}_High``
+     event at the start of the trial (fix:
+     `#12 <https://github.com/sanworks/Bpod_StateMachine_Firmware/pull/12>`__).
+   - Threshold events are only reliable for analog inputs on ``Flex1``, ``Flex2``, and
+     so on, with no channel of another identity before them, so bpod-core refuses
+     thresholds on other channels (fixed in the firmware's development version:
+     `6ea104b <https://github.com/sanworks/Bpod_StateMachine_Firmware/commit/6ea104bbc24b16dd9fe1645575bf87413b3c722f>`__).
 
 
 Digital Outputs
@@ -182,8 +166,8 @@ picture, right before port 1 lights up:
       │ 2026-10-22 15:12:39.358495 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ null          ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
       └────────────────────────────────┴───────┴──────────────────┴───────────────┴─────────────────┴───────┴─────────┴───────┘
 
-The pulse shows up as two output actions on ``Flex1``: 1 when ``TriggerCamera`` begins,
-and 0 ten milliseconds later, when ``LightOn`` begins and doesn't set the channel. See
+The pulse shows up as two output actions on ``Flex1``: on when ``TriggerCamera`` begins,
+and off ten milliseconds later, when the next state begins and doesn't set it. See
 :doc:`/data_format` for a description of all columns.
 
 
@@ -766,67 +750,3 @@ as before, but left disabled: the state machine enables it.
 ``AnalogThreshEnable`` shows up as an output action when ``WaitForPress`` begins,
 followed by the press's ``Flex1_Trig0`` event. An earlier press during ``Delay`` left
 no trace: the threshold wasn't enabled yet.
-
-
-Good to Know
-------------
-
-- **Settings are fixed once trials run.** Each channel's job and the sampling rate stay
-  the same from the first trial until you close the connection. Thresholds and
-  :attr:`~bpod_core.bpod.abc.AbstractFlexIO.n_reads_per_sample` can still be changed
-  between trials.
-- **Nothing can be changed during a trial.** To enable or disable thresholds during a
-  trial, use the ``AnalogThreshEnable`` and ``AnalogThreshDisable`` actions.
-- **Stopping a trial pauses recording.**
-  :meth:`~bpod_core.bpod.Bpod.stop_state_machine` also stops the analog inputs: they
-  record and report threshold events again once you call
-  :meth:`~bpod_core.bpod.Bpod.reset_session_clock` and start the next trial.
-- **Use the lowest-numbered channels for analog inputs.** Because of a limitation of the
-  Bpod's firmware, threshold events are only reliable for analog inputs on ``Flex1``,
-  ``Flex2``, and so on, with no channel of another job before them. bpod-core refuses
-  thresholds on other channels.
-- **No remote access yet.** FlexIO can't be set up through
-  :class:`~bpod_core.bpod.RemoteBpod`.
-
-Known Firmware Issues
-^^^^^^^^^^^^^^^^^^^^^
-
-The current Bpod firmware has a few issues with FlexIO channels. Fixes have been
-proposed, but they aren't part of an official firmware release yet:
-
-- Every state change switches FlexIO outputs to the new state's value, even while a
-  global timer controls them (fix:
-  `#6 <https://github.com/sanworks/Bpod_StateMachine_Firmware/pull/6>`__).
-- A state that doesn't use ``AnalogThreshEnable`` or ``AnalogThreshDisable`` can still
-  enable or disable thresholds, if a state at the same position in an earlier state
-  machine did. This lasts until the Bpod is switched off (fix:
-  `#7 <https://github.com/sanworks/Bpod_StateMachine_Firmware/pull/7>`__).
-- A digital input that is already on when a trial starts reports a ``Flex{N}_High``
-  event at the start of the trial (fix:
-  `#12 <https://github.com/sanworks/Bpod_StateMachine_Firmware/pull/12>`__).
-
-.. admonition:: Take-Home Messages
-   :class: tip
-
-   Four jobs
-      Each FlexIO channel is a digital or analog input or output, set through
-      :attr:`~bpod_core.bpod.Bpod.flex_io` before the first trial.
-
-   Inputs
-      Digital inputs report ``Flex{N}_High`` and ``Flex{N}_Low``; analog inputs record
-      continuously (see :meth:`~bpod_core.bpod.Bpod.get_analog_data`) and report
-      ``Flex{N}_Trig0`` and ``Flex{N}_Trig1`` through their thresholds.
-
-   Outputs
-      Set them with the ``Flex{N}`` action: 0 or 1 for digital outputs, millivolts for
-      analog outputs.
-
-   Millivolts
-      All FlexIO voltages are in millivolts, from 0 to 5000.
-
-.. seealso::
-
-   The API reference of :attr:`~bpod_core.bpod.Bpod.flex_io`,
-   :class:`~bpod_core.bpod.abc.FlexIOChannel`,
-   :class:`~bpod_core.bpod.abc.FlexIOThreshold` and
-   :meth:`~bpod_core.bpod.Bpod.get_analog_data` covers the technical details.

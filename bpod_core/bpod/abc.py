@@ -41,11 +41,29 @@ class AbstractBpod(AbstractContextManager):
     @property
     def flex_io(self) -> 'AbstractFlexIO':
         """
-        The FlexIO subsystem.
+        The Bpod's FlexIO channels.
 
-        On supported hardware (e.g. Bpod Finite State Machine r2+),
-        :attr:`~bpod_core.bpod.Bpod.flex_io` acts as a read-only mapping for configuring
-        the FlexIO subsystem.
+        A read-only mapping from channel name (``'Flex1'`` to ``'Flex4'`` on a Bpod
+        Finite State Machine r2+) to :class:`~bpod_core.bpod.abc.FlexIOChannel`
+        objects, which set each channel's identity and analog thresholds. The settings
+        shared by all analog inputs,
+        :attr:`~bpod_core.bpod.abc.AbstractFlexIO.analog_sampling_rate` and
+        :attr:`~bpod_core.bpod.abc.AbstractFlexIO.n_reads_per_sample`, are attributes
+        of the mapping itself. See :doc:`/flexio/index` for a guide.
+
+        Raises
+        ------
+        RuntimeError
+            If the Bpod has no FlexIO channels, or they can't be used through this
+            object (e.g. a :class:`~bpod_core.bpod.RemoteBpod`).
+
+        Examples
+        --------
+        .. code-block:: python
+
+           bpod.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
+           bpod.flex_io['Flex1'].thresholds[0].voltage = 2500  # mV
+           bpod.flex_io.analog_sampling_rate = 500  # Hz
         """
         if self._flex_io is None:
             if self._hardware.n_flexio == 0:
@@ -302,7 +320,7 @@ class FlexIOThreshold:
 
 @dataclass(slots=True)
 class FlexIOChannel:
-    """Class representing a single FlexIO channel."""
+    """A single FlexIO channel, as found in :attr:`~bpod_core.bpod.Bpod.flex_io`."""
 
     _state_getter: Callable[[], _FlexIOState] = field(repr=False)
     _state_setter: Callable[[_FlexIOState], None] = field(repr=False)
@@ -371,7 +389,11 @@ class FlexIOChannel:
 
 
 class AbstractFlexIO(SuggestionMapping[FlexIOChannel]):
-    """Abstract base for FlexIO subsystems."""
+    """Abstract base for :attr:`~bpod_core.bpod.Bpod.flex_io`.
+
+    A mapping from channel name to :class:`FlexIOChannel`, which also holds the
+    settings shared by all analog inputs.
+    """
 
     __slots__ = (
         '_on_input_events_changed',
