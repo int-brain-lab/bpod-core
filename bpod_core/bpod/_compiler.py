@@ -945,7 +945,7 @@ class StateMachineCompiler:
 
         # GLOBAL TIMER TRIGGERS AND CANCELS (bitmasks, one bit per timer)
         for key in ('GlobalTimerTrig', 'GlobalTimerCancel'):
-            bitmasks = [1 << s.actions[key] if key in s.actions else 0 for s in states]
+            bitmasks = [1 << a[key] if key in a else 0 for a in state_actions]
             extend_packed(fsm_bytes, bitmasks, format_string)
 
         # GLOBAL TIMER ONSET TRIGGERS
