@@ -56,6 +56,8 @@ N_SERIAL_EVENTS_DEFAULT = 15
 VALID_OPERATORS = {'>exit', '>back'}
 MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+ r1.0'}
 CONFIG_PATH = platformdirs.user_config_path(appname='bpod-core', appauthor=False)
+DISCOVERY_BYTE = b'\xde'
+"""The byte a Bpod sends on its serial port while it isn't connected to a host."""
 DISCOVERY_TIMEOUT = 0.11
 
 

@@ -851,6 +851,10 @@ def verify_serial_discovery(
     discovery message. Optionally executes a function first, which can be used to
     trigger the device's discovery routine, e.g., by sending a command.
 
+    DTR is raised only once the port is open: a device that sends its discovery message
+    when a host asserts DTR then does so after the port's input buffer has been cleared
+    on opening, rather than into it.
+
     Parameters
     ----------
     port : str
@@ -870,7 +874,11 @@ def verify_serial_discovery(
         False otherwise (including if the port cannot be opened).
     """
     try:
-        with Serial(port, timeout=timeout) as ser:
+        ser = Serial(timeout=timeout)
+        ser.dtr = False
+        ser.port = port
+        with ser:
+            ser.dtr = True
             if trigger is not None:
                 trigger()
             return ser.read(len(expected_message)) == expected_message

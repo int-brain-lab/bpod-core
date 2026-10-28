@@ -45,6 +45,7 @@ from bpod_core.bpod.constants import (
     CHANNEL_TYPES_INPUT,
     CHANNEL_TYPES_OUTPUT,
     CONFIG_PATH,
+    DISCOVERY_BYTE,
     DISCOVERY_TIMEOUT,
     MACHINE_TYPES,
     MAX_BPOD_HW_VERSION,
@@ -794,7 +795,12 @@ class Bpod(SerialDevice, AbstractBpod):
             If the handshake fails.
         """
         try:
-            if not self.serial0.verify(b'6', b'5', timeout=0.2):
+            # discovery bytes the Bpod sent while unconnected, e.g. in response to the
+            # port being opened, may precede its reply: skip them
+            self.serial0.write(b'6')
+            with self.serial0.temporary_timeout(0.2):
+                reply = self.serial0.read_until(b'5')
+            if reply.lstrip(DISCOVERY_BYTE) != b'5':
                 raise BpodError(
                     f'Handshake with {self._serial_device_name} on {self.port} failed'
                 )
@@ -2171,8 +2177,10 @@ def discover_bpod(
         vid=VIDS_BPOD, pid=PIDS_BPOD, device=port, serial_number=serial_number
     )
     for p in ports:
+        # an unconnected Bpod sends its discovery byte at regular intervals, and recent
+        # firmware also when DTR is asserted
         if verify_serial_discovery(
-            port=p.device, expected_message=b'\xde', timeout=DISCOVERY_TIMEOUT
+            port=p.device, expected_message=DISCOVERY_BYTE, timeout=DISCOVERY_TIMEOUT
         ):
             yield BpodInfo(port=p.device, serial_number=str(p.serial_number))
 

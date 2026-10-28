@@ -494,6 +494,13 @@ class TestVerifySerialDiscovery:
         assert result is True
         trigger.assert_called_once()
 
+    def test_dtr_raised_after_open(self, mock_serial, mocker):
+        """The port is opened with DTR low; DTR is raised before reading."""
+        dtr = mocker.PropertyMock()
+        type(mock_serial).dtr = dtr
+        assert com.verify_serial_discovery(port='COM1', expected_message=b'A') is True
+        assert dtr.call_args_list == [mocker.call(False), mocker.call(True)]
+
     def test_serial_exception(self, mock_serial):
         mock_serial.read.side_effect = SerialException()
         result = com.verify_serial_discovery(

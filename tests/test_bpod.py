@@ -281,6 +281,12 @@ class TestBpodHandshake:
         assert caplog.records[0].levelname == 'DEBUG'
         assert 'successful' in caplog.records[0].message
 
+    def test_handshake_skips_discovery_bytes(self, mock_bpod):
+        """Discovery bytes arriving before the reply are skipped."""
+        mock_bpod.serial0.mock_responses = {b'6': b'\xde\xde5'}
+        Bpod._handshake(mock_bpod)
+        assert mock_bpod.serial0.in_waiting == 0
+
     def test_handshake_failure_1(self, mock_bpod):
         """Test failure to complete handshake with Bpod due to incorrect response."""
         mock_bpod.serial0.mock_responses = {b'6': b'6'}
@@ -291,7 +297,7 @@ class TestBpodHandshake:
     def test_handshake_failure_2(self, mock_bpod):
         """Test failure to complete handshake with Bpod due to exception."""
         mock_bpod.serial0 = MagicMock(spec=ExtendedSerial)
-        mock_bpod.serial0.verify.side_effect = SerialException
+        mock_bpod.serial0.read_until.side_effect = SerialException
         with pytest.raises(BpodError, match=r'Handshake .* failed'):
             Bpod._handshake(mock_bpod)
         mock_bpod.serial0.reset_input_buffer.assert_called_once()
