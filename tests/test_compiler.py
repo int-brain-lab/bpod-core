@@ -76,7 +76,7 @@ class TestTables:
         assert {'Flex3', 'Flex4'} <= actions
         assert not {'Flex1', 'Flex2'} & actions
         lookup = compiler.event_tables.lookup.filter(
-            pl.col('event').cast(pl.String).str.starts_with('Flex1_Trig')
+            pl.col('Event').cast(pl.String).str.starts_with('Flex1_Trig')
         )
         assert lookup['default_value'].to_list() == [2500, 1000]
 

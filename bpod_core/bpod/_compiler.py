@@ -467,7 +467,8 @@ class StateMachineCompiler:
                     )
 
             # validate actions
-            if bad_actions := set(state.actions).difference(valid_actions):
+            action_set = set(state.actions)
+            if bad_actions := action_set.difference(valid_actions):
                 bad_action = bad_actions.pop()
                 if bad_action in self._global_timer_actions:
                     detail = ' - no global timer has been set'
@@ -542,15 +543,19 @@ class StateMachineCompiler:
                                 'attributed (upstream firmware quirk)'
                             )
             for key in self._global_timer_actions:
-                value = state.actions.get(key)
-                if value is not None and value not in global_timer_ids:
+                if (
+                    key in action_set
+                    and (value := state.actions[key]) not in global_timer_ids
+                ):
                     raise ValueError(
                         f"Invalid value {value} for action '{key}' in state "
                         f"'{state_name}' - Global Timer {value} has not been set"
                     )
             for key in self._global_counter_actions:
-                value = state.actions.get(key)
-                if value is not None and value not in global_counter_ids:
+                if (
+                    key in action_set
+                    and (value := state.actions[key]) not in global_counter_ids
+                ):
                     raise ValueError(
                         f"Invalid value {value} for action '{key}' in state "
                         f"'{state_name}' - Global Counter {value} has not been set"
@@ -821,6 +826,9 @@ class StateMachineCompiler:
             number of transitions, event_idx is relative to the range's first event,
             and target_idx is the target state index.
             """
+            if not any(transitions_per_state):  # unused range: a zero count per state
+                fsm_bytes.extend(bytes(len(transitions_per_state)))
+                return
             for transitions in transitions_per_state:
                 fsm_bytes.append(len(transitions) // 2)
                 fsm_bytes.extend(transitions)

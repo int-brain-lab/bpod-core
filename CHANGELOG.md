@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   about twice as fast when states omit `transitions` or `actions`.
 - `Bpod.run` returns about 40% sooner: the event lookup tables are built once per
   hardware configuration instead of for every trial.
+- `StateMachine.from_yaml` and `from_file` parse YAML with libyaml where available,
+  about seven times faster.
+- validating and compiling state machines is 10-20% faster, and `Bpod.get_data`
+  builds its frames about 20% faster.
 - the IPC transport is used wherever libzmq supports it, as reported by
   `zmq.has('ipc')`, instead of only on POSIX. This includes Windows builds with
   AF_UNIX support.

@@ -532,6 +532,21 @@ class TestCheck:
         with pytest.raises(ValueError, match='are unreachable'):
             fsm.check()
 
+    def test_invalid_transition_target(self):
+        """A transition to an unknown state names the state and the condition."""
+        fsm = StateMachine()
+        fsm.add_state('state1', transitions={'Tup': 'state2'})
+        with pytest.raises(
+            ValueError, match=r"'state2' for transition condition 'Tup'"
+        ):
+            fsm.check()
+
+    @pytest.mark.parametrize('bad', ['a: \ud800', 'a: [', '- 1\n- 2'])
+    def test_from_yaml_invalid(self, bad):
+        """Unparseable or structurally wrong YAML raises ValueError with any loader."""
+        with pytest.raises(ValueError, match='Invalid YAML'):
+            StateMachine.from_yaml(bad)
+
 
 class TestHash:
     def test_private_api_available(self):

@@ -30,6 +30,9 @@ from xxhash import xxh3_64 as _xxh3_64
 from bpod_core.constants import UINT16_MAX, UINT32_MAX
 from bpod_core.misc import ValidatedDict, suggest_similar
 
+# libyaml's C loader is about seven times faster; fall back to pure Python without it
+_YAML_LOADER = getattr(yaml, 'CSafeLoader', yaml.SafeLoader)
+
 
 class _CheckData(NamedTuple):
     """Data returned by :meth:`StateMachine._check`."""
@@ -1014,8 +1017,10 @@ class StateMachine(BaseModel, title='State Machine'):
             :class:`StateMachine`.
         """
         try:
-            return cls.model_validate(yaml.safe_load(yaml_str))
-        except (ValidationError, yaml.YAMLError) as e:
+            return cls.model_validate(yaml.load(yaml_str, Loader=_YAML_LOADER))  # noqa: S506
+        except (ValidationError, yaml.YAMLError, UnicodeError) as e:
+            # libyaml raises UnicodeError for a str it can't encode, e.g. with a lone
+            # surrogate, where the pure-Python loader raises a YAMLError
             raise ValueError('Invalid YAML string') from e
 
     @classmethod
@@ -1126,15 +1131,20 @@ class StateMachine(BaseModel, title='State Machine'):
             )
             raise ValueError(f'States {unreachable_states_string} are unreachable')
 
-        # Check transitions for invalid target states
-        for state_name, state in self.states.items():
-            for condition_name, target in state.transitions.items():
-                if target not in state_name_set and not target.startswith('>'):
-                    raise ValueError(
-                        f"Invalid target state '{target}' for transition condition"
-                        f"'{condition_name}' in state '{state_name}'"
-                        + suggest_similar(target, state_name_set - {state_name})
-                    )
+        # Check transitions for invalid target states; only locate the offending
+        # transition for the error message once a set operation shows there is one
+        invalid_targets = {
+            t for t in transition_targets if not t.startswith('>')
+        } - state_name_set
+        if invalid_targets:
+            for state_name, state in self.states.items():
+                for condition_name, target in state.transitions.items():
+                    if target in invalid_targets:
+                        raise ValueError(
+                            f"Invalid target state '{target}' for transition condition "
+                            f"'{condition_name}' in state '{state_name}'"
+                            + suggest_similar(target, state_name_set - {state_name})
+                        )
 
         # add state machine's hash to cache, along with some data
         data = _CheckData(

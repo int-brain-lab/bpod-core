@@ -1025,10 +1025,10 @@ class TestFlexIOSettings:
         mock_bpod_2p._state_machine_started = True  # voltages stay changeable
         flex1.thresholds[1].voltage = 1000
         lookup = mock_bpod_2p._compiler.event_tables.lookup.filter(
-            pl.col('event').cast(pl.String).str.starts_with('Flex1_Trig')
+            pl.col('Event').cast(pl.String).str.starts_with('Flex1_Trig')
         )
         values = dict(
-            lookup.select(pl.col('event').cast(pl.String), 'default_value').rows()
+            lookup.select(pl.col('Event').cast(pl.String), 'default_value').rows()
         )
         assert values == {'Flex1_Trig0': 2500, 'Flex1_Trig1': 1000}
 

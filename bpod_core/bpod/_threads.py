@@ -7,6 +7,7 @@ import time
 import weakref
 from collections.abc import Callable, Collection
 from enum import IntEnum, auto
+from functools import cached_property
 from queue import SimpleQueue
 from typing import NamedTuple, cast, get_args
 
@@ -57,7 +58,7 @@ class _DrainMarker(_RawSoftcode):
 
 _EVENT_DTYPE = np.dtype(
     [
-        ('time', 'datetime64[us]'),
+        ('Time', 'datetime64[us]'),
         ('event_id', np.int16),
         ('state_id', np.int16),
         ('value', np.int16),
@@ -108,14 +109,17 @@ _TRIAL_DATA_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
 """Column schema for trial DataFrames returned by :meth:`~bpod_core.bpod.Bpod.get_data`
 and :meth:`~bpod_core.bpod.Bpod.peek_data`."""
 
+_TRIAL_DATA_COLUMNS = list(_TRIAL_DATA_SCHEMA)
+"""Column names of trial DataFrames, in order."""
+
 _SYNTHETIC_EVENT_LOOKUP = pl.DataFrame(
     {
         'event_id': pl.Series(list(_SYNTHETIC_EVENT_TYPES), dtype=pl.Int16),
-        'type': pl.Series(
+        'Type': pl.Series(
             list(_SYNTHETIC_EVENT_TYPES.values()), dtype=_EVENT_TYPE_ENUM
         ),
-        'event': pl.Series([None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.Null),
-        'channel': pl.Series([None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.Null),
+        'Event': pl.Series([None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.Null),
+        'Channel': pl.Series([None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.Null),
         'default_value': pl.Series(
             [None] * len(_SYNTHETIC_EVENT_TYPES), dtype=pl.UInt16
         ),
@@ -139,8 +143,8 @@ def _build_event_lookup(
     Returns
     -------
     pl.DataFrame
-        DataFrame with columns ``event_id`` (Int16), ``type`` (Enum),
-        ``event`` (Categorical), ``channel`` (Categorical), and
+        DataFrame with columns ``event_id`` (Int16), ``Type`` (Enum),
+        ``Event`` (Categorical), ``Channel`` (Categorical), and
         ``default_value`` (UInt16, null if no pre-defined value),
         covering input events, synthetic events, and output actions.
     """
@@ -148,22 +152,22 @@ def _build_event_lookup(
     input_lookup = pl.DataFrame(
         {
             'event_id': pl.Series(range(len(input_events.names)), dtype=pl.Int16),
-            'type': pl.Series(
+            'Type': pl.Series(
                 ['InputEvent'] * len(input_events.names), dtype=_EVENT_TYPE_ENUM
             ),
-            'event': pl.Series(input_events.names, dtype=pl.Categorical),
-            'channel': pl.Series(input_events.channels, dtype=pl.Categorical),
+            'Event': pl.Series(input_events.names, dtype=pl.Categorical),
+            'Channel': pl.Series(input_events.channels, dtype=pl.Categorical),
             'default_value': pl.Series(input_events.values, dtype=pl.UInt16),
         }
     )
     output_lookup = pl.DataFrame(
         {
             'event_id': pl.Series(output_ids, dtype=pl.Int16),
-            'type': pl.Series(
+            'Type': pl.Series(
                 ['OutputAction'] * len(action_names), dtype=_EVENT_TYPE_ENUM
             ),
-            'event': pl.Series([None] * len(action_names), dtype=pl.Categorical),
-            'channel': pl.Series(action_names, dtype=pl.Categorical),
+            'Event': pl.Series([None] * len(action_names), dtype=pl.Categorical),
+            'Channel': pl.Series(action_names, dtype=pl.Categorical),
             'default_value': pl.Series([None] * len(action_names), dtype=pl.UInt16),
         }
     )
@@ -213,9 +217,9 @@ def _build_event_tables(
         lookup=lookup,
         event_info={
             row['event_id']: (
-                row['type'],
-                row['event'],
-                row['channel'],
+                row['Type'],
+                row['Event'],
+                row['Channel'],
                 row['default_value'],
             )
             for row in lookup.iter_rows(named=True)
@@ -773,26 +777,29 @@ class EventThread(threading.Thread):
             pl.from_numpy(data)
             .lazy()
             .join(self._event_lookup, on='event_id', how='left', maintain_order='left')
-            .with_columns(
-                pl.col('state_id')
-                .replace_strict(
-                    self._state_lookup, return_dtype=pl.Categorical, default=None
-                )
-                .alias('state')
+            .with_columns(self._decode_exprs)
+            .select(_TRIAL_DATA_COLUMNS)
+        )
+
+    @cached_property
+    def _decode_exprs(self) -> tuple[pl.Expr, ...]:
+        """Expressions decoding the trial's raw events, shared by all of its frames.
+
+        Built on first use rather than in ``__init__``, which runs on the time-critical
+        path of :meth:`~bpod_core.bpod.Bpod.run`.
+        """
+        return (
+            pl.col('state_id')
+            .replace_strict(
+                self._state_lookup, return_dtype=pl.Categorical, default=None
             )
-            .with_columns(
-                pl.col('time').dt.replace_time_zone('UTC'),
-                pl.lit(self._trial).cast(pl.UInt32).alias('trial'),
-                pl.lit(self._fsm_hash_str).cast(pl.Categorical).alias('state machine'),
-                pl.coalesce(
-                    pl.col('value').replace(-1, None),
-                    pl.col('default_value'),
-                )
-                .cast(pl.UInt16)
-                .alias('value'),
-            )
-            # the columns above are named in lowercase; the output uses title case
-            .select(pl.col(name.lower()).alias(name) for name in _TRIAL_DATA_SCHEMA)
+            .alias('State'),
+            pl.col('Time').dt.replace_time_zone('UTC'),
+            pl.lit(self._trial).cast(pl.UInt32).alias('Trial'),
+            pl.lit(self._fsm_hash_str).cast(pl.Categorical).alias('State Machine'),
+            pl.coalesce(pl.col('value').replace(-1, None), pl.col('default_value'))
+            .cast(pl.UInt16)
+            .alias('Value'),
         )
 
     def peek_data(
