@@ -62,8 +62,8 @@ class _StateMachineLookup(NamedTuple):
     """Names of all states, indexed by state index."""
     state_transition_matrix: list[list[int]]
     """Target state per state and event: ``n_states`` lists of 255 state indices."""
-    state_actions: list[dict[str, int]]
-    """Per-state mapping of action name to value."""
+    state_action_indices: list[dict[int, int]]
+    """Per-state mapping of action index to value."""
     use_back_op: bool
     """Whether the ``>back`` operator is used."""
     state_lookup: dict[int, str]

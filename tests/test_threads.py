@@ -19,7 +19,7 @@ from bpod_core.bpod._threads import (
     EventThread,
     ReadThread,
     SoftcodeThread,
-    _build_event_lookup,
+    _build_event_tables,
     _EventID,
 )
 from bpod_core.bpod.structs import (
@@ -356,7 +356,7 @@ class TestReadThread:
 def _make_fsm(
     n_states: int = 2,
     transitions: dict[tuple[int, int], int] | None = None,
-    state_actions: list[dict[str, int]] | None = None,
+    state_action_indices: list[dict[int, int]] | None = None,
 ) -> _StateMachineLookup:
     """Build a minimal CompiledStateMachine for testing."""
     mat = [[state] * 255 for state in range(n_states)]
@@ -367,7 +367,7 @@ def _make_fsm(
         fsm_hash=b'',
         state_names=state_names,
         state_transition_matrix=mat,
-        state_actions=state_actions or [{} for _ in range(n_states)],
+        state_action_indices=state_action_indices or [{} for _ in range(n_states)],
         use_back_op=False,
         state_lookup=dict(enumerate(state_names)),
     )
@@ -403,10 +403,10 @@ class TestEventThread:
                 trial=trial,
                 fsm=fsm or _make_fsm(),
                 data_queue=data_queue,
-                event_lookup=_build_event_lookup(input_events, action_names),
-                action_names=action_names,
-                resettable_actions=(
-                    action_names if resettable_actions is None else resettable_actions
+                event_tables=_build_event_tables(
+                    input_events,
+                    action_names,
+                    action_names if resettable_actions is None else resettable_actions,
                 ),
                 time_reference=time_reference or _TimeReferences(0, 0, 0),
                 publish=publish if publish is not None else lambda _: None,
@@ -710,7 +710,7 @@ class TestEventThread:
 
     def test_output_action_recorded(self, make_thread):
         """Output actions for the current state are recorded on START_STATE."""
-        fsm = _make_fsm(state_actions=[{'PWM1': 128}, {}])
+        fsm = _make_fsm(state_action_indices=[{0: 128}, {}])
         thread, data_queue = make_thread(fsm=fsm, action_names=['PWM1'])
         # START_STATE triggers initial output recording for S0
         thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,)))
@@ -722,7 +722,7 @@ class TestEventThread:
 
     def test_output_action_value_above_uint8_range(self, make_thread):
         """Output values above 255 (e.g. scaled FlexIO analog-output counts) survive."""
-        fsm = _make_fsm(state_actions=[{'Flex4': 2048}, {}])
+        fsm = _make_fsm(state_action_indices=[{0: 2048}, {}])
         thread, data_queue = make_thread(fsm=fsm, action_names=['Flex4'])
         thread.queue.put(_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,)))
         thread.stop()
@@ -736,7 +736,7 @@ class TestEventThread:
         # S0 sets TTL1=1; S1 has no actions; event 0 triggers S0→S1
         fsm = _make_fsm(
             transitions={(0, 0): 1},
-            state_actions=[{'TTL1': 1}, {}],
+            state_action_indices=[{0: 1}, {}],
         )
         thread, data_queue = make_thread(fsm=fsm, action_names=['TTL1'])
         # START_STATE seeds active_outputs with TTL1=1 for S0
@@ -752,7 +752,7 @@ class TestEventThread:
 
     def test_non_resettable_action_not_reset(self, make_thread):
         """An action the Bpod doesn't reset, e.g. a module message, isn't reset."""
-        fsm = _make_fsm(transitions={(0, 0): 1}, state_actions=[{'Module1': 3}, {}])
+        fsm = _make_fsm(transitions={(0, 0): 1}, state_action_indices=[{0: 3}, {}])
         thread, data_queue = make_thread(
             fsm=fsm, action_names=['Module1'], resettable_actions=[]
         )

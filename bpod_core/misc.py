@@ -581,8 +581,11 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V]):
 
     @override
     def __setitem__(self, key: K, value: V) -> None:
-        validated = type(self).model_validate({key: value}).root
-        self.root[key] = validated[key]
+        # store the validated pair: the key may have been coerced, e.g. '1' to 1
+        ((validated_key, validated_value),) = (
+            type(self).model_validate({key: value}).root.items()
+        )
+        self.root[validated_key] = validated_value
 
     @override
     def __delitem__(self, key: K) -> None:

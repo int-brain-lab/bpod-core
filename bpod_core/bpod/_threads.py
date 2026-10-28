@@ -8,7 +8,7 @@ import weakref
 from collections.abc import Callable, Collection
 from enum import IntEnum, auto
 from queue import SimpleQueue
-from typing import cast, get_args
+from typing import NamedTuple, cast, get_args
 
 import numpy as np
 import numpy.typing as npt
@@ -168,6 +168,62 @@ def _build_event_lookup(
         }
     )
     return pl.concat([input_lookup, _SYNTHETIC_EVENT_LOOKUP, output_lookup])
+
+
+class _EventTables(NamedTuple):
+    """Lookup tables for decoding a trial's events, fixed per hardware configuration.
+
+    Built once by :func:`_build_event_tables` so that :class:`EventThread` does not
+    rebuild them for every trial.
+    """
+
+    lookup: pl.DataFrame
+    """Event metadata, see :func:`_build_event_lookup`."""
+    event_info: dict[int, tuple[BpodEventType, str | None, str | None, int | None]]
+    """Type, event name, channel and default value of each event ID."""
+    resettable_indices: frozenset[int]
+    """Indices of the outputs that the Bpod resets to 0 at each state transition."""
+
+
+def _build_event_tables(
+    input_events: _InputEvents,
+    action_names: list[str],
+    resettable_actions: Collection[str],
+) -> _EventTables:
+    """Build the lookup tables for decoding a trial's events.
+
+    Parameters
+    ----------
+    input_events : _InputEvents
+        Hardware-level input event names and their source channels.
+    action_names : list of str
+        Names of all output channels, indexed by action ID.
+    resettable_actions : Collection of str
+        Names of the actions driving outputs that the Bpod resets to 0 when a state
+        begins that doesn't set them.
+
+    Returns
+    -------
+    _EventTables
+        The lookup tables.
+    """
+    lookup = _build_event_lookup(input_events, action_names)
+    action_indices = {name: i for i, name in enumerate(action_names)}
+    return _EventTables(
+        lookup=lookup,
+        event_info={
+            row['event_id']: (
+                row['type'],
+                row['event'],
+                row['channel'],
+                row['default_value'],
+            )
+            for row in lookup.iter_rows(named=True)
+        },
+        resettable_indices=frozenset(
+            action_indices[name] for name in resettable_actions
+        ),
+    )
 
 
 class ReadThread(threading.Thread):
@@ -452,13 +508,8 @@ class EventThread(threading.Thread):
         Compiled state machine data for this trial.
     data_queue : SimpleQueue of LazyFrame
         Queue to push the completed trial DataFrame into.
-    event_lookup : polars.DataFrame
-        Pre-built event metadata lookup, see :func:`_build_event_lookup`.
-    action_names : list of str
-        Names of all output channels, indexed by action ID.
-    resettable_actions : Collection of str
-        Names of the actions driving outputs that the Bpod resets to 0 when a state
-        begins that doesn't set them.
+    event_tables : _EventTables
+        Pre-built lookup tables for decoding events, see :func:`_build_event_tables`.
     time_reference : _TimeReferences
         Reference values for performance counters.
     publish : Callable
@@ -486,9 +537,7 @@ class EventThread(threading.Thread):
         trial: int,
         fsm: _StateMachineLookup,
         data_queue: SimpleQueue[pl.LazyFrame],
-        event_lookup: pl.DataFrame,
-        action_names: list[str],
-        resettable_actions: Collection[str],
+        event_tables: _EventTables,
         time_reference: _TimeReferences,
         publish: Callable[[list[BpodEventUnion]], object],
         publish_gate: Callable[[], bool],
@@ -508,34 +557,14 @@ class EventThread(threading.Thread):
         self._n_events: int = 0
         self._check_trigger = threading.Event()
         self._finished = False  # set before the final wake-up of peek_data()
-        self._event_lookup = event_lookup.lazy()
+        self._event_lookup = event_tables.lookup.lazy()
+        self._event_info = event_tables.event_info
+        self._resettable_indices = event_tables.resettable_indices
         self._state_names = fsm.state_names
         self._state_lookup = fsm.state_lookup
         self._fsm_hash_str = fsm.fsm_hash.hex()
 
-        # pre-compute action index map for fast lookup in the hot loop
-        action_index_map = {name: i for i, name in enumerate(action_names)}
-        self._state_action_indices: list[dict[int, int]] = [
-            {action_index_map[k]: v for k, v in d.items()} for d in fsm.state_actions
-        ]
-        # these outputs are implicitly reset to 0 at each state transition
-        self._resettable_indices: frozenset[int] = frozenset(
-            i for i, name in enumerate(action_names) if name in resettable_actions
-        )
-
-        # pre-compute event metadata for resolving published messages in the hot
-        # loop; covers input events, synthetic events, and output actions alike
-        self._event_info: dict[
-            int, tuple[BpodEventType, str | None, str | None, int | None]
-        ] = {
-            row['event_id']: (
-                row['type'],
-                row['event'],
-                row['channel'],
-                row['default_value'],
-            )
-            for row in event_lookup.iter_rows(named=True)
-        }
+        self._state_action_indices = fsm.state_action_indices
         self._n_published: int = 0
         self._pending: list[BpodEventUnion] = []  # messages not published yet
 

@@ -3,6 +3,7 @@
 import datetime as dt
 import re
 import threading
+from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, cast
@@ -307,6 +308,7 @@ StateName = Annotated[
         description='The name of the state',
         min_length=1,
         pattern=re.compile(r'^(?!>)(?!exit$)(?!back$).+$'),
+        strict=True,
     ),
     WrapValidator(_validate_state_name),
 ]
@@ -329,6 +331,7 @@ Operator = Annotated[
         pattern=re.compile(r'^>.+$'),
         min_length=2,
         examples=['>exit', '>back'],
+        strict=True,
     ),
     WrapValidator(_validate_operator),
 ]
@@ -515,8 +518,8 @@ class StateMachine(BaseModel, title='State Machine'):
         self,
         name: StateName,
         timer: StateTimer = 0.0,
-        transitions: dict[Event, StateName | Operator] | None = None,
-        actions: dict[OutputActionName, OutputActionValue] | None = None,
+        transitions: Mapping[Event, StateName | Operator] | None = None,
+        actions: Mapping[OutputActionName, OutputActionValue] | None = None,
         comment: StateComment | None = None,
     ) -> None:
         """
@@ -528,11 +531,11 @@ class StateMachine(BaseModel, title='State Machine'):
             The name of the state to be added.
         timer : float, default: 0.0
             The duration of the state's timer.
-        transitions : dict, optional
-            An optional dictionary mapping conditions to target states for transitions.
+        transitions : Mapping, optional
+            An optional mapping of conditions to target states for transitions.
             Passing a :class:`Transitions` instance stores it by reference.
-        actions : dict, optional
-            An optional dictionary of actions to be executed on entering the state.
+        actions : Mapping, optional
+            An optional mapping of actions to be executed on entering the state.
             Passing an :class:`Actions` instance stores it by reference.
         comment : str, optional
             An optional comment describing the state.
@@ -544,10 +547,11 @@ class StateMachine(BaseModel, title='State Machine'):
         """
         state = State(
             timer=timer,
-            transitions=transitions or {},
-            actions=actions or {},
+            transitions={} if transitions is None else transitions,
+            actions={} if actions is None else actions,
             comment=comment,
         )
+        # StateName is strict, so any name that validates is the key that gets stored
         if name in self.states:
             raise ValueError(f"A state named '{name}' is already registered")
         self.states[name] = state

@@ -1024,7 +1024,7 @@ class TestFlexIOSettings:
         flex1.thresholds[0].voltage = 2500
         mock_bpod_2p._state_machine_started = True  # voltages stay changeable
         flex1.thresholds[1].voltage = 1000
-        lookup = mock_bpod_2p._compiler.event_lookup.filter(
+        lookup = mock_bpod_2p._compiler.event_tables.lookup.filter(
             pl.col('event').cast(pl.String).str.starts_with('Flex1_Trig')
         )
         values = dict(
@@ -1062,7 +1062,7 @@ class TestFlexIOSettings:
         idx = mock_bpod_2p._compiler.actions.index('Flex4')
         assert struct.pack('<HHH', 1, idx, 819) in fsm_bytes
         # ...while the annotation used to build get_data()'s value is millivolts
-        assert annotations.state_actions[0]['Flex4'] == 1000
+        assert annotations.state_action_indices[0][idx] == 1000
 
     def test_flexio_threshold_event_rejected_on_mis_ranked_channel(self, mock_bpod_2p):
         """A Trig event on a mis-ranked ANALOG_INPUT channel can't be bound.

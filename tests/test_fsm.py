@@ -2,6 +2,7 @@ from collections.abc import MutableMapping
 from pathlib import Path
 
 import msgspec
+import numpy as np
 import pytest
 from pydantic import ValidationError, create_model
 
@@ -136,12 +137,32 @@ class TestStateMachineBasic:
         with pytest.raises(ValidationError):
             sm.add_state(name='state1', timer=-1.0)
 
-    def test_transitions_instance_is_stored_by_reference(self):
-        """A Transitions instance passed to add_state is not copied."""
-        transitions = Transitions({'Tup': '>exit'})
+    @pytest.mark.parametrize(
+        'transitions', [Transitions({'Tup': '>exit'}), Transitions()]
+    )
+    def test_transitions_instance_is_stored_by_reference(self, transitions):
+        """A Transitions instance passed to add_state is not copied, even if empty."""
         sm = StateMachine()
         sm.add_state(name='state1', transitions=transitions)
         assert sm.states['state1'].transitions is transitions
+
+    @pytest.mark.parametrize('name', [b'state1', 1, None])
+    def test_state_name_must_be_str(self, name):
+        """State names are not coerced from other types."""
+        with pytest.raises(ValidationError):
+            StateMachine().add_state(name=name)
+        with pytest.raises(ValidationError):
+            StateMachine().add_state(name='a', transitions={'Tup': name})
+
+    @pytest.mark.parametrize('index', [np.int64(0), '1', 2.0])
+    def test_index_is_coerced(self, index):
+        """Indices that pydantic coerces are stored as int and serialize."""
+        sm = StateMachine()
+        sm.set_global_timer(index, duration=1.0)
+        sm.set_global_counter(index, event='Port1_High', threshold=1)
+        sm.set_condition(index, channel='Port1', value=True)
+        assert list(sm.global_timers) == [int(index)]
+        assert sm.hash and sm.to_json()
 
     def test_empty_repr_default_name(self):
         """Default name should be omitted from __repr__."""

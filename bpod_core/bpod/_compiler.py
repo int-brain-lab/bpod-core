@@ -9,11 +9,10 @@ from time import perf_counter_ns
 from typing import ClassVar
 
 import msgspec
-import polars as pl
 from cachetools import FIFOCache
 from xxhash import xxh3_64 as _xxh3_64
 
-from bpod_core.bpod._threads import _build_event_lookup
+from bpod_core.bpod._threads import _build_event_tables, _EventTables
 from bpod_core.bpod.constants import (
     _CHANNEL_BASE_NAME_CONDITION,
     _CHANNEL_BASE_NAME_GLOBAL_COUNTER,
@@ -109,8 +108,8 @@ class StateMachineCompiler:
     n_softcodes: int
     """Number of softcodes per USB channel."""
 
-    event_lookup: pl.DataFrame
-    """Event metadata for decoding a trial's events."""
+    event_tables: _EventTables
+    """Lookup tables for decoding a trial's events."""
 
     hardware_hash: bytes
     """Hash of the hardware configuration and the tables derived from it."""
@@ -134,7 +133,9 @@ class StateMachineCompiler:
         self._threshold_voltages = dict(threshold_voltages)
         self.serial_event_allocation = self._compile_input_events()
         self._compile_output_actions()
-        self.event_lookup = _build_event_lookup(self._input_events, self.actions)
+        self.event_tables = _build_event_tables(
+            self._input_events, self.actions, self.resettable_actions
+        )
         self.hardware_hash = self._compute_hardware_hash()
 
     def _compile_input_events(self) -> bytes:
@@ -772,11 +773,14 @@ class StateMachineCompiler:
             for s in states
         ]
 
-        # the annotation EventThread uses to record get_data()'s reported value
-        # reports FlexIO ANALOG_OUTPUT in millivolts (what was actually applied to
-        # the pin), not the wire's raw DAC count
-        reported_state_actions = [
-            {k: _counts_to_mv(v) if k in analog_outputs else v for k, v in a.items()}
+        # the annotation EventThread uses to record get_data()'s reported value,
+        # keyed by action index; FlexIO ANALOG_OUTPUT is reported in millivolts (what
+        # was actually applied to the pin), not the wire's raw DAC count
+        state_action_indices = [
+            {
+                action_indices[k]: _counts_to_mv(v) if k in analog_outputs else v
+                for k, v in a.items()
+            }
             for a in state_actions
         ]
 
@@ -785,7 +789,7 @@ class StateMachineCompiler:
             fsm_hash=state_machine_hash,
             state_names=state_names,
             state_transition_matrix=state_transition_matrix,
-            state_actions=reported_state_actions,
+            state_action_indices=state_action_indices,
             use_back_op=use_back_op,
             state_lookup=dict(enumerate(state_names)),
         )

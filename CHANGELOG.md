@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - validation messages for invalid state names and operators no longer substitute
   braces in the input, e.g. `{pattern}`.
+- `misc.ValidatedDict` stores a coerced key in its validated form, e.g. `'1'` as `1`,
+  instead of under the key as passed.
 
 ### Changed
 
@@ -22,8 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unknown keyword arguments raise a `TypeError` instead of a `ValidationError`. A
   `Transitions` or `Actions` instance passed to `add_state` is stored by reference
   instead of being copied.
+- state names and operators must be strings; other types such as `bytes` are no
+  longer coerced.
 - loading state machines with `from_dict`, `from_json`, `from_yaml` or `from_file` is
   about twice as fast when states omit `transitions` or `actions`.
+- `Bpod.run` returns about 40% sooner: the event lookup tables are built once per
+  hardware configuration instead of for every trial.
 
 ## [0.1.0a15] - 2026-10-23
 
