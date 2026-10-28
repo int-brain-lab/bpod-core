@@ -15,6 +15,8 @@ from pydantic import ValidationError
 from serial import SerialException
 
 from bpod_core.bpod import (
+    _SESSION_CLOCK_MAX_ERROR_NS,
+    _SESSION_CLOCK_RESET_ATTEMPTS,
     Bpod,
     BpodError,
     Input,
@@ -380,6 +382,10 @@ class TestRequestDisconnect:
         Bpod._request_disconnect(mock_ext_serial)
 
 
+_FAST = _SESSION_CLOCK_MAX_ERROR_NS // 10
+_SLOW = _SESSION_CLOCK_MAX_ERROR_NS * 4
+
+
 class TestResetSessionClock:
     def test_reset_session_clock(self, mock_bpod, caplog):
         """Test successful reset of session clock."""
@@ -392,6 +398,31 @@ class TestResetSessionClock:
         mock_bpod.is_running = True
         with pytest.raises(BpodError, match=r'Cannot use Bpod.reset_session_clock'):
             Bpod.reset_session_clock(mock_bpod)
+
+    def test_reset_is_the_last_command_of_the_connection(self, mock_bpod_25):
+        """The clock is reset after all other setup traffic."""
+        assert mock_bpod_25.serial0.last_write == b'*'
+
+    @pytest.mark.parametrize(
+        ('round_trips', 'warns'),
+        [
+            ([_FAST], False),
+            ([_SLOW, _FAST], False),
+            ([_SLOW] * _SESSION_CLOCK_RESET_ATTEMPTS, True),
+        ],
+        ids=['in time', 'retried', 'always late'],
+    )
+    def test_slow_reset(self, mock_bpod, mocker, caplog, *, round_trips, warns):
+        """A reset answered too late is repeated; if none is in time, that's warned."""
+        caplog.set_level(logging.DEBUG)
+        mock_bpod.serial0.mock_responses = {rb'\*': b'\x01'}
+        ticks = [t for round_trip in round_trips for t in (0, round_trip)]
+        mocker.patch('bpod_core.bpod.perf_counter_ns', side_effect=ticks)
+        assert Bpod.reset_session_clock(mock_bpod) is True
+        n_resets = len(round_trips)
+        assert mock_bpod.serial0.write.call_args_list == [mocker.call(b'*')] * n_resets
+        assert ('took' in caplog.text) == (n_resets > 1)
+        assert ('timestamps may be off' in caplog.text) == warns
 
 
 def _first(mapping):

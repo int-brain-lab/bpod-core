@@ -109,6 +109,10 @@ from bpod_core.misc import (
 logger = logging.getLogger(__name__)
 
 _ANALOG_FLUSH_INTERVAL_NS = 100_000_000  # 100 ms
+# a session clock reset is aligned to the host clock by the midpoint of its round trip,
+# so its timestamps are off by up to half the round trip; a slow reset is repeated
+_SESSION_CLOCK_RESET_ATTEMPTS = 3
+_SESSION_CLOCK_MAX_ERROR_NS = 5_000_000  # 5 ms
 # while idle, the Bpod answers 'X' with a trial-end report: opcode 1, one event, event
 # code 255 (end of trial), then 2 x uInt32 cycle counts and a uInt64 timestamp
 _IDLE_STOP_REPLY_HEADER = b'\x01\x01\xff'
@@ -265,7 +269,6 @@ class Bpod(SerialDevice, AbstractBpod):
                 init_perf_counter_ns=perf_counter_ns(),
                 reset_system_time_ns=0,
             )
-            self.reset_session_clock()
 
             # get firmware version and machine type; enforce version requirements
             self._get_version_info()
@@ -288,6 +291,10 @@ class Bpod(SerialDevice, AbstractBpod):
             # tables, which depend on self.inputs/outputs/modules being set
             if self._flex_io is not None:
                 self._flex_io.reset()
+
+            # reset the session clock after all other setup traffic, so that nothing
+            # delays its reply: the clocks are aligned by the reply's round trip
+            self.reset_session_clock()
 
             # log hardware information
             logger.info(
@@ -838,14 +845,25 @@ class Bpod(SerialDevice, AbstractBpod):
     @override
     @_requires_idle
     def reset_session_clock(self) -> bool:
-        # reset the session clock
-        # bracket the serial round-trip to estimate reset time within ±(t1-t0)/2
+        # bracket the serial round trip to estimate the reset time within ±(t1-t0)/2;
+        # a late reply would skew the estimate, so the reset is repeated after one
         logger.debug('Resetting session clock')
-        t0 = perf_counter_ns()
-        self.serial0.write(b'*')
-        if not self.serial0.read_bool():
-            return False
-        t1 = perf_counter_ns()
+        for _ in range(_SESSION_CLOCK_RESET_ATTEMPTS):
+            t0 = perf_counter_ns()
+            self.serial0.write(b'*')
+            if not self.serial0.read_bool():
+                return False
+            t1 = perf_counter_ns()
+            round_trip_ns = t1 - t0
+            if round_trip_ns <= 2 * _SESSION_CLOCK_MAX_ERROR_NS:
+                break
+            logger.debug('Session clock reset took %d μs', round_trip_ns // 1000)
+        else:
+            logger.warning(
+                'Session clock reset took %d μs - timestamps may be off by up to %d μs',
+                round_trip_ns // 1000,
+                round_trip_ns // 2000,
+            )
         perf_count_ns = (t0 + t1) // 2
 
         # Store time reference

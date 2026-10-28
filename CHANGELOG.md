@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with firmware that sends one when the port is opened; discovery raises DTR once
   the port is open to request that byte, so connecting no longer waits for the next
   periodic one.
+- the session clock is reset at the end of connecting, not right after the handshake,
+  when the firmware answers late and the clocks ended up misaligned by about 50 ms on
+  Bpod r2.0; a slow reset is repeated, so timestamps stay aligned to the host clock.
 - a `RemoteBpod` connecting by one of the host machine's own network addresses is
   recognized as local: it upgrades to the IPC transport and skips compressing trial
   data. The upgrade is verified and reverted if the host doesn't answer there.
