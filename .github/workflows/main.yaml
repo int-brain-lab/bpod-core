@@ -86,12 +86,14 @@ jobs:
           prune-cache: true
       - name: sync dependencies
         run: uv sync --no-default-groups --group tox --group ci
+      - name: provide a runtime directory
+        # the local service advertisements live in the runtime directory; platformdirs
+        # warns unless XDG_RUNTIME_DIR points to a directory with mode 0700 (Linux only)
+        if: runner.os == 'Linux'
+        run: echo "XDG_RUNTIME_DIR=$(mktemp -d)" >> "$GITHUB_ENV"
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # the local service advertisements live in the runtime directory, which
-          # platformdirs warns about if XDG_RUNTIME_DIR is unset (Linux only)
-          XDG_RUNTIME_DIR: ${{ runner.temp }}
         run: uv run tox --skip-env 'linting|formatting|typing' --fail-fast -p --parallel-no-spinner -- -ci
   finish:
     needs: tox
