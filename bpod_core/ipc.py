@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextvars import ContextVar
-from ipaddress import ip_address
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from types import ModuleType, TracebackType
 from typing import Any, Generic, Literal, NamedTuple, TypeAlias, cast, overload
@@ -25,7 +25,7 @@ import msgspec
 import platformdirs
 import zmq
 from filelock import FileLock
-from psutil import pid_exists
+from psutil import net_if_addrs, pid_exists
 from pydantic import validate_call
 from typing_extensions import Self, TypeForm, TypeVar, override
 from zeroconf import (
@@ -1291,17 +1291,34 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             self._finalizer()
 
 
+def _local_ip_addresses() -> set[IPv4Address | IPv6Address]:
+    """The IP addresses of this machine's network interfaces, without zone IDs."""
+    try:
+        interfaces = net_if_addrs()
+    except OSError:  # e.g. getifaddrs() denied in a sandbox
+        logger.debug('Could not list network interfaces', exc_info=True)
+        return set()
+    addresses: set[IPv4Address | IPv6Address] = set()
+    for snics in interfaces.values():
+        for snic in snics:
+            if snic.family in (socket.AF_INET, socket.AF_INET6):
+                addresses.add(ip_address(snic.address.partition('%')[0]))
+    return addresses
+
+
 def _is_local_address(address: str) -> bool:
-    """Check whether a ZMQ address points at the local machine."""
+    """Check whether a ZMQ address is IPC, loopback or one of this machine's own IPs."""
     try:
         address_components = urlsplit(address)
-        return (
-            address_components.scheme == 'ipc'
-            or address_components.hostname == 'localhost'
-            or ip_address(address_components.hostname or '').is_loopback
-        )
+        if address_components.scheme == 'ipc':
+            return True
+        hostname = address_components.hostname or ''
+        if hostname == 'localhost':
+            return True
+        ip = ip_address(hostname.partition('%')[0])  # IPv6 literals may carry a zone
     except ValueError:
         return False
+    return ip.is_loopback or ip in _local_ip_addresses()
 
 
 class ServiceClient(ServiceBase, Generic[Q, R, E]):
@@ -1756,7 +1773,6 @@ class _ServiceListenerIterator(ServiceListener):
         self._queue = q
         self._properties = properties
         self._seen_remote: dict[str, ServiceEvent] = {}
-        self._local_ipv4 = get_local_ipv4()
 
     @override
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
@@ -1765,9 +1781,9 @@ class _ServiceListenerIterator(ServiceListener):
         if info is None or not info.parsed_addresses():
             return
 
-        # check if the service runs on localhost
+        # skip services on this machine: they are discovered locally, via IPC
         ipv4 = next(iter(info.parsed_addresses(IPVersion.V4Only)), None)
-        if ipv4 is None or ipv4 == self._local_ipv4:
+        if ipv4 is None or ip_address(ipv4) in _local_ip_addresses():
             return
 
         # check if the service matches the requested properties

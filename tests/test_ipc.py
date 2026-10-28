@@ -8,6 +8,7 @@ import socket
 import threading
 import time
 import weakref
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, NamedTuple
 from uuid import uuid4
@@ -249,14 +250,42 @@ def mock_service_browser(mocker):
         ('tcp://127.0.0.99:5555', True),
         ('tcp://localhost:5555', True),
         ('tcp://[::1]:5555', True),
+        ('tcp://10.0.0.7:5555', True),  # one of the machine's own interfaces
+        ('tcp://[fe80:0::1]:5555', True),  # own interface, differently spelled IPv6
+        ('tcp://[fe80::1%eth0]:5555', True),  # own interface, with zone ID
         ('tcp://192.168.1.10:5555', False),
         ('tcp://rig-pc.local:5555', False),  # DNS hostname, not an IP literal
         ('tcp://:5555', False),
     ],
 )
-def test_is_local_address(address, expected):
-    """_is_local_address() detects loopback and IPC addresses without raising."""
+def test_is_local_address(mocker, address, expected):
+    """_is_local_address() detects IPC, loopback and own-interface addresses."""
+    own = {ip_address('10.0.0.7'), ip_address('fe80::1')}
+    mocker.patch.object(ipc, '_local_ip_addresses', return_value=own)
     assert ipc._is_local_address(address) is expected
+
+
+def test_local_ip_addresses():
+    """_local_ip_addresses() lists the real interfaces, loopback included."""
+    assert ip_address('127.0.0.1') in ipc._local_ip_addresses()
+
+
+def test_local_ip_addresses_unavailable(mocker):
+    """An OS refusing to list interfaces yields no addresses rather than an error."""
+    mocker.patch.object(ipc, 'net_if_addrs', side_effect=OSError)
+    assert ipc._local_ip_addresses() == set()
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='IPC transport is POSIX-only')
+def test_client_on_host_network_address_is_local(mocker, mock_local_discovery_dir):
+    """A client connecting via the host's network address upgrades to IPC."""
+    mocker.patch('bpod_core.ipc.Zeroconf')
+    with (
+        ipc.ServiceHost('Test', 'service', request_handler=lambda q: q) as host,
+        ipc.ServiceClient('service', address=host.rep_tcp_addr) as client,
+    ):
+        assert client.is_local
+        assert client.address_req.startswith('ipc://')
 
 
 class TestErrorData:
@@ -1058,6 +1087,9 @@ class TestIterServices:
     ):
         """Simulate a remote service advertised via Zeroconf."""
         mocker.patch('bpod_core.ipc.get_local_ipv4', return_value='192.168.1.50')
+        mocker.patch.object(
+            ipc, '_local_ip_addresses', return_value={ip_address('192.168.1.50')}
+        )
 
         mock_info = mocker.MagicMock(spec=zeroconf.ServiceInfo)
         mock_info.parsed_addresses.return_value = ['192.168.1.100']

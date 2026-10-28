@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   braces in the input, e.g. `{pattern}`.
 - `misc.ValidatedDict` stores a coerced key in its validated form, e.g. `'1'` as `1`,
   instead of under the key as passed.
+- a `RemoteBpod` connecting to a host on the same machine by its network address,
+  e.g. `Bpod.address` of a host started with `remote=True`, is recognized as local:
+  it upgrades to the IPC transport where available (POSIX) and skips compressing
+  trial data.
 
 ### Changed
 
