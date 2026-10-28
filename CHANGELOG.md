@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of under the key as passed.
 - a `RemoteBpod` connecting to a host on the same machine by its network address,
   e.g. `Bpod.address` of a host started with `remote=True`, is recognized as local:
-  it upgrades to the IPC transport where available (POSIX) and skips compressing
-  trial data.
+  it upgrades to the IPC transport where libzmq supports it and skips compressing
+  trial data. The upgrade is verified with a probe and reverted if the host does not
+  answer at the IPC address, e.g. from a container on the host's network.
 
 ### Changed
 
@@ -34,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   about twice as fast when states omit `transitions` or `actions`.
 - `Bpod.run` returns about 40% sooner: the event lookup tables are built once per
   hardware configuration instead of for every trial.
+- the IPC transport is used wherever libzmq supports it, as reported by
+  `zmq.has('ipc')`, instead of only on POSIX. This includes Windows builds with
+  AF_UNIX support.
 
 ## [0.1.0a15] - 2026-10-23
 

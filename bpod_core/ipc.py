@@ -87,6 +87,13 @@ gives it time to go out before the sockets are closed.
 _HANDSHAKE_TIMEOUT_S = 10.0
 """Timeout in seconds for the client's handshake with the host."""
 
+_IPC_PROBE_TIMEOUT_S = 1.0
+"""Timeout in seconds for the client's HELLO probe of the host's IPC address.
+
+Only costs time if the probe fails, i.e. if the client doesn't share the host's IPC
+namespace after all.
+"""
+
 _HELLO_GRACE_S = 1.0
 """Seconds after a HELLO request during which the host presumes a subscriber.
 
@@ -699,14 +706,15 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             if uuid is not None:
                 self._remember_ports(uuid, self.rep_tcp_port, self.pub_tcp_port)
 
-            # bind sockets to IPC addresses for improved performance (POSIX only)
+            # bind sockets to IPC addresses for improved performance, where libzmq
+            # supports the transport; short identifiers keep filesystem socket paths
+            # within the AF_UNIX limit of about 100 characters
+            short_uuid = self._uuid.hex[:16]
             rep_ipc_addr, rep_pipe = self._bind_ipc(
-                zmq_socket=self._rep_socket,
-                identifier=f'REQ_REP_{self._uuid.hex}',
+                zmq_socket=self._rep_socket, identifier=f'{short_uuid}_rep'
             )
             pub_ipc_addr, pub_pipe = self._bind_ipc(
-                zmq_socket=self._pub_socket,
-                identifier=f'PUB_SUB_{self._uuid.hex}',
+                zmq_socket=self._pub_socket, identifier=f'{short_uuid}_pub'
             )
             named_pipes.extend(
                 (pipe, _file_id(pipe))
@@ -782,11 +790,11 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
     def _bind_ipc(
         zmq_socket: zmq.Socket, identifier: str
     ) -> tuple[str | None, Path | None]:
-        """Bind a socket to an IPC address for improved performance (POSIX only).
+        """Bind a socket to an IPC address for improved performance.
 
-        On linux we use abstract sockets for IPC, avoiding issues with filesystem,
-        cleanup, permissions and stale files. On other POSIX platforms we use filesystem
-        Unix domain sockets.
+        Requires libzmq's ``ipc`` transport. On linux we use abstract sockets for IPC,
+        avoiding issues with filesystem, cleanup, permissions and stale files. Elsewhere
+        we use filesystem Unix domain sockets.
 
         Returns the IPC address and - on platforms using filesystem sockets - the path
         of the named pipe. Returns ``(None, None)`` if IPC is unavailable on the
@@ -795,10 +803,11 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         only if both channels offer it, though locally discovered clients may still
         reach the REQ channel via its advertised IPC address.
         """
-        if os.name != 'posix':
-            return None, None  # Return early if we're not on POSIX
+        if not zmq.has('ipc'):
+            return None, None  # Return early if libzmq lacks the ipc transport
 
         named_pipe: Path | None = None
+        address: str | None = None
         socket_type = zmq.SocketType(cast('int', zmq_socket.type)).name
         try:
             if sys.platform.startswith('linux'):  # Use abstract sockets on Linux
@@ -1292,17 +1301,26 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
 
 def _local_ip_addresses() -> set[IPv4Address | IPv6Address]:
-    """The IP addresses of this machine's network interfaces, without zone IDs."""
+    """The IP addresses of this machine's network interfaces.
+
+    Zone IDs are dropped, and link-local addresses are left out: they are only unique
+    per link, so a remote peer may carry the same one. If the OS refuses to list the
+    interfaces, e.g. in a sandbox, only the primary address is known.
+    """
     try:
         interfaces = net_if_addrs()
-    except OSError:  # e.g. getifaddrs() denied in a sandbox
+    except OSError:
         logger.debug('Could not list network interfaces', exc_info=True)
-        return set()
+        return {ip_address(get_local_ipv4())}
     addresses: set[IPv4Address | IPv6Address] = set()
     for snics in interfaces.values():
         for snic in snics:
-            if snic.family in (socket.AF_INET, socket.AF_INET6):
-                addresses.add(ip_address(snic.address.partition('%')[0]))
+            try:
+                ip = ip_address(snic.address.partition('%')[0])
+            except ValueError:  # e.g. a MAC address
+                continue
+            if not ip.is_link_local:
+                addresses.add(ip)
     return addresses
 
 
@@ -1377,7 +1395,11 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
     """
 
     is_local: bool
-    """Whether the client is connected to a service on localhost."""
+    """Whether the client is connected to a service on this machine.
+
+    Same machine means the same network stack: data needn't be compressed. It doesn't
+    guarantee a shared IPC namespace, which the handshake verifies separately.
+    """
 
     _serialization: Serialization
     _req_encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
@@ -1423,6 +1445,9 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         self._sub_socket = self._zmq_context.socket(zmq.SUB)
         self._req_socket.setsockopt(zmq.REQ_RELAXED, 1)
         self._req_socket.setsockopt(zmq.REQ_CORRELATE, 1)
+        # don't let an abandoned request - timed out, or a failed IPC probe - keep the
+        # socket's pipe alive on disconnect() or close(): context termination would wait
+        self._req_socket.setsockopt(zmq.LINGER, 0)
         self._req_socket.setsockopt_string(
             zmq.METADATA, f'X-Hostname:{socket.gethostname()}'
         )
@@ -1553,24 +1578,54 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         if reply_data.serialization != self._serialization:
             logger.debug('Switching to %s serialization', reply_data.serialization)
             self._set_serialization(reply_data.serialization)
+        via_ipc = not self._address_req.startswith('tcp://')
         if (
-            self.is_local
-            and os.name == 'posix'
+            not via_ipc
+            and self.is_local
+            and zmq.has('ipc')
             and reply_data.ipc_req_rep is not None
             and reply_data.ipc_pub_sub is not None
         ):
-            if self._address_req.startswith('tcp://'):
-                self._req_socket.disconnect(self._address_req)
-                self._address_req = reply_data.ipc_req_rep
-                logger.debug("Reconnecting REQ socket to '%s'", self._address_req)
-                self._req_socket.connect(self._address_req)
+            via_ipc = self._upgrade_to_ipc(reply_data.ipc_req_rep)
+        if via_ipc and reply_data.ipc_pub_sub is not None:
             self._address_sub = reply_data.ipc_pub_sub
         else:
             # build the PUB address from the host IP that already proved reachable:
             # the one used to reach the REQ socket. When connected via IPC, the host
             # is local and its TCP sockets are reachable via loopback.
             host_ip = urlsplit(self._address_req).hostname or IPV4_LOOPBACK
+            if ':' in host_ip:  # IPv6 literal
+                host_ip = f'[{host_ip}]'
             self._address_sub = f'tcp://{host_ip}:{reply_data.tcp_port_pub}'
+
+    def _upgrade_to_ipc(self, ipc_address: str) -> bool:
+        """Move the REQ socket to the host's IPC address, if the host answers there.
+
+        Sharing the host's IP addresses does not guarantee sharing its IPC namespace,
+        e.g. for a container on the host's network. A HELLO that goes unanswered within
+        :data:`_IPC_PROBE_TIMEOUT_S` reverts the socket to its TCP address.
+        """
+        tcp_address = self._address_req
+        self._req_socket.disconnect(tcp_address)
+        self._req_socket.connect(ipc_address)
+        logger.debug("Probing IPC address '%s'", ipc_address)
+        try:
+            self._req(
+                _MessageKind.HELLO,
+                reply_type=_WelcomeData,
+                timeout=_IPC_PROBE_TIMEOUT_S,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Host did not answer at '%s' - staying on '%s'",
+                ipc_address,
+                tcp_address,
+            )
+            self._req_socket.disconnect(ipc_address)
+            self._req_socket.connect(tcp_address)
+            return False
+        self._address_req = ipc_address
+        return True
 
     @overload
     def _req(
@@ -1773,6 +1828,7 @@ class _ServiceListenerIterator(ServiceListener):
         self._queue = q
         self._properties = properties
         self._seen_remote: dict[str, ServiceEvent] = {}
+        self._local_ips = _local_ip_addresses()
 
     @override
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
@@ -1783,7 +1839,7 @@ class _ServiceListenerIterator(ServiceListener):
 
         # skip services on this machine: they are discovered locally, via IPC
         ipv4 = next(iter(info.parsed_addresses(IPVersion.V4Only)), None)
-        if ipv4 is None or ip_address(ipv4) in _local_ip_addresses():
+        if ipv4 is None or ip_address(ipv4) in self._local_ips:
             return
 
         # check if the service matches the requested properties

@@ -59,8 +59,8 @@ Clients do not normally need to know these addresses: the host advertises itself
 
 Which transport a connection ends up using is negotiated during the handshake: a client
 on the same machine as the host is upgraded from TCP to a Unix domain socket
-(an abstract socket on Linux) where available, which avoids the network stack
-altogether. Clients on another machine communicate over TCP.
+(an abstract socket on Linux) wherever libzmq supports the ``ipc`` transport, which
+avoids the network stack altogether. Clients on another machine communicate over TCP.
 
 
 Hosting a Bpod service

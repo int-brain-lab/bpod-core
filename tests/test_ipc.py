@@ -11,6 +11,7 @@ import weakref
 from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, NamedTuple
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import msgspec
@@ -251,8 +252,8 @@ def mock_service_browser(mocker):
         ('tcp://localhost:5555', True),
         ('tcp://[::1]:5555', True),
         ('tcp://10.0.0.7:5555', True),  # one of the machine's own interfaces
-        ('tcp://[fe80:0::1]:5555', True),  # own interface, differently spelled IPv6
-        ('tcp://[fe80::1%eth0]:5555', True),  # own interface, with zone ID
+        ('tcp://[2001:db8:0:0:0:0:0:1]:5555', True),  # own IPv6, differently spelled
+        ('tcp://[2001:db8::1%eth0]:5555', True),  # own IPv6, with zone ID
         ('tcp://192.168.1.10:5555', False),
         ('tcp://rig-pc.local:5555', False),  # DNS hostname, not an IP literal
         ('tcp://:5555', False),
@@ -260,32 +261,85 @@ def mock_service_browser(mocker):
 )
 def test_is_local_address(mocker, address, expected):
     """_is_local_address() detects IPC, loopback and own-interface addresses."""
-    own = {ip_address('10.0.0.7'), ip_address('fe80::1')}
+    own = {ip_address('10.0.0.7'), ip_address('2001:db8::1')}
     mocker.patch.object(ipc, '_local_ip_addresses', return_value=own)
     assert ipc._is_local_address(address) is expected
 
 
-def test_local_ip_addresses():
-    """_local_ip_addresses() lists the real interfaces, loopback included."""
-    assert ip_address('127.0.0.1') in ipc._local_ip_addresses()
+class _Snic(NamedTuple):
+    """Stand-in for psutil's interface address tuple."""
+
+    family: int
+    address: str
+
+
+def test_local_ip_addresses(mocker):
+    """Interface addresses are parsed, zone IDs dropped, link-local and junk skipped."""
+    snic = _Snic
+    mocker.patch.object(
+        ipc,
+        'net_if_addrs',
+        return_value={
+            'lo': [snic(socket.AF_INET, '127.0.0.1'), snic(socket.AF_INET6, '::1')],
+            'eth0': [
+                snic(socket.AF_INET, '10.0.0.7'),
+                snic(socket.AF_INET6, 'fe80::1%eth0'),  # link-local
+                snic(socket.AF_INET6, '2001:db8::1%eth0'),
+                snic(socket.AF_INET6, 'not an address'),
+                snic(socket.AF_PACKET, 'aa:bb:cc:dd:ee:ff'),
+            ],
+        },
+    )
+    assert ipc._local_ip_addresses() == {
+        ip_address('127.0.0.1'),
+        ip_address('::1'),
+        ip_address('10.0.0.7'),
+        ip_address('2001:db8::1'),
+    }
 
 
 def test_local_ip_addresses_unavailable(mocker):
-    """An OS refusing to list interfaces yields no addresses rather than an error."""
+    """An OS refusing to list interfaces falls back to the primary address."""
     mocker.patch.object(ipc, 'net_if_addrs', side_effect=OSError)
-    assert ipc._local_ip_addresses() == set()
+    mocker.patch.object(ipc, 'get_local_ipv4', return_value='10.0.0.7')
+    assert ipc._local_ip_addresses() == {ip_address('10.0.0.7')}
 
 
-@pytest.mark.skipif(os.name != 'posix', reason='IPC transport is POSIX-only')
-def test_client_on_host_network_address_is_local(mocker, mock_local_discovery_dir):
+@pytest.mark.skipif(not zmq.has('ipc'), reason='libzmq lacks the ipc transport')
+def test_client_on_host_network_address_is_local(mock_advertisement):
     """A client connecting via the host's network address upgrades to IPC."""
-    mocker.patch('bpod_core.ipc.Zeroconf')
-    with (
-        ipc.ServiceHost('Test', 'service', request_handler=lambda q: q) as host,
-        ipc.ServiceClient('service', address=host.rep_tcp_addr) as client,
-    ):
-        assert client.is_local
-        assert client.address_req.startswith('ipc://')
+    with ipc.ServiceHost('Test', 'service', request_handler=lambda q: q) as host:
+        if urlsplit(host.rep_tcp_addr).hostname == '127.0.0.1':
+            pytest.skip('no network address to connect through')
+        with ipc.ServiceClient('service', address=host.rep_tcp_addr) as client:
+            assert client.is_local
+            assert client.address_req.startswith('ipc://')
+
+
+def test_ipc_probe_failure_reverts_to_tcp(mocker, mock_advertisement):
+    """If the host does not answer at its IPC address, the client stays on TCP."""
+    mocker.patch.object(ipc, '_IPC_PROBE_TIMEOUT_S', 0.2)
+    with ipc.ServiceHost('Test', 'service', request_handler=lambda q: q) as host:
+        # make the host offer an IPC address nobody listens on
+        welcome = ipc._WelcomeData(
+            serialization='msgpack',
+            tcp_port_pub=host.pub_tcp_port,
+            ipc_pub_sub='ipc://@nobody_pub',
+            ipc_req_rep='ipc://@nobody_rep',
+        )
+        original = ipc.ServiceClient._req
+        replies = iter([welcome])  # the first reply - the TCP handshake - is replaced
+
+        def fake_req(self, *args, **kwargs):
+            reply_kind, reply = original(self, *args, **kwargs)
+            return reply_kind, next(replies, reply)
+
+        mocker.patch.object(ipc.ServiceClient, '_req', fake_req)
+        with ipc.ServiceClient('service', address=host.rep_tcp_addr) as client:
+            assert client.is_local
+            assert client.address_req == host.rep_tcp_addr
+            assert client.address_sub.startswith('tcp://')
+            assert client.request({'x': 1}) == {'x': 1}
 
 
 class TestErrorData:
@@ -905,16 +959,16 @@ class TestHost:
 class TestBindIpc:
     """Tests for ServiceHost._bind_ipc."""
 
-    def test_non_posix_returns_none(self, mocker):
-        """IPC is skipped entirely on non-POSIX platforms."""
-        mocker.patch.object(ipc.os, 'name', 'nt')
+    def test_without_ipc_transport_returns_none(self, mocker):
+        """IPC is skipped entirely if libzmq lacks the ipc transport."""
+        mocker.patch.object(ipc.zmq, 'has', return_value=False)
         zmq_socket = mocker.Mock()
         assert ipc.ServiceHost._bind_ipc(zmq_socket, 'ID') == (None, None)
         zmq_socket.bind.assert_not_called()
 
-    @pytest.mark.skipif(os.name != 'posix', reason='POSIX only')
     def test_abstract_socket_on_linux(self, mocker, caplog):
         """On linux, sockets bind to abstract IPC addresses without named pipes."""
+        mocker.patch.object(ipc.zmq, 'has', return_value=True)
         mocker.patch.object(ipc.sys, 'platform', 'linux')
         zmq_socket = mocker.Mock()
         zmq_socket.type = zmq.REP
@@ -925,9 +979,9 @@ class TestBindIpc:
         zmq_socket.bind.assert_called_once_with('ipc://@ID')
         assert f"Bound REP socket to '{address}'" in caplog.text
 
-    @pytest.mark.skipif(os.name != 'posix', reason='POSIX only')
-    def test_named_pipe_on_other_posix(self, mocker, tmp_path, caplog):
-        """On non-linux POSIX platforms, sockets bind to filesystem named pipes."""
+    def test_named_pipe_on_other_platforms(self, mocker, tmp_path, caplog):
+        """Off linux, sockets bind to filesystem Unix domain sockets."""
+        mocker.patch.object(ipc.zmq, 'has', return_value=True)
         mocker.patch.object(ipc.sys, 'platform', 'darwin')
         mocker.patch.object(
             ipc.platformdirs, 'user_runtime_path', return_value=tmp_path
@@ -944,9 +998,9 @@ class TestBindIpc:
         zmq_socket.bind.assert_called_once_with(address)
         assert f"Bound REP socket to '{address}'" in caplog.text
 
-    @pytest.mark.skipif(os.name != 'posix', reason='POSIX only')
     def test_bind_failure_falls_back_to_tcp(self, mocker, tmp_path, caplog):
         """A failed bind is unwound, logged, and reported as (None, None)."""
+        mocker.patch.object(ipc.zmq, 'has', return_value=True)
         mocker.patch.object(ipc.sys, 'platform', 'darwin')
         mocker.patch.object(
             ipc.platformdirs, 'user_runtime_path', return_value=tmp_path
@@ -1086,7 +1140,6 @@ class TestIterServices:
         self, mocker, mock_local_discovery_dir, mock_service_browser
     ):
         """Simulate a remote service advertised via Zeroconf."""
-        mocker.patch('bpod_core.ipc.get_local_ipv4', return_value='192.168.1.50')
         mocker.patch.object(
             ipc, '_local_ip_addresses', return_value={ip_address('192.168.1.50')}
         )
