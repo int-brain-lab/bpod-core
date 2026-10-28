@@ -341,7 +341,7 @@ at creation and assignment:
    >>> fsm.add_state(name='MyState', timer=-1)
    Traceback (most recent call last):
       ...
-   pydantic_core._pydantic_core.ValidationError: 1 validation error for StateMachine.add_state
+   pydantic_core._pydantic_core.ValidationError: 1 validation error for State
    timer
      Invalid State Timer - cannot be negative [type=greater_than_equal, input_value=-1, input_type=int]
 

@@ -6,6 +6,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- validation messages for invalid state names and operators no longer substitute
+  braces in the input, e.g. `{pattern}`.
+
+### Changed
+
+- `StateMachine.add_state`, `set_global_timer`, `set_global_counter` and
+  `set_condition` are two to three times faster. They validate their arguments
+  through the models instead of `validate_call`, so validation errors are titled
+  after the model or collection (e.g. `State`, `States`) rather than the method, and
+  unknown keyword arguments raise a `TypeError` instead of a `ValidationError`. A
+  `Transitions` or `Actions` instance passed to `add_state` is stored by reference
+  instead of being copied.
+- loading state machines with `from_dict`, `from_json`, `from_yaml` or `from_file` is
+  about twice as fast when states omit `transitions` or `actions`.
+
 ## [0.1.0a15] - 2026-10-23
 
 ### Added

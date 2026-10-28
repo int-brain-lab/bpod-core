@@ -74,9 +74,7 @@ def _validate_state_timer(v: Any, h: ValidatorFunctionWrapHandler) -> float:
         for error in e.errors():
             if (error_type := error.get('type')) == 'greater_than_equal':
                 raise PydanticCustomError(
-                    error_type,
-                    'Invalid State Timer - cannot be negative',
-                    error.get('ctx', {}),
+                    error_type, 'Invalid State Timer - cannot be negative'
                 ) from e
         raise
 
@@ -108,7 +106,7 @@ def _validate_state_name(v: Any, h: ValidatorFunctionWrapHandler) -> 'StateName'
                     detail = 'A State Name must be at least 1 character long'
                 case _:
                     continue
-            raise PydanticCustomError(error_type, detail, error.get('ctx', {})) from e
+            raise PydanticCustomError(error_type, detail) from e
         raise
 
 
@@ -125,7 +123,7 @@ def _validate_operator(v: Any, h: ValidatorFunctionWrapHandler) -> 'Operator':
                 case _:
                     continue
             detail = f"Invalid State Machine Operator '{v}' - {detail}"
-            raise PydanticCustomError(error_type, detail, error.get('ctx', {})) from e
+            raise PydanticCustomError(error_type, detail) from e
         raise
 
 
@@ -364,8 +362,10 @@ class State(BaseModel, title='State'):
     model_config = ConfigDict(validate_assignment=True, extra='forbid')
 
     timer: StateTimer = StateTimer()
-    transitions: Transitions = Transitions()
-    actions: Actions = Actions()
+    transitions: Transitions = Field(
+        default_factory=Transitions, json_schema_extra={'default': {}}
+    )
+    actions: Actions = Field(default_factory=Actions, json_schema_extra={'default': {}})
     comment: StateComment | None = None
 
     def __repr__(self) -> str:
@@ -511,7 +511,6 @@ class StateMachine(BaseModel, title='State Machine'):
             return f"{self.__class__.__name__}(name='{self.name}', {string})"
         return f'{self.__class__.__name__}({string})'
 
-    @validate_call()
     def add_state(
         self,
         name: StateName,
@@ -531,8 +530,10 @@ class StateMachine(BaseModel, title='State Machine'):
             The duration of the state's timer.
         transitions : dict, optional
             An optional dictionary mapping conditions to target states for transitions.
+            Passing a :class:`Transitions` instance stores it by reference.
         actions : dict, optional
             An optional dictionary of actions to be executed on entering the state.
+            Passing an :class:`Actions` instance stores it by reference.
         comment : str, optional
             An optional comment describing the state.
 
@@ -541,18 +542,16 @@ class StateMachine(BaseModel, title='State Machine'):
         ValueError
             If a state with the given name already exists in the state machine.
         """
-        if name in self.states:
-            raise ValueError(f"A state named '{name}' is already registered")
-
-        # the arguments have already been validated by validate_call
-        self.states[name] = State.model_construct(
+        state = State(
             timer=timer,
-            transitions=Transitions.model_construct(transitions or {}),
-            actions=Actions.model_construct(actions or {}),
+            transitions=transitions or {},
+            actions=actions or {},
             comment=comment,
         )
+        if name in self.states:
+            raise ValueError(f"A state named '{name}' is already registered")
+        self.states[name] = state
 
-    @validate_call()
     def set_global_timer(
         self,
         index: Index,
@@ -597,7 +596,7 @@ class StateMachine(BaseModel, title='State Machine'):
         -------
         None
         """
-        self.global_timers[index] = GlobalTimer.model_construct(
+        self.global_timers[index] = GlobalTimer(
             duration=duration,
             onset_delay=onset_delay,
             channel=channel,
@@ -609,7 +608,6 @@ class StateMachine(BaseModel, title='State Machine'):
             onset_trigger=onset_trigger,
         )
 
-    @validate_call()
     def set_global_counter(
         self,
         index: Index,
@@ -632,12 +630,8 @@ class StateMachine(BaseModel, title='State Machine'):
         -------
         None
         """
-        self.global_counters[index] = GlobalCounter.model_construct(
-            event=event,
-            threshold=threshold,
-        )
+        self.global_counters[index] = GlobalCounter(event=event, threshold=threshold)
 
-    @validate_call()
     def set_condition(
         self,
         index: Index,
@@ -659,10 +653,7 @@ class StateMachine(BaseModel, title='State Machine'):
         -------
         None
         """
-        self.conditions[index] = Condition.model_construct(
-            channel=channel,
-            value=value,
-        )
+        self.conditions[index] = Condition(channel=channel, value=value)
 
     @validate_call()
     def to_digraph(

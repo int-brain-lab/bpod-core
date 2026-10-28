@@ -5,7 +5,7 @@ import msgspec
 import pytest
 from pydantic import ValidationError, create_model
 
-from bpod_core.fsm import State, StateMachine, dec_hook, enc_hook
+from bpod_core.fsm import State, StateMachine, Transitions, dec_hook, enc_hook
 
 
 class TestEncDecHooks:
@@ -104,11 +104,44 @@ class TestStateMachineBasic:
         with pytest.raises(ValidationError):
             sm.add_state(name='back')
 
+    @pytest.mark.parametrize(
+        ('method', 'kwargs', 'message'),
+        [
+            ('add_state', {'name': '>x'}, "Invalid State Name '>x'"),
+            ('add_state', {'name': ''}, 'at least 1 character'),
+            ('add_state', {'name': '>{pattern}'}, "Invalid State Name '>{pattern}'"),
+            ('set_global_timer', {'index': -1, 'duration': 1}, 'greater'),
+            ('set_global_counter', {'index': 'x', 'event': 'e', 'threshold': 1}, 'int'),
+            ('set_condition', {'index': -1, 'channel': 'c', 'value': True}, 'greater'),
+        ],
+    )
+    def test_invalid_key_argument_error(self, method, kwargs, message):
+        """Invalid key arguments are reported as key errors of the collection."""
+        with pytest.raises(ValidationError) as excinfo:
+            getattr(StateMachine(), method)(**kwargs)
+        (error,) = excinfo.value.errors()
+        assert error['loc'][-1] == '[key]'
+        assert message in error['msg']
+
     def test_invalid_timer(self):
         """Negative timer values should raise validation errors."""
         sm = StateMachine(name='Test State Machine')
         with pytest.raises(ValidationError):
             sm.add_state(name='state1', timer=-1.0)
+
+    def test_invalid_value_precedes_duplicate_name(self):
+        """Invalid arguments are reported before a duplicate state name."""
+        sm = StateMachine()
+        sm.add_state(name='state1')
+        with pytest.raises(ValidationError):
+            sm.add_state(name='state1', timer=-1.0)
+
+    def test_transitions_instance_is_stored_by_reference(self):
+        """A Transitions instance passed to add_state is not copied."""
+        transitions = Transitions({'Tup': '>exit'})
+        sm = StateMachine()
+        sm.add_state(name='state1', transitions=transitions)
+        assert sm.states['state1'].transitions is transitions
 
     def test_empty_repr_default_name(self):
         """Default name should be omitted from __repr__."""
