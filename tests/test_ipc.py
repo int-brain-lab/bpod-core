@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import msgspec
+import psutil
 import pytest
 import zeroconf
 import zmq
@@ -286,7 +287,7 @@ def test_local_ip_addresses(mocker):
                 snic(socket.AF_INET6, 'fe80::1%eth0'),  # link-local
                 snic(socket.AF_INET6, '2001:db8::1%eth0'),
                 snic(socket.AF_INET6, 'not an address'),
-                snic(socket.AF_PACKET, 'aa:bb:cc:dd:ee:ff'),
+                snic(psutil.AF_LINK, 'aa:bb:cc:dd:ee:ff'),  # a MAC address
             ],
         },
     )
