@@ -618,6 +618,12 @@ class TestValidatedDict:
         assert validated_dict == {'a': 1}
         assert validated_dict != {'a': 2}
 
+    def test_private_api_available(self):
+        """Pydantic's core validator, used by __setitem__ for speed, is available."""
+        validated_dict = ValidatedDict[int, int]({})
+        validator = type(validated_dict).__pydantic_validator__
+        assert validator.validate_python({'1': 2}).root == {1: 2}
+
     @pytest.mark.parametrize('key', ['1', 1.0])
     def test_setitem_stores_validated_key(self, key):
         """Keys that pydantic coerces are stored in their validated form."""

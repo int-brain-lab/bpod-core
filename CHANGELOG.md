@@ -12,36 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - validation messages for invalid state names and operators no longer substitute
   braces in the input, e.g. `{pattern}`.
-- `misc.ValidatedDict` stores a coerced key in its validated form, e.g. `'1'` as `1`,
-  instead of under the key as passed.
-- a `RemoteBpod` connecting to a host on the same machine by its network address,
-  e.g. `Bpod.address` of a host started with `remote=True`, is recognized as local:
-  it upgrades to the IPC transport where libzmq supports it and skips compressing
-  trial data. The upgrade is verified with a probe and reverted if the host does not
-  answer at the IPC address, e.g. from a container on the host's network.
+- `misc.ValidatedDict` stores a coerced key in its validated form, e.g. `'1'` as `1`.
+- a `RemoteBpod` connecting by one of the host machine's own network addresses is
+  recognized as local: it upgrades to the IPC transport and skips compressing trial
+  data. The upgrade is verified and reverted if the host doesn't answer there.
 
 ### Changed
 
-- `StateMachine.add_state`, `set_global_timer`, `set_global_counter` and
-  `set_condition` are two to three times faster. They validate their arguments
-  through the models instead of `validate_call`, so validation errors are titled
-  after the model or collection (e.g. `State`, `States`) rather than the method, and
-  unknown keyword arguments raise a `TypeError` instead of a `ValidationError`. A
-  `Transitions` or `Actions` instance passed to `add_state` is stored by reference
-  instead of being copied.
-- state names and operators must be strings; other types such as `bytes` are no
-  longer coerced.
-- loading state machines with `from_dict`, `from_json`, `from_yaml` or `from_file` is
-  about twice as fast when states omit `transitions` or `actions`.
-- `Bpod.run` returns about 40% sooner: the event lookup tables are built once per
-  hardware configuration instead of for every trial.
-- `StateMachine.from_yaml` and `from_file` parse YAML with libyaml where available,
-  about seven times faster.
-- validating and compiling state machines is 10-20% faster, and `Bpod.get_data`
-  builds its frames about 20% faster.
-- the IPC transport is used wherever libzmq supports it, as reported by
-  `zmq.has('ipc')`, instead of only on POSIX. This includes Windows builds with
-  AF_UNIX support.
+- building state machines is two to three times faster, loading them from a file up
+  to seven times, and `Bpod.run` returns about 40% sooner. Validating and compiling
+  state machines and `Bpod.get_data` gained 10-20%.
+- the builder methods of `StateMachine` validate their arguments through the models
+  instead of `validate_call`: validation errors are titled after the model (e.g.
+  `State`) rather than the method, unknown keyword arguments raise a `TypeError`, and
+  a `Transitions` or `Actions` instance passed to `add_state` is stored by reference.
+- state names and operators must be strings; `bytes` are no longer coerced.
+- the IPC transport is used wherever libzmq supports it, instead of only on POSIX.
 
 ## [0.1.0a15] - 2026-10-23
 
