@@ -243,5 +243,5 @@ source_pkgs = ["bpod_core"]
 relative_files = true
 
 [tool.pytest.ini_options]
-addopts = "--cov=bpod_core --doctest-modules"
+addopts = "--cov=bpod_core --doctest-modules -rs"
 testpaths = ["tests/", "bpod_core/"]
