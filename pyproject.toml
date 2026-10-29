@@ -100,8 +100,8 @@ typing = [
   "types-pyyaml>=6",
 ]
 tox = [
-  "tox>=4.36",
-  "tox-uv>=0.7",
+  "tox>=4.67.4; python_version >= '3.11'",
+  "tox-uv>=1.37.2; python_version >= '3.11'",
 ]
 ci = [
   "coveralls>=4.0.1",
