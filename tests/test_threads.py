@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import struct
+import subprocess
+import sys
 import threading
 import time
 from queue import SimpleQueue
@@ -978,3 +980,14 @@ class TestSoftcodeThread:
         thread = make_thread(handler=handler)
         thread.queue.put(_RawSoftcode(1, 0, 0))
         assert done.wait(timeout=2)
+
+
+def test_polars_imports_numpy_ma_lazily():
+    """The reason _threads imports numpy.ma up front; drop both if this fails."""
+    script = (
+        'import sys, numpy, polars\n'
+        "assert 'numpy.ma' not in sys.modules\n"
+        'polars.from_numpy(numpy.zeros(1))\n'
+        "assert 'numpy.ma' in sys.modules\n"
+    )
+    subprocess.run([sys.executable, '-c', script], check=True)  # noqa: S603
