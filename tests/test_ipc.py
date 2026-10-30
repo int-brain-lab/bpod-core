@@ -393,6 +393,21 @@ class TestErrorData:
 class TestClient:
     """Tests for the ServiceClient class."""
 
+    def test_close_wakes_the_event_loop(self, mock_advertisement, mocker):
+        """close() ends the subscriber loop's receive instead of waiting it out."""
+        mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 800)  # < the join timeout
+        host = ipc.ServiceHost('test', 'test_service', _noop_handler, remote=False)
+        with (
+            host,
+            ipc.ServiceClient(
+                'test_service', address=host.rep_tcp_addr, event_handler=lambda _: None
+            ) as client,
+        ):
+            start = time.perf_counter()
+            client.close()
+            assert time.perf_counter() - start < 0.4
+            assert not client._event_thread.is_alive()
+
     @pytest.fixture
     def host(self, mock_advertisement):
         with ipc.ServiceHost(
@@ -939,6 +954,15 @@ class TestHost:
         assert service_file.exists()
         host.close()
         assert not service_file.exists()
+
+    def test_close_wakes_the_event_loop(self, mock_advertisement, mocker):
+        """close() ends the loop's blocking receive instead of waiting it out."""
+        mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 800)  # < the join timeout
+        host = ipc.ServiceHost('test', 'test_service', _noop_handler, remote=False)
+        start = time.perf_counter()
+        host.close()
+        assert time.perf_counter() - start < 0.4
+        assert not host._event_thread.is_alive()
 
     def test_close_from_request_handler(self, mock_advertisement, mock_service_browser):
         """A host closed from within its request handler still sends the reply."""

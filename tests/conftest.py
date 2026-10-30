@@ -168,7 +168,8 @@ def assert_collected():
 
 @pytest.fixture
 def fast_event_loop(mocker):
-    """Shorten the IPC event loops' poll interval, so that they stop quickly."""
+    """Shorten the IPC poll interval: requests notice close() / deadlines sooner, and
+    an idle host refreshes its subscriber flag sooner. Stopping doesn't depend on it."""
     mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 5)
 
 

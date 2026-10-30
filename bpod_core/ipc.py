@@ -70,11 +70,18 @@ _DefaultT = TypeVar('_DefaultT', bound=int | bytes | str | None)
 """Type of the fallback value returned by :meth:`ServiceHost.get_metadata`."""
 
 _EVENT_LOOP_POLL_MS = 100
-"""Receive timeout / poll interval of the event loops, in milliseconds.
+"""Receive timeout of the event loops and poll interval of :meth:`ServiceClient._req`.
 
-Determines how quickly the event loops react to stop requests, and how quickly
-a blocking :meth:`ServiceClient._req` notices close() or an expired deadline.
+In milliseconds. Bounds how quickly `_req` notices close() or an expired deadline,
+and how often an idle host refreshes its subscriber flag; close() wakes the loops
+with a message instead of waiting for it.
 """
+
+_WAKE_ADDRESS = 'inproc://wake'
+"""Where a closing host or client wakes its event loop; each has its own context."""
+
+_WAKE_TIMEOUT_MS = 100
+"""How long waking a client's event loop waits for its subscription, in milliseconds."""
 
 _HANDOFF_LINGER_MS = 100
 """Linger period, in milliseconds, for sockets closed after their own event loop.
@@ -504,6 +511,8 @@ class ServiceBase(ABC):
         sockets: Iterable[zmq.Socket],
         zmq_context: zmq.Context,
         linger_ms: int = 0,
+        *,
+        wake: Callable[[zmq.Context], None],
     ) -> None:
         if ServiceBase._continue_off_event_thread(
             ServiceBase._finalize_base,
@@ -511,12 +520,17 @@ class ServiceBase(ABC):
             stop_event=stop_event,
             sockets=sockets,
             zmq_context=zmq_context,
+            wake=wake,
         ):
             return
 
         # event thread
         if event_thread is not None and event_thread.is_alive():
             stop_event.set()
+            try:  # end the loop's blocking receive
+                wake(zmq_context)
+            except Exception:
+                logger.debug('Could not wake the event loop', exc_info=True)
             event_thread.join(timeout=1)
             if event_thread.is_alive():
                 logger.warning('Event thread did not terminate cleanly')
@@ -683,11 +697,13 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         # set UUID (generated if not provided by user)
         self._uuid = uuid or uuid4()
 
-        # create ZeroMQ sockets
+        # create ZeroMQ sockets; the finalizer wakes the event loop through the
+        # inproc address (see _wake_rep)
         self._rep_socket, self._pub_socket = self._create_sockets(self._zmq_context)
         named_pipes: list[tuple[Path, _FileId]] = []
 
         try:
+            self._rep_socket.bind(_WAKE_ADDRESS)
             # bind sockets to TCP addresses. Explicit port arguments take precedence
             # over the ports remembered for a caller-supplied UUID. Sockets listen on
             # bind_ip; addresses handed out to clients are built from advertised_ip.
@@ -753,6 +769,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 local_advertisement=self._local_advertisement,
                 zeroconf=self._zeroconf,
                 named_pipes=named_pipes,
+                wake=ServiceHost._wake_rep,
             )
         except BaseException:
             # unwind partially-acquired resources when construction fails
@@ -764,6 +781,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 local_advertisement=self._local_advertisement,
                 zeroconf=self._zeroconf,
                 named_pipes=named_pipes,
+                wake=ServiceHost._wake_rep,
             )
             raise
 
@@ -974,6 +992,14 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         ).start()
 
     @staticmethod
+    def _wake_rep(zmq_context: zmq.Context) -> None:
+        """Send the REP socket an empty request, which ends its blocking receive."""
+        with zmq_context.socket(zmq.DEALER) as wake:
+            wake.setsockopt(zmq.LINGER, 0)
+            wake.connect(_WAKE_ADDRESS)
+            wake.send_multipart([b'', b''])
+
+    @staticmethod
     def _finalize(
         *,
         event_thread: threading.Thread | None,
@@ -983,6 +1009,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         local_advertisement: LocalServiceAdvertisement | None,
         zeroconf: Zeroconf | None,
         named_pipes: Iterable[tuple[Path, _FileId]],
+        wake: Callable[[zmq.Context], None],
         linger_ms: int = 0,
     ) -> None:
         """Unadvertise the service and release all resources held by the host."""
@@ -995,6 +1022,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             local_advertisement=local_advertisement,
             zeroconf=zeroconf,
             named_pipes=named_pipes,
+            wake=wake,
         ):
             return
 
@@ -1016,6 +1044,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             sockets,
             zmq_context,
             linger_ms,
+            wake=wake,
         )
 
         # named pipes, unless another host with the same UUID has replaced them
@@ -1205,7 +1234,8 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 logger.exception('Error sending reply to client')
 
         # receive with a timeout instead of poll + receive: this saves a syscall
-        # per message, and the periodic timeouts allow checking stop_event
+        # per message; the timeouts pace the subscriber flag's refresh when idle and
+        # are the fallback should the wake-up message of a close() not arrive
         rep_socket.setsockopt(zmq.RCVTIMEO, _EVENT_LOOP_POLL_MS)
 
         while not stop_event.is_set():
@@ -1221,6 +1251,14 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             except zmq.ZMQError:
                 if not stop_event.is_set():  # silent when closing down
                     logger.exception('Error receiving request from client')
+                break
+            # the wake-up of a close() is a single empty frame; a request that
+            # arrived first is still answered, the loop ends after it
+            if (
+                stop_event.is_set()
+                and len(request_frames) == 1
+                and not request_frames[0].buffer.nbytes
+            ):
                 break
 
             # validate framing and determine the kind of request. Once a request has
@@ -1485,6 +1523,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
                 self._stop_event_loop,
                 [self._req_socket, self._sub_socket],
                 self._zmq_context,
+                wake=ServiceClient._wake_sub,
             )
         except BaseException:
             # unwind partially-acquired resources when construction fails
@@ -1493,6 +1532,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
                 self._stop_event_loop,
                 [self._req_socket, self._sub_socket],
                 self._zmq_context,
+                wake=ServiceClient._wake_sub,
             )
             raise
 
@@ -1504,6 +1544,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         """
         logger.debug("Connecting SUB socket to '%s'", self._address_sub)
         self._sub_socket.connect(self._address_sub)
+        self._sub_socket.connect(_WAKE_ADDRESS)  # bound by the finalizer, see _wake_sub
         self._sub_socket.setsockopt_string(zmq.SUBSCRIBE, '')
         self._handler_slot = _HandlerSlot(event_handler)
         self._event_thread = threading.Thread(
@@ -1519,6 +1560,16 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         self._event_thread.start()
 
     @staticmethod
+    def _wake_sub(zmq_context: zmq.Context) -> None:
+        """Publish an empty message to the SUB socket, ending its blocking receive."""
+        with zmq_context.socket(zmq.XPUB) as wake:
+            wake.setsockopt(zmq.LINGER, 0)
+            wake.setsockopt(zmq.RCVTIMEO, _WAKE_TIMEOUT_MS)
+            wake.bind(_WAKE_ADDRESS)
+            wake.recv()  # wait for the subscription: a message before it is dropped
+            wake.send(b'')
+
+    @staticmethod
     def _event_loop(
         stop_event: threading.Event,
         socket_sub: zmq.Socket,
@@ -1527,7 +1578,8 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
     ) -> None:
         """Process incoming PUB messages."""
         # receive with a timeout instead of poll + receive: this saves a syscall per
-        # message, and the periodic timeouts allow checking stop_event
+        # message; the timeout is the fallback should the wake-up message of a
+        # close() not arrive
         socket_sub.setsockopt(zmq.RCVTIMEO, _EVENT_LOOP_POLL_MS)
 
         # the first receive of a burst blocks (with timeout); once a message has
@@ -1542,6 +1594,8 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
             except zmq.ZMQError:
                 if not stop_event.is_set():  # silent when closing down
                     logger.exception('Error receiving published message')
+                break
+            if stop_event.is_set():  # woken by the finalizer, not by a message
                 break
             flags = zmq.NOBLOCK
 
