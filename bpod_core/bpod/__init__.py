@@ -394,7 +394,9 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         Close the connection to the Bpod.
 
-        Waits for any running trial to finish before closing the serial port.
+        Waits for any running trial to finish before closing the serial port. The IPC
+        service stays up, so that remote clients can still reach this object; a newer
+        :class:`Bpod` for the same device takes the service over.
 
         .. note::
             Prefer using :class:`Bpod` as a context manager, which opens and closes the

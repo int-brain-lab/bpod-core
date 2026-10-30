@@ -955,6 +955,17 @@ class TestHost:
         host.close()
         assert not service_file.exists()
 
+    def test_same_uuid_replaces_previous_host(
+        self, mock_advertisement, mock_ports_file
+    ):
+        """A host whose UUID a live host uses closes that host and takes over."""
+        kwargs = {'uuid': uuid4(), 'remote': False}
+        first = ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        address = first.rep_tcp_addr
+        with ipc.ServiceHost('b', 'test_service', _noop_handler, **kwargs) as second:
+            assert first._closed
+            assert second.rep_tcp_addr == address  # the remembered port was free again
+
     def test_close_wakes_the_event_loop(self, mock_advertisement, mocker):
         """close() ends the loop's blocking receive instead of waiting it out."""
         mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 800)  # < the join timeout

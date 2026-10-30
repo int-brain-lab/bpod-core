@@ -17,7 +17,16 @@ from contextvars import ContextVar
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from types import ModuleType, TracebackType
-from typing import Any, Generic, Literal, NamedTuple, TypeAlias, cast, overload
+from typing import (
+    Any,
+    ClassVar,
+    Generic,
+    Literal,
+    NamedTuple,
+    TypeAlias,
+    cast,
+    overload,
+)
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -587,7 +596,8 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
     request-reply messaging and a PUB/SUB channel for broadcasting events to
     subscribers. Incoming requests are dispatched to a user-provided ``request_handler``
     callback. Events are broadcast with :meth:`publish`; subscribers decode them via
-    the ``event_type`` of :class:`ServiceClient`.
+    the ``event_type`` of :class:`ServiceClient`. A host whose UUID is in use by a live
+    host of this process replaces it: the older host is closed first.
 
     The type parameters are the request type decoded from incoming requests
     (``Q``, inferred from ``request_type``) and the published event type (``E``,
@@ -660,6 +670,11 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
     )
     """State file storing the TCP ports last bound per service UUID."""
 
+    _live: ClassVar[weakref.WeakValueDictionary[UUID, 'ServiceHost']] = (
+        weakref.WeakValueDictionary()
+    )
+    """The hosts of this process that are alive, by UUID."""
+
     def __init__(
         self,
         service_name: str,
@@ -696,6 +711,11 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
         # set UUID (generated if not provided by user)
         self._uuid = uuid or uuid4()
+        if (previous := ServiceHost._live.pop(self._uuid, None)) is not None:
+            logger.info('Replacing the running service %s', self._uuid)
+            # synchronous, unless this runs on the previous host's own event thread:
+            # then its sockets close later and the binds below may still collide
+            previous.close()
 
         # create ZeroMQ sockets; the finalizer wakes the event loop through the
         # inproc address (see _wake_rep)
@@ -771,6 +791,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 named_pipes=named_pipes,
                 wake=ServiceHost._wake_rep,
             )
+            ServiceHost._live[self._uuid] = self
         except BaseException:
             # unwind partially-acquired resources when construction fails
             ServiceHost._finalize(

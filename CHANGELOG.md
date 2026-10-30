@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so connecting no longer waits for the next periodic one.
 - closing a `Bpod`, or any IPC host or client, no longer waits up to 100 ms for its
   event loop's receive timeout: the loop is woken by a message.
+- a `Bpod` created after closing another one for the same device takes over its IPC
+  service instead of failing to bind the same addresses.
 - the session clock is reset at the end of connecting, not right after the handshake,
   when the firmware answers late and the clocks ended up misaligned by about 50 ms on
   Bpod r2.0; a slow reset is repeated, so timestamps stay aligned to the host clock.
