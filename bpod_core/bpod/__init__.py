@@ -2032,7 +2032,8 @@ class RemoteBpod(AbstractBpod):
 
     def close(self) -> None:
         """Close the connection to the remote Bpod."""
-        self._zmq.request(request_data=_RequestBye(), reply_type=str)
+        with contextlib.suppress(TimeoutError):  # a dead host must not hang close()
+            self._zmq.request(request_data=_RequestBye(), reply_type=str, timeout=1.0)
         self._zmq.close()
 
     def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any:

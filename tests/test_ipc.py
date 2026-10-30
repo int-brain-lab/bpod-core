@@ -2,6 +2,8 @@ import gc
 import json
 import logging
 import os
+import pickle
+import queue
 import re
 import shutil
 import socket
@@ -1417,6 +1419,8 @@ class TestIterServices:
             pytest.param('+-+', 1, ('added', 2), id='add, remove, add'),
             pytest.param('+-+-', 0, None, id='add, remove, add, remove'),
             pytest.param('+Y-', 1, ('removed', 1), id='add, yield, remove'),
+            pytest.param('+Y-Y+', 1, ('added', 2), id='add, yield, remove, re-add'),
+            pytest.param('+Y-Y+-', 0, None, id='add, yield, remove, re-add, remove'),
         ],
     )
     def test_collapse(
@@ -1459,3 +1463,105 @@ def test_closed_shared_zeroconf_drops_record_operations(mock_zeroconf):
     _zeroconf_idle()
     mock_zeroconf.return_value.close.assert_called_once()
     mock_zeroconf.return_value.unregister_service.assert_not_called()
+
+
+class TestTakeoverFromEventThread:
+    """A host replaced from inside its own request handler."""
+
+    def test_record_is_handed_over(self, mock_advertisement, mock_ports_file):
+        """The replaced host's late finalizer leaves the handed-over record alone."""
+        zeroconf = mock_advertisement['zeroconf'].return_value
+        kwargs = {'uuid': uuid4(), 'remote': True}
+        hosts = {}
+
+        def replace(request):
+            hosts['second'] = ipc.ServiceHost(
+                'a', 'test_service', _noop_handler, **kwargs
+            )
+            return 'replaced'
+
+        first = ipc.ServiceHost('a', 'test_service', replace, **kwargs)
+        with ipc.ServiceClient(
+            'test_service', address=first.rep_tcp_addr, remote=False
+        ) as c:
+            assert c.request('go', timeout=5) == 'replaced'
+        assert _wait_until(lambda: not first._event_thread.is_alive())  # finalized
+        _zeroconf_idle()
+        zeroconf.register_service.assert_called_once()  # no fresh registration
+        zeroconf.unregister_service.assert_not_called()  # handed over, not withdrawn
+        hosts['second'].close()
+        _zeroconf_idle()
+        zeroconf.unregister_service.assert_called_once()
+
+
+def test_update_resolves_the_name_the_worker_settled_on(mock_zeroconf):
+    """An update is published under the replaced record's name as renamed by then."""
+    zeroconf = mock_zeroconf.return_value
+    previous = zeroconf_info('a')
+    zeroconf.register_service.side_effect = lambda info, **_: setattr(
+        info, 'name', 'a (2).' + info.type
+    )
+    ipc._SharedZeroconf.register(previous, replacing=None)
+    new = zeroconf_info('a')
+    ipc._SharedZeroconf.register(new, replacing=previous)
+    _zeroconf_idle()
+    assert zeroconf.update_service.call_args[0][0].name.startswith('a (2).')
+
+
+def zeroconf_info(name: str, port: int = 5555) -> zeroconf.ServiceInfo:
+    return zeroconf.ServiceInfo(
+        '_t._tcp.local.',
+        f'{name}._t._tcp.local.',
+        port=port,
+        addresses=[b'\xc0\xa8\x01d'],
+    )
+
+
+class TestServiceListener:
+    """The Zeroconf listener feeding the service iterator."""
+
+    @pytest.fixture
+    def listener(self, mocker):
+        mocker.patch.object(ipc, '_local_ip_addresses', return_value=set())
+        q = queue.Queue()
+        return ipc._ServiceListenerIterator(q, {}), q
+
+    def test_port_change_is_a_removal_and_an_addition(self, listener, mocker):
+        listener, q = listener
+        zc = mocker.MagicMock(spec=zeroconf.Zeroconf)
+        zc.get_service_info.return_value = zeroconf_info('a', 5555)
+        listener.add_service(zc, '_t._tcp.local.', 'a._t._tcp.local.')
+        listener.update_service(zc, '_t._tcp.local.', 'a._t._tcp.local.')  # unchanged
+        zc.get_service_info.return_value = zeroconf_info('a', 5556)
+        listener.update_service(zc, '_t._tcp.local.', 'a._t._tcp.local.')
+        events = [q.get_nowait() for _ in range(q.qsize())]
+        assert [(e.kind, e.address) for e in events] == [
+            ('added', 'tcp://192.168.1.100:5555'),
+            ('removed', 'tcp://192.168.1.100:5555'),
+            ('added', 'tcp://192.168.1.100:5556'),
+        ]
+
+
+@pytest.mark.parametrize(
+    ('primary', 'interfaces', 'expected'),
+    [
+        ('10.0.0.5', set(), '10.0.0.5'),
+        ('127.0.0.1', {'10.0.0.7', 'fe80::1', '127.0.0.1', '10.0.0.5'}, '10.0.0.5'),
+        ('127.0.0.1', {'fe80::1', '127.0.0.1'}, '127.0.0.1'),
+    ],
+)
+def test_advertised_ipv4(mocker, primary, interfaces, expected):
+    """Without a route out, an interface's address is advertised instead of loopback."""
+    mocker.patch.object(ipc, 'get_local_ipv4', return_value=primary)
+    mocker.patch.object(
+        ipc, '_local_ip_addresses', return_value=set(map(ip_address, interfaces))
+    )
+    assert ipc._advertised_ipv4() == expected
+
+
+def test_remote_error_survives_pickling():
+    """RemoteError carries its ErrorData through pickle, e.g. across processes."""
+    error = ipc.RemoteError(ipc.ErrorData('ValueError', 'boom', ('boom',), None))
+    restored = pickle.loads(pickle.dumps(error))  # noqa: S301
+    assert isinstance(restored, ipc.RemoteError)
+    assert restored.original_error == error.original_error

@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - a `RemoteBpod` connecting by one of the host machine's own network addresses is
   recognized as local: it upgrades to the IPC transport and skips compressing trial
   data. The upgrade is verified and reverted if the host doesn't answer there.
+- a service that disappears and comes back is reported again by `iter_services` and
+  `discover_remote_bpod`; a record changing its address or port is reported as a removal
+  and an addition.
+- `RemoteBpod.close()` returns within a second when the host is gone, instead of
+  waiting for a goodbye reply forever.
+- a host without a route to the internet advertises one of its interface addresses via
+  Zeroconf instead of the loopback address.
+- `RemoteError` survives pickling, e.g. when raised in a worker process.
 
 ### Changed
 

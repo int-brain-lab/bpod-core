@@ -137,6 +137,9 @@ class RemoteError(ServiceError):
         self.original_error = error_data
         super().__init__(f'Remote {error_data.name}: {error_data.message}')
 
+    def __reduce__(self) -> 'tuple[type[RemoteError], tuple[ErrorData]]':
+        return RemoteError, (self.original_error,)
+
     def __str__(self) -> str:
         if self.original_error.traceback is None:
             return f'Remote {self.original_error.name}: {self.original_error.message}'
@@ -459,6 +462,9 @@ class LocalServiceAdvertisement:
         properties = properties or {}
 
         if service_dir.exists():
+            for lock_file in service_dir.glob('*.lock'):  # left behind by readers
+                if not lock_file.with_suffix('.json').exists():
+                    lock_file.unlink(missing_ok=True)
             for service_file in service_dir.glob('*.json'):
                 lock_file = service_file.with_suffix('.lock')
                 try:
@@ -471,6 +477,7 @@ class LocalServiceAdvertisement:
                 # Remove stale service file if process no longer exists
                 if not pid_exists(info.pid):
                     service_file.unlink(missing_ok=True)
+                    lock_file.unlink(missing_ok=True)
                     continue
 
                 # Check if properties match
@@ -502,7 +509,7 @@ class _SharedZeroconf:
     _lock: ClassVar[threading.Lock] = threading.Lock()
     _worker: ClassVar[threading.Thread | None] = None
     _queue: ClassVar[
-        'queue.Queue[tuple[Callable[[ServiceInfo], None], ServiceInfo]]'
+        'queue.Queue[tuple[Callable[..., None], tuple[ServiceInfo, ...]]]'
     ] = queue.Queue()
 
     @classmethod
@@ -519,9 +526,12 @@ class _SharedZeroconf:
             return cls._instance
 
     @classmethod
-    def register(cls, info: ServiceInfo, *, update: bool = False) -> None:
-        """Publish ``info`` - or, with ``update``, its changes - in the background."""
-        cls._submit(cls._update if update else cls._register, info)
+    def register(cls, info: ServiceInfo, *, replacing: ServiceInfo | None) -> None:
+        """Publish ``info`` in the background, updating ``replacing`` if given."""
+        if replacing is None:
+            cls._submit(cls._register, info)
+        else:
+            cls._submit(cls._update, info, replacing)
 
     @classmethod
     def unregister(cls, info: ServiceInfo) -> None:
@@ -545,26 +555,24 @@ class _SharedZeroconf:
                     cls._instance.close()
 
     @classmethod
-    def _submit(
-        cls, operation: Callable[[ServiceInfo], None], info: ServiceInfo
-    ) -> None:
+    def _submit(cls, operation: Callable[..., None], *args: ServiceInfo) -> None:
         with cls._lock:
             if cls._worker is None:
                 cls._worker = threading.Thread(
                     target=cls._work, name='zeroconf-records', daemon=True
                 )
                 cls._worker.start()
-        cls._queue.put((operation, info))
+        cls._queue.put((operation, args))
 
     @classmethod
     def _work(cls) -> None:
         while True:
-            operation, info = cls._queue.get()
+            operation, args = cls._queue.get()
             try:
                 if not cls._closed:
-                    operation(info)
+                    operation(*args)
             except Exception:
-                logger.debug("Zeroconf failed for '%s'", info.name, exc_info=True)
+                logger.debug('Zeroconf %s failed', operation.__name__, exc_info=True)
             finally:
                 cls._queue.task_done()
 
@@ -574,7 +582,8 @@ class _SharedZeroconf:
         logger.debug("Advertising remote service at '%s'", info.name)
 
     @classmethod
-    def _update(cls, info: ServiceInfo) -> None:
+    def _update(cls, info: ServiceInfo, previous: ServiceInfo) -> None:
+        info.name = previous.name  # as resolved on the network, by now
         cls.instance().update_service(info)
         logger.debug("Updated remote service at '%s'", info.name)
 
@@ -834,8 +843,8 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             # synchronous, unless this runs on the previous host's own event thread:
             # then its sockets close later and the binds below may still collide
             previous.close()
-            if inherited is not None:
-                ServiceHost._registrations[self._uuid] = inherited
+            if inherited is not None:  # a new entry: the predecessor's finalizer
+                ServiceHost._registrations[self._uuid] = _Registration(*inherited)
 
         # create ZeroMQ sockets; the finalizer wakes the event loop through the
         # inproc address (see _wake_rep)
@@ -848,7 +857,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             # over the ports remembered for a caller-supplied UUID. Sockets listen on
             # bind_ip; addresses handed out to clients are built from advertised_ip.
             bind_ip = IPV4_WILDCARD if remote else IPV4_LOOPBACK
-            advertised_ip = get_local_ipv4() if remote else IPV4_LOOPBACK
+            advertised_ip = _advertised_ipv4() if remote else IPV4_LOOPBACK
             if uuid is not None:
                 remembered_rep, remembered_pub = self._recall_ports(uuid)
                 port_rep = port_rep if port_rep is not None else remembered_rep
@@ -908,6 +917,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 zmq_context=self._zmq_context,
                 local_advertisement=self._local_advertisement,
                 uuid=self._uuid,
+                registration=ServiceHost._registrations.get(self._uuid),
                 named_pipes=named_pipes,
                 wake=ServiceHost._wake_rep,
             )
@@ -921,6 +931,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 zmq_context=self._zmq_context,
                 local_advertisement=self._local_advertisement,
                 uuid=self._uuid,
+                registration=ServiceHost._registrations.get(self._uuid),
                 named_pipes=named_pipes,
                 wake=ServiceHost._wake_rep,
             )
@@ -981,8 +992,13 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             logger.debug("Bound %s socket to '%s'", socket_type, address)
 
         except (zmq.ZMQError, OSError) as e:
+            # an address in use is the expected, handled case: no traceback for it
             logger.warning(
-                "Failed to bind %s socket to '%s'", socket_type, address, exc_info=e
+                "Failed to bind %s socket to '%s': %s",
+                socket_type,
+                address,
+                e,
+                exc_info=None if e.errno == zmq.EADDRINUSE else e,
             )
             if address is not None:
                 with contextlib.suppress(zmq.ZMQError):
@@ -1124,13 +1140,15 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             server=f'{socket.gethostname()}.local.',
             other_ttl=60,
         )
-        if inherited is not None:
-            service_info.name = inherited.info.name  # as resolved on the network
-        registration = _Registration(requested_name, service_info)
-        ServiceHost._registrations[self._uuid] = registration
         if inherited is not None and _same_record(inherited.info, service_info):
-            return  # the record on the network already describes this host
-        _SharedZeroconf.register(service_info, update=inherited is not None)
+            # the record on the network already describes this host: adopt it, under
+            # whatever name Zeroconf resolves for it
+            registration = _Registration(requested_name, inherited.info)
+        else:
+            registration = _Registration(requested_name, service_info)
+            replacing = None if inherited is None else inherited.info
+            _SharedZeroconf.register(service_info, replacing=replacing)
+        ServiceHost._registrations[self._uuid] = registration
 
     @staticmethod
     def _wake_rep(zmq_context: zmq.Context) -> None:
@@ -1149,6 +1167,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         zmq_context: zmq.Context,
         local_advertisement: LocalServiceAdvertisement | None,
         uuid: UUID,
+        registration: _Registration | None,
         named_pipes: Iterable[tuple[Path, _FileId]],
         wake: Callable[[zmq.Context], None],
         linger_ms: int = 0,
@@ -1162,6 +1181,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             zmq_context=zmq_context,
             local_advertisement=local_advertisement,
             uuid=uuid,
+            registration=registration,
             named_pipes=named_pipes,
             wake=wake,
         ):
@@ -1173,7 +1193,8 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 local_advertisement.close()
 
         # withdraw the Zeroconf registration, unless a replacing host took it over
-        if (registration := ServiceHost._registrations.pop(uuid, None)) is not None:
+        if ServiceHost._registrations.get(uuid) is registration is not None:
+            del ServiceHost._registrations[uuid]
             _SharedZeroconf.unregister(registration.info)
 
         # call base class finalizer
@@ -1501,6 +1522,18 @@ def _local_ip_addresses() -> set[IPv4Address | IPv6Address]:
     return addresses
 
 
+def _advertised_ipv4() -> str:
+    """The IPv4 address to advertise: the primary one, or any other if no route out."""
+    if (primary := get_local_ipv4()) != IPV4_LOOPBACK:
+        return primary
+    candidates = sorted(
+        ip
+        for ip in _local_ip_addresses()
+        if isinstance(ip, IPv4Address) and not ip.is_loopback
+    )
+    return str(candidates[0]) if candidates else IPV4_LOOPBACK
+
+
 def _is_local_address(address: str) -> bool:
     """Check whether a ZMQ address is IPC, loopback or one of this machine's own IPs."""
     try:
@@ -1605,9 +1638,6 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         if event_type is not Any and event_handler is None:
             raise ValueError('event_type requires an event_handler')
 
-        # initialize base class
-        super().__init__()
-
         # define msgspec encoder/decoder; building the decoders also validates
         # default_reply_type and event_type before any resources exist. The
         # serialization format is provisional until the handshake, which may
@@ -1615,6 +1645,9 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         self._default_rep_type = default_reply_type
         self._event_type = event_type
         self._set_serialization('msgpack')
+
+        # initialize base class
+        super().__init__()
 
         # ZeroMQ sockets; RELAXED lets the REQ socket send again after an abandoned
         # (e.g. timed-out) request, and CORRELATE discards the stale reply to it
@@ -1786,7 +1819,8 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
             # build the PUB address from the host IP that already proved reachable:
             # the one used to reach the REQ socket. When connected via IPC, the host
             # is local and its TCP sockets are reachable via loopback.
-            host_ip = urlsplit(self._address_req).hostname or IPV4_LOOPBACK
+            host_ip = None if via_ipc else urlsplit(self._address_req).hostname
+            host_ip = host_ip or IPV4_LOOPBACK
             if ':' in host_ip:  # IPv6 literal
                 host_ip = f'[{host_ip}]'
             self._address_sub = f'tcp://{host_ip}:{reply_data.tcp_port_pub}'
@@ -2025,25 +2059,9 @@ class _ServiceListenerIterator(ServiceListener):
 
     @override
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        # get service info
-        info = zc.get_service_info(type_, name)
-        if info is None or not info.parsed_addresses():
-            return
-
-        # skip services on this machine: they are discovered locally, via IPC
-        ipv4 = next(iter(info.parsed_addresses(IPVersion.V4Only)), None)
-        if ipv4 is None or ip_address(ipv4) in self._local_ips:
-            return
-
-        # check if the service matches the requested properties
-        txt = info.decoded_properties
-        if not all(_match_filter(txt.get(k), v) for k, v in self._properties.items()):
-            return
-
-        # add event to the queue
-        event = ServiceEvent('added', f'tcp://{ipv4}:{info.port}', txt)
-        self._seen_remote[name] = event
-        self._queue.put(event)
+        if (event := self._event(zc, type_, name)) is not None:
+            self._seen_remote[name] = event
+            self._queue.put(event)
 
     @override
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
@@ -2054,7 +2072,27 @@ class _ServiceListenerIterator(ServiceListener):
 
     @override
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        logger.debug('Ignoring update for service: %s', name)
+        """Pass a changed record on as a removal followed by an addition."""
+        if self._event(zc, type_, name) != self._seen_remote.get(name):
+            self.remove_service(zc, type_, name)
+            self.add_service(zc, type_, name)
+
+    def _event(self, zc: Zeroconf, type_: str, name: str) -> ServiceEvent | None:
+        """The 'added' event for a record - None if it is local or filtered out."""
+        info = zc.get_service_info(type_, name)
+        if info is None or not info.parsed_addresses():
+            return None
+
+        # skip services on this machine: they are discovered locally, via IPC
+        ipv4 = next(iter(info.parsed_addresses(IPVersion.V4Only)), None)
+        if ipv4 is None or ip_address(ipv4) in self._local_ips:
+            return None
+
+        # check if the service matches the requested properties
+        txt = info.decoded_properties
+        if not all(_match_filter(txt.get(k), v) for k, v in self._properties.items()):
+            return None
+        return ServiceEvent('added', f'tcp://{ipv4}:{info.port}', txt)
 
 
 class _Yielded:
@@ -2183,7 +2221,8 @@ class ServiceIterator(Iterator[ServiceEvent]):
                 event = self._state.pop(address, None)
                 if event is None or isinstance(event, _Yielded):
                     continue
-                self._state[address] = self._YIELDED
+                if event.kind == 'added':  # a removed service may come back
+                    self._state[address] = self._YIELDED
                 return event
 
             # Handle timeout / blocking
