@@ -259,6 +259,14 @@ class Bpod(SerialDevice, AbstractBpod):
         self._softcode_thread = SoftcodeThread(handler_slot=self._softcode_slot)
         self._softcode_thread.start()
 
+        # record reference system time before opening the port: the handshake's clock
+        # reset is dated against it
+        self._time_reference = _TimeReferences(
+            init_system_time_ns=time_ns(),
+            init_perf_counter_ns=perf_counter_ns(),
+            reset_system_time_ns=0,
+        )
+
         try:
             # enumerating serial ports is slow, so it is done once: for identifying the
             # Bpod by port or serial number and for detecting its additional ports
@@ -266,13 +274,6 @@ class Bpod(SerialDevice, AbstractBpod):
             port_info = self._identify_bpod(bpod_ports, port, serial_number)
             super().__init__(port=port_info, open_connection=True)
             self._serial_number = port_info.serial_number or 'unknown'
-
-            # record reference system time
-            self._time_reference = _TimeReferences(
-                init_system_time_ns=time_ns(),
-                init_perf_counter_ns=perf_counter_ns(),
-                reset_system_time_ns=0,
-            )
 
             # get firmware version and machine type; enforce version requirements
             self._get_version_info()
@@ -297,10 +298,6 @@ class Bpod(SerialDevice, AbstractBpod):
             # tables, which depend on self.inputs/outputs/modules being set
             if self._flex_io is not None:
                 self._flex_io.reset()
-
-            # reset the session clock after all other setup traffic, so that nothing
-            # delays its reply: the clocks are aligned by the reply's round trip
-            self.reset_session_clock()
 
             # log hardware information
             logger.info(
@@ -374,7 +371,7 @@ class Bpod(SerialDevice, AbstractBpod):
     @_requires_idle
     def open(self) -> None:
         """
-        Open the connection to the Bpod and perform a handshake.
+        Open the connection to the Bpod, handshake and align the session clock.
 
         .. note::
             Prefer using :class:`Bpod` as a context manager, which opens and closes the
@@ -831,6 +828,7 @@ class Bpod(SerialDevice, AbstractBpod):
         BpodError
             If the handshake fails.
         """
+        failed = f'Handshake with {self._serial_device_name} on {self.port} failed'
         try:
             # discovery bytes the Bpod sent while unconnected, e.g. in response to the
             # port being opened, may precede its reply: skip them
@@ -838,15 +836,14 @@ class Bpod(SerialDevice, AbstractBpod):
             with self.serial0.temporary_timeout(0.2):
                 reply = self.serial0.read_until(b'5')
             if reply.lstrip(DISCOVERY_BYTE) != b'5':
-                raise BpodError(
-                    f'Handshake with {self._serial_device_name} on {self.port} failed'
-                )
+                raise BpodError(failed)
         except SerialException as e:
-            raise BpodError(
-                f'Handshake with {self._serial_device_name} on {self.port} failed'
-            ) from e
+            raise BpodError(failed) from e
         finally:
             self.serial0.reset_input_buffer()
+        # the handshake restarted the Bpod's session clock: align the host's reference
+        if not self.reset_session_clock():
+            raise BpodError(f'{failed}: no reply to the session clock reset')
         self._rename_serial_device('Bpod Finite State Machine')
         logger.debug(
             'Handshake with %s on %s successful', self._serial_device_name, self.port

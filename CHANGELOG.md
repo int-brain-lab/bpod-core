@@ -21,9 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event loop's receive timeout: the loop is woken by a message.
 - a `Bpod` created after closing another one for the same device takes over its IPC
   service instead of failing to bind the same addresses.
-- the session clock is reset at the end of connecting, not right after the handshake,
-  when the firmware answers late and the clocks ended up misaligned by about 50 ms on
-  Bpod r2.0; a slow reset is repeated, so timestamps stay aligned to the host clock.
+- every handshake ends with a session clock reset, also on reopening the connection; a
+  reset the firmware answers late (about 50 ms on Bpod r2.0) is repeated, so
+  timestamps stay aligned to the host clock.
 - a `RemoteBpod` connecting by one of the host machine's own network addresses is
   recognized as local: it upgrades to the IPC transport and skips compressing trial
   data. The upgrade is verified and reverted if the host doesn't answer there.

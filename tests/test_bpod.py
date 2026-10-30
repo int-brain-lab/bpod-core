@@ -292,6 +292,13 @@ class TestUpdateModules:
 
 
 class TestBpodHandshake:
+    def test_handshake_fails_without_reset_reply(self, mock_bpod):
+        """A handshake whose clock reset isn't acknowledged fails."""
+        mock_bpod.serial0.mock_responses = {b'6': b'5'}
+        mock_bpod.reset_session_clock.return_value = False
+        with pytest.raises(BpodError, match='no reply to the session clock reset'):
+            Bpod._handshake(mock_bpod)
+
     def test_handshake_success(self, mock_bpod, caplog):
         """Test successful handshake with Bpod."""
         caplog.set_level(logging.DEBUG)
@@ -417,9 +424,19 @@ class TestResetSessionClock:
         with pytest.raises(BpodError, match=r'Cannot use Bpod.reset_session_clock'):
             Bpod.reset_session_clock(mock_bpod)
 
-    def test_reset_is_the_last_command_of_the_connection(self, mock_bpod_25):
-        """The clock is reset after all other setup traffic."""
-        assert mock_bpod_25.serial0.last_write == b'*'
+    def test_handshake_ends_with_a_reset(self, mock_bpod_25):
+        """The clock is reset right after the handshake, and again on every reopen."""
+
+        def reset_follows_handshake():
+            write = mock_bpod_25.serial0.write
+            commands = [c.args[0][:1] for c in write.call_args_list]
+            return commands[commands.index(b'6') + 1] == b'*'
+
+        assert reset_follows_handshake()
+        mock_bpod_25.serial0.write.reset_mock()
+        mock_bpod_25.close()
+        mock_bpod_25.open()
+        assert reset_follows_handshake()
 
     @pytest.mark.parametrize(
         ('round_trips', 'warns'),
