@@ -173,6 +173,17 @@ def fast_event_loop(mocker):
     mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 5)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_shared_zeroconf(mocker):
+    """Start each test without a shared Zeroconf instance, and close the one it made."""
+    mocker.patch.object(ipc._SharedZeroconf, '_instance', None)
+    mocker.patch.object(ipc._SharedZeroconf, '_closed', False)
+    mocker.patch.object(ipc.ServiceHost, '_registrations', {})
+    yield
+    ipc._SharedZeroconf._queue.join()  # no record operation spills into the next test
+    ipc._SharedZeroconf.close()
+
+
 @pytest.fixture
 def mock_zeroconf(mocker):
     """Mock Zeroconf class."""

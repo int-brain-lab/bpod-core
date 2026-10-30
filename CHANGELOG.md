@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `Transitions` or `Actions` instance passed to `add_state` is stored by reference.
 - state names and operators must be strings; `bytes` are no longer coerced.
 - the IPC transport is used wherever libzmq supports it, instead of only on POSIX.
+- all IPC hosts and service browsers of a process share one Zeroconf instance,
+  started on first use and closed at exit; closing a remote host no longer waits for
+  its goodbye packets.
 
 ## [0.1.0a15] - 2026-10-23
 

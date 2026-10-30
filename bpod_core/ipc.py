@@ -1,5 +1,6 @@
 """Inter-process Communication, service discovery and related."""
 
+import atexit
 import contextlib
 import logging
 import operator
@@ -480,32 +481,110 @@ class LocalServiceAdvertisement:
                     yield info
 
 
-class _ZeroconfAdvertisement:
-    """A service registered with its own Zeroconf instance, owned by one host."""
+class _Registration(NamedTuple):
+    """A host's Zeroconf record, with the name it asked for."""
 
-    def __init__(
-        self, zeroconf: Zeroconf, info: ServiceInfo, requested_name: str
+    requested_name: str  # Zeroconf renames the record on a conflict
+    info: ServiceInfo
+
+
+class _SharedZeroconf:
+    """The process-wide Zeroconf instance, and the worker publishing records on it.
+
+    One instance serves every host and browser in the process. A single worker
+    thread publishes and withdraws the records, in order: a withdrawal thus waits
+    for the publication it ends - which probes and announces for about 1.5 s -
+    instead of overtaking it and leaving a stale record behind.
+    """
+
+    _instance: ClassVar[Zeroconf | None] = None
+    _closed: ClassVar[bool] = False
+    _lock: ClassVar[threading.Lock] = threading.Lock()
+    _worker: ClassVar[threading.Thread | None] = None
+    _queue: ClassVar[
+        'queue.Queue[tuple[Callable[[ServiceInfo], None], ServiceInfo]]'
+    ] = queue.Queue()
+
+    @classmethod
+    def instance(cls) -> Zeroconf:
+        """Return the instance, started on first use and closed at exit."""
+        with cls._lock:
+            if cls._closed:
+                raise RuntimeError('the shared Zeroconf instance has been closed')
+            if cls._instance is None:
+                cls._instance = Zeroconf(
+                    interfaces=InterfaceChoice.All,
+                    ip_version=IPVersion.V4Only,
+                )
+            return cls._instance
+
+    @classmethod
+    def register(cls, info: ServiceInfo, *, update: bool = False) -> None:
+        """Publish ``info`` - or, with ``update``, its changes - in the background."""
+        cls._submit(cls._update if update else cls._register, info)
+
+    @classmethod
+    def unregister(cls, info: ServiceInfo) -> None:
+        """Withdraw ``info`` in the background, once it has been published."""
+        cls._submit(cls._unregister, info)
+
+    @classmethod
+    def close(cls) -> None:
+        """Withdraw all services, with goodbye packets, and shut the instance down.
+
+        Registered at exit. Afterwards no instance is started, and record operations
+        still queued are dropped: there is nothing left to withdraw.
+        """
+        with cls._lock:
+            if cls._closed:
+                return
+            cls._closed = True
+            if cls._instance is not None:
+                with contextlib.suppress(Exception):
+                    logger.debug('Closing Zeroconf')
+                    cls._instance.close()
+
+    @classmethod
+    def _submit(
+        cls, operation: Callable[[ServiceInfo], None], info: ServiceInfo
     ) -> None:
-        self.zeroconf = zeroconf
-        self.info = info
-        self.requested_name = requested_name  # info.name may have been renamed
-        self._released = False
+        with cls._lock:
+            if cls._worker is None:
+                cls._worker = threading.Thread(
+                    target=cls._work, name='zeroconf-records', daemon=True
+                )
+                cls._worker.start()
+        cls._queue.put((operation, info))
 
-    def release(self) -> '_ZeroconfAdvertisement | None':
-        """Hand the registration to another owner, leaving nothing here to close."""
-        if self._released:
-            return None
-        self._released = True
-        return _ZeroconfAdvertisement(self.zeroconf, self.info, self.requested_name)
+    @classmethod
+    def _work(cls) -> None:
+        while True:
+            operation, info = cls._queue.get()
+            try:
+                if not cls._closed:
+                    operation(info)
+            except Exception:
+                logger.debug("Zeroconf failed for '%s'", info.name, exc_info=True)
+            finally:
+                cls._queue.task_done()
 
-    def close(self) -> None:
-        """End the registration and shut Zeroconf down, unless it was handed over."""
-        if self._released:
-            return
-        self._released = True
-        with contextlib.suppress(Exception):
-            logger.debug('Closing Zeroconf')
-            self.zeroconf.close()
+    @classmethod
+    def _register(cls, info: ServiceInfo) -> None:
+        cls.instance().register_service(info, allow_name_change=True)
+        logger.debug("Advertising remote service at '%s'", info.name)
+
+    @classmethod
+    def _update(cls, info: ServiceInfo) -> None:
+        cls.instance().update_service(info)
+        logger.debug("Updated remote service at '%s'", info.name)
+
+    @classmethod
+    def _unregister(cls, info: ServiceInfo) -> None:
+        cls.instance().unregister_service(info)
+        logger.debug("Withdrew remote service at '%s'", info.name)
+
+
+atexit.register(_SharedZeroconf.close)
 
 
 class ServiceBase(ABC):
@@ -697,7 +776,6 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
     """TCP port of the PUB socket."""
 
     _local_advertisement: LocalServiceAdvertisement | None = None
-    _zeroconf_advertisement: _ZeroconfAdvertisement | None = None
 
     _ports_file: Path = (
         platformdirs.user_state_path('bpod-core', appauthor=False)
@@ -709,6 +787,8 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         weakref.WeakValueDictionary()
     )
     """The hosts of this process that are alive, by UUID."""
+    _registrations: ClassVar[dict[UUID, _Registration]] = {}
+    """The Zeroconf records published for this process's hosts, by UUID."""
 
     def __init__(
         self,
@@ -746,13 +826,16 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
         # set UUID (generated if not provided by user)
         self._uuid = uuid or uuid4()
-        inherited = None
         if (previous := ServiceHost._live.pop(self._uuid, None)) is not None:
             logger.info('Replacing the running service %s', self._uuid)
-            inherited = previous._release_zeroconf()  # noqa: SLF001
+            # hold back its Zeroconf registration while it closes: this host takes
+            # it over in _advertise, or withdraws it - also if construction fails
+            inherited = ServiceHost._registrations.pop(self._uuid, None)
             # synchronous, unless this runs on the previous host's own event thread:
             # then its sockets close later and the binds below may still collide
             previous.close()
+            if inherited is not None:
+                ServiceHost._registrations[self._uuid] = inherited
 
         # create ZeroMQ sockets; the finalizer wakes the event loop through the
         # inproc address (see _wake_rep)
@@ -813,7 +896,6 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 rep_ipc_addr,
                 advertised_ip,
                 use_zeroconf=remote,
-                inherited=inherited,
             )
 
             # register finalizer to clean up resources on exit
@@ -825,7 +907,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 sockets=[self._rep_socket, self._pub_socket],
                 zmq_context=self._zmq_context,
                 local_advertisement=self._local_advertisement,
-                zeroconf=self._zeroconf_advertisement,
+                uuid=self._uuid,
                 named_pipes=named_pipes,
                 wake=ServiceHost._wake_rep,
             )
@@ -838,12 +920,10 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 sockets=[self._rep_socket, self._pub_socket],
                 zmq_context=self._zmq_context,
                 local_advertisement=self._local_advertisement,
-                zeroconf=self._zeroconf_advertisement,
+                uuid=self._uuid,
                 named_pipes=named_pipes,
                 wake=ServiceHost._wake_rep,
             )
-            if inherited is not None:
-                inherited.close()  # a no-op if _advertise adopted or ended it
             raise
 
     @staticmethod
@@ -1008,13 +1088,12 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         advertised_ip: str,
         *,
         use_zeroconf: bool,
-        inherited: _ZeroconfAdvertisement | None,
     ) -> None:
         """Advertise the service locally and - if ``use_zeroconf`` - via Zeroconf.
 
         The Zeroconf record advertises ``advertised_ip``, which must be concrete
-        and routable. A registration ``inherited`` from the replaced host is kept if
-        this host advertises under the same name, and ended in the background otherwise.
+        and routable. A registration left under this host's UUID by the host it
+        replaced is kept if the names match, and withdrawn otherwise.
         """
         # advertise service locally
         self._local_advertisement = LocalServiceAdvertisement(
@@ -1028,12 +1107,11 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
         # advertise service via Zeroconf for remote discovery
         requested_name = _format_zeroconf_service_name(service_name, service_type)
+        inherited = ServiceHost._registrations.pop(self._uuid, None)
         if inherited is not None and not (
             use_zeroconf and inherited.requested_name == requested_name
         ):
-            # the goodbye packets take a while, but must go out even if the process
-            # exits right away - hence not a daemon thread
-            threading.Thread(target=inherited.close).start()
+            _SharedZeroconf.unregister(inherited.info)
             inherited = None
         if not use_zeroconf:
             return
@@ -1046,43 +1124,13 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             server=f'{socket.gethostname()}.local.',
             other_ttl=60,
         )
-        if inherited is None:
-            zeroconf = Zeroconf(
-                interfaces=InterfaceChoice.All,
-                ip_version=IPVersion.V4Only,
-            )
-            self._zeroconf_advertisement = _ZeroconfAdvertisement(
-                zeroconf, service_info, requested_name
-            )
-        else:
-            zeroconf = inherited.zeroconf
+        if inherited is not None:
             service_info.name = inherited.info.name  # as resolved on the network
-            unchanged = _same_record(inherited.info, service_info)
-            inherited.info = service_info
-            self._zeroconf_advertisement = inherited
-            if unchanged:
-                return  # the record on the network already describes this host
-
-        def _publish(zc: Zeroconf, service: ServiceInfo, *, update: bool) -> None:
-            with contextlib.suppress(Exception):
-                if update:
-                    zc.update_service(service)
-                else:
-                    zc.register_service(service, allow_name_change=True)
-                logger.debug("Advertising remote service at '%s'", service.name)
-
-        threading.Thread(
-            target=_publish,
-            args=(zeroconf, service_info),
-            kwargs={'update': inherited is not None},
-            daemon=True,
-        ).start()
-
-    def _release_zeroconf(self) -> _ZeroconfAdvertisement | None:
-        """Hand the Zeroconf registration to a successor host, instead of ending it."""
-        if self._closed or self._zeroconf_advertisement is None:
-            return None
-        return self._zeroconf_advertisement.release()
+        registration = _Registration(requested_name, service_info)
+        ServiceHost._registrations[self._uuid] = registration
+        if inherited is not None and _same_record(inherited.info, service_info):
+            return  # the record on the network already describes this host
+        _SharedZeroconf.register(service_info, update=inherited is not None)
 
     @staticmethod
     def _wake_rep(zmq_context: zmq.Context) -> None:
@@ -1100,7 +1148,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         sockets: Iterable[zmq.Socket],
         zmq_context: zmq.Context,
         local_advertisement: LocalServiceAdvertisement | None,
-        zeroconf: _ZeroconfAdvertisement | None,
+        uuid: UUID,
         named_pipes: Iterable[tuple[Path, _FileId]],
         wake: Callable[[zmq.Context], None],
         linger_ms: int = 0,
@@ -1113,7 +1161,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             sockets=sockets,
             zmq_context=zmq_context,
             local_advertisement=local_advertisement,
-            zeroconf=zeroconf,
+            uuid=uuid,
             named_pipes=named_pipes,
             wake=wake,
         ):
@@ -1124,9 +1172,9 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             with contextlib.suppress(Exception):
                 local_advertisement.close()
 
-        # close zeroconf; this also unregisters the advertised service
-        if zeroconf is not None:
-            zeroconf.close()
+        # withdraw the Zeroconf registration, unless a replacing host took it over
+        if (registration := ServiceHost._registrations.pop(uuid, None)) is not None:
+            _SharedZeroconf.unregister(registration.info)
 
         # call base class finalizer
         ServiceBase._finalize_base(  # noqa: SLF001
@@ -2064,7 +2112,6 @@ class ServiceIterator(Iterator[ServiceEvent]):
         self._q: queue.Queue[ServiceEvent | None] = queue.Queue()
         self._stop = threading.Event()
         self._deadline = None if timeout is None else time.monotonic() + timeout
-        self._zc: Zeroconf | None = None
         self._browser: ServiceBrowser | None = None
         self._state: dict[str, ServiceEvent | _Yielded] = {}  # per-address state
         self._pending: deque[str] = deque()  # waiting to be emitted
@@ -2088,13 +2135,12 @@ class ServiceIterator(Iterator[ServiceEvent]):
             if remote:
                 handler = _ServiceListenerIterator(self._q, properties)
                 zc_service_type = _format_zeroconf_service_type(service_type)
-                self._zc = Zeroconf()
-                self._browser = ServiceBrowser(self._zc, zc_service_type, handler)
+                self._browser = ServiceBrowser(
+                    _SharedZeroconf.instance(), zc_service_type, handler
+                )
         except BaseException:
             # unwind partially-acquired resources when construction fails
-            ServiceIterator._cleanup(
-                self._q, self._stop, self._watcher, self._zc, self._browser
-            )
+            ServiceIterator._cleanup(self._q, self._stop, self._watcher, self._browser)
             raise
 
         # register finalizer to clean up resources on exit
@@ -2104,7 +2150,6 @@ class ServiceIterator(Iterator[ServiceEvent]):
             self._q,
             self._stop,
             self._watcher,
-            self._zc,
             self._browser,
         )
 
@@ -2167,7 +2212,6 @@ class ServiceIterator(Iterator[ServiceEvent]):
         q: 'queue.Queue[ServiceEvent | None]',
         stop: threading.Event,
         watcher: threading.Thread | None,
-        zc: Zeroconf | None,
         browser: ServiceBrowser | None,
     ) -> None:
         stop.set()
@@ -2177,9 +2221,6 @@ class ServiceIterator(Iterator[ServiceEvent]):
         if browser is not None:
             with contextlib.suppress(Exception):
                 browser.cancel()
-        if zc is not None:
-            with contextlib.suppress(Exception):
-                zc.close()
         # unblock a consumer waiting in __next__ and mark the iterator exhausted
         q.put(None)
 
