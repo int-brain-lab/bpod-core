@@ -514,14 +514,9 @@ class TestSerialDevice:
     """Tests for SerialDevice class."""
 
     @pytest.fixture
-    def mock_port_info(self, mocker):
-        """Fixture to create a mock port info object."""
-        port_info = mocker.MagicMock()
-        port_info.device = '/dev/ttyACM0'
-        port_info.serial_number = '12345'
-        port_info.vid = 0x16C0
-        port_info.pid = 0x0483
-        return port_info
+    def mock_port_info(self, make_port_info):
+        """Fixture to create a port info object."""
+        return make_port_info('/dev/ttyACM0')
 
     @pytest.fixture
     def mock_comports(self, mocker, mock_port_info):
@@ -548,6 +543,14 @@ class TestSerialDevice:
         mock_extended_serial.open.assert_called_once()
         assert device.port == '/dev/ttyACM0'
 
+    def test_init_with_port_info(
+        self, mock_comports, mock_port_info, mock_extended_serial
+    ):
+        """An already enumerated port is used without enumerating again."""
+        device = com.SerialDevice(mock_port_info)
+        mock_comports.assert_not_called()
+        assert device.port == '/dev/ttyACM0'
+
     def test_init_without_opening_connection(self, mock_comports, mock_extended_serial):
         """Device can be initialized without opening connection."""
         device = com.SerialDevice('/dev/ttyACM0', open_connection=False)
@@ -559,6 +562,11 @@ class TestSerialDevice:
         mock_comports.return_value = []
         with pytest.raises(SerialException, match='serial port not found'):
             com.SerialDevice('/dev/ttyACM0')
+
+    def test_init_port_none(self, mock_comports):
+        """Anything but a path or a port info is reported as a missing port."""
+        with pytest.raises(SerialException, match='serial port not found: None'):
+            com.SerialDevice(None)  # type: ignore[arg-type]
 
     def test_context_manager_enter(self, mock_comports, mock_extended_serial):
         """Context manager __enter__ returns the device instance."""

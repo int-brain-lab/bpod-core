@@ -7,7 +7,7 @@ import os
 import re
 import struct
 import weakref
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from queue import Empty, SimpleQueue
 from time import perf_counter_ns, time_ns
@@ -27,6 +27,7 @@ import polars as pl
 from pydantic import ConfigDict, validate_call
 from serial import SerialException
 from serial.threaded import ReaderThread
+from serial.tools.list_ports_common import ListPortInfo
 from typing_extensions import override
 
 from bpod_core import __version__ as bpod_core_version
@@ -82,6 +83,7 @@ from bpod_core.com import (
     ChunkedSerialReader,
     ExtendedSerial,
     SerialDevice,
+    _filter_ports,
     find_ports,
     verify_serial_discovery,
 )
@@ -258,10 +260,12 @@ class Bpod(SerialDevice, AbstractBpod):
         self._softcode_thread.start()
 
         try:
-            # identify Bpod by port or serial number, open connection
-            bpod_port, _ = self._identify_bpod(port, serial_number)
-            super().__init__(port=bpod_port, open_connection=True)
-            self._serial_number = self._port_info.serial_number or 'unknown'
+            # enumerating serial ports is slow, so it is done once: for identifying the
+            # Bpod by port or serial number and for detecting its additional ports
+            bpod_ports = find_ports(vid=VIDS_BPOD, pid=PIDS_BPOD)
+            port_info = self._identify_bpod(bpod_ports, port, serial_number)
+            super().__init__(port=port_info, open_connection=True)
+            self._serial_number = port_info.serial_number or 'unknown'
 
             # record reference system time
             self._time_reference = _TimeReferences(
@@ -277,7 +281,9 @@ class Bpod(SerialDevice, AbstractBpod):
             self._get_hardware_configuration()
 
             # detect additional serial ports
-            self.serial1, self._flexio_serial = self._detect_additional_serial_ports()
+            self.serial1, self._flexio_serial = self._detect_additional_serial_ports(
+                bpod_ports
+            )
 
             # configure input and output channels
             self._configure_io()
@@ -584,8 +590,10 @@ class Bpod(SerialDevice, AbstractBpod):
 
     @staticmethod
     def _identify_bpod(
-        port: str | None = None, serial_number: str | None = None
-    ) -> tuple[str, str]:
+        ports: list[ListPortInfo],
+        port: str | None = None,
+        serial_number: str | None = None,
+    ) -> ListPortInfo:
         """
         Try to identify a supported Bpod based on port or serial number.
 
@@ -594,6 +602,8 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Parameters
         ----------
+        ports : list of ListPortInfo
+            The serial ports with a Bpod vendor and product ID, see :func:`find_ports`.
         port : str, optional
             The port of the device.
         serial_number : str, optional
@@ -601,19 +611,17 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Returns
         -------
-        str
-            the port of the device
-        str
-            the serial number of the device
+        ListPortInfo
+            the serial port of the identified Bpod
 
         Raises
         ------
         BpodError
             If no Bpod is found or the indicated device is not supported.
         """
+        candidates = _filter_ports(ports, device=port, serial_number=serial_number)
         try:
-            port_info = next(discover_bpod(port, serial_number))
-            return cast('str', port_info.port), str(port_info.serial_number)
+            return next(_discover_bpod_ports(candidates))
         except StopIteration as e:
             if port is not None:
                 if len(find_ports(device=port)) == 0:
@@ -730,10 +738,16 @@ class Bpod(SerialDevice, AbstractBpod):
         self._set_enable_inputs()
 
     def _detect_additional_serial_ports(
-        self,
+        self, ports: list[ListPortInfo]
     ) -> tuple[ExtendedSerial | None, ExtendedSerial | None]:
         """
         Detect additional USB-serial ports.
+
+        Parameters
+        ----------
+        ports : list of ListPortInfo
+            The serial ports with a Bpod vendor and product ID, as enumerated when the
+            Bpod was identified.
 
         Returns
         -------
@@ -743,13 +757,27 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         logger.debug('Detecting additional USB-serial ports')
 
-        # First, assemble a list of candidate ports
-        candidate_ports = find_ports(
-            vid=VIDS_BPOD,
-            pid=[TeensyPID.DUAL_SERIAL, TeensyPID.TRIPLE_SERIAL],
-            serial_number=self._serial_number,
-            device=re.compile(rf'^(?!{re.escape(str(self.port))}$).*$'),
-        )
+        def other_ports(candidates: list[ListPortInfo]) -> list[ListPortInfo]:
+            return [
+                p
+                for p in _filter_ports(
+                    candidates,
+                    pid=[TeensyPID.DUAL_SERIAL, TeensyPID.TRIPLE_SERIAL],
+                    serial_number=self._serial_number,
+                )
+                if p.device != self.port
+            ]
+
+        # First, assemble a list of candidate ports: the Bpod's other USB-serial ports.
+        # Right after the Bpod was plugged in, the OS may not have registered all of
+        # them yet when the Bpod was identified; if so, the ports are enumerated again.
+        n_other_ports: dict[int, int] = {
+            TeensyPID.DUAL_SERIAL: 1,
+            TeensyPID.TRIPLE_SERIAL: 2,
+        }
+        candidate_ports = other_ports(ports)
+        if len(candidate_ports) < n_other_ports.get(self._port_info.pid, 0):
+            candidate_ports = other_ports(find_ports(vid=VIDS_BPOD, pid=PIDS_BPOD))
 
         # Then, try to find the secondary USB-serial port
         serial1 = None
@@ -2194,13 +2222,19 @@ def discover_bpod(
     ports = find_ports(
         vid=VIDS_BPOD, pid=PIDS_BPOD, device=port, serial_number=serial_number
     )
+    for p in _discover_bpod_ports(ports):
+        yield BpodInfo(port=p.device, serial_number=str(p.serial_number))
+
+
+def _discover_bpod_ports(ports: Iterable[ListPortInfo]) -> Iterator[ListPortInfo]:
+    """Yield the serial ports in `ports` on which an idle Bpod answers a discovery."""
     for p in ports:
         # an unconnected Bpod sends its discovery byte at regular intervals, and recent
         # firmware also when DTR is asserted
         if verify_serial_discovery(
             port=p.device, expected_message=DISCOVERY_BYTE, timeout=DISCOVERY_TIMEOUT
         ):
-            yield BpodInfo(port=p.device, serial_number=str(p.serial_number))
+            yield p
 
 
 def discover_remote_bpod(

@@ -4,6 +4,7 @@ import struct
 from unittest.mock import PropertyMock
 
 import pytest
+from serial.tools.list_ports_common import ListPortInfo
 
 from bpod_core import ipc
 from bpod_core.bpod import Bpod
@@ -80,15 +81,26 @@ def mock_serial_discovery(mocker):
 
 
 @pytest.fixture
-def mock_comports(mocker, mock_serial_discovery):
+def make_port_info():
+    """Factory for the port info of a Bpod's USB serial port."""
+
+    def make_port_info(
+        device, *, serial_number='12345', vid=VID_TEENSY, pid=TeensyPID.SERIAL
+    ):
+        port_info = ListPortInfo(device)
+        port_info.serial_number = serial_number
+        port_info.vid = vid
+        port_info.pid = pid
+        return port_info
+
+    return make_port_info
+
+
+@pytest.fixture
+def mock_comports(mocker, mock_serial_discovery, make_port_info):
     """Fixture to mock available COM ports."""
-    mock_port_info = mocker.MagicMock()
-    mock_port_info.device = 'COM3'
-    mock_port_info.serial_number = '12345'
-    mock_port_info.vid = VID_TEENSY
-    mock_port_info.pid = TeensyPID.SERIAL
     mock_comports = mocker.patch('bpod_core.com.comports')
-    mock_comports.return_value = [mock_port_info]
+    mock_comports.return_value = [make_port_info('COM3')]
     return mock_comports
 
 
@@ -235,11 +247,17 @@ def mock_bpod_25(
 
 
 @pytest.fixture
-def mock_bpod_2p(
-    mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
-):
+def mock_ext_serial_2p(mock_ext_serial, mocker):
+    """A mocked main serial port answering like a Bpod 2+."""
     mock_ext_serial.mock_responses.update(fixture_bpod_2p)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
+    return mock_ext_serial
+
+
+@pytest.fixture
+def mock_bpod_2p(
+    mock_comports, mock_ext_serial_2p, mock_settings, mocker, mock_advertisement
+):
     mocker.patch(
         'bpod_core.bpod.Bpod._detect_additional_serial_ports', return_value=(None, None)
     )

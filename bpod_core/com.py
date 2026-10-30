@@ -3,7 +3,7 @@
 import contextlib
 import logging
 import weakref
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from contextlib import AbstractContextManager
 from struct import Struct
 from types import TracebackType
@@ -831,11 +831,18 @@ def find_ports(
 
         find_ports(vid=0x16C0, device=re.compile(r'/dev/ttyACM\d+'))
     """
-    filters = {k: v for k, v in locals().items() if v is not None}
+    return _filter_ports(sorted(comports()), **locals())
+
+
+def _filter_ports(
+    ports: Iterable[ListPortInfo], **filters: Filter[Any] | None
+) -> list[ListPortInfo]:
+    """Return the ports whose attributes match the filters (``None`` is ignored)."""
+    criteria = {k: v for k, v in filters.items() if v is not None}
     return [
         port
-        for port in sorted(comports())
-        if all(_match_filter(getattr(port, k), v) for k, v in filters.items())
+        for port in ports
+        if all(_match_filter(getattr(port, k), v) for k, v in criteria.items())
     ]
 
 
@@ -896,8 +903,9 @@ class SerialDevice(AbstractContextManager):
 
     Parameters
     ----------
-    port : str
-        The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3').
+    port : str or ListPortInfo
+        The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3'), or the port's
+        :class:`~serial.tools.list_ports_common.ListPortInfo` if already enumerated.
     open_connection : bool, default: True
         Whether to open the connection immediately.
 
@@ -931,22 +939,24 @@ class SerialDevice(AbstractContextManager):
 
     def __init__(
         self,
-        port: str,
+        port: str | ListPortInfo,
         *,
         open_connection: bool = True,
     ) -> None:
         # obtain ListPortInfo for device on specified port
-        try:
-            self._port_info = next(p for p in comports() if p.device == port)
-        except StopIteration as e:
-            raise SerialException(
-                f'Failed to connect to {self._serial_device_name} - '
-                f'serial port not found: {port}'
-            ) from e
+        if not isinstance(port, ListPortInfo):
+            port_info = next((p for p in comports() if p.device == port), None)
+            if port_info is None:
+                raise SerialException(
+                    f'Failed to connect to {self._serial_device_name} - '
+                    f'serial port not found: {port}'
+                )
+            port = port_info
+        self._port_info = port
 
         # instantiate ExtendedSerial
         self._serial = ExtendedSerial()
-        self._serial.port = port  # only set port after the fact
+        self._serial.port = self._port_info.device  # only set port after the fact
 
         # finalizer for cleanup on garbage collection
         self._serial_device_finalizer: weakref.finalize | None = None

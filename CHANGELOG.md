@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - building state machines is two to three times faster, loading them from a file up
   to seven times, and `Bpod.run` returns about 40% sooner. Validating and compiling
   state machines and `Bpod.get_data` gained 10-20%.
+- connecting to a Bpod enumerates the serial ports once instead of three times;
+  `com.SerialDevice` also accepts a `ListPortInfo` as port.
 - the builder methods of `StateMachine` validate their arguments through the models
   instead of `validate_call`: validation errors are titled after the model (e.g.
   `State`) rather than the method, unknown keyword arguments raise a `TypeError`, and
