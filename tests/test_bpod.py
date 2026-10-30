@@ -72,6 +72,12 @@ class TestBpodIdentifyBpod:
         """Test successful identification of Bpod without specifying port or serial."""
         assert self.identify().device == 'COM3'
 
+    @pytest.mark.usefixtures('mock_comports')
+    def test_discovery_requested_by_raising_dtr(self, mock_serial_discovery):
+        """The Bpod's discovery byte is requested by raising DTR on the opened port."""
+        self.identify()
+        assert mock_serial_discovery.call_args.kwargs['raise_dtr'] is True
+
     def test_automatic_unsupported_vid(self, mock_bpod, mock_comports):
         """Test failure to auto identify Bpod when only device has unsupported VID."""
         mock_port_info = mock_comports.return_value

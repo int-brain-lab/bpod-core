@@ -2232,7 +2232,10 @@ def _discover_bpod_ports(ports: Iterable[ListPortInfo]) -> Iterator[ListPortInfo
         # an unconnected Bpod sends its discovery byte at regular intervals, and recent
         # firmware also when DTR is asserted
         if verify_serial_discovery(
-            port=p.device, expected_message=DISCOVERY_BYTE, timeout=DISCOVERY_TIMEOUT
+            port=p.device,
+            expected_message=DISCOVERY_BYTE,
+            timeout=DISCOVERY_TIMEOUT,
+            raise_dtr=True,
         ):
             yield p
 

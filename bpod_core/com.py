@@ -851,16 +851,14 @@ def verify_serial_discovery(
     expected_message: bytes,
     timeout: float = 1,
     trigger: Callable[[], Any] | None = None,
+    *,
+    raise_dtr: bool = False,
 ) -> bool:
     """Check if a device sends an expected discovery message on a serial port.
 
     Opens the specified serial port and waits to receive bytes matching the expected
     discovery message. Optionally executes a function first, which can be used to
     trigger the device's discovery routine, e.g., by sending a command.
-
-    DTR is raised only once the port is open: a device that sends its discovery message
-    when a host asserts DTR then does so after the port's input buffer has been cleared
-    on opening, rather than into it.
 
     Parameters
     ----------
@@ -873,6 +871,11 @@ def verify_serial_discovery(
     trigger : Callable, optional
         A function to call before reading. Use this to trigger the device's discovery
         routine.
+    raise_dtr : bool, default: False
+        Open the port with DTR low and raise it once the port is open: a device that
+        sends its discovery message when a host asserts DTR then does so after the
+        port's input buffer has been cleared on opening, rather than into it. Costs
+        two USB control transfers.
 
     Returns
     -------
@@ -882,10 +885,12 @@ def verify_serial_discovery(
     """
     try:
         ser = Serial(timeout=timeout)
-        ser.dtr = False
+        if raise_dtr:
+            ser.dtr = False
         ser.port = port
         with ser:
-            ser.dtr = True
+            if raise_dtr:
+                ser.dtr = True
             if trigger is not None:
                 trigger()
             return ser.read(len(expected_message)) == expected_message
