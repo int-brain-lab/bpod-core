@@ -13,8 +13,8 @@ from typing import NamedTuple, cast, get_args
 
 import numpy as np
 
-# polars imports numpy.ma on its first array conversion: about 10 ms that would
-# otherwise delay the end of a process's first trial
+# polars (2.1 and later) imports numpy.ma on its first array conversion: about
+# 10 ms that would otherwise delay the end of a process's first trial
 import numpy.ma
 import numpy.typing as npt
 import polars as pl

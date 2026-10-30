@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - a `Bpod` created after closing another one for the same device takes over its IPC
   service, network advertisement included, instead of failing to bind the same
   addresses.
-- a process's first trial no longer ends about 10 ms late: `numpy.ma`, which polars
+- a process's first trial no longer ends about 10 ms late: `numpy.ma`, which polars 2.1
   imports on its first DataFrame conversion, is imported with bpod-core.
 - every handshake ends with a session clock reset, also on reopening the connection; a
   reset the firmware answers late (about 50 ms on Bpod r2.0) is repeated, so

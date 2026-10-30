@@ -984,6 +984,7 @@ class TestSoftcodeThread:
 
 def test_polars_imports_numpy_ma_lazily():
     """The reason _threads imports numpy.ma up front; drop both if this fails."""
+    pytest.importorskip('polars', minversion='2.1')  # 2.0 never imports numpy.ma
     script = (
         'import sys, numpy, polars\n'
         "assert 'numpy.ma' not in sys.modules\n"
