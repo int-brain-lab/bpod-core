@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+import operator
 import os
 import queue
 import socket
@@ -479,6 +480,34 @@ class LocalServiceAdvertisement:
                     yield info
 
 
+class _ZeroconfAdvertisement:
+    """A service registered with its own Zeroconf instance, owned by one host."""
+
+    def __init__(
+        self, zeroconf: Zeroconf, info: ServiceInfo, requested_name: str
+    ) -> None:
+        self.zeroconf = zeroconf
+        self.info = info
+        self.requested_name = requested_name  # info.name may have been renamed
+        self._released = False
+
+    def release(self) -> '_ZeroconfAdvertisement | None':
+        """Hand the registration to another owner, leaving nothing here to close."""
+        if self._released:
+            return None
+        self._released = True
+        return _ZeroconfAdvertisement(self.zeroconf, self.info, self.requested_name)
+
+    def close(self) -> None:
+        """End the registration and shut Zeroconf down, unless it was handed over."""
+        if self._released:
+            return
+        self._released = True
+        with contextlib.suppress(Exception):
+            logger.debug('Closing Zeroconf')
+            self.zeroconf.close()
+
+
 class ServiceBase(ABC):
     """Abstract Base class to :class:`ServiceHost` and :class:`ServiceClient`."""
 
@@ -588,6 +617,12 @@ def _format_zeroconf_service_name(service_name: str, service_type: str) -> str:
     return f'{service_name}.{service_type}'
 
 
+def _same_record(a: ServiceInfo, b: ServiceInfo) -> bool:
+    """Whether two service infos describe the same host, port and properties."""
+    fields = operator.attrgetter('port', 'server', 'addresses', 'properties')
+    return fields(a) == fields(b)
+
+
 class ServiceHost(ServiceBase, Generic[Q, E]):
     """
     A ZeroMQ host providing REQ/REP and PUB/SUB sockets with service discovery.
@@ -662,7 +697,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
     """TCP port of the PUB socket."""
 
     _local_advertisement: LocalServiceAdvertisement | None = None
-    _zeroconf: Zeroconf | None = None
+    _zeroconf_advertisement: _ZeroconfAdvertisement | None = None
 
     _ports_file: Path = (
         platformdirs.user_state_path('bpod-core', appauthor=False)
@@ -711,8 +746,10 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
         # set UUID (generated if not provided by user)
         self._uuid = uuid or uuid4()
+        inherited = None
         if (previous := ServiceHost._live.pop(self._uuid, None)) is not None:
             logger.info('Replacing the running service %s', self._uuid)
+            inherited = previous._release_zeroconf()  # noqa: SLF001
             # synchronous, unless this runs on the previous host's own event thread:
             # then its sockets close later and the binds below may still collide
             previous.close()
@@ -776,6 +813,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 rep_ipc_addr,
                 advertised_ip,
                 use_zeroconf=remote,
+                inherited=inherited,
             )
 
             # register finalizer to clean up resources on exit
@@ -787,7 +825,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 sockets=[self._rep_socket, self._pub_socket],
                 zmq_context=self._zmq_context,
                 local_advertisement=self._local_advertisement,
-                zeroconf=self._zeroconf,
+                zeroconf=self._zeroconf_advertisement,
                 named_pipes=named_pipes,
                 wake=ServiceHost._wake_rep,
             )
@@ -800,10 +838,12 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 sockets=[self._rep_socket, self._pub_socket],
                 zmq_context=self._zmq_context,
                 local_advertisement=self._local_advertisement,
-                zeroconf=self._zeroconf,
+                zeroconf=self._zeroconf_advertisement,
                 named_pipes=named_pipes,
                 wake=ServiceHost._wake_rep,
             )
+            if inherited is not None:
+                inherited.close()  # a no-op if _advertise adopted or ended it
             raise
 
     @staticmethod
@@ -968,11 +1008,13 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         advertised_ip: str,
         *,
         use_zeroconf: bool,
+        inherited: _ZeroconfAdvertisement | None,
     ) -> None:
         """Advertise the service locally and - if ``use_zeroconf`` - via Zeroconf.
 
         The Zeroconf record advertises ``advertised_ip``, which must be concrete
-        and routable.
+        and routable. A registration ``inherited`` from the replaced host is kept if
+        this host advertises under the same name, and ended in the background otherwise.
         """
         # advertise service locally
         self._local_advertisement = LocalServiceAdvertisement(
@@ -985,32 +1027,62 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         )
 
         # advertise service via Zeroconf for remote discovery
+        requested_name = _format_zeroconf_service_name(service_name, service_type)
+        if inherited is not None and not (
+            use_zeroconf and inherited.requested_name == requested_name
+        ):
+            # the goodbye packets take a while, but must go out even if the process
+            # exits right away - hence not a daemon thread
+            threading.Thread(target=inherited.close).start()
+            inherited = None
         if not use_zeroconf:
             return
         service_info = ServiceInfo(
             type_=_format_zeroconf_service_type(service_type),
-            name=_format_zeroconf_service_name(service_name, service_type),
+            name=requested_name,
             port=self.rep_tcp_port,
             parsed_addresses=[advertised_ip],
             properties=dict(properties or {}),
             server=f'{socket.gethostname()}.local.',
             other_ttl=60,
         )
-        self._zeroconf = Zeroconf(
-            interfaces=InterfaceChoice.All,
-            ip_version=IPVersion.V4Only,
-        )
+        if inherited is None:
+            zeroconf = Zeroconf(
+                interfaces=InterfaceChoice.All,
+                ip_version=IPVersion.V4Only,
+            )
+            self._zeroconf_advertisement = _ZeroconfAdvertisement(
+                zeroconf, service_info, requested_name
+            )
+        else:
+            zeroconf = inherited.zeroconf
+            service_info.name = inherited.info.name  # as resolved on the network
+            unchanged = _same_record(inherited.info, service_info)
+            inherited.info = service_info
+            self._zeroconf_advertisement = inherited
+            if unchanged:
+                return  # the record on the network already describes this host
 
-        def _register(zc: Zeroconf, service: ServiceInfo) -> None:
+        def _publish(zc: Zeroconf, service: ServiceInfo, *, update: bool) -> None:
             with contextlib.suppress(Exception):
-                zc.register_service(service, allow_name_change=True)
+                if update:
+                    zc.update_service(service)
+                else:
+                    zc.register_service(service, allow_name_change=True)
                 logger.debug("Advertising remote service at '%s'", service.name)
 
         threading.Thread(
-            target=_register,
-            args=(self._zeroconf, service_info),
+            target=_publish,
+            args=(zeroconf, service_info),
+            kwargs={'update': inherited is not None},
             daemon=True,
         ).start()
+
+    def _release_zeroconf(self) -> _ZeroconfAdvertisement | None:
+        """Hand the Zeroconf registration to a successor host, instead of ending it."""
+        if self._closed or self._zeroconf_advertisement is None:
+            return None
+        return self._zeroconf_advertisement.release()
 
     @staticmethod
     def _wake_rep(zmq_context: zmq.Context) -> None:
@@ -1028,7 +1100,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         sockets: Iterable[zmq.Socket],
         zmq_context: zmq.Context,
         local_advertisement: LocalServiceAdvertisement | None,
-        zeroconf: Zeroconf | None,
+        zeroconf: _ZeroconfAdvertisement | None,
         named_pipes: Iterable[tuple[Path, _FileId]],
         wake: Callable[[zmq.Context], None],
         linger_ms: int = 0,
@@ -1054,9 +1126,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
         # close zeroconf; this also unregisters the advertised service
         if zeroconf is not None:
-            with contextlib.suppress(Exception):
-                logger.debug('Closing Zeroconf')
-                zeroconf.close()
+            zeroconf.close()
 
         # call base class finalizer
         ServiceBase._finalize_base(  # noqa: SLF001

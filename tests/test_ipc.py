@@ -722,7 +722,7 @@ class TestHost:
         """Check ports, addresses, and Zeroconf objects are initialized."""
         with ipc.ServiceHost('test', 'test_service', _noop_handler) as host:
             assert host.rep_tcp_addr.startswith('tcp://')
-            assert host._zeroconf is not None
+            assert host._zeroconf_advertisement is not None
 
     def test_preferred_port_used_when_free(self, mock_advertisement):
         """A free preferred port is used as-is."""
@@ -811,14 +811,14 @@ class TestHost:
         with ipc.ServiceHost(
             'test', 'test_service', _noop_handler, remote=True
         ) as host:
-            assert host._zeroconf is not None
+            assert host._zeroconf_advertisement is not None
             # registration runs on a background thread
-            register_service = host._zeroconf.register_service
-            assert _wait_until(lambda: register_service.call_count == 1)
-            host._zeroconf.close.assert_not_called()
+            zeroconf = host._zeroconf_advertisement.zeroconf
+            assert _wait_until(lambda: zeroconf.register_service.call_count == 1)
+            zeroconf.close.assert_not_called()
             assert host._local_advertisement is not None
             assert host._local_advertisement.service_file.exists()
-        host._zeroconf.close.assert_called_once()
+        zeroconf.close.assert_called_once()
         assert not host._local_advertisement.service_file.exists()
         assert not host._local_advertisement._runtime_directory.exists()
 
@@ -827,7 +827,7 @@ class TestHost:
         with ipc.ServiceHost(
             'test', 'test_service', _noop_handler, remote=False
         ) as host:
-            assert host._zeroconf is None
+            assert host._zeroconf_advertisement is None
             assert host._local_advertisement is not None
             assert host._local_advertisement.service_file.exists()
         assert not host._local_advertisement.service_file.exists()
@@ -965,6 +965,91 @@ class TestHost:
         with ipc.ServiceHost('b', 'test_service', _noop_handler, **kwargs) as second:
             assert first._closed
             assert second.rep_tcp_addr == address  # the remembered port was free again
+
+    @pytest.mark.parametrize('changed', [False, True], ids=['same', 'changed'])
+    def test_takeover_keeps_the_zeroconf_registration(
+        self, mock_advertisement, mock_ports_file, changed
+    ):
+        """A remote host replacing a remote one keeps its registration, updated."""
+        zeroconf = mock_advertisement['zeroconf']
+        kwargs = {'uuid': uuid4(), 'remote': True}
+        first = ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        properties = {'k': 'v'} if changed else None
+        with ipc.ServiceHost('a', 'test_service', _noop_handler, properties, **kwargs):
+            assert first._closed
+            assert zeroconf.call_count == 1  # no second Zeroconf instance
+            update_service = zeroconf.return_value.update_service
+            if changed:
+                assert _wait_until(lambda: update_service.called)
+            else:
+                update_service.assert_not_called()  # nothing to publish, no thread
+            zeroconf.return_value.close.assert_not_called()
+        zeroconf.return_value.close.assert_called_once()
+
+    def test_takeover_keeps_a_registration_renamed_on_the_network(
+        self, mock_advertisement, mock_ports_file
+    ):
+        """The inherited record is updated under the name Zeroconf settled on."""
+        zeroconf = mock_advertisement['zeroconf'].return_value
+        kwargs = {'uuid': uuid4(), 'remote': True}
+
+        def rename(info, **_):  # as Zeroconf does on a name conflict
+            info.name = 'a (2).' + info.type
+
+        zeroconf.register_service.side_effect = rename
+        first = ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        assert _wait_until(lambda: zeroconf.register_service.called)
+        with ipc.ServiceHost('a', 'test_service', _noop_handler, {'k': 'v'}, **kwargs):
+            assert first._closed
+            assert _wait_until(lambda: zeroconf.update_service.called)
+            assert zeroconf.update_service.call_args[0][0].name.startswith('a (2).')
+
+    @pytest.mark.parametrize(
+        ('name', 'service_type'), [('b', 'test_service'), ('a', 'other_type')]
+    )
+    def test_takeover_under_a_new_name_registers_afresh(
+        self, mock_advertisement, mock_ports_file, name, service_type
+    ):
+        """A replacing remote host with another name ends the inherited registration."""
+        zeroconf = mock_advertisement['zeroconf']
+        kwargs = {'uuid': uuid4(), 'remote': True}
+        first = ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        with ipc.ServiceHost(name, service_type, _noop_handler, **kwargs):
+            assert first._closed
+            assert zeroconf.call_count == 2
+            assert _wait_until(lambda: zeroconf.return_value.close.called)
+            assert _wait_until(
+                lambda: zeroconf.return_value.register_service.call_count == 2
+            )
+
+    def test_failed_takeover_ends_the_inherited_registration(
+        self, mock_advertisement, mock_ports_file, mocker
+    ):
+        """A successor that fails to construct closes the registration it took."""
+        zeroconf = mock_advertisement['zeroconf'].return_value
+        kwargs = {'uuid': uuid4(), 'remote': True}
+        first = ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        mocker.patch.object(ipc.ServiceHost, '_advertise', side_effect=RuntimeError)
+        with pytest.raises(RuntimeError):
+            ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        assert first._closed
+        zeroconf.close.assert_called_once()
+
+    def test_takeover_by_a_local_host_ends_the_registration(
+        self, mock_advertisement, mock_ports_file
+    ):
+        """A local host replacing a remote one ends the registration in a thread."""
+        zeroconf = mock_advertisement['zeroconf'].return_value
+        kwargs = {'uuid': uuid4()}
+        first = ipc.ServiceHost(
+            'a', 'test_service', _noop_handler, **kwargs, remote=True
+        )
+        with ipc.ServiceHost(
+            'a', 'test_service', _noop_handler, **kwargs, remote=False
+        ) as second:
+            assert first._closed
+            assert second._zeroconf_advertisement is None
+            assert _wait_until(lambda: zeroconf.close.called)
 
     def test_close_wakes_the_event_loop(self, mock_advertisement, mocker):
         """close() ends the loop's blocking receive instead of waiting it out."""

@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - closing a `Bpod`, or any IPC host or client, no longer waits up to 100 ms for its
   event loop's receive timeout: the loop is woken by a message.
 - a `Bpod` created after closing another one for the same device takes over its IPC
-  service instead of failing to bind the same addresses.
+  service, network advertisement included, instead of failing to bind the same
+  addresses.
 - a process's first trial no longer ends about 10 ms late: `numpy.ma`, which polars
   imports on its first DataFrame conversion, is imported with bpod-core.
 - every handshake ends with a session clock reset, also on reopening the connection; a
