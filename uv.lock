@@ -258,8 +258,6 @@ test = [
     { name = "pytest-qt" },
     { name = "pytest-xvfb" },
     { name = "ruff" },
-    { name = "tox", marker = "python_full_version >= '3.11'" },
-    { name = "tox-uv", marker = "python_full_version >= '3.11'" },
     { name = "types-cachetools" },
     { name = "types-docutils" },
     { name = "types-psutil" },
@@ -282,8 +280,9 @@ typing = [
 ]
 
 [package.group-requires-python]
-dev = ">=3.14"
+dev = ">=3.11,>=3.14"
 doc = ">=3.14"
+tox = ">=3.11"
 
 [package.metadata]
 requires-dist = [
@@ -382,8 +381,6 @@ test = [
     { name = "pytest-xvfb", specifier = ">=3.1" },
     { name = "ruff", specifier = ">=0.9" },
     { name = "ruff", specifier = ">=0.11" },
-    { name = "tox", marker = "python_full_version >= '3.11'", specifier = ">=4.67.4" },
-    { name = "tox-uv", marker = "python_full_version >= '3.11'", specifier = ">=1.37.2" },
     { name = "types-cachetools", specifier = ">=7" },
     { name = "types-docutils", specifier = ">=0.22" },
     { name = "types-psutil", specifier = ">=7" },
