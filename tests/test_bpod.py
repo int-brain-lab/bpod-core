@@ -48,6 +48,7 @@ from bpod_core.constants import (
     STRUCT_INT16_LE,
     STRUCT_UINT8,
     UINT32_MAX,
+    TeensyModel,
     TeensyPID,
 )
 from bpod_core.fsm import StateMachine
@@ -73,6 +74,25 @@ class TestDiscoverBpodPorts:
         assert list(_discover_bpod_ports(bpod_2p)) == []
         assert [c.kwargs['port'] for c in mock_serial_discovery.call_args_list] == [
             'COM3'
+        ]
+
+    def test_other_teensy_models_are_skipped(
+        self, make_port_info, mock_serial_discovery, mocker
+    ):
+        """Ports of Teensy models no Bpod is built on are skipped, unknown ones not."""
+        models = {
+            'COM3': TeensyModel.TEENSY_4_0,
+            'COM4': TeensyModel.TEENSY_4_1,
+            'COM5': None,  # unknown, e.g. on a platform without a lookup
+        }
+        mocker.patch(
+            'bpod_core.bpod._read_bcd_device', side_effect=lambda p: models[p.device]
+        )
+        ports = [make_port_info(device, serial_number=device) for device in models]
+        assert [p.device for p in _discover_bpod_ports(ports)] == ['COM4', 'COM5']
+        assert [c.kwargs['port'] for c in mock_serial_discovery.call_args_list] == [
+            'COM4',
+            'COM5',
         ]
 
     def test_other_ports_of_a_found_bpod_are_skipped(

@@ -84,3 +84,28 @@ class TeensyPID(IntEnum):
     """Product ID of Teensy microcontrollers with dual USB serial ports."""
     TRIPLE_SERIAL = 0x048C
     """Product ID of Teensy microcontrollers with triple USB serial ports."""
+
+
+class TeensyModel(IntEnum):
+    """Teensy models, as reported in the USB device release number (bcdDevice).
+
+    The Teensy core sets these for USB serial types; MIDI and flight simulator types
+    report 0x0211 or 0x0212 instead.
+    """
+
+    TEENSY_LC = 0x0273
+    """Teensy LC."""
+    TEENSY_3_0 = 0x0274
+    """Teensy 3.0."""
+    TEENSY_3_2 = 0x0275
+    """Teensy 3.1 and 3.2."""
+    TEENSY_3_5 = 0x0276
+    """Teensy 3.5."""
+    TEENSY_3_6 = 0x0277
+    """Teensy 3.6."""
+    TEENSY_4_0 = 0x0279
+    """Teensy 4.0."""
+    TEENSY_4_1 = 0x0280
+    """Teensy 4.1."""
+    TEENSY_MICROMOD = 0x0281
+    """Teensy MicroMod."""

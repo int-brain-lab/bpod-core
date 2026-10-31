@@ -7,7 +7,7 @@ from uuid import UUID
 import platformdirs
 from pydantic import Field
 
-from bpod_core.constants import VID_TEENSY, TeensyPID
+from bpod_core.constants import VID_TEENSY, TeensyModel, TeensyPID
 
 BPOD_UUID_NAMESPACE = UUID('9dbb7a76-cb73-4b16-aaf7-f574f4d218f6')
 """UUID namespace for Bpod devices"""
@@ -17,6 +17,12 @@ VIDS_BPOD = [VID_TEENSY]
 
 PIDS_BPOD = [TeensyPID.SERIAL, TeensyPID.DUAL_SERIAL, TeensyPID.TRIPLE_SERIAL]
 """List of Product IDs of supported Bpod devices"""
+
+NON_BPOD_TEENSY_MODELS = frozenset(TeensyModel) - {
+    TeensyModel.TEENSY_3_6,
+    TeensyModel.TEENSY_4_1,
+}
+"""Teensy models no Bpod is built on: discovery doesn't probe their ports."""
 
 MIN_BPOD_FW_VERSION = (23, 0)
 """minimum supported firmware version (major, minor)"""

@@ -55,6 +55,7 @@ from bpod_core.bpod.constants import (
     MIN_BPOD_FW_VERSION,
     MIN_BPOD_HW_VERSION,
     N_SERIAL_EVENTS_DEFAULT,
+    NON_BPOD_TEENSY_MODELS,
     PIDS_BPOD,
     VIDS_BPOD,
     FlexIOChannelType,
@@ -86,6 +87,7 @@ from bpod_core.com import (
     ExtendedSerial,
     SerialDevice,
     _filter_ports,
+    _read_bcd_device,
     _usb_interface_number,
     find_ports,
     verify_serial_discovery,
@@ -2352,11 +2354,16 @@ def _discover_bpod_ports(ports: Iterable[ListPortInfo]) -> Iterator[ListPortInfo
 
     Only a Bpod's first serial port, on USB interface 0, sends discovery bytes. Its
     other ports are skipped without being opened: by their interface number where the
-    platform reports it, else once the Bpod has answered on one of its ports.
+    platform reports it, else once the Bpod has answered on one of its ports. Ports of
+    Teensy models no Bpod is built on are skipped too.
     """
     found: set[str] = set()  # serial numbers of the Bpods that answered
     for p in ports:
-        if _usb_interface_number(p) or p.serial_number in found:  # 0 or None: probe
+        if (
+            _usb_interface_number(p)  # 0 or None: probe
+            or p.serial_number in found
+            or _read_bcd_device(p) in NON_BPOD_TEENSY_MODELS
+        ):
             continue
         # an unconnected Bpod sends its discovery byte at regular intervals, and recent
         # firmware also when DTR is asserted
