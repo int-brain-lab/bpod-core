@@ -22,7 +22,7 @@ NON_BPOD_TEENSY_MODELS = frozenset(TeensyModel) - {
     TeensyModel.TEENSY_3_6,
     TeensyModel.TEENSY_4_1,
 }
-"""Teensy models no Bpod is built on: discovery doesn't probe their ports."""
+"""Teensy models that no Bpod is built on, whose ports discovery doesn't probe."""
 
 MIN_BPOD_FW_VERSION = (23, 0)
 """minimum supported firmware version (major, minor)"""

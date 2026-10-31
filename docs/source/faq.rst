@@ -78,3 +78,22 @@ should solve these issues by:
 - Preventing `ModemManager <https://modemmanager.org/>`__  from probing and interfering
   with the connection
 - Configuring serial ports with appropriate low-level settings (raw mode, no echo)
+
+My Bpod reports events on ports nothing is connected to
+-------------------------------------------------------
+On a Bpod State Machine r2.0 to r2.2, the input of a behavior port floats while nothing
+is connected to the port. It picks up mains hum and reports ``Port{N}_High`` and
+``Port{N}_Low`` about 100 times per second (120 with 60 Hz mains). From r2.3 on, and on
+the Bpod 2+, a pull-up resistor keeps unused inputs quiet.
+
+Disable the inputs of the ports you don't use, after connecting:
+
+.. code-block:: python
+
+   from bpod_core.bpod import Bpod
+
+   with Bpod() as bpod:
+       for port in ('Port2', 'Port3', 'Port4'):
+           bpod.inputs[port].enabled = False
+
+The setting lasts until the connection is closed.
