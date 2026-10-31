@@ -457,6 +457,14 @@ class Bpod(SerialDevice, AbstractBpod):
         serial0_open = hasattr(self, '_serial') and getattr(
             self._serial, 'is_open', False
         )
+        if serial0_open and self._out_of_sync:
+            # a given-up trial may still be running on the Bpod: stop it and swallow its
+            # report, so that the next connection's handshake is answered
+            with (
+                contextlib.suppress(SerialException),  # the Bpod may be unplugged
+                self._serial.temporary_timeout(0.2),
+            ):
+                self._serial.query(b'X', 4096)  # whatever arrives within the timeout
         if serial0_open and self._analog_reader_thread is not None:
             # firmware keeps streaming FlexIO analog samples on its own serial port
             # until explicitly told to stop - even after a trial ends naturally via

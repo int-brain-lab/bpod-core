@@ -1577,6 +1577,18 @@ class TestStopStateMachine:
         mock_bpod_2p.open()
         assert mock_bpod_2p.reset_session_clock()
 
+    def test_close_stops_a_given_up_trial(self, mock_bpod_2p, blocked_reader, mocker):
+        """Closing after a give-up stops the trial first, for the next handshake."""
+        with pytest.raises(TimeoutError):
+            mock_bpod_2p.stop_state_machine(timeout=0.05)
+        disconnect = mocker.patch.object(Bpod, '_request_disconnect')
+        serial0 = mock_bpod_2p.serial0
+        serial0.is_open = True
+        serial0.last_write = b''
+        mock_bpod_2p.close()
+        assert serial0.last_write == b'X'
+        disconnect.assert_called_once()
+
     def test_warns_about_analog_sampling(self, running, caplog):
         """With an analog input, stopping warns that analog sampling stops too."""
         running._analog_channel_names = ('Flex1',)
