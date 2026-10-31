@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `Transitions` or `Actions` instance passed to `add_state` is stored by reference.
 - state names and operators must be strings; `bytes` are no longer coerced.
 - the IPC transport is used wherever libzmq supports it, instead of only on POSIX.
+- the reader hands the packets of one serial read to the event thread as one batch:
+  fewer thread wake-ups at high event rates.
+- the warning about a timing violation reports how far the host fell behind in
+  reading the serial port: a full buffer stalls the Bpod's state machine cycle.
 - all IPC hosts and service browsers of a process share one Zeroconf instance,
   started on first use and closed at exit; closing a remote host no longer waits for
   its goodbye packets.
