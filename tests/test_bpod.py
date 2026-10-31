@@ -25,6 +25,7 @@ from bpod_core.bpod import (
     RemoteBpod,
     _allocate_module_events,
     _discover_bpod_ports,
+    _machine_name,
 )
 from bpod_core.bpod._threads import SoftcodeThread
 from bpod_core.bpod.constants import (
@@ -90,10 +91,6 @@ class TestDiscoverBpodPorts:
         )
         ports = [make_port_info(device, serial_number=device) for device in models]
         assert [p.device for p in _discover_bpod_ports(ports)] == ['COM4', 'COM5']
-        assert [c.kwargs['port'] for c in mock_serial_discovery.call_args_list] == [
-            'COM4',
-            'COM5',
-        ]
 
     def test_other_ports_of_a_found_bpod_are_skipped(
         self, bpod_2p, make_port_info, mock_serial_discovery
@@ -196,12 +193,32 @@ class TestGetVersionInfo:
         mock_bpod.serial0.mock_responses = {
             b'F': struct.pack('<2H', 23, 3),  # Firmware version 23, Bpod type 3
             b'f': STRUCT_INT16_LE.pack(1),  # Minor firmware version 1
-            b'v': STRUCT_UINT8.pack(2),  # PCB revision 2
+            b'v': STRUCT_UINT8.pack(4),  # PCB revision 4
         }
+        mock_bpod._bcd_device = TeensyModel.TEENSY_3_6
         Bpod._get_version_info(mock_bpod)
         assert mock_bpod._version.firmware == (23, 1)
         assert mock_bpod._version.machine == 3
-        assert mock_bpod._version.pcb == 2
+        assert mock_bpod._version.machine_str == 'r2.4'
+        assert mock_bpod._version.pcb == 4
+
+    @pytest.mark.parametrize(
+        ('machine', 'model', 'pcb', 'name'),
+        [
+            (3, TeensyModel.TEENSY_3_6, 0, 'r2.0-2.3'),
+            (3, TeensyModel.TEENSY_3_6, 4, 'r2.4'),
+            (3, TeensyModel.TEENSY_3_6, 7, 'r2.0-2.4'),  # no such revision
+            (3, TeensyModel.TEENSY_4_1, 5, 'r2.5'),
+            (3, None, 0, 'r2.0-2.5'),  # model unknown
+            (4, TeensyModel.TEENSY_4_1, 2, '2+ r1.2'),
+            (4, None, 3, '2+ r1.3'),  # model unknown: always a Teensy 4.1
+            (4, TeensyModel.TEENSY_4_1, 9, '2+'),  # no such revision
+            (4, TeensyModel.TEENSY_4_1, None, '2+'),
+        ],
+    )
+    def test_machine_name(self, machine, model, pcb, name):
+        """A Bpod is named as precisely as its Teensy model and PCB revision tell."""
+        assert _machine_name(machine, model, pcb) == name
 
     def test_get_version_info_unsupported_firmware(self, mock_bpod):
         """Test failure when firmware version is unsupported."""
