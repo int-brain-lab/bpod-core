@@ -486,7 +486,9 @@ class Bpod(SerialDevice, AbstractBpod):
             # discard any analog samples firmware sent (or was still sending) up to
             # the 'X' above, so a stale byte can't be misread as the next
             # connection's discovery-handshake response
-            with contextlib.suppress(SerialException):  # the Bpod may be unplugged
+            # the Bpod may be unplugged: checking for pending bytes then raises a plain
+            # OSError, which SerialException derives from
+            with contextlib.suppress(OSError):
                 self._discard_stray_bytes(self._flexio_serial, 'the FlexIO serial port')
             self._flexio_serial.close()
         if hasattr(self, 'serial0'):
@@ -497,7 +499,7 @@ class Bpod(SerialDevice, AbstractBpod):
             # discard anything unread at this point - we're about to abandon the
             # connection either way, so this just keeps a straggler byte from
             # confusing the next connection's own handshake on this port
-            with contextlib.suppress(SerialException):
+            with contextlib.suppress(OSError):  # see above
                 self._discard_stray_bytes(self._serial, 'serial0')
         super().close()
         self._out_of_sync = False  # the next open() handshakes

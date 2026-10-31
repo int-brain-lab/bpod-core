@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   trial.
 - closing a connection after a trial was given up stops the state machine first, so
   that the next connection's handshake is answered.
+- closing an unplugged `Bpod` no longer raises an `OSError`.
 - validation messages for invalid state names and operators no longer substitute
   braces in the input, e.g. `{pattern}`.
 - `misc.ValidatedDict` stores a coerced key in its validated form, e.g. `'1'` as `1`.

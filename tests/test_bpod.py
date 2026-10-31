@@ -2005,6 +2005,18 @@ class TestWait:
         assert handled == [3]
 
 
+def test_close_after_unplug(mock_bpod_2p, mock_ext_serial, mocker):
+    """close() still closes the port when checking for stray bytes fails (unplugged)."""
+    mocker.patch.object(mock_ext_serial, 'is_open', True)  # reset after the test
+    mocker.patch.object(mock_ext_serial, 'write', side_effect=SerialException('gone'))
+    mocker.patch.object(
+        mock_ext_serial, 'read_all', side_effect=OSError(5, 'Input/output error')
+    )
+    close = mocker.spy(mock_ext_serial, 'close')
+    mock_bpod_2p.close()
+    close.assert_called_once()
+
+
 def test_close_after_lost_connection(mock_bpod_2p, mock_ext_serial, mocker):
     """close() still closes the port if the Bpod can't be told to disconnect."""
     mocker.patch.object(mock_ext_serial, 'is_open', True)  # reset after the test
