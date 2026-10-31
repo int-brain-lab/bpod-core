@@ -39,6 +39,10 @@ _DIRECT_READ = os.name == 'posix'
 """Whether :meth:`ExtendedSerial.read_waiting` waits on and reads a file descriptor."""
 _READ_SIZE = 65536
 """Most bytes :meth:`ExtendedSerial.read_waiting` asks for at once."""
+_RE_USB_INTERFACE = re.compile(r':\w+\.(\d+)$')
+"""Match the interface number ending a port's location, see _usb_interface_number."""
+_RE_USB_REVISION = re.compile(r'REV_([0-9A-Fa-f]{4})')
+"""Match the device release number (bcdDevice) in a Windows hardware ID."""
 
 
 class ReadCancelled(Exception):  # noqa: N818 - not an error
@@ -920,7 +924,7 @@ def _usb_interface_number(port: ListPortInfo) -> int | None:
     configuration and interface on Linux (e.g., ``3-2:1.0``) and with ``x`` and the
     interface on Windows (``1-2:x.0``); macOS doesn't report the interface.
     """
-    match = re.search(r':\w+\.(\d+)$', port.location or '')
+    match = _RE_USB_INTERFACE.search(port.location or '')
     return int(match[1]) if match else None
 
 
@@ -1041,7 +1045,7 @@ def _look_up_bcd_device(port: ListPortInfo) -> int | None:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as handle:
                 hardware_ids, _ = winreg.QueryValueEx(handle, 'HardwareID')
             # e.g., USB\VID_16C0&PID_048C&REV_0280
-            match = re.search(r'REV_([0-9A-Fa-f]{4})', ' '.join(hardware_ids))
+            match = _RE_USB_REVISION.search(' '.join(hardware_ids))
             return int(match[1], 16) if match else None
         if sys.platform == 'darwin':  # the I/O Registry, with pyserial's IOKit helpers
             from serial.tools import list_ports_osx as iokit  # noqa: PLC0415 - IOKit
