@@ -140,6 +140,10 @@ def mock_ext_serial(mocker):
     mocker.patch(f'{tmp}.reset_input_buffer')
     mocker.patch(f'{tmp}._reconfigure_port')  # e.g. a timeout set while open
     mocker.patch(f'{tmp}.in_waiting', new_callable=PropertyMock, side_effect=in_waiting)
+    mocker.patch(  # the port isn't open, so the direct read would refuse it
+        'bpod_core.com.ExtendedSerial.read_waiting',
+        side_effect=lambda: read(max(1, in_waiting())),
+    )
     yield extended_serial
     # tests may mark the port open; pyserial's real close() would then run on garbage
     # collection, after the patches above are gone

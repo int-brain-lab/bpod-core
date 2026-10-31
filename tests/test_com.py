@@ -1,8 +1,9 @@
 import logging
+import os
 import re
 import struct
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, PropertyMock, call
 
 import numpy as np
 import pytest
@@ -30,6 +31,36 @@ class TestExtendedSerial:
         """Send bytes and ensure underlying serial.write is called."""
         mock_serial.write(b'x')
         mock_serial.super_write.assert_called_with(b'x')
+
+    @pytest.mark.skipif(
+        os.name != 'posix', reason='direct reads need a file descriptor'
+    )
+    def test_read_waiting_takes_all_pending_bytes(self):
+        """On POSIX, one call returns everything pending on the port; EOF raises."""
+        master, slave = os.openpty()
+        try:
+            with com.ExtendedSerial(os.ttyname(slave)) as port:
+                os.write(master, b'abc')
+                os.write(master, b'de')
+                assert port.read_waiting() == b'abcde'
+                os.close(master)
+                with pytest.raises(SerialException):  # hung up
+                    port.read_waiting()
+        finally:
+            os.close(slave)
+
+    def test_read_waiting_falls_back_to_read(self, mock_serial, mocker):
+        """Without descriptors, read() takes what is waiting or waits for one byte."""
+        mocker.patch('bpod_core.com._DIRECT_READ', False)
+        mocker.patch(
+            'bpod_core.com.Serial.in_waiting',
+            new_callable=PropertyMock,
+            side_effect=[3, 0],
+        )
+        mock_serial.super_read.return_value = b'xyz'
+        assert mock_serial.read_waiting() == b'xyz'
+        mock_serial.read_waiting()
+        assert mock_serial.super_read.call_args_list == [call(3), call(1)]
 
     def test_write_struct(self, mock_serial):
         """Pack values with struct format and write exact bytes."""

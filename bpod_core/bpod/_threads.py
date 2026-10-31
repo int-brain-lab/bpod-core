@@ -310,11 +310,11 @@ class ReadThread(threading.Thread):
     """The exception that ended the thread, if the connection to the Bpod was lost."""
 
     backlog: int = 0
-    """The most bytes found waiting on the serial port before one of the trial's reads.
+    """The most bytes a read of the trial's main loop found pending on the serial port.
 
     How far the host fell behind the Bpod: once the OS buffer is full, the Bpod stalls
-    in its state machine cycle until the host reads again. The count is the OS's, which
-    may cap it (Linux reports at most about 4 KB).
+    in its state machine cycle until the host reads again. A read returns at most what
+    the OS hands out at once, on Linux about 4 KB, so the figure saturates there.
     """
 
     def __init__(
@@ -342,18 +342,18 @@ class ReadThread(threading.Thread):
         self.leftover_received_ns = 0
 
     def _fill(self) -> int:
-        """Read all bytes waiting on the serial port, blocking until there is one.
+        """Read all bytes pending on the serial port, blocking until there is one.
 
-        Returns how many were waiting: the host's read backlog at that moment.
+        Returns how many there were: the host's read backlog at that moment.
         """
         try:
-            waiting = self._serial.in_waiting
-            self._buffer += self._serial.read(max(1, waiting))
+            chunk = self._serial.read_waiting()
         except OSError as error:  # including SerialException, e.g., when unplugged
             self.error = error
             raise
+        self._buffer += chunk
         self._received_ns = time.perf_counter_ns()
-        return waiting
+        return len(chunk)
 
     def _take(self, n_bytes: int) -> bytes:
         """Remove and return the next ``n_bytes`` bytes, reading more as needed."""
@@ -400,7 +400,7 @@ class ReadThread(threading.Thread):
 
             # position of the next unparsed byte in the buffer, and the time at which
             # the bytes in the buffer were received
-            backlog = 0  # the host's peak read backlog over the trial's reads
+            backlog = 0  # the most bytes a read of this loop found pending
             pos = 0
             received_ns = self._received_ns
 
@@ -459,8 +459,7 @@ class ReadThread(threading.Thread):
                 if batch:
                     q_events.put(batch)
                     batch = []
-                waiting = self._fill()
-                backlog = max(backlog, waiting)
+                backlog = max(backlog, self._fill())
                 received_ns = self._received_ns
 
             # the Bpod sends two values after exiting the state machine trial:

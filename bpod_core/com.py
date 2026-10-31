@@ -2,6 +2,8 @@
 
 import contextlib
 import logging
+import os
+import select
 import weakref
 from collections.abc import Callable, Collection, Iterable, Iterator
 from contextlib import AbstractContextManager
@@ -28,6 +30,12 @@ from bpod_core.constants import (
 from bpod_core.misc import Filter, _match_filter
 
 logger = logging.getLogger(__name__)
+
+
+_DIRECT_READ = os.name == 'posix'
+"""Whether :meth:`ExtendedSerial.read_waiting` waits on and reads a file descriptor."""
+_READ_SIZE = 65536
+"""Most bytes :meth:`ExtendedSerial.read_waiting` asks for at once."""
 
 
 class ExtendedSerial(Serial):
@@ -315,6 +323,40 @@ class ExtendedSerial(Serial):
             ``True`` if the byte read is non-zero, ``False`` otherwise.
         """
         return self.read(1) != b'\x00'
+
+    def read_waiting(self) -> bytes:
+        """
+        Block until at least one byte is pending, then return all pending bytes.
+
+        On POSIX, the port's file descriptor is waited on and read directly, in one
+        call each; elsewhere :meth:`read` is used. The wait ignores the port's timeout
+        and :meth:`cancel_read`. A read returns at most what the OS hands out at once,
+        on Linux about 4 KB.
+
+        Returns
+        -------
+        bytes
+            The pending bytes, at least one.
+
+        Raises
+        ------
+        SerialException
+            If the port is closed, or if it reports pending bytes but returns none.
+        """
+        if not _DIRECT_READ:
+            return self.read(max(1, self.in_waiting))
+        fd = self.fileno()  # raises if the port is closed
+        try:
+            select.select([fd], [], [])
+            data = os.read(fd, _READ_SIZE)
+        except OSError as e:
+            raise SerialException(f'read failed: {e}') from e
+        if not data:
+            raise SerialException(
+                'device reports readiness to read but returned no data '
+                '(device disconnected or multiple access on port?)'
+            )
+        return data
 
     def write_struct(self, fmt: str | Struct, *data: Any) -> int | None:
         """

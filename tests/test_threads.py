@@ -76,31 +76,19 @@ class _TrickleSerial:
     def __init__(self, data: bytes) -> None:
         self._data = bytearray(data)
 
-    @property
-    def in_waiting(self) -> int:
-        return min(1, len(self._data))
-
-    def read(self, size: int = 1) -> bytes:
+    def read_waiting(self) -> bytes:
         chunk = bytes(self._data[:1])
         del self._data[:1]
         return chunk
 
 
-class _BacklogSerial(_TrickleSerial):
-    """Fake serial port reporting all of its data as waiting, as a slow host sees it."""
-
-    @property
-    def in_waiting(self) -> int:
-        return len(self._data)
-
-
 class _UnpluggedSerial(_TrickleSerial):
     """Fake serial port that fails once its data is used up, like an unplugged one."""
 
-    def read(self, size: int = 1) -> bytes:
+    def read_waiting(self) -> bytes:
         if not self._data:
             raise SerialException('device disconnected')
-        return super().read(size)
+        return super().read_waiting()
 
 
 def _drain(q: SimpleQueue) -> list:
@@ -381,19 +369,17 @@ class TestReadThread:
 
     def test_timing_warning_names_the_read_backlog(self, make_thread, caplog):
         """The warning tells how far the host fell behind, which can stall the Bpod."""
-        data = (
-            _CONFIRM_OK
-            + _start(micros_us=1000)
-            + _opcode1([255], n_cycles=10)
-            + _exit_data(10, 5000)  # 4000 µs on the clock for 10 cycles of 100 µs
+        head = _CONFIRM_OK + _start(micros_us=1000)
+        body = _opcode1([255], n_cycles=10) + _exit_data(10, 5000)  # 4000 µs, 10 cycles
+        serial = MagicMock(read_waiting=MagicMock(return_value=body))  # all at once
+        thread, _, _ = make_thread(
+            b'', cycle_period_us=100, serial=serial, initial_bytes=head
         )
-        serial = _BacklogSerial(data)
-        thread, _, _ = make_thread(b'', cycle_period_us=100, serial=serial)
         with caplog.at_level(logging.WARNING):
             thread.start()
             thread.join(timeout=2)
-        assert thread.backlog == len(data) - 9  # after the confirm byte and start time
-        assert f'Peak read backlog on the host: {len(data) - 9} bytes' in caplog.text
+        assert thread.backlog == len(body)
+        assert f'Peak read backlog on the host: {len(body)} bytes' in caplog.text
 
     def test_timing_check_uses_exit_packet(self, make_thread, caplog):
         """The timing check compares the reported TrialEnd, not the end-of-trial count.
