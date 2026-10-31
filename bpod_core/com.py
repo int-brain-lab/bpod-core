@@ -3,10 +3,13 @@
 import contextlib
 import logging
 import os
+import re
 import select
+import sys
 import weakref
 from collections.abc import Callable, Collection, Iterable, Iterator
 from contextlib import AbstractContextManager
+from pathlib import Path
 from struct import Struct
 from types import TracebackType
 from typing import Any, Literal, cast, overload
@@ -974,6 +977,86 @@ def verify_serial_discovery(
         return False
 
 
+_BCD_DEVICES: dict[tuple[int, int, str], int] = {}
+"""The release numbers found by :func:`_read_bcd_device`, by vid, pid and serial."""
+
+
+def _read_bcd_device(port: ListPortInfo) -> int | None:
+    """Read the USB device release number (bcdDevice) of the device behind a port.
+
+    pyserial reads the port's other USB descriptor fields, but not this one. Teensy
+    boards report their model in it, e.g., 0x0280 for a Teensy 4.1. A number found
+    is kept for the device's vid, pid and serial number.
+
+    Parameters
+    ----------
+    port : ListPortInfo
+        The port of the device.
+
+    Returns
+    -------
+    int or None
+        The release number, or None if the port isn't a USB port with a serial
+        number, the platform isn't supported, or the lookup failed (e.g., for a
+        device unplugged on Linux or macOS; Windows keeps the records of absent
+        devices).
+    """
+    if port.vid is None or port.pid is None or not port.serial_number:
+        return None  # no way to tell the device from one that took over its port
+    key = (port.vid, port.pid, port.serial_number)
+    if (bcd_device := _BCD_DEVICES.get(key)) is None:
+        bcd_device = _look_up_bcd_device(port)
+        if bcd_device is not None:  # a failed lookup may succeed later
+            _BCD_DEVICES[key] = bcd_device
+    return bcd_device
+
+
+def _look_up_bcd_device(port: ListPortInfo) -> int | None:
+    """Look up bcdDevice in the operating system's records (see _read_bcd_device).
+
+    Linux and macOS find the USB device by the port's path or name, which another
+    device can take over after a replug: its serial number must match the port's.
+    """
+    try:
+        if sys.platform == 'win32':  # the hardware IDs in the USB device's registry key
+            import winreg  # noqa: PLC0415 - Windows only
+
+            # the USB device's node is named after its serial number, also for a
+            # composite device, whose serial ports are nodes below it
+            key = (
+                r'SYSTEM\CurrentControlSet\Enum\USB'
+                rf'\VID_{port.vid:04X}&PID_{port.pid:04X}\{port.serial_number}'
+            )
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as handle:
+                hardware_ids, _ = winreg.QueryValueEx(handle, 'HardwareID')
+            # e.g., USB\VID_16C0&PID_048C&REV_0280
+            match = re.search(r'REV_([0-9A-Fa-f]{4})', ' '.join(hardware_ids))
+            return int(match[1], 16) if match else None
+        if sys.platform == 'darwin':  # the I/O Registry, with pyserial's IOKit helpers
+            from serial.tools import list_ports_osx as iokit  # noqa: PLC0415 - IOKit
+
+            for service in iokit.GetIOServicesByType('IOSerialBSDClient'):
+                if iokit.get_string_property(service, 'IOCalloutDevice') == port.device:
+                    usb_device = iokit.GetParentDeviceByType(service, 'IOUSBHostDevice')
+                    if not usb_device:
+                        usb_device = iokit.GetParentDeviceByType(service, 'IOUSBDevice')
+                    serial_number = usb_device and iokit.get_string_property(
+                        usb_device, iokit.kUSBSerialNumberString
+                    )
+                    if usb_device and serial_number == port.serial_number:
+                        return iokit.get_int_property(
+                            usb_device, 'bcdDevice', iokit.kCFNumberSInt32Type
+                        )
+            return None
+        if (path := getattr(port, 'usb_device_path', None)) is None:  # pyserial's SysFS
+            return None  # not a USB port
+        sysfs = Path(path)
+        same_device = (sysfs / 'serial').read_text().strip() == port.serial_number
+        return int((sysfs / 'bcdDevice').read_text(), 16) if same_device else None
+    except (OSError, ValueError):
+        return None
+
+
 class SerialDevice(AbstractContextManager):
     r"""Base class for implementing drivers for USB serial devices.
 
@@ -1166,6 +1249,11 @@ class SerialDevice(AbstractContextManager):
             )
             if self._serial_device_finalizer is not None:
                 self._serial_device_finalizer.detach()
+
+    @property
+    def _bcd_device(self) -> int | None:
+        """The USB device release number (bcdDevice), or None if unknown."""
+        return _read_bcd_device(self._port_info)
 
     @property
     def port(self) -> str:

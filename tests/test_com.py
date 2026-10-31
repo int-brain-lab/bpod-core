@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import struct
+import sys
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock, call
@@ -12,7 +13,7 @@ from serial import SerialException
 from serial.tools.list_ports_common import numsplit
 
 from bpod_core import com
-from bpod_core.constants import STRUCT_UINT64_LE
+from bpod_core.constants import STRUCT_UINT64_LE, TeensyPID
 
 
 @pytest.fixture
@@ -563,6 +564,141 @@ class TestVerifySerialDiscovery:
         assert result is False
 
 
+class TestReadBcdDevice:
+    """Tests for _read_bcd_device(), the USB device release number."""
+
+    @pytest.fixture(autouse=True)
+    def no_cache(self, mocker):
+        """Start each test without release numbers found by earlier tests."""
+        mocker.patch.dict(com._BCD_DEVICES, clear=True)
+
+    @pytest.fixture
+    def port(self, make_port_info):
+        """The port of a Bpod 2+, a Teensy 4.1 with three serial ports."""
+        return make_port_info(
+            '/dev/ttyACM0', serial_number='14414540', pid=TeensyPID.TRIPLE_SERIAL
+        )
+
+    @pytest.fixture
+    def sysfs(self, mocker, port, tmp_path):
+        """Linux, with the sysfs directory of the port's USB device (no bcdDevice)."""
+        mocker.patch.object(com, 'sys', SimpleNamespace(platform='linux'))
+        port.usb_device_path = str(tmp_path)  # type: ignore[attr-defined]
+        (tmp_path / 'serial').write_text(f'{port.serial_number}\n')
+        return tmp_path
+
+    @pytest.fixture
+    def winreg(self, mocker):
+        """Windows, with a fake winreg listing a Teensy 4.1's hardware IDs."""
+        mocker.patch.object(com, 'sys', SimpleNamespace(platform='win32'))
+        winreg = MagicMock()
+        winreg.OpenKey.return_value.__enter__.return_value = 'key'
+        hardware_ids = [r'USB\VID_16C0&PID_048C&REV_0280', r'USB\VID_16C0&PID_048C']
+        winreg.QueryValueEx.return_value = (hardware_ids, 7)
+        mocker.patch.dict(sys.modules, {'winreg': winreg})
+        return winreg
+
+    @pytest.fixture
+    def iokit(self, mocker, port):
+        """macOS, with fake IOKit helpers: two serial ports, one the port's."""
+        mocker.patch.object(com, 'sys', SimpleNamespace(platform='darwin'))
+        iokit = MagicMock(kUSBSerialNumberString='USB Serial Number')
+        properties = {
+            ('other', 'IOCalloutDevice'): '/dev/cu.other',
+            ('bpod', 'IOCalloutDevice'): port.device,
+            ('usb', 'USB Serial Number'): port.serial_number,
+        }
+        iokit.GetIOServicesByType.return_value = ['other', 'bpod']
+        iokit.get_string_property.side_effect = lambda obj, key: properties.get(
+            (obj, key)
+        )
+        iokit.GetParentDeviceByType.return_value = 'usb'
+        iokit.get_int_property.return_value = 0x0280
+        # an attribute of serial.tools: on macOS, pyserial has imported the real one
+        mocker.patch('serial.tools.list_ports_osx', iokit, create=True)
+        return iokit
+
+    def test_found_number_is_kept(self, port, sysfs):
+        """Reads bcdDevice from sysfs, and keeps the number for the device."""
+        (sysfs / 'bcdDevice').write_text('0280\n')
+        assert com._read_bcd_device(port) == 0x0280
+        (sysfs / 'bcdDevice').unlink()
+        assert com._read_bcd_device(port) == 0x0280
+
+    def test_failed_lookup_is_repeated(self, port, sysfs):
+        """A failed lookup is repeated next time, e.g., once the device is back."""
+        assert com._read_bcd_device(port) is None
+        (sysfs / 'bcdDevice').write_text('0280\n')
+        assert com._read_bcd_device(port) == 0x0280
+
+    def test_no_serial_number(self, mocker, port):
+        """A port without a serial number isn't looked up: its device can't be told."""
+        look_up = mocker.patch('bpod_core.com._look_up_bcd_device')
+        port.serial_number = None
+        assert com._read_bcd_device(port) is None
+        look_up.assert_not_called()
+
+    def test_linux_not_usb(self, port, sysfs):
+        """A port without a USB device has no release number."""
+        port.usb_device_path = None  # type: ignore[attr-defined]
+        assert com._read_bcd_device(port) is None
+
+    def test_linux_unplugged(self, port, sysfs):
+        """A device unplugged since the ports were listed has no release number."""
+        port.usb_device_path = str(sysfs / 'gone')  # type: ignore[attr-defined]
+        assert com._read_bcd_device(port) is None
+
+    def test_linux_other_device(self, port, sysfs):
+        """A device that has taken over the port's USB path isn't the port's."""
+        (sysfs / 'bcdDevice').write_text('0277\n')
+        (sysfs / 'serial').write_text('99999999\n')
+        assert com._read_bcd_device(port) is None
+
+    def test_windows(self, port, winreg):
+        """Reads the revision from the hardware IDs of the USB device's registry key."""
+        assert com._read_bcd_device(port) == 0x0280
+        winreg.OpenKey.assert_called_once_with(
+            winreg.HKEY_LOCAL_MACHINE,
+            r'SYSTEM\CurrentControlSet\Enum\USB\VID_16C0&PID_048C\14414540',
+        )
+        winreg.QueryValueEx.assert_called_once_with('key', 'HardwareID')
+
+    def test_windows_unknown_device(self, port, winreg):
+        """A device without a registry key has no release number."""
+        winreg.OpenKey.side_effect = FileNotFoundError
+        assert com._read_bcd_device(port) is None
+
+    def test_macos(self, port, iokit):
+        """Reads bcdDevice from the USB device the port's serial service belongs to."""
+        assert com._read_bcd_device(port) == 0x0280
+        iokit.GetParentDeviceByType.assert_called_once_with('bpod', 'IOUSBHostDevice')
+        iokit.get_int_property.assert_called_once_with(
+            'usb', 'bcdDevice', iokit.kCFNumberSInt32Type
+        )
+
+    def test_macos_unknown_port(self, port, iokit):
+        """A port without a serial service has no release number."""
+        port.device = '/dev/cu.gone'
+        assert com._read_bcd_device(port) is None
+
+    def test_macos_not_usb(self, port, iokit):
+        """A serial service without a USB device has no release number."""
+        iokit.GetParentDeviceByType.return_value = None
+        assert com._read_bcd_device(port) is None
+
+    def test_macos_other_device(self, port, iokit):
+        """A device that has taken over the port's name isn't the port's."""
+        port.serial_number = '99999999'
+        assert com._read_bcd_device(port) is None
+
+    def test_unknown_device_on_this_platform(self, make_port_info):
+        """The real lookup of this platform finds nothing for an unknown device."""
+        port = make_port_info(
+            '/dev/nonexistent', serial_number='NONE', vid=0xFFFF, pid=0xFFFF
+        )
+        assert com._read_bcd_device(port) is None
+
+
 class TestSerialDevice:
     """Tests for SerialDevice class."""
 
@@ -620,6 +756,16 @@ class TestSerialDevice:
         """Anything but a path or a port info is reported as a missing port."""
         with pytest.raises(SerialException, match='serial port not found: None'):
             com.SerialDevice(None)  # type: ignore[arg-type]
+
+    def test_bcd_device(
+        self, mocker, mock_comports, mock_port_info, mock_extended_serial
+    ):
+        """The USB device release number is read for the device's port."""
+        read = mocker.patch('bpod_core.com._read_bcd_device', return_value=0x0280)
+        device = com.SerialDevice('/dev/ttyACM0', open_connection=False)
+        read.assert_not_called()
+        assert device._bcd_device == 0x0280
+        read.assert_called_once_with(mock_port_info)
 
     def test_context_manager_enter(self, mock_comports, mock_extended_serial):
         """Context manager __enter__ returns the device instance."""
