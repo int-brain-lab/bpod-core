@@ -205,7 +205,10 @@ remote instance:
      - Returns the trial data as a Polars :class:`~polars.DataFrame` (see
        :doc:`/data_format`), or a :class:`~polars.LazyFrame` with ``lazy=True``.
    * - :meth:`~bpod_core.bpod.RemoteBpod.stop_state_machine`
-     - Aborts the state machine currently running on the host.
+     - Aborts the state machine currently running on the host. The reply is awaited a
+       second longer than ``timeout``; a host busy queuing a state machine may answer
+       later still, in which case the ``TimeoutError`` is the client's and the host
+       stops the trial afterwards.
    * - :meth:`~bpod_core.bpod.RemoteBpod.reset_session_clock`
      - Resets the device's session clock.
    * - :meth:`~bpod_core.bpod.RemoteBpod.set_status_led`

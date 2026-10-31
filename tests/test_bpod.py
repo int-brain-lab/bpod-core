@@ -1557,14 +1557,25 @@ class TestStopStateMachine:
         return mock_bpod_2p
 
     def test_timeout(self, mock_bpod_2p, blocked_reader):
-        """A Bpod that doesn't end the trial after X: BpodError, still running."""
-        with pytest.raises(TimeoutError, match=r'did not end trial #7 within 0\.05 s'):
+        """A Bpod that doesn't end the trial after X: TimeoutError, trial given up."""
+        with pytest.raises(TimeoutError, match=r'within 0\.05 s .*was given up'):
             mock_bpod_2p.stop_state_machine(timeout=0.05)
         assert mock_bpod_2p.serial0.last_write == b'X'
-        assert mock_bpod_2p.is_running
-        blocked_reader.release.set()
-        mock_bpod_2p.stop_state_machine(timeout=2)
-        assert not mock_bpod_2p.is_running
+        assert not mock_bpod_2p.is_running  # the reader was cancelled
+
+    def test_given_up_trial_needs_a_reopen(self, mock_bpod_2p, blocked_reader):
+        """After a trial was given up, the stream is suspect until the next reopen."""
+        with pytest.raises(TimeoutError):
+            mock_bpod_2p.stop_state_machine(timeout=0.05)
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        with pytest.raises(BpodError, match='out of sync'):
+            mock_bpod_2p.run(fsm)
+        with pytest.raises(BpodError, match='out of sync'):
+            mock_bpod_2p.reset_session_clock()
+        mock_bpod_2p.close()
+        mock_bpod_2p.open()
+        assert mock_bpod_2p.reset_session_clock()
 
     def test_warns_about_analog_sampling(self, running, caplog):
         """With an analog input, stopping warns that analog sampling stops too."""
@@ -1903,7 +1914,7 @@ class TestExitOnException:
             raise RuntimeError
         assert mock_bpod_2p.serial0.last_write == b'X'
         assert 'did not end trial #7 within 0.05 s' in caplog.text
-        assert 'giving the trial up' in caplog.text
+        assert 'the trial was given up' in caplog.text
         assert 'Lost connection' not in caplog.text
         assert not mock_bpod_2p.is_running
 
@@ -1918,6 +1929,20 @@ class TestExitOnException:
         stop.assert_called_once()
         disconnect.assert_called_once()
         assert 'leaving on KeyboardInterrupt' in caplog.text
+
+    def test_a_failing_stop_is_logged(
+        self, mock_bpod_2p, blocked_reader, mocker, caplog
+    ):
+        """A stop that fails doesn't replace the exception being handled."""
+
+        def failing_stop(**_):
+            blocked_reader.cancel()
+            raise SerialException('gone')
+
+        mocker.patch.object(Bpod, 'stop_state_machine', side_effect=failing_stop)
+        with pytest.raises(RuntimeError, match='task error'), mock_bpod_2p:
+            raise RuntimeError('task error')
+        assert 'Could not stop the state machine: gone' in caplog.text
 
     def test_normal_exit_waits(self, mock_bpod_2p, blocked_reader, stop):
         """Leaving normally waits for the trial instead of stopping it."""

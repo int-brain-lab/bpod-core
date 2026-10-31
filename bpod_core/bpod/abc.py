@@ -247,8 +247,10 @@ class AbstractBpod(AbstractContextManager):
         Raises
         ------
         TimeoutError
-            If the Bpod hasn't ended the trial within `timeout` seconds. The state
-            machine still counts as running.
+            If the Bpod hasn't ended the trial within `timeout` seconds. The trial is
+            then given up: it no longer counts as running, its data stays incomplete,
+            and the connection has to be closed and reopened before the next command
+            or state machine.
 
         Notes
         -----

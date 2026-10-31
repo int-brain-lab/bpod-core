@@ -184,6 +184,7 @@ class BlockedThread(threading.Thread):
 
     def cancel(self) -> None:
         self.release.set()
+        self.join(timeout=2)
 
 
 @pytest.fixture
@@ -192,8 +193,7 @@ def blocked_thread() -> Iterator[BlockedThread]:
     thread = BlockedThread()
     thread.start()
     yield thread
-    thread.release.set()
-    thread.join(timeout=2)
+    thread.cancel()
 
 
 @pytest.fixture

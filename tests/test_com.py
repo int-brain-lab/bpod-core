@@ -44,12 +44,22 @@ class TestExtendedSerial:
             port.read_waiting()
 
     def test_read_waiting_ends_on_cancel(self, pty_port):
-        """cancel_read() from another thread ends the wait with an empty result."""
+        """cancel_read() from another thread ends the wait with ReadCancelled."""
         master, port = pty_port
         threading.Timer(0.05, port.cancel_read).start()
-        assert port.read_waiting() == b''
+        with pytest.raises(com.ReadCancelled):
+            port.read_waiting()
         os.write(master, b'a')
         assert port.read_waiting() == b'a'  # reading goes on afterwards
+
+    def test_discard_cancel_read(self, pty_port):
+        """A cancel no read consumed is withdrawn; with none pending, it's a no-op."""
+        master, port = pty_port
+        port.cancel_read()
+        port.discard_cancel_read()
+        port.discard_cancel_read()  # nothing pending: returns at once
+        os.write(master, b'a')
+        assert port.read_waiting() == b'a'
 
     def test_read_waiting_falls_back_to_read(self, mock_serial, mocker):
         """Without descriptors, read() takes what is waiting or waits for one byte."""

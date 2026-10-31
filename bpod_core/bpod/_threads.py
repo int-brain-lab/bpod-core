@@ -35,7 +35,7 @@ from bpod_core.bpod.structs import (
     _StateMachineLookup,
     _TimeReferences,
 )
-from bpod_core.com import ExtendedSerial
+from bpod_core.com import ExtendedSerial, ReadCancelled
 from bpod_core.constants import STRUCT_UINT32_LE, STRUCT_UINT64_LE
 from bpod_core.misc import _HandlerSlot
 
@@ -50,8 +50,11 @@ _INITIAL_BUFFER_SIZE = 2048
 _OUTPUT_ID_OFFSET = 1000
 """Event ID offset for output action events."""
 
-_DRAIN_GRACE_S = 0.01
-"""Wait for a drain marker past the deadline: an idle thread reaches it at once."""
+_DRAIN_GRACE_S = 0.1
+"""Wait for a drain marker past the deadline: an idle thread reaches it at once.
+
+Generous, so that a trial that finished in time never fails on its softcodes.
+"""
 
 _SOFTCODE_STOP = _RawSoftcode(-1, 0, 0)
 """Sentinel that ends :class:`SoftcodeThread` once the softcodes before it are done."""
@@ -61,10 +64,6 @@ class _DrainMarker(_RawSoftcode):
     """Queued by :meth:`SoftcodeThread.drain`; ``done`` is set once it is reached."""
 
     done: threading.Event
-
-
-class _ReadCancelledError(Exception):
-    """Raised inside :class:`ReadThread` once :meth:`ReadThread.cancel` took effect."""
 
 
 _JOIN_SLICE_S = 0.5
@@ -372,11 +371,11 @@ class ReadThread(threading.Thread):
     def cancel(self) -> None:
         """End the thread without waiting for the trial; its data stays incomplete."""
         self._serial.cancel_read()
-        if self is threading.current_thread():
-            return
         self.join(timeout=1)
         if self.is_alive():
             logger.warning('Read thread did not terminate')
+        else:  # a cancellation the thread didn't see must not end the next read
+            self._serial.discard_cancel_read()
 
     def _fill(self) -> int:
         """Read all bytes pending on the serial port, blocking until there is one.
@@ -388,8 +387,8 @@ class ReadThread(threading.Thread):
         except OSError as error:  # including SerialException, e.g., when unplugged
             self.error = error
             raise
-        if not chunk:  # read_waiting() returns nothing only after cancel_read()
-            raise _ReadCancelledError
+        if not chunk:  # the port's timeout elapsed (off POSIX only): nothing yet
+            return 0
         self._buffer += chunk
         self._received_ns = time.perf_counter_ns()
         return len(chunk)
@@ -548,7 +547,7 @@ class ReadThread(threading.Thread):
                 ]
             )
 
-        except _ReadCancelledError:
+        except ReadCancelled:
             logger.debug('Reading of trial #%d cancelled', self._trial)
         finally:
             if batch:  # e.g. the packets parsed before an unknown opcode

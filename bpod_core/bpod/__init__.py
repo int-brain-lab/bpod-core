@@ -131,21 +131,25 @@ _R = TypeVar('_R')
 def _requires_idle(
     method: Callable[Concatenate[_S, _P], _R],
 ) -> Callable[Concatenate[_S, _P], _R]:
-    """Refuse calls to `method` while a state machine is running.
+    """Refuse calls to `method` while a state machine runs or the stream is suspect.
 
     While a trial runs, its read thread owns the Bpod's serial port: a command that
     expects a reply would steal the trial's event bytes or corrupt them with its reply,
-    and reconfiguring the hardware mid-trial is unsafe. Applies to methods of
+    and reconfiguring the hardware mid-trial is unsafe. After a trial was given up (see
+    :meth:`Bpod.stop_state_machine`), the Bpod may still be sending, so commands are
+    refused until the connection is closed and reopened. Applies to methods of
     :class:`Bpod` and of objects that refer to one as ``_bpod`` (channels, modules).
     Decorated methods are marked with ``requires_idle = True``.
     """
 
     @functools.wraps(method)
     def wrapper(self: _S, *args: _P.args, **kwargs: _P.kwargs) -> _R:
-        if cast('Bpod', getattr(self, '_bpod', self)).is_running:
+        bpod = cast('Bpod', getattr(self, '_bpod', self))
+        if bpod.is_running:
             raise BpodError(
                 f'Cannot use {method.__qualname__} while a state machine is running.'
             )
+        bpod._check_in_sync()  # noqa: SLF001 - same module
         return method(self, *args, **kwargs)
 
     wrapper.requires_idle = True  # type: ignore[attr-defined]
@@ -184,6 +188,9 @@ class Bpod(SerialDevice, AbstractBpod):
     """
 
     _settings: SettingsDict
+    _out_of_sync: bool = False
+    """Set when a trial was given up: the Bpod may still be sending, so the stream can't
+    be trusted until the connection is closed and reopened."""
     _read_thread: ReadThread | None = None
     _event_thread: EventThread | None = None
     _starting_state_machine: bool = False
@@ -370,16 +377,25 @@ class Bpod(SerialDevice, AbstractBpod):
             self._shutdown()
 
     def _abort_trial(self, reason: type[BaseException]) -> None:
-        """Stop the running state machine; give the trial up if the Bpod won't stop."""
+        """Stop the running state machine when leaving on an exception.
+
+        Failures are logged, so that the exception being handled propagates unchanged.
+        """
         if not self.is_running:
             return
         logger.warning('Stopping the state machine: leaving on %s', reason.__name__)
         try:
             self.stop_state_machine()
-        except TimeoutError as e:
-            logger.warning('%s - giving the trial up', e)
-            if (read_thread := self._read_thread) is not None:
-                read_thread.cancel()
+        except Exception as e:  # noqa: BLE001 - the caller's own exception matters more
+            logger.warning('Could not stop the state machine: %s', e)
+
+    def _check_in_sync(self) -> None:
+        """Refuse commands after a trial was given up, until the connection reopens."""
+        if self._out_of_sync:
+            raise BpodError(
+                'The connection has been out of sync since a trial was given up: '
+                'close and reopen it.'
+            )
 
     def _shutdown(self) -> None:
         """Close the connection, then end the IPC service and softcode thread."""
@@ -476,6 +492,7 @@ class Bpod(SerialDevice, AbstractBpod):
             with contextlib.suppress(SerialException):
                 self._discard_stray_bytes(self._serial, 'serial0')
         super().close()
+        self._out_of_sync = False  # the next open() handshakes
 
     @staticmethod
     def _discard_stray_bytes(serial: ExtendedSerial, name: str) -> None:
@@ -1197,6 +1214,7 @@ class Bpod(SerialDevice, AbstractBpod):
         trial_number: int | None = None,
         validate: bool = True,
     ) -> None:
+        self._check_in_sync()  # allowed while running, but not on a suspect stream
         if trial_number is None:
             trial_number = self._next_fsm_index + 1
         if not 0 <= trial_number <= UINT32_MAX:
@@ -1596,9 +1614,14 @@ class Bpod(SerialDevice, AbstractBpod):
         read_thread = self._read_thread  # snapshot for thread-safety
         deadline = None if timeout is None else monotonic() + timeout
         if read_thread is not None and not join_until(read_thread, deadline):
+            # give the trial up: its data stays incomplete, and the Bpod may still be
+            # sending, so the stream can't be trusted until the connection is closed
+            # and reopened
+            read_thread.cancel()
+            self._out_of_sync = True
             raise TimeoutError(
                 f'The Bpod did not end trial #{read_thread.trial_number} within '
-                f'{timeout:g} s of the stop command'
+                f'{timeout:g} s of the stop command; the trial was given up'
             )
 
     @override

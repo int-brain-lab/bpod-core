@@ -38,8 +38,21 @@ _READ_SIZE = 65536
 """Most bytes :meth:`ExtendedSerial.read_waiting` asks for at once."""
 
 
+class ReadCancelled(Exception):  # noqa: N818 - not an error
+    """Raised by :meth:`ExtendedSerial.read_waiting` when the wait was cancelled."""
+
+
 class ExtendedSerial(Serial):
     """Enhances pySerial's :class:`~serial.Serial` with additional functionality."""
+
+    _read_cancelled: bool = False
+    """A :meth:`cancel_read` that no read has reported yet."""
+
+    @override
+    def cancel_read(self) -> None:
+        """Cancel a blocking read; :meth:`read_waiting` reports it as ReadCancelled."""
+        self._read_cancelled = True
+        super().cancel_read()
 
     def write_int8(self, value: int) -> int | None:
         """
@@ -329,29 +342,37 @@ class ExtendedSerial(Serial):
         Block until at least one byte is pending, then return all pending bytes.
 
         On POSIX, the port's file descriptor is waited on and read directly, in one
-        call each; elsewhere :meth:`read` is used. The wait ignores the port's timeout;
-        :meth:`cancel_read` ends it with an empty result. A read returns at most what
-        the OS hands out at once, on Linux about 4 KB.
+        call each, ignoring the port's timeout; elsewhere :meth:`read` is used, which
+        returns nothing once the port's timeout elapses. A read returns at most what the
+        OS hands out at once, on Linux about 4 KB.
 
         Returns
         -------
         bytes
-            The pending bytes, at least one - or none after :meth:`cancel_read`.
+            The pending bytes, at least one - or none when, off POSIX, the port's
+            timeout elapsed.
 
         Raises
         ------
+        ReadCancelled
+            If :meth:`cancel_read` ended the wait.
         SerialException
             If the port is closed, or if it reports pending bytes but returns none.
         """
         if not _DIRECT_READ:
-            return self.read(max(1, self.in_waiting))
+            data = self.read(max(1, self.in_waiting))
+            if not data and self._read_cancelled:
+                self._read_cancelled = False
+                raise ReadCancelled
+            return data
         fd = self.fileno()  # raises if the port is closed
         abort = cast('int', self.pipe_abort_read_r)  # written to by cancel_read()
         try:
             ready, _, _ = select.select([fd, abort], [], [])
             if abort in ready:
                 os.read(abort, 1000)  # consume the cancellation
-                return b''
+                self._read_cancelled = False
+                raise ReadCancelled
             data = os.read(fd, _READ_SIZE)
         except OSError as e:
             raise SerialException(f'read failed: {e}') from e
@@ -361,6 +382,15 @@ class ExtendedSerial(Serial):
                 '(device disconnected or multiple access on port?)'
             )
         return data
+
+    def discard_cancel_read(self) -> None:
+        """Withdraw a :meth:`cancel_read` that no read has reported yet."""
+        self._read_cancelled = False
+        if not _DIRECT_READ:
+            return  # pyserial's cancellation leaves nothing pending off POSIX
+        abort = cast('int', self.pipe_abort_read_r)
+        if select.select([abort], [], [], 0)[0]:
+            os.read(abort, 1000)
 
     def write_struct(self, fmt: str | Struct, *data: Any) -> int | None:
         """

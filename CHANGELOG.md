@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Bpod.wait(timeout=...)` raises a `TimeoutError` when the state machine hasn't
   finished in time.
 - `stop_state_machine(timeout=...)` waits at most `timeout` seconds (one by default) for
-  the Bpod to end the trial and raises a `TimeoutError` otherwise.
+  the Bpod to end the trial; otherwise it gives the trial up and raises a
+  `TimeoutError`, and the connection has to be reopened.
 
 ### Fixed
 

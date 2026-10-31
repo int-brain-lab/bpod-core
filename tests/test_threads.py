@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import struct
 import subprocess
 import sys
@@ -65,6 +66,20 @@ def _opcode1(events: list[int], n_cycles: int) -> bytes:
 def _opcode2(softcode: int) -> bytes:
     """Encode an opcode-2 (softcode) packet. param is 1-based on the wire."""
     return bytes([2, softcode + 1])
+
+
+def _reader(serial) -> tuple[ReadThread, SimpleQueue]:
+    """A ReadThread for trial 0 on `serial`, and its event queue."""
+    q_events: SimpleQueue[list[_RawEvents]] = SimpleQueue()
+    thread = ReadThread(
+        serial=serial,
+        state_machine_hash=b'',
+        trial=0,
+        cycle_period_us=1,
+        queue_events=q_events,
+        queue_softcodes=SimpleQueue(),
+    )
+    return thread, q_events
 
 
 def _exit_data(n_cycles: int, end_micros_us: int) -> bytes:
@@ -143,15 +158,7 @@ class TestReadThread:
     def test_cancel_ends_the_thread_without_the_bpod(self, pty_port):
         """cancel() ends a reader waiting on a silent port; no error is recorded."""
         _, port = pty_port  # a real port: the mock serial never blocks
-        q_events = SimpleQueue()
-        thread = ReadThread(
-            serial=port,
-            state_machine_hash=b'',
-            trial=0,
-            cycle_period_us=1,
-            queue_events=q_events,
-            queue_softcodes=SimpleQueue(),
-        )
+        thread, q_events = _reader(port)
         thread.start()
         thread.join(timeout=0.05)
         assert thread.is_alive()  # waiting for the confirmation byte
@@ -159,6 +166,29 @@ class TestReadThread:
         assert not thread.is_alive()
         assert thread.error is None
         assert q_events.get(timeout=1) is _EVENTS_STOP
+
+    def test_cancel_after_the_trial_ended_withdraws_the_abort(self, pty_port):
+        """A cancel the reader never saw must not end the next read on the port."""
+        master, port = pty_port
+        thread, _ = _reader(port)
+        data = _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(0, 0)
+        os.write(master, data)
+        thread.start()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        thread.cancel()  # too late to end anything
+        os.write(master, b'a')
+        assert port.read_waiting() == b'a'  # not b'': the abort byte was withdrawn
+
+    def test_empty_read_without_cancel_is_retried(self):
+        """Off POSIX an elapsed port timeout yields nothing: the reader reads again."""
+        data = _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(0, 0)
+        serial = MagicMock()
+        serial.read_waiting.side_effect = [b'', data]
+        thread, q_events = _reader(serial)
+        thread.run()
+        assert thread.error is None
+        assert len(_drain(q_events)) > 1  # events, not just the stop sentinel
 
     def test_initial_events_enqueued(self, make_thread):
         """START_FSM and START_STATE are the first two events enqueued."""
