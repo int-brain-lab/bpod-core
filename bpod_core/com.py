@@ -2,12 +2,14 @@
 
 import contextlib
 import logging
+import os
+import select
 import weakref
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from contextlib import AbstractContextManager
 from struct import Struct
 from types import TracebackType
-from typing import Any, Literal, overload
+from typing import Any, Literal, cast, overload
 
 from serial import Serial, SerialException
 from serial.threaded import Protocol, ReaderThread
@@ -30,8 +32,27 @@ from bpod_core.misc import Filter, _match_filter
 logger = logging.getLogger(__name__)
 
 
+_DIRECT_READ = os.name == 'posix'
+"""Whether :meth:`ExtendedSerial.read_waiting` waits on and reads a file descriptor."""
+_READ_SIZE = 65536
+"""Most bytes :meth:`ExtendedSerial.read_waiting` asks for at once."""
+
+
+class ReadCancelled(Exception):  # noqa: N818 - not an error
+    """Raised by :meth:`ExtendedSerial.read_waiting` when the wait was cancelled."""
+
+
 class ExtendedSerial(Serial):
     """Enhances pySerial's :class:`~serial.Serial` with additional functionality."""
+
+    _read_cancelled: bool = False
+    """A :meth:`cancel_read` that no read has reported yet."""
+
+    @override
+    def cancel_read(self) -> None:
+        """Cancel a blocking read; :meth:`read_waiting` reports it as ReadCancelled."""
+        self._read_cancelled = True
+        super().cancel_read()
 
     def write_int8(self, value: int) -> int | None:
         """
@@ -315,6 +336,61 @@ class ExtendedSerial(Serial):
             ``True`` if the byte read is non-zero, ``False`` otherwise.
         """
         return self.read(1) != b'\x00'
+
+    def read_waiting(self) -> bytes:
+        """
+        Block until at least one byte is pending, then return all pending bytes.
+
+        On POSIX, the port's file descriptor is waited on and read directly, in one
+        call each, ignoring the port's timeout; elsewhere :meth:`read` is used, which
+        returns nothing once the port's timeout elapses. A read returns at most what the
+        OS hands out at once, on Linux about 4 KB.
+
+        Returns
+        -------
+        bytes
+            The pending bytes, at least one - or none when, off POSIX, the port's
+            timeout elapsed.
+
+        Raises
+        ------
+        ReadCancelled
+            If :meth:`cancel_read` ended the wait.
+        SerialException
+            If the port is closed, or if it reports pending bytes but returns none.
+        """
+        if not _DIRECT_READ:
+            data = self.read(max(1, self.in_waiting))
+            if not data and self._read_cancelled:
+                self._read_cancelled = False
+                raise ReadCancelled
+            return data
+        fd = self.fileno()  # raises if the port is closed
+        abort = cast('int', self.pipe_abort_read_r)  # written to by cancel_read()
+        try:
+            ready, _, _ = select.select([fd, abort], [], [])
+            if abort in ready:
+                os.read(abort, 1000)  # consume the cancellation
+                self._read_cancelled = False
+                raise ReadCancelled
+            data = os.read(fd, _READ_SIZE)
+        except OSError as e:
+            raise SerialException(f'read failed: {e}') from e
+        if not data:
+            raise SerialException(
+                'device reports readiness to read but returned no data '
+                '(device disconnected or multiple access on port?)'
+            )
+        return data
+
+    def discard_cancel_read(self) -> None:
+        """Withdraw a :meth:`cancel_read` that no read has reported yet."""
+        self._read_cancelled = False
+        if not _DIRECT_READ:
+            return  # pyserial's cancellation leaves nothing pending off POSIX
+        abort = cast('int', self.pipe_abort_read_r)
+        if select.select([abort], [], [], 0)[0]:
+            os.read(abort, 1000)
 
     def write_struct(self, fmt: str | Struct, *data: Any) -> int | None:
         """
@@ -831,11 +907,18 @@ def find_ports(
 
         find_ports(vid=0x16C0, device=re.compile(r'/dev/ttyACM\d+'))
     """
-    filters = {k: v for k, v in locals().items() if v is not None}
+    return _filter_ports(sorted(comports()), **locals())
+
+
+def _filter_ports(
+    ports: Iterable[ListPortInfo], **filters: Filter[Any] | None
+) -> list[ListPortInfo]:
+    """Return the ports whose attributes match the filters (``None`` is ignored)."""
+    criteria = {k: v for k, v in filters.items() if v is not None}
     return [
         port
-        for port in sorted(comports())
-        if all(_match_filter(getattr(port, k), v) for k, v in filters.items())
+        for port in ports
+        if all(_match_filter(getattr(port, k), v) for k, v in criteria.items())
     ]
 
 
@@ -844,6 +927,8 @@ def verify_serial_discovery(
     expected_message: bytes,
     timeout: float = 1,
     trigger: Callable[[], Any] | None = None,
+    *,
+    raise_dtr: bool = False,
 ) -> bool:
     """Check if a device sends an expected discovery message on a serial port.
 
@@ -862,6 +947,11 @@ def verify_serial_discovery(
     trigger : Callable, optional
         A function to call before reading. Use this to trigger the device's discovery
         routine.
+    raise_dtr : bool, default: False
+        Open the port with DTR low and raise it once the port is open: a device that
+        sends its discovery message when a host asserts DTR then does so after the
+        port's input buffer has been cleared on opening, rather than into it. Costs
+        two USB control transfers.
 
     Returns
     -------
@@ -870,7 +960,13 @@ def verify_serial_discovery(
         False otherwise (including if the port cannot be opened).
     """
     try:
-        with Serial(port, timeout=timeout) as ser:
+        ser = Serial(timeout=timeout)
+        if raise_dtr:
+            ser.dtr = False
+        ser.port = port
+        with ser:
+            if raise_dtr:
+                ser.dtr = True
             if trigger is not None:
                 trigger()
             return ser.read(len(expected_message)) == expected_message
@@ -888,8 +984,9 @@ class SerialDevice(AbstractContextManager):
 
     Parameters
     ----------
-    port : str
-        The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3').
+    port : str or ListPortInfo
+        The serial port device path (e.g., '/dev/ttyUSB0' or 'COM3'), or the port's
+        :class:`~serial.tools.list_ports_common.ListPortInfo` if already enumerated.
     open_connection : bool, default: True
         Whether to open the connection immediately.
 
@@ -923,22 +1020,24 @@ class SerialDevice(AbstractContextManager):
 
     def __init__(
         self,
-        port: str,
+        port: str | ListPortInfo,
         *,
         open_connection: bool = True,
     ) -> None:
         # obtain ListPortInfo for device on specified port
-        try:
-            self._port_info = next(p for p in comports() if p.device == port)
-        except StopIteration as e:
-            raise SerialException(
-                f'Failed to connect to {self._serial_device_name} - '
-                f'serial port not found: {port}'
-            ) from e
+        if not isinstance(port, ListPortInfo):
+            port_info = next((p for p in comports() if p.device == port), None)
+            if port_info is None:
+                raise SerialException(
+                    f'Failed to connect to {self._serial_device_name} - '
+                    f'serial port not found: {port}'
+                )
+            port = port_info
+        self._port_info = port
 
         # instantiate ExtendedSerial
         self._serial = ExtendedSerial()
-        self._serial.port = port  # only set port after the fact
+        self._serial.port = self._port_info.device  # only set port after the fact
 
         # finalizer for cleanup on garbage collection
         self._serial_device_finalizer: weakref.finalize | None = None

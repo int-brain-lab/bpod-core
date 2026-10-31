@@ -7,15 +7,16 @@ import os
 import re
 import struct
 import weakref
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from queue import Empty, SimpleQueue
-from time import perf_counter_ns, time_ns
+from time import monotonic, perf_counter_ns, time_ns
 from types import TracebackType
 from typing import (
     Any,
     Concatenate,
     Literal,
+    NoReturn,
     ParamSpec,
     TypeVar,
     cast,
@@ -27,6 +28,7 @@ import polars as pl
 from pydantic import ConfigDict, validate_call
 from serial import SerialException
 from serial.threaded import ReaderThread
+from serial.tools.list_ports_common import ListPortInfo
 from typing_extensions import override
 
 from bpod_core import __version__ as bpod_core_version
@@ -36,6 +38,7 @@ from bpod_core.bpod._threads import (
     EventThread,
     ReadThread,
     SoftcodeThread,
+    join_until,
 )
 from bpod_core.bpod.abc import AbstractBpod
 from bpod_core.bpod.constants import (
@@ -45,6 +48,7 @@ from bpod_core.bpod.constants import (
     CHANNEL_TYPES_INPUT,
     CHANNEL_TYPES_OUTPUT,
     CONFIG_PATH,
+    DISCOVERY_BYTE,
     DISCOVERY_TIMEOUT,
     MACHINE_TYPES,
     MAX_BPOD_HW_VERSION,
@@ -81,6 +85,7 @@ from bpod_core.com import (
     ChunkedSerialReader,
     ExtendedSerial,
     SerialDevice,
+    _filter_ports,
     find_ports,
     verify_serial_discovery,
 )
@@ -108,6 +113,10 @@ from bpod_core.misc import (
 logger = logging.getLogger(__name__)
 
 _ANALOG_FLUSH_INTERVAL_NS = 100_000_000  # 100 ms
+# a session clock reset is aligned to the host clock by the midpoint of its round trip,
+# so its timestamps are off by up to half the round trip; a slow reset is repeated
+_SESSION_CLOCK_RESET_ATTEMPTS = 3
+_SESSION_CLOCK_MAX_ERROR_NS = 5_000_000  # 5 ms
 # while idle, the Bpod answers 'X' with a trial-end report: opcode 1, one event, event
 # code 255 (end of trial), then 2 x uInt32 cycle counts and a uInt64 timestamp
 _IDLE_STOP_REPLY_HEADER = b'\x01\x01\xff'
@@ -122,21 +131,25 @@ _R = TypeVar('_R')
 def _requires_idle(
     method: Callable[Concatenate[_S, _P], _R],
 ) -> Callable[Concatenate[_S, _P], _R]:
-    """Refuse calls to `method` while a state machine is running.
+    """Refuse calls to `method` while a state machine runs or the stream is suspect.
 
     While a trial runs, its read thread owns the Bpod's serial port: a command that
     expects a reply would steal the trial's event bytes or corrupt them with its reply,
-    and reconfiguring the hardware mid-trial is unsafe. Applies to methods of
+    and reconfiguring the hardware mid-trial is unsafe. After a trial was given up (see
+    :meth:`Bpod.stop_state_machine`), the Bpod may still be sending, so commands are
+    refused until the connection is closed and reopened. Applies to methods of
     :class:`Bpod` and of objects that refer to one as ``_bpod`` (channels, modules).
     Decorated methods are marked with ``requires_idle = True``.
     """
 
     @functools.wraps(method)
     def wrapper(self: _S, *args: _P.args, **kwargs: _P.kwargs) -> _R:
-        if cast('Bpod', getattr(self, '_bpod', self)).is_running:
+        bpod = cast('Bpod', getattr(self, '_bpod', self))
+        if bpod.is_running:
             raise BpodError(
                 f'Cannot use {method.__qualname__} while a state machine is running.'
             )
+        bpod._check_in_sync()  # noqa: SLF001 - same module
         return method(self, *args, **kwargs)
 
     wrapper.requires_idle = True  # type: ignore[attr-defined]
@@ -175,6 +188,9 @@ class Bpod(SerialDevice, AbstractBpod):
     """
 
     _settings: SettingsDict
+    _out_of_sync: bool = False
+    """Set when a trial was given up: the Bpod may still be sending, so the stream can't
+    be trusted until the connection is closed and reopened."""
     _read_thread: ReadThread | None = None
     _event_thread: EventThread | None = None
     _starting_state_machine: bool = False
@@ -252,19 +268,21 @@ class Bpod(SerialDevice, AbstractBpod):
         self._softcode_thread = SoftcodeThread(handler_slot=self._softcode_slot)
         self._softcode_thread.start()
 
-        try:
-            # identify Bpod by port or serial number, open connection
-            bpod_port, _ = self._identify_bpod(port, serial_number)
-            super().__init__(port=bpod_port, open_connection=True)
-            self._serial_number = self._port_info.serial_number or 'unknown'
+        # record reference system time before opening the port: the handshake's clock
+        # reset is dated against it
+        self._time_reference = _TimeReferences(
+            init_system_time_ns=time_ns(),
+            init_perf_counter_ns=perf_counter_ns(),
+            reset_system_time_ns=0,
+        )
 
-            # record reference system time
-            self._time_reference = _TimeReferences(
-                init_system_time_ns=time_ns(),
-                init_perf_counter_ns=perf_counter_ns(),
-                reset_system_time_ns=0,
-            )
-            self.reset_session_clock()
+        try:
+            # enumerating serial ports is slow, so it is done once: for identifying the
+            # Bpod by port or serial number and for detecting its additional ports
+            bpod_ports = find_ports(vid=VIDS_BPOD, pid=PIDS_BPOD)
+            port_info = self._identify_bpod(bpod_ports, port, serial_number)
+            super().__init__(port=port_info, open_connection=True)
+            self._serial_number = port_info.serial_number or 'unknown'
 
             # get firmware version and machine type; enforce version requirements
             self._get_version_info()
@@ -273,7 +291,9 @@ class Bpod(SerialDevice, AbstractBpod):
             self._get_hardware_configuration()
 
             # detect additional serial ports
-            self.serial1, self._flexio_serial = self._detect_additional_serial_ports()
+            self.serial1, self._flexio_serial = self._detect_additional_serial_ports(
+                bpod_ports
+            )
 
             # configure input and output channels
             self._configure_io()
@@ -345,9 +365,37 @@ class Bpod(SerialDevice, AbstractBpod):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        """Exit context and close connection."""
+        """Exit context and close connection.
+
+        Leaving on an exception stops a running state machine instead of waiting for it.
+        """
         self._bpod_finalizer.detach()
-        self._shutdown()
+        try:
+            if exc_type is not None:
+                self._abort_trial(exc_type)
+        finally:
+            self._shutdown()
+
+    def _abort_trial(self, reason: type[BaseException]) -> None:
+        """Stop the running state machine when leaving on an exception.
+
+        Failures are logged, so that the exception being handled propagates unchanged.
+        """
+        if not self.is_running:
+            return
+        logger.warning('Stopping the state machine: leaving on %s', reason.__name__)
+        try:
+            self.stop_state_machine()
+        except Exception as e:  # noqa: BLE001 - the caller's own exception matters more
+            logger.warning('Could not stop the state machine: %s', e)
+
+    def _check_in_sync(self) -> None:
+        """Refuse commands after a trial was given up, until the connection reopens."""
+        if self._out_of_sync:
+            raise BpodError(
+                'The connection has been out of sync since a trial was given up: '
+                'close and reopen it.'
+            )
 
     def _shutdown(self) -> None:
         """Close the connection, then end the IPC service and softcode thread."""
@@ -360,7 +408,7 @@ class Bpod(SerialDevice, AbstractBpod):
     @_requires_idle
     def open(self) -> None:
         """
-        Open the connection to the Bpod and perform a handshake.
+        Open the connection to the Bpod, handshake and align the session clock.
 
         .. note::
             Prefer using :class:`Bpod` as a context manager, which opens and closes the
@@ -380,7 +428,10 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         Close the connection to the Bpod.
 
-        Waits for any running trial to finish before closing the serial port.
+        Waits for any running trial to finish before closing the serial port; if that
+        wait is interrupted, the state machine is stopped first. The IPC service stays
+        up, so that remote clients can still reach this object; a newer :class:`Bpod`
+        for the same device takes the service over.
 
         .. note::
             Prefer using :class:`Bpod` as a context manager, which opens and closes the
@@ -388,10 +439,21 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Raises
         ------
+        BpodError
+            If the connection was lost during the trial, once the port is closed.
         SerialException
             If the port could not be closed.
         """
-        self.wait()
+        try:
+            self.wait()
+        except BaseException as e:  # don't leave the trial running on the Bpod
+            self._abort_trial(type(e))
+            raise
+        finally:
+            self._close_ports()
+
+    def _close_ports(self) -> None:
+        """Stop analog sampling, request the disconnect and close the serial ports."""
         serial0_open = hasattr(self, '_serial') and getattr(
             self._serial, 'is_open', False
         )
@@ -400,13 +462,13 @@ class Bpod(SerialDevice, AbstractBpod):
             # until explicitly told to stop - even after a trial ends naturally via
             # '>exit' - so the next connection's discovery handshake would race stray
             # bytes. Read the Bpod's reply, so it isn't taken for stray bytes below.
-            with contextlib.suppress(SerialException):  # the Bpod may be unplugged
-                self._serial.write(b'X')
-                with self._serial.temporary_timeout(0.2):
-                    reply = self._serial.read(_IDLE_STOP_REPLY_SIZE)
+            with (
+                contextlib.suppress(SerialException),  # the Bpod may be unplugged
+                self._serial.temporary_timeout(0.2),
+            ):
+                reply = self._serial.query(b'X', _IDLE_STOP_REPLY_SIZE)
                 if not reply.startswith(_IDLE_STOP_REPLY_HEADER):
                     logger.warning('Unexpected reply to stop command: %s', reply.hex())
-        self._softcode_thread.drain()
         if self._analog_reader_thread is not None:
             self._analog_reader_thread.stop()  # thread stopped, serial still open
             self._analog_reader_thread = None
@@ -430,6 +492,7 @@ class Bpod(SerialDevice, AbstractBpod):
             with contextlib.suppress(SerialException):
                 self._discard_stray_bytes(self._serial, 'serial0')
         super().close()
+        self._out_of_sync = False  # the next open() handshakes
 
     @staticmethod
     def _discard_stray_bytes(serial: ExtendedSerial, name: str) -> None:
@@ -576,8 +639,10 @@ class Bpod(SerialDevice, AbstractBpod):
 
     @staticmethod
     def _identify_bpod(
-        port: str | None = None, serial_number: str | None = None
-    ) -> tuple[str, str]:
+        ports: list[ListPortInfo],
+        port: str | None = None,
+        serial_number: str | None = None,
+    ) -> ListPortInfo:
         """
         Try to identify a supported Bpod based on port or serial number.
 
@@ -586,6 +651,8 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Parameters
         ----------
+        ports : list of ListPortInfo
+            The serial ports with a Bpod vendor and product ID, see :func:`find_ports`.
         port : str, optional
             The port of the device.
         serial_number : str, optional
@@ -593,19 +660,17 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Returns
         -------
-        str
-            the port of the device
-        str
-            the serial number of the device
+        ListPortInfo
+            the serial port of the identified Bpod
 
         Raises
         ------
         BpodError
             If no Bpod is found or the indicated device is not supported.
         """
+        candidates = _filter_ports(ports, device=port, serial_number=serial_number)
         try:
-            port_info = next(discover_bpod(port, serial_number))
-            return cast('str', port_info.port), str(port_info.serial_number)
+            return next(_discover_bpod_ports(candidates))
         except StopIteration as e:
             if port is not None:
                 if len(find_ports(device=port)) == 0:
@@ -722,10 +787,16 @@ class Bpod(SerialDevice, AbstractBpod):
         self._set_enable_inputs()
 
     def _detect_additional_serial_ports(
-        self,
+        self, ports: list[ListPortInfo]
     ) -> tuple[ExtendedSerial | None, ExtendedSerial | None]:
         """
         Detect additional USB-serial ports.
+
+        Parameters
+        ----------
+        ports : list of ListPortInfo
+            The serial ports with a Bpod vendor and product ID, as enumerated when the
+            Bpod was identified.
 
         Returns
         -------
@@ -735,13 +806,27 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         logger.debug('Detecting additional USB-serial ports')
 
-        # First, assemble a list of candidate ports
-        candidate_ports = find_ports(
-            vid=VIDS_BPOD,
-            pid=[TeensyPID.DUAL_SERIAL, TeensyPID.TRIPLE_SERIAL],
-            serial_number=self._serial_number,
-            device=re.compile(rf'^(?!{re.escape(str(self.port))}$).*$'),
-        )
+        def other_ports(candidates: list[ListPortInfo]) -> list[ListPortInfo]:
+            return [
+                p
+                for p in _filter_ports(
+                    candidates,
+                    pid=[TeensyPID.DUAL_SERIAL, TeensyPID.TRIPLE_SERIAL],
+                    serial_number=self._serial_number,
+                )
+                if p.device != self.port
+            ]
+
+        # First, assemble a list of candidate ports: the Bpod's other USB-serial ports.
+        # Right after the Bpod was plugged in, the OS may not have registered all of
+        # them yet when the Bpod was identified; if so, the ports are enumerated again.
+        n_other_ports: dict[int, int] = {
+            TeensyPID.DUAL_SERIAL: 1,
+            TeensyPID.TRIPLE_SERIAL: 2,
+        }
+        candidate_ports = other_ports(ports)
+        if len(candidate_ports) < n_other_ports.get(self._port_info.pid, 0):
+            candidate_ports = other_ports(find_ports(vid=VIDS_BPOD, pid=PIDS_BPOD))
 
         # Then, try to find the secondary USB-serial port
         serial1 = None
@@ -793,17 +878,22 @@ class Bpod(SerialDevice, AbstractBpod):
         BpodError
             If the handshake fails.
         """
+        failed = f'Handshake with {self._serial_device_name} on {self.port} failed'
         try:
-            if not self.serial0.verify(b'6', b'5', timeout=0.2):
-                raise BpodError(
-                    f'Handshake with {self._serial_device_name} on {self.port} failed'
-                )
+            # discovery bytes the Bpod sent while unconnected, e.g. in response to the
+            # port being opened, may precede its reply: skip them
+            self.serial0.write(b'6')
+            with self.serial0.temporary_timeout(0.2):
+                reply = self.serial0.read_until(b'5')
+            if reply.lstrip(DISCOVERY_BYTE) != b'5':
+                raise BpodError(failed)
         except SerialException as e:
-            raise BpodError(
-                f'Handshake with {self._serial_device_name} on {self.port} failed'
-            ) from e
+            raise BpodError(failed) from e
         finally:
             self.serial0.reset_input_buffer()
+        # the handshake restarted the Bpod's session clock: align the host's reference
+        if not self.reset_session_clock():
+            raise BpodError(f'{failed}: no reply to the session clock reset')
         self._rename_serial_device('Bpod Finite State Machine')
         logger.debug(
             'Handshake with %s on %s successful', self._serial_device_name, self.port
@@ -827,19 +917,30 @@ class Bpod(SerialDevice, AbstractBpod):
         enabled = {i.index: i.enabled for i in self.inputs.values()}
         enable = [enabled.get(idx, True) for idx in range(self._hardware.n_inputs)]
         self.serial0.write_struct(f'<c{self._hardware.n_inputs}?', b'E', *enable)
-        return self.serial0.read(1) == b'\x01'
+        return self.serial0.verify()
 
     @override
     @_requires_idle
     def reset_session_clock(self) -> bool:
-        # reset the session clock
-        # bracket the serial round-trip to estimate reset time within ±(t1-t0)/2
+        # bracket the serial round trip to estimate the reset time within ±(t1-t0)/2;
+        # a late reply would skew the estimate, so the reset is repeated after one
         logger.debug('Resetting session clock')
-        t0 = perf_counter_ns()
-        self.serial0.write(b'*')
-        if not self.serial0.read_bool():
-            return False
-        t1 = perf_counter_ns()
+        for _ in range(_SESSION_CLOCK_RESET_ATTEMPTS):
+            t0 = perf_counter_ns()
+            self.serial0.write(b'*')
+            if not self.serial0.read_bool():
+                return False
+            t1 = perf_counter_ns()
+            round_trip_ns = t1 - t0
+            if round_trip_ns <= 2 * _SESSION_CLOCK_MAX_ERROR_NS:
+                break
+            logger.debug('Session clock reset took %d μs', round_trip_ns // 1000)
+        else:
+            logger.warning(
+                'Session clock reset took %d μs - timestamps may be off by up to %d μs',
+                round_trip_ns // 1000,
+                round_trip_ns // 2000,
+            )
         perf_count_ns = (t0 + t1) // 2
 
         # Store time reference
@@ -1113,6 +1214,7 @@ class Bpod(SerialDevice, AbstractBpod):
         trial_number: int | None = None,
         validate: bool = True,
     ) -> None:
+        self._check_in_sync()  # allowed while running, but not on a suspect stream
         if trial_number is None:
             trial_number = self._next_fsm_index + 1
         if not 0 <= trial_number <= UINT32_MAX:
@@ -1229,9 +1331,7 @@ class Bpod(SerialDevice, AbstractBpod):
             trial=self._next_fsm_index,
             fsm=state_machine_lookup,
             data_queue=self._trial_data,
-            event_lookup=self._compiler.event_lookup,
-            action_names=self._compiler.actions,
-            resettable_actions=self._compiler.resettable_actions,
+            event_tables=self._compiler.event_tables,
             time_reference=self._time_reference,
             publish=self._zmq.publish,
             publish_gate=lambda: self._zmq.has_subscribers,
@@ -1247,6 +1347,8 @@ class Bpod(SerialDevice, AbstractBpod):
                 'Waiting for state machine #%d to finish ...',
                 previous_read_thread.trial_number,
             )
+            # a plain join: the machine is queued on the Bpod already, so the handoff
+            # to its threads must not be interrupted
             previous_read_thread.join()
         leftover, leftover_received_ns = (
             (previous_read_thread.leftover, previous_read_thread.leftover_received_ns)
@@ -1269,7 +1371,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # backlog - this keeps trial streams strictly sequential on the PUB/SUB channel.
         previous_event_thread = self._event_thread
         if previous_event_thread is not None and previous_event_thread.is_alive():
-            previous_event_thread.join()
+            previous_event_thread.join()  # see above
         event_thread.start()
 
         # set private class attributes
@@ -1295,31 +1397,40 @@ class Bpod(SerialDevice, AbstractBpod):
         """Check if a state machine is queued to run after the current one."""
         return self.is_running and self.is_ready
 
-    def wait(self) -> None:
+    def wait(self, timeout: float | None = None) -> None:
         """
         Wait for the currently running state machine to finish.
 
-        Blocks until the state machine's reader and event threads complete - i.e., until
-        all of the trial's events have been recorded and published. If no state machine
-        is currently running, this method returns immediately.
+        Blocks until the trial's events have been recorded and published and the
+        softcodes received so far have been handled. If no state machine is running,
+        this method returns immediately.
+
+        Parameters
+        ----------
+        timeout : float or None, default: None
+            Seconds to wait before giving up. ``None`` waits indefinitely.
 
         Raises
         ------
+        TimeoutError
+            If the state machine hasn't finished within `timeout` seconds.
         BpodError
             If the connection to the Bpod was lost during the trial. The events received
             up to then are kept.
         """
+        deadline = None if timeout is None else monotonic() + timeout
         read_thread = self._read_thread  # snapshot for thread-safety
         if read_thread is not None and read_thread.is_alive():
             logger.debug(
-                'Waiting for state machine #%d to finish ...',
-                read_thread.trial_number,
+                'Waiting for state machine #%d to finish ...', read_thread.trial_number
             )
-            read_thread.join()
-
-        event_thread = self._event_thread  # snapshot for thread-safety
-        if event_thread is not None and event_thread.is_alive():
-            event_thread.join()
+        for thread in (read_thread, self._event_thread):
+            if thread is not None and not join_until(thread, deadline):
+                raise TimeoutError(
+                    f'Trial #{thread.trial_number} did not finish within {timeout:g} s'
+                )
+        if not self._softcode_thread.drain(deadline):
+            raise TimeoutError(f'Softcode handlers still busy after {timeout:g} s')
 
         if read_thread is not None and (error := read_thread.error) is not None:
             read_thread.error = None  # report it once
@@ -1488,7 +1599,7 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
     @override
-    def stop_state_machine(self) -> None:
+    def stop_state_machine(self, timeout: float | None = 1.0) -> None:
         if not self.is_running:
             return
         if self._analog_channel_names:
@@ -1500,8 +1611,18 @@ class Bpod(SerialDevice, AbstractBpod):
         logger.debug('Stopping state machine')
         self.serial0.write(b'X')
         self._analog_recording = False  # the Bpod stops analog sampling on 'X'
-        if self._read_thread is not None:
-            self._read_thread.join()
+        read_thread = self._read_thread  # snapshot for thread-safety
+        deadline = None if timeout is None else monotonic() + timeout
+        if read_thread is not None and not join_until(read_thread, deadline):
+            # give the trial up: its data stays incomplete, and the Bpod may still be
+            # sending, so the stream can't be trusted until the connection is closed
+            # and reopened
+            read_thread.cancel()
+            self._out_of_sync = True
+            raise TimeoutError(
+                f'The Bpod did not end trial #{read_thread.trial_number} within '
+                f'{timeout:g} s of the stop command; the trial was given up'
+            )
 
     @override
     @property
@@ -1874,6 +1995,15 @@ def _allocate_module_events(modules: list[Module], n_requested: list[int]) -> li
     return n_events
 
 
+_REMOTE_REPLY_MARGIN_S = 1.0
+"""Extra wait for a reply beyond the remote method's own timeout."""
+
+_REMOTE_ERRORS: dict[str, type[Exception]] = {
+    cls.__name__: cls for cls in (BpodError, RuntimeError, TimeoutError, ValueError)
+}
+"""Errors of the host's methods that a :class:`RemoteBpod` raises as the same type."""
+
+
 class RemoteBpod(AbstractBpod):
     """Proxy for a :class:`Bpod` instance running in another process.
 
@@ -1983,10 +2113,17 @@ class RemoteBpod(AbstractBpod):
 
     def close(self) -> None:
         """Close the connection to the remote Bpod."""
-        self._zmq.request(request_data=_RequestBye(), reply_type=str)
+        with contextlib.suppress(TimeoutError):  # a dead host must not hang close()
+            self._zmq.request(request_data=_RequestBye(), reply_type=str, timeout=1.0)
         self._zmq.close()
 
-    def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+    def _remote_call(
+        self,
+        method: str,
+        *args: Any,
+        reply_timeout: float | None = None,
+        **kwargs: Any,
+    ) -> Any:
         """
         Perform a remote procedure call.
 
@@ -1996,6 +2133,8 @@ class RemoteBpod(AbstractBpod):
             The name of the remote method to invoke.
         *args : Any
             Positional arguments to pass to the remote method.
+        reply_timeout : float, optional
+            Seconds to wait for the host's reply; ``None`` waits indefinitely.
         **kwargs : Any
             Keyword arguments to pass to the remote method.
 
@@ -2003,19 +2142,29 @@ class RemoteBpod(AbstractBpod):
         -------
         Any
             The result returned from the remote method.
+
+        Raises
+        ------
+        BpodError, RuntimeError, TimeoutError, ValueError
+            As raised by the remote method.
+        TimeoutError
+            If the host doesn't reply within `reply_timeout` seconds.
         """
         try:
             return self._zmq.request(
                 request_data=_RequestCall(method_name=method, args=args, kwargs=kwargs),
                 reply_type=_ReplyGeneric,
+                timeout=reply_timeout,
             ).value
         except RemoteError as e:
-            match e.original_error.name:
-                case 'RuntimeError':
-                    raise RuntimeError(e.original_error.message) from e
-                case 'ValueError':
-                    raise ValueError(e.original_error.message) from e
-            raise
+            self._raise_local(e)
+
+    @staticmethod
+    def _raise_local(error: RemoteError) -> NoReturn:
+        """Raise the host's error as the matching local type, else the RemoteError."""
+        if (cls := _REMOTE_ERRORS.get(error.original_error.name)) is not None:
+            raise cls(error.original_error.message) from error
+        raise error
 
     def _handshake(self) -> None:
         reply = self._zmq.request(
@@ -2069,9 +2218,7 @@ class RemoteBpod(AbstractBpod):
                 reply_type=bytes,
             )
         except RemoteError as e:
-            if e.original_error.name == 'BpodError':
-                raise BpodError(e.original_error.message) from e
-            raise
+            self._raise_local(e)
 
         return pl.scan_ipc(reply) if lazy else pl.read_ipc(reply)
 
@@ -2097,12 +2244,7 @@ class RemoteBpod(AbstractBpod):
 
     @override
     def reset_session_clock(self) -> bool:
-        try:
-            return self._remote_call('reset_session_clock') is True
-        except RemoteError as e:
-            if e.original_error.name == 'BpodError':
-                raise BpodError(e.original_error.message) from e
-            raise
+        return self._remote_call('reset_session_clock') is True
 
     @override
     @validate_call()
@@ -2130,8 +2272,13 @@ class RemoteBpod(AbstractBpod):
         return self._remote_call('set_status_led', enable) or False
 
     @override
-    def stop_state_machine(self) -> None:
-        self._remote_call('stop_state_machine')
+    def stop_state_machine(self, timeout: float | None = 1.0) -> None:
+        self._remote_call(
+            'stop_state_machine',
+            timeout=timeout,
+            # the host's own TimeoutError arrives before the reply times out
+            reply_timeout=None if timeout is None else timeout + _REMOTE_REPLY_MARGIN_S,
+        )
 
     @override
     def update_modules(self) -> None:
@@ -2172,11 +2319,22 @@ def discover_bpod(
     ports = find_ports(
         vid=VIDS_BPOD, pid=PIDS_BPOD, device=port, serial_number=serial_number
     )
+    for p in _discover_bpod_ports(ports):
+        yield BpodInfo(port=p.device, serial_number=str(p.serial_number))
+
+
+def _discover_bpod_ports(ports: Iterable[ListPortInfo]) -> Iterator[ListPortInfo]:
+    """Yield the serial ports in `ports` on which an idle Bpod answers a discovery."""
     for p in ports:
+        # an unconnected Bpod sends its discovery byte at regular intervals, and recent
+        # firmware also when DTR is asserted
         if verify_serial_discovery(
-            port=p.device, expected_message=b'\xde', timeout=DISCOVERY_TIMEOUT
+            port=p.device,
+            expected_message=DISCOVERY_BYTE,
+            timeout=DISCOVERY_TIMEOUT,
+            raise_dtr=True,
         ):
-            yield BpodInfo(port=p.device, serial_number=str(p.serial_number))
+            yield p
 
 
 def discover_remote_bpod(

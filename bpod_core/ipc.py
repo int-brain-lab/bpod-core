@@ -1,7 +1,9 @@
 """Inter-process Communication, service discovery and related."""
 
+import atexit
 import contextlib
 import logging
+import operator
 import os
 import queue
 import socket
@@ -14,10 +16,19 @@ from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextvars import ContextVar
-from ipaddress import ip_address
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from types import ModuleType, TracebackType
-from typing import Any, Generic, Literal, NamedTuple, TypeAlias, cast, overload
+from typing import (
+    Any,
+    ClassVar,
+    Generic,
+    Literal,
+    NamedTuple,
+    TypeAlias,
+    cast,
+    overload,
+)
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -25,7 +36,7 @@ import msgspec
 import platformdirs
 import zmq
 from filelock import FileLock
-from psutil import pid_exists
+from psutil import net_if_addrs, pid_exists
 from pydantic import validate_call
 from typing_extensions import Self, TypeForm, TypeVar, override
 from zeroconf import (
@@ -70,11 +81,18 @@ _DefaultT = TypeVar('_DefaultT', bound=int | bytes | str | None)
 """Type of the fallback value returned by :meth:`ServiceHost.get_metadata`."""
 
 _EVENT_LOOP_POLL_MS = 100
-"""Receive timeout / poll interval of the event loops, in milliseconds.
+"""Receive timeout of the event loops and poll interval of :meth:`ServiceClient._req`.
 
-Determines how quickly the event loops react to stop requests, and how quickly
-a blocking :meth:`ServiceClient._req` notices close() or an expired deadline.
+In milliseconds. Bounds how quickly `_req` notices close() or an expired deadline,
+and how often an idle host refreshes its subscriber flag; close() wakes the loops
+with a message instead of waiting for it.
 """
+
+_WAKE_ADDRESS = 'inproc://wake'
+"""Where a closing host or client wakes its event loop; each has its own context."""
+
+_WAKE_TIMEOUT_MS = 100
+"""How long waking a client's event loop waits for its subscription, in milliseconds."""
 
 _HANDOFF_LINGER_MS = 100
 """Linger period, in milliseconds, for sockets closed after their own event loop.
@@ -86,6 +104,13 @@ gives it time to go out before the sockets are closed.
 
 _HANDSHAKE_TIMEOUT_S = 10.0
 """Timeout in seconds for the client's handshake with the host."""
+
+_IPC_PROBE_TIMEOUT_S = 1.0
+"""Timeout in seconds for the client's HELLO probe of the host's IPC address.
+
+Only costs time if the probe fails, i.e. if the client doesn't share the host's IPC
+namespace after all.
+"""
 
 _HELLO_GRACE_S = 1.0
 """Seconds after a HELLO request during which the host presumes a subscriber.
@@ -111,6 +136,9 @@ class RemoteError(ServiceError):
     def __init__(self, error_data: 'ErrorData') -> None:
         self.original_error = error_data
         super().__init__(f'Remote {error_data.name}: {error_data.message}')
+
+    def __reduce__(self) -> 'tuple[type[RemoteError], tuple[ErrorData]]':
+        return RemoteError, (self.original_error,)
 
     def __str__(self) -> str:
         if self.original_error.traceback is None:
@@ -434,6 +462,9 @@ class LocalServiceAdvertisement:
         properties = properties or {}
 
         if service_dir.exists():
+            for lock_file in service_dir.glob('*.lock'):  # left behind by readers
+                if not lock_file.with_suffix('.json').exists():
+                    lock_file.unlink(missing_ok=True)
             for service_file in service_dir.glob('*.json'):
                 lock_file = service_file.with_suffix('.lock')
                 try:
@@ -446,6 +477,7 @@ class LocalServiceAdvertisement:
                 # Remove stale service file if process no longer exists
                 if not pid_exists(info.pid):
                     service_file.unlink(missing_ok=True)
+                    lock_file.unlink(missing_ok=True)
                     continue
 
                 # Check if properties match
@@ -454,6 +486,114 @@ class LocalServiceAdvertisement:
                     for k, v in properties.items()
                 ):
                     yield info
+
+
+class _Registration(NamedTuple):
+    """A host's Zeroconf record, with the name it asked for."""
+
+    requested_name: str  # Zeroconf renames the record on a conflict
+    info: ServiceInfo
+
+
+class _SharedZeroconf:
+    """The process-wide Zeroconf instance, and the worker publishing records on it.
+
+    One instance serves every host and browser in the process. A single worker
+    thread publishes and withdraws the records, in order: a withdrawal thus waits
+    for the publication it ends - which probes and announces for about 1.5 s -
+    instead of overtaking it and leaving a stale record behind.
+    """
+
+    _instance: ClassVar[Zeroconf | None] = None
+    _closed: ClassVar[bool] = False
+    _lock: ClassVar[threading.Lock] = threading.Lock()
+    _worker: ClassVar[threading.Thread | None] = None
+    _queue: ClassVar[
+        'queue.Queue[tuple[Callable[..., None], tuple[ServiceInfo, ...]]]'
+    ] = queue.Queue()
+
+    @classmethod
+    def instance(cls) -> Zeroconf:
+        """Return the instance, started on first use and closed at exit."""
+        with cls._lock:
+            if cls._closed:
+                raise RuntimeError('the shared Zeroconf instance has been closed')
+            if cls._instance is None:
+                cls._instance = Zeroconf(
+                    interfaces=InterfaceChoice.All,
+                    ip_version=IPVersion.V4Only,
+                )
+            return cls._instance
+
+    @classmethod
+    def register(cls, info: ServiceInfo, *, replacing: ServiceInfo | None) -> None:
+        """Publish ``info`` in the background, updating ``replacing`` if given."""
+        if replacing is None:
+            cls._submit(cls._register, info)
+        else:
+            cls._submit(cls._update, info, replacing)
+
+    @classmethod
+    def unregister(cls, info: ServiceInfo) -> None:
+        """Withdraw ``info`` in the background, once it has been published."""
+        cls._submit(cls._unregister, info)
+
+    @classmethod
+    def close(cls) -> None:
+        """Withdraw all services, with goodbye packets, and shut the instance down.
+
+        Registered at exit. Afterwards no instance is started, and record operations
+        still queued are dropped: there is nothing left to withdraw.
+        """
+        with cls._lock:
+            if cls._closed:
+                return
+            cls._closed = True
+            if cls._instance is not None:
+                with contextlib.suppress(Exception):
+                    logger.debug('Closing Zeroconf')
+                    cls._instance.close()
+
+    @classmethod
+    def _submit(cls, operation: Callable[..., None], *args: ServiceInfo) -> None:
+        with cls._lock:
+            if cls._worker is None:
+                cls._worker = threading.Thread(
+                    target=cls._work, name='zeroconf-records', daemon=True
+                )
+                cls._worker.start()
+        cls._queue.put((operation, args))
+
+    @classmethod
+    def _work(cls) -> None:
+        while True:
+            operation, args = cls._queue.get()
+            try:
+                if not cls._closed:
+                    operation(*args)
+            except Exception:
+                logger.debug('Zeroconf %s failed', operation.__name__, exc_info=True)
+            finally:
+                cls._queue.task_done()
+
+    @classmethod
+    def _register(cls, info: ServiceInfo) -> None:
+        cls.instance().register_service(info, allow_name_change=True)
+        logger.debug("Advertising remote service at '%s'", info.name)
+
+    @classmethod
+    def _update(cls, info: ServiceInfo, previous: ServiceInfo) -> None:
+        info.name = previous.name  # as resolved on the network, by now
+        cls.instance().update_service(info)
+        logger.debug("Updated remote service at '%s'", info.name)
+
+    @classmethod
+    def _unregister(cls, info: ServiceInfo) -> None:
+        cls.instance().unregister_service(info)
+        logger.debug("Withdrew remote service at '%s'", info.name)
+
+
+atexit.register(_SharedZeroconf.close)
 
 
 class ServiceBase(ABC):
@@ -497,6 +637,8 @@ class ServiceBase(ABC):
         sockets: Iterable[zmq.Socket],
         zmq_context: zmq.Context,
         linger_ms: int = 0,
+        *,
+        wake: Callable[[zmq.Context], None],
     ) -> None:
         if ServiceBase._continue_off_event_thread(
             ServiceBase._finalize_base,
@@ -504,12 +646,17 @@ class ServiceBase(ABC):
             stop_event=stop_event,
             sockets=sockets,
             zmq_context=zmq_context,
+            wake=wake,
         ):
             return
 
         # event thread
         if event_thread is not None and event_thread.is_alive():
             stop_event.set()
+            try:  # end the loop's blocking receive
+                wake(zmq_context)
+            except Exception:
+                logger.debug('Could not wake the event loop', exc_info=True)
             event_thread.join(timeout=1)
             if event_thread.is_alive():
                 logger.warning('Event thread did not terminate cleanly')
@@ -558,6 +705,12 @@ def _format_zeroconf_service_name(service_name: str, service_type: str) -> str:
     return f'{service_name}.{service_type}'
 
 
+def _same_record(a: ServiceInfo, b: ServiceInfo) -> bool:
+    """Whether two service infos describe the same host, port and properties."""
+    fields = operator.attrgetter('port', 'server', 'addresses', 'properties')
+    return fields(a) == fields(b)
+
+
 class ServiceHost(ServiceBase, Generic[Q, E]):
     """
     A ZeroMQ host providing REQ/REP and PUB/SUB sockets with service discovery.
@@ -566,7 +719,8 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
     request-reply messaging and a PUB/SUB channel for broadcasting events to
     subscribers. Incoming requests are dispatched to a user-provided ``request_handler``
     callback. Events are broadcast with :meth:`publish`; subscribers decode them via
-    the ``event_type`` of :class:`ServiceClient`.
+    the ``event_type`` of :class:`ServiceClient`. A host whose UUID is in use by a live
+    host of this process replaces it: the older host is closed first.
 
     The type parameters are the request type decoded from incoming requests
     (``Q``, inferred from ``request_type``) and the published event type (``E``,
@@ -631,13 +785,19 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
     """TCP port of the PUB socket."""
 
     _local_advertisement: LocalServiceAdvertisement | None = None
-    _zeroconf: Zeroconf | None = None
 
     _ports_file: Path = (
         platformdirs.user_state_path('bpod-core', appauthor=False)
         / 'service_ports.json'
     )
     """State file storing the TCP ports last bound per service UUID."""
+
+    _live: ClassVar[weakref.WeakValueDictionary[UUID, 'ServiceHost']] = (
+        weakref.WeakValueDictionary()
+    )
+    """The hosts of this process that are alive, by UUID."""
+    _registrations: ClassVar[dict[UUID, _Registration]] = {}
+    """The Zeroconf records published for this process's hosts, by UUID."""
 
     def __init__(
         self,
@@ -675,17 +835,29 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
         # set UUID (generated if not provided by user)
         self._uuid = uuid or uuid4()
+        if (previous := ServiceHost._live.pop(self._uuid, None)) is not None:
+            logger.info('Replacing the running service %s', self._uuid)
+            # hold back its Zeroconf registration while it closes: this host takes
+            # it over in _advertise, or withdraws it - also if construction fails
+            inherited = ServiceHost._registrations.pop(self._uuid, None)
+            # synchronous, unless this runs on the previous host's own event thread:
+            # then its sockets close later and the binds below may still collide
+            previous.close()
+            if inherited is not None:  # a new entry: the predecessor's finalizer
+                ServiceHost._registrations[self._uuid] = _Registration(*inherited)
 
-        # create ZeroMQ sockets
+        # create ZeroMQ sockets; the finalizer wakes the event loop through the
+        # inproc address (see _wake_rep)
         self._rep_socket, self._pub_socket = self._create_sockets(self._zmq_context)
         named_pipes: list[tuple[Path, _FileId]] = []
 
         try:
+            self._rep_socket.bind(_WAKE_ADDRESS)
             # bind sockets to TCP addresses. Explicit port arguments take precedence
             # over the ports remembered for a caller-supplied UUID. Sockets listen on
             # bind_ip; addresses handed out to clients are built from advertised_ip.
             bind_ip = IPV4_WILDCARD if remote else IPV4_LOOPBACK
-            advertised_ip = get_local_ipv4() if remote else IPV4_LOOPBACK
+            advertised_ip = _advertised_ipv4() if remote else IPV4_LOOPBACK
             if uuid is not None:
                 remembered_rep, remembered_pub = self._recall_ports(uuid)
                 port_rep = port_rep if port_rep is not None else remembered_rep
@@ -699,14 +871,15 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             if uuid is not None:
                 self._remember_ports(uuid, self.rep_tcp_port, self.pub_tcp_port)
 
-            # bind sockets to IPC addresses for improved performance (POSIX only)
+            # bind sockets to IPC addresses for improved performance, where libzmq
+            # supports the transport; short identifiers keep filesystem socket paths
+            # within the AF_UNIX limit of about 100 characters
+            short_uuid = self._uuid.hex[:16]
             rep_ipc_addr, rep_pipe = self._bind_ipc(
-                zmq_socket=self._rep_socket,
-                identifier=f'REQ_REP_{self._uuid.hex}',
+                zmq_socket=self._rep_socket, identifier=f'{short_uuid}_rep'
             )
             pub_ipc_addr, pub_pipe = self._bind_ipc(
-                zmq_socket=self._pub_socket,
-                identifier=f'PUB_SUB_{self._uuid.hex}',
+                zmq_socket=self._pub_socket, identifier=f'{short_uuid}_pub'
             )
             named_pipes.extend(
                 (pipe, _file_id(pipe))
@@ -743,9 +916,12 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 sockets=[self._rep_socket, self._pub_socket],
                 zmq_context=self._zmq_context,
                 local_advertisement=self._local_advertisement,
-                zeroconf=self._zeroconf,
+                uuid=self._uuid,
+                registration=ServiceHost._registrations.get(self._uuid),
                 named_pipes=named_pipes,
+                wake=ServiceHost._wake_rep,
             )
+            ServiceHost._live[self._uuid] = self
         except BaseException:
             # unwind partially-acquired resources when construction fails
             ServiceHost._finalize(
@@ -754,8 +930,10 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 sockets=[self._rep_socket, self._pub_socket],
                 zmq_context=self._zmq_context,
                 local_advertisement=self._local_advertisement,
-                zeroconf=self._zeroconf,
+                uuid=self._uuid,
+                registration=ServiceHost._registrations.get(self._uuid),
                 named_pipes=named_pipes,
+                wake=ServiceHost._wake_rep,
             )
             raise
 
@@ -782,11 +960,11 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
     def _bind_ipc(
         zmq_socket: zmq.Socket, identifier: str
     ) -> tuple[str | None, Path | None]:
-        """Bind a socket to an IPC address for improved performance (POSIX only).
+        """Bind a socket to an IPC address for improved performance.
 
-        On linux we use abstract sockets for IPC, avoiding issues with filesystem,
-        cleanup, permissions and stale files. On other POSIX platforms we use filesystem
-        Unix domain sockets.
+        Requires libzmq's ``ipc`` transport. On linux we use abstract sockets for IPC,
+        avoiding issues with filesystem, cleanup, permissions and stale files. Elsewhere
+        we use filesystem Unix domain sockets.
 
         Returns the IPC address and - on platforms using filesystem sockets - the path
         of the named pipe. Returns ``(None, None)`` if IPC is unavailable on the
@@ -795,10 +973,11 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         only if both channels offer it, though locally discovered clients may still
         reach the REQ channel via its advertised IPC address.
         """
-        if os.name != 'posix':
-            return None, None  # Return early if we're not on POSIX
+        if not zmq.has('ipc'):
+            return None, None  # Return early if libzmq lacks the ipc transport
 
         named_pipe: Path | None = None
+        address: str | None = None
         socket_type = zmq.SocketType(cast('int', zmq_socket.type)).name
         try:
             if sys.platform.startswith('linux'):  # Use abstract sockets on Linux
@@ -813,8 +992,13 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             logger.debug("Bound %s socket to '%s'", socket_type, address)
 
         except (zmq.ZMQError, OSError) as e:
+            # an address in use is the expected, handled case: no traceback for it
             logger.warning(
-                "Failed to bind %s socket to '%s'", socket_type, address, exc_info=e
+                "Failed to bind %s socket to '%s': %s",
+                socket_type,
+                address,
+                e,
+                exc_info=None if e.errno == zmq.EADDRINUSE else e,
             )
             if address is not None:
                 with contextlib.suppress(zmq.ZMQError):
@@ -924,7 +1108,8 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         """Advertise the service locally and - if ``use_zeroconf`` - via Zeroconf.
 
         The Zeroconf record advertises ``advertised_ip``, which must be concrete
-        and routable.
+        and routable. A registration left under this host's UUID by the host it
+        replaced is kept if the names match, and withdrawn otherwise.
         """
         # advertise service locally
         self._local_advertisement = LocalServiceAdvertisement(
@@ -937,32 +1122,41 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         )
 
         # advertise service via Zeroconf for remote discovery
+        requested_name = _format_zeroconf_service_name(service_name, service_type)
+        inherited = ServiceHost._registrations.pop(self._uuid, None)
+        if inherited is not None and not (
+            use_zeroconf and inherited.requested_name == requested_name
+        ):
+            _SharedZeroconf.unregister(inherited.info)
+            inherited = None
         if not use_zeroconf:
             return
         service_info = ServiceInfo(
             type_=_format_zeroconf_service_type(service_type),
-            name=_format_zeroconf_service_name(service_name, service_type),
+            name=requested_name,
             port=self.rep_tcp_port,
             parsed_addresses=[advertised_ip],
             properties=dict(properties or {}),
             server=f'{socket.gethostname()}.local.',
             other_ttl=60,
         )
-        self._zeroconf = Zeroconf(
-            interfaces=InterfaceChoice.All,
-            ip_version=IPVersion.V4Only,
-        )
+        if inherited is not None and _same_record(inherited.info, service_info):
+            # the record on the network already describes this host: adopt it, under
+            # whatever name Zeroconf resolves for it
+            registration = _Registration(requested_name, inherited.info)
+        else:
+            registration = _Registration(requested_name, service_info)
+            replacing = None if inherited is None else inherited.info
+            _SharedZeroconf.register(service_info, replacing=replacing)
+        ServiceHost._registrations[self._uuid] = registration
 
-        def _register(zc: Zeroconf, service: ServiceInfo) -> None:
-            with contextlib.suppress(Exception):
-                zc.register_service(service, allow_name_change=True)
-                logger.debug("Advertising remote service at '%s'", service.name)
-
-        threading.Thread(
-            target=_register,
-            args=(self._zeroconf, service_info),
-            daemon=True,
-        ).start()
+    @staticmethod
+    def _wake_rep(zmq_context: zmq.Context) -> None:
+        """Send the REP socket an empty request, which ends its blocking receive."""
+        with zmq_context.socket(zmq.DEALER) as wake:
+            wake.setsockopt(zmq.LINGER, 0)
+            wake.connect(_WAKE_ADDRESS)
+            wake.send_multipart([b'', b''])
 
     @staticmethod
     def _finalize(
@@ -972,8 +1166,10 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
         sockets: Iterable[zmq.Socket],
         zmq_context: zmq.Context,
         local_advertisement: LocalServiceAdvertisement | None,
-        zeroconf: Zeroconf | None,
+        uuid: UUID,
+        registration: _Registration | None,
         named_pipes: Iterable[tuple[Path, _FileId]],
+        wake: Callable[[zmq.Context], None],
         linger_ms: int = 0,
     ) -> None:
         """Unadvertise the service and release all resources held by the host."""
@@ -984,8 +1180,10 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             sockets=sockets,
             zmq_context=zmq_context,
             local_advertisement=local_advertisement,
-            zeroconf=zeroconf,
+            uuid=uuid,
+            registration=registration,
             named_pipes=named_pipes,
+            wake=wake,
         ):
             return
 
@@ -994,11 +1192,10 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             with contextlib.suppress(Exception):
                 local_advertisement.close()
 
-        # close zeroconf; this also unregisters the advertised service
-        if zeroconf is not None:
-            with contextlib.suppress(Exception):
-                logger.debug('Closing Zeroconf')
-                zeroconf.close()
+        # withdraw the Zeroconf registration, unless a replacing host took it over
+        if ServiceHost._registrations.get(uuid) is registration is not None:
+            del ServiceHost._registrations[uuid]
+            _SharedZeroconf.unregister(registration.info)
 
         # call base class finalizer
         ServiceBase._finalize_base(  # noqa: SLF001
@@ -1007,6 +1204,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             sockets,
             zmq_context,
             linger_ms,
+            wake=wake,
         )
 
         # named pipes, unless another host with the same UUID has replaced them
@@ -1196,7 +1394,8 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 logger.exception('Error sending reply to client')
 
         # receive with a timeout instead of poll + receive: this saves a syscall
-        # per message, and the periodic timeouts allow checking stop_event
+        # per message; the timeouts pace the subscriber flag's refresh when idle and
+        # are the fallback should the wake-up message of a close() not arrive
         rep_socket.setsockopt(zmq.RCVTIMEO, _EVENT_LOOP_POLL_MS)
 
         while not stop_event.is_set():
@@ -1212,6 +1411,14 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             except zmq.ZMQError:
                 if not stop_event.is_set():  # silent when closing down
                     logger.exception('Error receiving request from client')
+                break
+            # the wake-up of a close() is a single empty frame; a request that
+            # arrived first is still answered, the loop ends after it
+            if (
+                stop_event.is_set()
+                and len(request_frames) == 1
+                and not request_frames[0].buffer.nbytes
+            ):
                 break
 
             # validate framing and determine the kind of request. Once a request has
@@ -1291,17 +1498,55 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
             self._finalizer()
 
 
+def _local_ip_addresses() -> set[IPv4Address | IPv6Address]:
+    """The IP addresses of this machine's network interfaces.
+
+    Zone IDs are dropped, and link-local addresses are left out: they are only unique
+    per link, so a remote peer may carry the same one. If the OS refuses to list the
+    interfaces, e.g. in a sandbox, only the primary address is known.
+    """
+    try:
+        interfaces = net_if_addrs()
+    except OSError:
+        logger.debug('Could not list network interfaces', exc_info=True)
+        return {ip_address(get_local_ipv4())}
+    addresses: set[IPv4Address | IPv6Address] = set()
+    for snics in interfaces.values():
+        for snic in snics:
+            try:
+                ip = ip_address(snic.address.partition('%')[0])
+            except ValueError:  # e.g. a MAC address
+                continue
+            if not ip.is_link_local:
+                addresses.add(ip)
+    return addresses
+
+
+def _advertised_ipv4() -> str:
+    """The IPv4 address to advertise: the primary one, or any other if no route out."""
+    if (primary := get_local_ipv4()) != IPV4_LOOPBACK:
+        return primary
+    candidates = sorted(
+        ip
+        for ip in _local_ip_addresses()
+        if isinstance(ip, IPv4Address) and not ip.is_loopback
+    )
+    return str(candidates[0]) if candidates else IPV4_LOOPBACK
+
+
 def _is_local_address(address: str) -> bool:
-    """Check whether a ZMQ address points at the local machine."""
+    """Check whether a ZMQ address is IPC, loopback or one of this machine's own IPs."""
     try:
         address_components = urlsplit(address)
-        return (
-            address_components.scheme == 'ipc'
-            or address_components.hostname == 'localhost'
-            or ip_address(address_components.hostname or '').is_loopback
-        )
+        if address_components.scheme == 'ipc':
+            return True
+        hostname = address_components.hostname or ''
+        if hostname == 'localhost':
+            return True
+        ip = ip_address(hostname.partition('%')[0])  # IPv6 literals may carry a zone
     except ValueError:
         return False
+    return ip.is_loopback or ip in _local_ip_addresses()
 
 
 class ServiceClient(ServiceBase, Generic[Q, R, E]):
@@ -1360,7 +1605,11 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
     """
 
     is_local: bool
-    """Whether the client is connected to a service on localhost."""
+    """Whether the client is connected to a service on this machine.
+
+    Same machine means the same network stack: data needn't be compressed. It doesn't
+    guarantee a shared IPC namespace, which the handshake verifies separately.
+    """
 
     _serialization: Serialization
     _req_encoder: msgspec.msgpack.Encoder | msgspec.json.Encoder
@@ -1389,9 +1638,6 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         if event_type is not Any and event_handler is None:
             raise ValueError('event_type requires an event_handler')
 
-        # initialize base class
-        super().__init__()
-
         # define msgspec encoder/decoder; building the decoders also validates
         # default_reply_type and event_type before any resources exist. The
         # serialization format is provisional until the handshake, which may
@@ -1400,12 +1646,18 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         self._event_type = event_type
         self._set_serialization('msgpack')
 
+        # initialize base class
+        super().__init__()
+
         # ZeroMQ sockets; RELAXED lets the REQ socket send again after an abandoned
         # (e.g. timed-out) request, and CORRELATE discards the stale reply to it
         self._req_socket = self._zmq_context.socket(zmq.REQ)
         self._sub_socket = self._zmq_context.socket(zmq.SUB)
         self._req_socket.setsockopt(zmq.REQ_RELAXED, 1)
         self._req_socket.setsockopt(zmq.REQ_CORRELATE, 1)
+        # don't let an abandoned request - timed out, or a failed IPC probe - keep the
+        # socket's pipe alive on disconnect() or close(): context termination would wait
+        self._req_socket.setsockopt(zmq.LINGER, 0)
         self._req_socket.setsockopt_string(
             zmq.METADATA, f'X-Hostname:{socket.gethostname()}'
         )
@@ -1443,6 +1695,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
                 self._stop_event_loop,
                 [self._req_socket, self._sub_socket],
                 self._zmq_context,
+                wake=ServiceClient._wake_sub,
             )
         except BaseException:
             # unwind partially-acquired resources when construction fails
@@ -1451,6 +1704,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
                 self._stop_event_loop,
                 [self._req_socket, self._sub_socket],
                 self._zmq_context,
+                wake=ServiceClient._wake_sub,
             )
             raise
 
@@ -1462,6 +1716,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         """
         logger.debug("Connecting SUB socket to '%s'", self._address_sub)
         self._sub_socket.connect(self._address_sub)
+        self._sub_socket.connect(_WAKE_ADDRESS)  # bound by the finalizer, see _wake_sub
         self._sub_socket.setsockopt_string(zmq.SUBSCRIBE, '')
         self._handler_slot = _HandlerSlot(event_handler)
         self._event_thread = threading.Thread(
@@ -1477,6 +1732,16 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         self._event_thread.start()
 
     @staticmethod
+    def _wake_sub(zmq_context: zmq.Context) -> None:
+        """Publish an empty message to the SUB socket, ending its blocking receive."""
+        with zmq_context.socket(zmq.XPUB) as wake:
+            wake.setsockopt(zmq.LINGER, 0)
+            wake.setsockopt(zmq.RCVTIMEO, _WAKE_TIMEOUT_MS)
+            wake.bind(_WAKE_ADDRESS)
+            wake.recv()  # wait for the subscription: a message before it is dropped
+            wake.send(b'')
+
+    @staticmethod
     def _event_loop(
         stop_event: threading.Event,
         socket_sub: zmq.Socket,
@@ -1485,7 +1750,8 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
     ) -> None:
         """Process incoming PUB messages."""
         # receive with a timeout instead of poll + receive: this saves a syscall per
-        # message, and the periodic timeouts allow checking stop_event
+        # message; the timeout is the fallback should the wake-up message of a
+        # close() not arrive
         socket_sub.setsockopt(zmq.RCVTIMEO, _EVENT_LOOP_POLL_MS)
 
         # the first receive of a burst blocks (with timeout); once a message has
@@ -1500,6 +1766,8 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
             except zmq.ZMQError:
                 if not stop_event.is_set():  # silent when closing down
                     logger.exception('Error receiving published message')
+                break
+            if stop_event.is_set():  # woken by the finalizer, not by a message
                 break
             flags = zmq.NOBLOCK
 
@@ -1536,24 +1804,55 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
         if reply_data.serialization != self._serialization:
             logger.debug('Switching to %s serialization', reply_data.serialization)
             self._set_serialization(reply_data.serialization)
+        via_ipc = not self._address_req.startswith('tcp://')
         if (
-            self.is_local
-            and os.name == 'posix'
+            not via_ipc
+            and self.is_local
+            and zmq.has('ipc')
             and reply_data.ipc_req_rep is not None
             and reply_data.ipc_pub_sub is not None
         ):
-            if self._address_req.startswith('tcp://'):
-                self._req_socket.disconnect(self._address_req)
-                self._address_req = reply_data.ipc_req_rep
-                logger.debug("Reconnecting REQ socket to '%s'", self._address_req)
-                self._req_socket.connect(self._address_req)
+            via_ipc = self._upgrade_to_ipc(reply_data.ipc_req_rep)
+        if via_ipc and reply_data.ipc_pub_sub is not None:
             self._address_sub = reply_data.ipc_pub_sub
         else:
             # build the PUB address from the host IP that already proved reachable:
             # the one used to reach the REQ socket. When connected via IPC, the host
             # is local and its TCP sockets are reachable via loopback.
-            host_ip = urlsplit(self._address_req).hostname or IPV4_LOOPBACK
+            host_ip = None if via_ipc else urlsplit(self._address_req).hostname
+            host_ip = host_ip or IPV4_LOOPBACK
+            if ':' in host_ip:  # IPv6 literal
+                host_ip = f'[{host_ip}]'
             self._address_sub = f'tcp://{host_ip}:{reply_data.tcp_port_pub}'
+
+    def _upgrade_to_ipc(self, ipc_address: str) -> bool:
+        """Move the REQ socket to the host's IPC address, if the host answers there.
+
+        Sharing the host's IP addresses does not guarantee sharing its IPC namespace,
+        e.g. for a container on the host's network. A HELLO that goes unanswered within
+        :data:`_IPC_PROBE_TIMEOUT_S` reverts the socket to its TCP address.
+        """
+        tcp_address = self._address_req
+        self._req_socket.disconnect(tcp_address)
+        self._req_socket.connect(ipc_address)
+        logger.debug("Probing IPC address '%s'", ipc_address)
+        try:
+            self._req(
+                _MessageKind.HELLO,
+                reply_type=_WelcomeData,
+                timeout=_IPC_PROBE_TIMEOUT_S,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Host did not answer at '%s' - staying on '%s'",
+                ipc_address,
+                tcp_address,
+            )
+            self._req_socket.disconnect(ipc_address)
+            self._req_socket.connect(tcp_address)
+            return False
+        self._address_req = ipc_address
+        return True
 
     @overload
     def _req(
@@ -1756,29 +2055,13 @@ class _ServiceListenerIterator(ServiceListener):
         self._queue = q
         self._properties = properties
         self._seen_remote: dict[str, ServiceEvent] = {}
-        self._local_ipv4 = get_local_ipv4()
+        self._local_ips = _local_ip_addresses()
 
     @override
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        # get service info
-        info = zc.get_service_info(type_, name)
-        if info is None or not info.parsed_addresses():
-            return
-
-        # check if the service runs on localhost
-        ipv4 = next(iter(info.parsed_addresses(IPVersion.V4Only)), None)
-        if ipv4 is None or ipv4 == self._local_ipv4:
-            return
-
-        # check if the service matches the requested properties
-        txt = info.decoded_properties
-        if not all(_match_filter(txt.get(k), v) for k, v in self._properties.items()):
-            return
-
-        # add event to the queue
-        event = ServiceEvent('added', f'tcp://{ipv4}:{info.port}', txt)
-        self._seen_remote[name] = event
-        self._queue.put(event)
+        if (event := self._event(zc, type_, name)) is not None:
+            self._seen_remote[name] = event
+            self._queue.put(event)
 
     @override
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
@@ -1789,7 +2072,27 @@ class _ServiceListenerIterator(ServiceListener):
 
     @override
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
-        logger.debug('Ignoring update for service: %s', name)
+        """Pass a changed record on as a removal followed by an addition."""
+        if self._event(zc, type_, name) != self._seen_remote.get(name):
+            self.remove_service(zc, type_, name)
+            self.add_service(zc, type_, name)
+
+    def _event(self, zc: Zeroconf, type_: str, name: str) -> ServiceEvent | None:
+        """The 'added' event for a record - None if it is local or filtered out."""
+        info = zc.get_service_info(type_, name)
+        if info is None or not info.parsed_addresses():
+            return None
+
+        # skip services on this machine: they are discovered locally, via IPC
+        ipv4 = next(iter(info.parsed_addresses(IPVersion.V4Only)), None)
+        if ipv4 is None or ip_address(ipv4) in self._local_ips:
+            return None
+
+        # check if the service matches the requested properties
+        txt = info.decoded_properties
+        if not all(_match_filter(txt.get(k), v) for k, v in self._properties.items()):
+            return None
+        return ServiceEvent('added', f'tcp://{ipv4}:{info.port}', txt)
 
 
 class _Yielded:
@@ -1847,7 +2150,6 @@ class ServiceIterator(Iterator[ServiceEvent]):
         self._q: queue.Queue[ServiceEvent | None] = queue.Queue()
         self._stop = threading.Event()
         self._deadline = None if timeout is None else time.monotonic() + timeout
-        self._zc: Zeroconf | None = None
         self._browser: ServiceBrowser | None = None
         self._state: dict[str, ServiceEvent | _Yielded] = {}  # per-address state
         self._pending: deque[str] = deque()  # waiting to be emitted
@@ -1871,13 +2173,12 @@ class ServiceIterator(Iterator[ServiceEvent]):
             if remote:
                 handler = _ServiceListenerIterator(self._q, properties)
                 zc_service_type = _format_zeroconf_service_type(service_type)
-                self._zc = Zeroconf()
-                self._browser = ServiceBrowser(self._zc, zc_service_type, handler)
+                self._browser = ServiceBrowser(
+                    _SharedZeroconf.instance(), zc_service_type, handler
+                )
         except BaseException:
             # unwind partially-acquired resources when construction fails
-            ServiceIterator._cleanup(
-                self._q, self._stop, self._watcher, self._zc, self._browser
-            )
+            ServiceIterator._cleanup(self._q, self._stop, self._watcher, self._browser)
             raise
 
         # register finalizer to clean up resources on exit
@@ -1887,7 +2188,6 @@ class ServiceIterator(Iterator[ServiceEvent]):
             self._q,
             self._stop,
             self._watcher,
-            self._zc,
             self._browser,
         )
 
@@ -1921,7 +2221,8 @@ class ServiceIterator(Iterator[ServiceEvent]):
                 event = self._state.pop(address, None)
                 if event is None or isinstance(event, _Yielded):
                     continue
-                self._state[address] = self._YIELDED
+                if event.kind == 'added':  # a removed service may come back
+                    self._state[address] = self._YIELDED
                 return event
 
             # Handle timeout / blocking
@@ -1950,7 +2251,6 @@ class ServiceIterator(Iterator[ServiceEvent]):
         q: 'queue.Queue[ServiceEvent | None]',
         stop: threading.Event,
         watcher: threading.Thread | None,
-        zc: Zeroconf | None,
         browser: ServiceBrowser | None,
     ) -> None:
         stop.set()
@@ -1960,9 +2260,6 @@ class ServiceIterator(Iterator[ServiceEvent]):
         if browser is not None:
             with contextlib.suppress(Exception):
                 browser.cancel()
-        if zc is not None:
-            with contextlib.suppress(Exception):
-                zc.close()
         # unblock a consumer waiting in __next__ and mark the iterator exhausted
         q.put(None)
 

@@ -1,9 +1,14 @@
+import contextlib
 import gc
+import os
 import re
 import struct
+import threading
+from collections.abc import Iterator
 from unittest.mock import PropertyMock
 
 import pytest
+from serial.tools.list_ports_common import ListPortInfo
 
 from bpod_core import ipc
 from bpod_core.bpod import Bpod
@@ -80,15 +85,26 @@ def mock_serial_discovery(mocker):
 
 
 @pytest.fixture
-def mock_comports(mocker, mock_serial_discovery):
+def make_port_info():
+    """Factory for the port info of a Bpod's USB serial port."""
+
+    def make_port_info(
+        device, *, serial_number='12345', vid=VID_TEENSY, pid=TeensyPID.SERIAL
+    ):
+        port_info = ListPortInfo(device)
+        port_info.serial_number = serial_number
+        port_info.vid = vid
+        port_info.pid = pid
+        return port_info
+
+    return make_port_info
+
+
+@pytest.fixture
+def mock_comports(mocker, mock_serial_discovery, make_port_info):
     """Fixture to mock available COM ports."""
-    mock_port_info = mocker.MagicMock()
-    mock_port_info.device = 'COM3'
-    mock_port_info.serial_number = '12345'
-    mock_port_info.vid = VID_TEENSY
-    mock_port_info.pid = TeensyPID.SERIAL
     mock_comports = mocker.patch('bpod_core.com.comports')
-    mock_comports.return_value = [mock_port_info]
+    mock_comports.return_value = [make_port_info('COM3')]
     return mock_comports
 
 
@@ -128,10 +144,56 @@ def mock_ext_serial(mocker):
     mocker.patch(f'{tmp}.reset_input_buffer')
     mocker.patch(f'{tmp}._reconfigure_port')  # e.g. a timeout set while open
     mocker.patch(f'{tmp}.in_waiting', new_callable=PropertyMock, side_effect=in_waiting)
+    mocker.patch(  # the port isn't open, so the direct read would refuse it
+        'bpod_core.com.ExtendedSerial.read_waiting',
+        side_effect=lambda: read(max(1, in_waiting())),
+    )
     yield extended_serial
     # tests may mark the port open; pyserial's real close() would then run on garbage
     # collection, after the patches above are gone
     extended_serial.is_open = False
+
+
+@pytest.fixture
+def pty_port() -> Iterator[tuple[int, ExtendedSerial]]:
+    """A port opened on a pseudo-terminal, and the master descriptor that feeds it."""
+    if os.name != 'posix':
+        pytest.skip('needs a pseudo-terminal')
+    master, slave = os.openpty()
+    try:
+        with ExtendedSerial(os.ttyname(slave)) as port:
+            yield master, port
+    finally:
+        with contextlib.suppress(OSError):  # a test may hang up the master itself
+            os.close(master)
+        os.close(slave)
+
+
+class BlockedThread(threading.Thread):
+    """A thread that ends once `release` is set; stands in for a trial's reader."""
+
+    trial_number = 7
+    error: OSError | None = None
+
+    def __init__(self) -> None:
+        super().__init__(daemon=True)
+        self.release = threading.Event()
+
+    def run(self) -> None:
+        self.release.wait()
+
+    def cancel(self) -> None:
+        self.release.set()
+        self.join(timeout=2)
+
+
+@pytest.fixture
+def blocked_thread() -> Iterator[BlockedThread]:
+    """A started thread that ends once its `release` event is set."""
+    thread = BlockedThread()
+    thread.start()
+    yield thread
+    thread.cancel()
 
 
 @pytest.fixture
@@ -156,8 +218,20 @@ def assert_collected():
 
 @pytest.fixture
 def fast_event_loop(mocker):
-    """Shorten the IPC event loops' poll interval, so that they stop quickly."""
+    """Shorten the IPC poll interval: requests notice close() / deadlines sooner, and
+    an idle host refreshes its subscriber flag sooner. Stopping doesn't depend on it."""
     mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 5)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_shared_zeroconf(mocker):
+    """Start each test without a shared Zeroconf instance, and close the one it made."""
+    mocker.patch.object(ipc._SharedZeroconf, '_instance', None)
+    mocker.patch.object(ipc._SharedZeroconf, '_closed', False)
+    mocker.patch.object(ipc.ServiceHost, '_registrations', {})
+    yield
+    ipc._SharedZeroconf._queue.join()  # no record operation spills into the next test
+    ipc._SharedZeroconf.close()
 
 
 @pytest.fixture
@@ -235,11 +309,17 @@ def mock_bpod_25(
 
 
 @pytest.fixture
-def mock_bpod_2p(
-    mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
-):
+def mock_ext_serial_2p(mock_ext_serial, mocker):
+    """A mocked main serial port answering like a Bpod 2+."""
     mock_ext_serial.mock_responses.update(fixture_bpod_2p)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
+    return mock_ext_serial
+
+
+@pytest.fixture
+def mock_bpod_2p(
+    mock_comports, mock_ext_serial_2p, mock_settings, mocker, mock_advertisement
+):
     mocker.patch(
         'bpod_core.bpod.Bpod._detect_additional_serial_ports', return_value=(None, None)
     )

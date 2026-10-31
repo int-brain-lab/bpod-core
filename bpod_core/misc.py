@@ -581,8 +581,15 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V]):
 
     @override
     def __setitem__(self, key: K, value: V) -> None:
-        validated = type(self).model_validate({key: value}).root
-        self.root[key] = validated[key]
+        # store the validated pair: the key may have been coerced, e.g. '1' to 1
+        try:
+            # calling pydantic's core validator directly skips the Python wrapper of
+            # model_validate; like StateMachine._hash, fall back to the public API if
+            # the private attribute changes
+            validated = type(self).__pydantic_validator__.validate_python({key: value})
+        except (AttributeError, TypeError):
+            validated = type(self).model_validate({key: value})
+        self.root.update(validated.root)
 
     @override
     def __delitem__(self, key: K) -> None:

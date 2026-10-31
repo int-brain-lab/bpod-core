@@ -6,6 +6,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Bpod.wait(timeout=...)` raises a `TimeoutError` when the state machine hasn't
+  finished in time.
+- `stop_state_machine(timeout=...)` waits at most `timeout` seconds (one by default) for
+  the Bpod to end the trial; otherwise it gives the trial up and raises a
+  `TimeoutError`, and the connection has to be reopened.
+
+### Fixed
+
+- `Bpod.close()` finishes its cleanup before raising a connection lost during the
+  trial.
+- validation messages for invalid state names and operators no longer substitute
+  braces in the input, e.g. `{pattern}`.
+- `misc.ValidatedDict` stores a coerced key in its validated form, e.g. `'1'` as `1`.
+- connecting discards discovery bytes before the handshake, which could otherwise fail
+  with firmware that sends one when the port is opened; discovery raises DTR once
+  the port is open (`verify_serial_discovery(raise_dtr=True)`) to request that byte,
+  so connecting no longer waits for the next periodic one.
+- closing a `Bpod`, or any IPC host or client, no longer waits up to 100 ms for its
+  event loop's receive timeout: the loop is woken by a message.
+- a `Bpod` created after closing another one for the same device takes over its IPC
+  service, network advertisement included, instead of failing to bind the same
+  addresses.
+- a process's first trial no longer ends about 10 ms late: `numpy.ma`, which polars 2.1
+  imports on its first DataFrame conversion, is imported with bpod-core.
+- every handshake ends with a session clock reset, also on reopening the connection; a
+  reset the firmware answers late (about 50 ms on Bpod r2.0) is repeated, so
+  timestamps stay aligned to the host clock.
+- a `RemoteBpod` connecting by one of the host machine's own network addresses is
+  recognized as local: it upgrades to the IPC transport and skips compressing trial
+  data. The upgrade is verified and reverted if the host doesn't answer there.
+- a service that disappears and comes back is reported again by `iter_services` and
+  `discover_remote_bpod`; a record changing its address or port is reported as a removal
+  and an addition.
+- `RemoteBpod.close()` returns within a second when the host is gone, instead of
+  waiting for a goodbye reply forever.
+- a host without a route to the internet advertises one of its interface addresses via
+  Zeroconf instead of the loopback address.
+- `RemoteError` survives pickling, e.g. when raised in a worker process.
+
+### Changed
+
+- building state machines is two to three times faster, loading them from a file up
+  to seven times, and `Bpod.run` returns about 40% sooner. Validating and compiling
+  state machines and `Bpod.get_data` gained 10-20%.
+- connecting to a Bpod enumerates the serial ports once instead of three times;
+  `com.SerialDevice` also accepts a `ListPortInfo` as port.
+- the builder methods of `StateMachine` validate their arguments through the models
+  instead of `validate_call`: validation errors are titled after the model (e.g.
+  `State`) rather than the method, unknown keyword arguments raise a `TypeError`, and
+  a `Transitions` or `Actions` instance passed to `add_state` is stored by reference.
+- state names and operators must be strings; `bytes` are no longer coerced.
+- the IPC transport is used wherever libzmq supports it, instead of only on POSIX.
+- the reader hands the packets of one serial read to the event thread as one batch:
+  fewer thread wake-ups at high event rates.
+- the reader takes everything pending on the port in one read
+  (`com.ExtendedSerial.read_waiting`, direct on POSIX), halving its CPU time.
+- the warning about a timing violation reports how far the host fell behind in
+  reading the serial port: a full buffer stalls the Bpod's state machine cycle.
+- all IPC hosts and service browsers of a process share one Zeroconf instance,
+  started on first use and closed at exit; closing a remote host no longer waits for
+  its goodbye packets.
+- `wait()` also waits for the trial's softcode handlers to have run.
+- `wait()` and `stop_state_machine()` can be interrupted with Ctrl+C while they wait
+  for a trial, despite polars' signal handler.
+- leaving the `Bpod` context manager on an exception stops a running state machine
+  instead of waiting for it, as does `Bpod.close()` when its wait is interrupted; if
+  the Bpod doesn't end the trial, the reader gives it up.
+
 ## [0.1.0a15] - 2026-10-23
 
 ### Added

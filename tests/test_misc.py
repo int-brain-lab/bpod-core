@@ -618,6 +618,20 @@ class TestValidatedDict:
         assert validated_dict == {'a': 1}
         assert validated_dict != {'a': 2}
 
+    def test_private_api_available(self):
+        """Pydantic's core validator, used by __setitem__ for speed, is available."""
+        validated_dict = ValidatedDict[int, int]({})
+        validator = type(validated_dict).__pydantic_validator__
+        assert validator.validate_python({'1': 2}).root == {1: 2}
+
+    @pytest.mark.parametrize('key', ['1', 1.0])
+    def test_setitem_stores_validated_key(self, key):
+        """Keys that pydantic coerces are stored in their validated form."""
+        validated_dict = ValidatedDict[int, int]({})
+        validated_dict[key] = 2
+        assert list(validated_dict) == [int(key)]
+        assert type(next(iter(validated_dict))) is int
+
     def test_runtime_validate_key(self, validated_dict):
         """Test runtime validation of keys."""
         with pytest.raises(ValidationError):

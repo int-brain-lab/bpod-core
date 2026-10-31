@@ -2,10 +2,11 @@ from collections.abc import MutableMapping
 from pathlib import Path
 
 import msgspec
+import numpy as np
 import pytest
 from pydantic import ValidationError, create_model
 
-from bpod_core.fsm import State, StateMachine, dec_hook, enc_hook
+from bpod_core.fsm import State, StateMachine, Transitions, dec_hook, enc_hook
 
 
 class TestEncDecHooks:
@@ -104,11 +105,64 @@ class TestStateMachineBasic:
         with pytest.raises(ValidationError):
             sm.add_state(name='back')
 
+    @pytest.mark.parametrize(
+        ('method', 'kwargs', 'message'),
+        [
+            ('add_state', {'name': '>x'}, "Invalid State Name '>x'"),
+            ('add_state', {'name': ''}, 'at least 1 character'),
+            ('add_state', {'name': '>{pattern}'}, "Invalid State Name '>{pattern}'"),
+            ('set_global_timer', {'index': -1, 'duration': 1}, 'greater'),
+            ('set_global_counter', {'index': 'x', 'event': 'e', 'threshold': 1}, 'int'),
+            ('set_condition', {'index': -1, 'channel': 'c', 'value': True}, 'greater'),
+        ],
+    )
+    def test_invalid_key_argument_error(self, method, kwargs, message):
+        """Invalid key arguments are reported as key errors of the collection."""
+        with pytest.raises(ValidationError) as excinfo:
+            getattr(StateMachine(), method)(**kwargs)
+        (error,) = excinfo.value.errors()
+        assert error['loc'][-1] == '[key]'
+        assert message in error['msg']
+
     def test_invalid_timer(self):
         """Negative timer values should raise validation errors."""
         sm = StateMachine(name='Test State Machine')
         with pytest.raises(ValidationError):
             sm.add_state(name='state1', timer=-1.0)
+
+    def test_invalid_value_precedes_duplicate_name(self):
+        """Invalid arguments are reported before a duplicate state name."""
+        sm = StateMachine()
+        sm.add_state(name='state1')
+        with pytest.raises(ValidationError):
+            sm.add_state(name='state1', timer=-1.0)
+
+    @pytest.mark.parametrize(
+        'transitions', [Transitions({'Tup': '>exit'}), Transitions()]
+    )
+    def test_transitions_instance_is_stored_by_reference(self, transitions):
+        """A Transitions instance passed to add_state is not copied, even if empty."""
+        sm = StateMachine()
+        sm.add_state(name='state1', transitions=transitions)
+        assert sm.states['state1'].transitions is transitions
+
+    @pytest.mark.parametrize('name', [b'state1', 1, None])
+    def test_state_name_must_be_str(self, name):
+        """State names are not coerced from other types."""
+        with pytest.raises(ValidationError):
+            StateMachine().add_state(name=name)
+        with pytest.raises(ValidationError):
+            StateMachine().add_state(name='a', transitions={'Tup': name})
+
+    @pytest.mark.parametrize('index', [np.int64(0), '1', 2.0])
+    def test_index_is_coerced(self, index):
+        """Indices that pydantic coerces are stored as int and serialize."""
+        sm = StateMachine()
+        sm.set_global_timer(index, duration=1.0)
+        sm.set_global_counter(index, event='Port1_High', threshold=1)
+        sm.set_condition(index, channel='Port1', value=True)
+        assert list(sm.global_timers) == [int(index)]
+        assert sm.hash and sm.to_json()
 
     def test_empty_repr_default_name(self):
         """Default name should be omitted from __repr__."""
@@ -477,6 +531,21 @@ class TestCheck:
         fsm.add_state('state3')
         with pytest.raises(ValueError, match='are unreachable'):
             fsm.check()
+
+    def test_invalid_transition_target(self):
+        """A transition to an unknown state names the state and the condition."""
+        fsm = StateMachine()
+        fsm.add_state('state1', transitions={'Tup': 'state2'})
+        with pytest.raises(
+            ValueError, match=r"'state2' for transition condition 'Tup'"
+        ):
+            fsm.check()
+
+    @pytest.mark.parametrize('bad', ['a: \ud800', 'a: [', '- 1\n- 2'])
+    def test_from_yaml_invalid(self, bad):
+        """Unparseable or structurally wrong YAML raises ValueError with any loader."""
+        with pytest.raises(ValueError, match='Invalid YAML'):
+            StateMachine.from_yaml(bad)
 
 
 class TestHash:

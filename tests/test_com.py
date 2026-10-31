@@ -1,8 +1,10 @@
 import logging
+import os
 import re
 import struct
+import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, PropertyMock, call
 
 import numpy as np
 import pytest
@@ -30,6 +32,47 @@ class TestExtendedSerial:
         """Send bytes and ensure underlying serial.write is called."""
         mock_serial.write(b'x')
         mock_serial.super_write.assert_called_with(b'x')
+
+    def test_read_waiting_takes_all_pending_bytes(self, pty_port):
+        """On POSIX, one call returns everything pending on the port; EOF raises."""
+        master, port = pty_port
+        os.write(master, b'abc')
+        os.write(master, b'de')
+        assert port.read_waiting() == b'abcde'
+        os.close(master)
+        with pytest.raises(SerialException):  # hung up
+            port.read_waiting()
+
+    def test_read_waiting_ends_on_cancel(self, pty_port):
+        """cancel_read() from another thread ends the wait with ReadCancelled."""
+        master, port = pty_port
+        threading.Timer(0.05, port.cancel_read).start()
+        with pytest.raises(com.ReadCancelled):
+            port.read_waiting()
+        os.write(master, b'a')
+        assert port.read_waiting() == b'a'  # reading goes on afterwards
+
+    def test_discard_cancel_read(self, pty_port):
+        """A cancel no read consumed is withdrawn; with none pending, it's a no-op."""
+        master, port = pty_port
+        port.cancel_read()
+        port.discard_cancel_read()
+        port.discard_cancel_read()  # nothing pending: returns at once
+        os.write(master, b'a')
+        assert port.read_waiting() == b'a'
+
+    def test_read_waiting_falls_back_to_read(self, mock_serial, mocker):
+        """Without descriptors, read() takes what is waiting or waits for one byte."""
+        mocker.patch('bpod_core.com._DIRECT_READ', False)
+        mocker.patch(
+            'bpod_core.com.Serial.in_waiting',
+            new_callable=PropertyMock,
+            side_effect=[3, 0],
+        )
+        mock_serial.super_read.return_value = b'xyz'
+        assert mock_serial.read_waiting() == b'xyz'
+        mock_serial.read_waiting()
+        assert mock_serial.super_read.call_args_list == [call(3), call(1)]
 
     def test_write_struct(self, mock_serial):
         """Pack values with struct format and write exact bytes."""
@@ -494,6 +537,23 @@ class TestVerifySerialDiscovery:
         assert result is True
         trigger.assert_called_once()
 
+    def test_dtr_raised_after_open(self, mock_serial, mocker):
+        """With `raise_dtr`, DTR is low on opening and raised before reading."""
+        dtr = mocker.PropertyMock()
+        type(mock_serial).dtr = dtr
+        result = com.verify_serial_discovery(
+            port='COM1', expected_message=b'A', raise_dtr=True
+        )
+        assert result is True
+        assert dtr.call_args_list == [mocker.call(False), mocker.call(True)]
+
+    def test_dtr_untouched_by_default(self, mock_serial, mocker):
+        """By default, the port is opened as is."""
+        dtr = mocker.PropertyMock()
+        type(mock_serial).dtr = dtr
+        assert com.verify_serial_discovery(port='COM1', expected_message=b'A') is True
+        dtr.assert_not_called()
+
     def test_serial_exception(self, mock_serial):
         mock_serial.read.side_effect = SerialException()
         result = com.verify_serial_discovery(
@@ -507,14 +567,9 @@ class TestSerialDevice:
     """Tests for SerialDevice class."""
 
     @pytest.fixture
-    def mock_port_info(self, mocker):
-        """Fixture to create a mock port info object."""
-        port_info = mocker.MagicMock()
-        port_info.device = '/dev/ttyACM0'
-        port_info.serial_number = '12345'
-        port_info.vid = 0x16C0
-        port_info.pid = 0x0483
-        return port_info
+    def mock_port_info(self, make_port_info):
+        """Fixture to create a port info object."""
+        return make_port_info('/dev/ttyACM0')
 
     @pytest.fixture
     def mock_comports(self, mocker, mock_port_info):
@@ -541,6 +596,14 @@ class TestSerialDevice:
         mock_extended_serial.open.assert_called_once()
         assert device.port == '/dev/ttyACM0'
 
+    def test_init_with_port_info(
+        self, mock_comports, mock_port_info, mock_extended_serial
+    ):
+        """An already enumerated port is used without enumerating again."""
+        device = com.SerialDevice(mock_port_info)
+        mock_comports.assert_not_called()
+        assert device.port == '/dev/ttyACM0'
+
     def test_init_without_opening_connection(self, mock_comports, mock_extended_serial):
         """Device can be initialized without opening connection."""
         device = com.SerialDevice('/dev/ttyACM0', open_connection=False)
@@ -552,6 +615,11 @@ class TestSerialDevice:
         mock_comports.return_value = []
         with pytest.raises(SerialException, match='serial port not found'):
             com.SerialDevice('/dev/ttyACM0')
+
+    def test_init_port_none(self, mock_comports):
+        """Anything but a path or a port info is reported as a missing port."""
+        with pytest.raises(SerialException, match='serial port not found: None'):
+            com.SerialDevice(None)  # type: ignore[arg-type]
 
     def test_context_manager_enter(self, mock_comports, mock_extended_serial):
         """Context manager __enter__ returns the device instance."""

@@ -2,17 +2,22 @@ import gc
 import json
 import logging
 import os
+import pickle
+import queue
 import re
 import shutil
 import socket
 import threading
 import time
 import weakref
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, NamedTuple
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import msgspec
+import psutil
 import pytest
 import zeroconf
 import zmq
@@ -57,6 +62,11 @@ def _wait_until(predicate, timeout=2.0):
             return True
         time.sleep(0.01)
     return False
+
+
+def _zeroconf_idle():
+    """Wait for the shared Zeroconf worker to have run every queued operation."""
+    ipc._SharedZeroconf._queue.join()
 
 
 pytestmark = pytest.mark.usefixtures('fast_event_loop')
@@ -249,14 +259,95 @@ def mock_service_browser(mocker):
         ('tcp://127.0.0.99:5555', True),
         ('tcp://localhost:5555', True),
         ('tcp://[::1]:5555', True),
+        ('tcp://10.0.0.7:5555', True),  # one of the machine's own interfaces
+        ('tcp://[2001:db8:0:0:0:0:0:1]:5555', True),  # own IPv6, differently spelled
+        ('tcp://[2001:db8::1%eth0]:5555', True),  # own IPv6, with zone ID
         ('tcp://192.168.1.10:5555', False),
         ('tcp://rig-pc.local:5555', False),  # DNS hostname, not an IP literal
         ('tcp://:5555', False),
     ],
 )
-def test_is_local_address(address, expected):
-    """_is_local_address() detects loopback and IPC addresses without raising."""
+def test_is_local_address(mocker, address, expected):
+    """_is_local_address() detects IPC, loopback and own-interface addresses."""
+    own = {ip_address('10.0.0.7'), ip_address('2001:db8::1')}
+    mocker.patch.object(ipc, '_local_ip_addresses', return_value=own)
     assert ipc._is_local_address(address) is expected
+
+
+class _Snic(NamedTuple):
+    """Stand-in for psutil's interface address tuple."""
+
+    family: int
+    address: str
+
+
+def test_local_ip_addresses(mocker):
+    """Interface addresses are parsed, zone IDs dropped, link-local and junk skipped."""
+    snic = _Snic
+    mocker.patch.object(
+        ipc,
+        'net_if_addrs',
+        return_value={
+            'lo': [snic(socket.AF_INET, '127.0.0.1'), snic(socket.AF_INET6, '::1')],
+            'eth0': [
+                snic(socket.AF_INET, '10.0.0.7'),
+                snic(socket.AF_INET6, 'fe80::1%eth0'),  # link-local
+                snic(socket.AF_INET6, '2001:db8::1%eth0'),
+                snic(socket.AF_INET6, 'not an address'),
+                snic(psutil.AF_LINK, 'aa:bb:cc:dd:ee:ff'),  # a MAC address
+            ],
+        },
+    )
+    assert ipc._local_ip_addresses() == {
+        ip_address('127.0.0.1'),
+        ip_address('::1'),
+        ip_address('10.0.0.7'),
+        ip_address('2001:db8::1'),
+    }
+
+
+def test_local_ip_addresses_unavailable(mocker):
+    """An OS refusing to list interfaces falls back to the primary address."""
+    mocker.patch.object(ipc, 'net_if_addrs', side_effect=OSError)
+    mocker.patch.object(ipc, 'get_local_ipv4', return_value='10.0.0.7')
+    assert ipc._local_ip_addresses() == {ip_address('10.0.0.7')}
+
+
+@pytest.mark.skipif(not zmq.has('ipc'), reason='libzmq lacks the ipc transport')
+def test_client_on_host_network_address_is_local(mock_advertisement):
+    """A client connecting via the host's network address upgrades to IPC."""
+    with ipc.ServiceHost('Test', 'service', request_handler=lambda q: q) as host:
+        if urlsplit(host.rep_tcp_addr).hostname == '127.0.0.1':
+            pytest.skip('no network address to connect through')
+        with ipc.ServiceClient('service', address=host.rep_tcp_addr) as client:
+            assert client.is_local
+            assert client.address_req.startswith('ipc://')
+
+
+def test_ipc_probe_failure_reverts_to_tcp(mocker, mock_advertisement):
+    """If the host does not answer at its IPC address, the client stays on TCP."""
+    mocker.patch.object(ipc, '_IPC_PROBE_TIMEOUT_S', 0.2)
+    with ipc.ServiceHost('Test', 'service', request_handler=lambda q: q) as host:
+        # make the host offer an IPC address nobody listens on
+        welcome = ipc._WelcomeData(
+            serialization='msgpack',
+            tcp_port_pub=host.pub_tcp_port,
+            ipc_pub_sub='ipc://@nobody_pub',
+            ipc_req_rep='ipc://@nobody_rep',
+        )
+        original = ipc.ServiceClient._req
+        replies = iter([welcome])  # the first reply - the TCP handshake - is replaced
+
+        def fake_req(self, *args, **kwargs):
+            reply_kind, reply = original(self, *args, **kwargs)
+            return reply_kind, next(replies, reply)
+
+        mocker.patch.object(ipc.ServiceClient, '_req', fake_req)
+        with ipc.ServiceClient('service', address=host.rep_tcp_addr) as client:
+            assert client.is_local
+            assert client.address_req == host.rep_tcp_addr
+            assert client.address_sub.startswith('tcp://')
+            assert client.request({'x': 1}) == {'x': 1}
 
 
 class TestErrorData:
@@ -308,6 +399,21 @@ class TestErrorData:
 
 class TestClient:
     """Tests for the ServiceClient class."""
+
+    def test_close_wakes_the_event_loop(self, mock_advertisement, mocker):
+        """close() ends the subscriber loop's receive instead of waiting it out."""
+        mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 800)  # < the join timeout
+        host = ipc.ServiceHost('test', 'test_service', _noop_handler, remote=False)
+        with (
+            host,
+            ipc.ServiceClient(
+                'test_service', address=host.rep_tcp_addr, event_handler=lambda _: None
+            ) as client,
+        ):
+            start = time.perf_counter()
+            client.close()
+            assert time.perf_counter() - start < 0.4
+            assert not client._event_thread.is_alive()
 
     @pytest.fixture
     def host(self, mock_advertisement):
@@ -620,10 +726,9 @@ class TestHost:
     """Tests for the ServiceHost class."""
 
     def test_basic_init_and_properties(self, mock_advertisement):
-        """Check ports, addresses, and Zeroconf objects are initialized."""
+        """Check ports and addresses are initialized."""
         with ipc.ServiceHost('test', 'test_service', _noop_handler) as host:
             assert host.rep_tcp_addr.startswith('tcp://')
-            assert host._zeroconf is not None
 
     def test_preferred_port_used_when_free(self, mock_advertisement):
         """A free preferred port is used as-is."""
@@ -712,14 +817,15 @@ class TestHost:
         with ipc.ServiceHost(
             'test', 'test_service', _noop_handler, remote=True
         ) as host:
-            assert host._zeroconf is not None
-            # registration runs on a background thread
-            register_service = host._zeroconf.register_service
-            assert _wait_until(lambda: register_service.call_count == 1)
-            host._zeroconf.close.assert_not_called()
+            # registration runs on the worker thread
+            zeroconf = mock_advertisement['zeroconf'].return_value
+            _zeroconf_idle()
+            zeroconf.register_service.assert_called_once()
+            zeroconf.unregister_service.assert_not_called()
             assert host._local_advertisement is not None
             assert host._local_advertisement.service_file.exists()
-        host._zeroconf.close.assert_called_once()
+        _zeroconf_idle()
+        zeroconf.unregister_service.assert_called_once()
         assert not host._local_advertisement.service_file.exists()
         assert not host._local_advertisement._runtime_directory.exists()
 
@@ -728,7 +834,7 @@ class TestHost:
         with ipc.ServiceHost(
             'test', 'test_service', _noop_handler, remote=False
         ) as host:
-            assert host._zeroconf is None
+            mock_advertisement['zeroconf'].assert_not_called()
             assert host._local_advertisement is not None
             assert host._local_advertisement.service_file.exists()
         assert not host._local_advertisement.service_file.exists()
@@ -856,6 +962,112 @@ class TestHost:
         host.close()
         assert not service_file.exists()
 
+    def test_same_uuid_replaces_previous_host(
+        self, mock_advertisement, mock_ports_file
+    ):
+        """A host whose UUID a live host uses closes that host and takes over."""
+        kwargs = {'uuid': uuid4(), 'remote': False}
+        first = ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        address = first.rep_tcp_addr
+        with ipc.ServiceHost('b', 'test_service', _noop_handler, **kwargs) as second:
+            assert first._closed
+            assert second.rep_tcp_addr == address  # the remembered port was free again
+
+    @pytest.mark.parametrize('changed', [False, True], ids=['same', 'changed'])
+    def test_takeover_keeps_the_zeroconf_registration(
+        self, mock_advertisement, mock_ports_file, changed
+    ):
+        """A remote host replacing a remote one keeps its registration, updated."""
+        zeroconf = mock_advertisement['zeroconf'].return_value
+        kwargs = {'uuid': uuid4(), 'remote': True}
+        first = ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        properties = {'k': 'v'} if changed else None
+        with ipc.ServiceHost('a', 'test_service', _noop_handler, properties, **kwargs):
+            assert first._closed
+            if changed:
+                _zeroconf_idle()
+                zeroconf.update_service.assert_called_once()
+            else:
+                zeroconf.update_service.assert_not_called()  # nothing to publish
+            zeroconf.unregister_service.assert_not_called()
+        _zeroconf_idle()
+        zeroconf.unregister_service.assert_called_once()
+
+    def test_takeover_keeps_a_registration_renamed_on_the_network(
+        self, mock_advertisement, mock_ports_file
+    ):
+        """The inherited record is updated under the name Zeroconf settled on."""
+        zeroconf = mock_advertisement['zeroconf'].return_value
+        kwargs = {'uuid': uuid4(), 'remote': True}
+
+        def rename(info, **_):  # as Zeroconf does on a name conflict
+            info.name = 'a (2).' + info.type
+
+        zeroconf.register_service.side_effect = rename
+        first = ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        _zeroconf_idle()  # registered, and renamed
+        with ipc.ServiceHost('a', 'test_service', _noop_handler, {'k': 'v'}, **kwargs):
+            assert first._closed
+            _zeroconf_idle()
+            zeroconf.update_service.assert_called_once()
+            assert zeroconf.update_service.call_args[0][0].name.startswith('a (2).')
+
+    @pytest.mark.parametrize(
+        ('name', 'service_type'), [('b', 'test_service'), ('a', 'other_type')]
+    )
+    def test_takeover_under_a_new_name_registers_afresh(
+        self, mock_advertisement, mock_ports_file, name, service_type
+    ):
+        """A replacing remote host with another name ends the inherited registration."""
+        zeroconf = mock_advertisement['zeroconf']
+        kwargs = {'uuid': uuid4(), 'remote': True}
+        first = ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        with ipc.ServiceHost(name, service_type, _noop_handler, **kwargs):
+            assert first._closed
+            _zeroconf_idle()
+            zeroconf.return_value.unregister_service.assert_called_once()
+            assert zeroconf.return_value.register_service.call_count == 2
+
+    def test_failed_takeover_ends_the_inherited_registration(
+        self, mock_advertisement, mock_ports_file, mocker
+    ):
+        """A successor that fails to construct closes the registration it took."""
+        zeroconf = mock_advertisement['zeroconf'].return_value
+        kwargs = {'uuid': uuid4(), 'remote': True}
+        first = ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        mocker.patch.object(ipc.ServiceHost, '_advertise', side_effect=RuntimeError)
+        with pytest.raises(RuntimeError):
+            ipc.ServiceHost('a', 'test_service', _noop_handler, **kwargs)
+        assert first._closed
+        _zeroconf_idle()
+        zeroconf.unregister_service.assert_called_once()
+
+    def test_takeover_by_a_local_host_ends_the_registration(
+        self, mock_advertisement, mock_ports_file
+    ):
+        """A local host replacing a remote one withdraws the registration."""
+        zeroconf = mock_advertisement['zeroconf'].return_value
+        kwargs = {'uuid': uuid4()}
+        first = ipc.ServiceHost(
+            'a', 'test_service', _noop_handler, **kwargs, remote=True
+        )
+        with ipc.ServiceHost(
+            'a', 'test_service', _noop_handler, **kwargs, remote=False
+        ):
+            assert first._closed
+            _zeroconf_idle()
+            zeroconf.unregister_service.assert_called_once()
+        assert zeroconf.unregister_service.call_count == 1  # nothing of the local host
+
+    def test_close_wakes_the_event_loop(self, mock_advertisement, mocker):
+        """close() ends the loop's blocking receive instead of waiting it out."""
+        mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 800)  # < the join timeout
+        host = ipc.ServiceHost('test', 'test_service', _noop_handler, remote=False)
+        start = time.perf_counter()
+        host.close()
+        assert time.perf_counter() - start < 0.4
+        assert not host._event_thread.is_alive()
+
     def test_close_from_request_handler(self, mock_advertisement, mock_service_browser):
         """A host closed from within its request handler still sends the reply."""
 
@@ -876,16 +1088,16 @@ class TestHost:
 class TestBindIpc:
     """Tests for ServiceHost._bind_ipc."""
 
-    def test_non_posix_returns_none(self, mocker):
-        """IPC is skipped entirely on non-POSIX platforms."""
-        mocker.patch.object(ipc.os, 'name', 'nt')
+    def test_without_ipc_transport_returns_none(self, mocker):
+        """IPC is skipped entirely if libzmq lacks the ipc transport."""
+        mocker.patch.object(ipc.zmq, 'has', return_value=False)
         zmq_socket = mocker.Mock()
         assert ipc.ServiceHost._bind_ipc(zmq_socket, 'ID') == (None, None)
         zmq_socket.bind.assert_not_called()
 
-    @pytest.mark.skipif(os.name != 'posix', reason='POSIX only')
     def test_abstract_socket_on_linux(self, mocker, caplog):
         """On linux, sockets bind to abstract IPC addresses without named pipes."""
+        mocker.patch.object(ipc.zmq, 'has', return_value=True)
         mocker.patch.object(ipc.sys, 'platform', 'linux')
         zmq_socket = mocker.Mock()
         zmq_socket.type = zmq.REP
@@ -896,9 +1108,9 @@ class TestBindIpc:
         zmq_socket.bind.assert_called_once_with('ipc://@ID')
         assert f"Bound REP socket to '{address}'" in caplog.text
 
-    @pytest.mark.skipif(os.name != 'posix', reason='POSIX only')
-    def test_named_pipe_on_other_posix(self, mocker, tmp_path, caplog):
-        """On non-linux POSIX platforms, sockets bind to filesystem named pipes."""
+    def test_named_pipe_on_other_platforms(self, mocker, tmp_path, caplog):
+        """Off linux, sockets bind to filesystem Unix domain sockets."""
+        mocker.patch.object(ipc.zmq, 'has', return_value=True)
         mocker.patch.object(ipc.sys, 'platform', 'darwin')
         mocker.patch.object(
             ipc.platformdirs, 'user_runtime_path', return_value=tmp_path
@@ -915,9 +1127,9 @@ class TestBindIpc:
         zmq_socket.bind.assert_called_once_with(address)
         assert f"Bound REP socket to '{address}'" in caplog.text
 
-    @pytest.mark.skipif(os.name != 'posix', reason='POSIX only')
     def test_bind_failure_falls_back_to_tcp(self, mocker, tmp_path, caplog):
         """A failed bind is unwound, logged, and reported as (None, None)."""
+        mocker.patch.object(ipc.zmq, 'has', return_value=True)
         mocker.patch.object(ipc.sys, 'platform', 'darwin')
         mocker.patch.object(
             ipc.platformdirs, 'user_runtime_path', return_value=tmp_path
@@ -1057,7 +1269,9 @@ class TestIterServices:
         self, mocker, mock_local_discovery_dir, mock_service_browser
     ):
         """Simulate a remote service advertised via Zeroconf."""
-        mocker.patch('bpod_core.ipc.get_local_ipv4', return_value='192.168.1.50')
+        mocker.patch.object(
+            ipc, '_local_ip_addresses', return_value={ip_address('192.168.1.50')}
+        )
 
         mock_info = mocker.MagicMock(spec=zeroconf.ServiceInfo)
         mock_info.parsed_addresses.return_value = ['192.168.1.100']
@@ -1163,7 +1377,8 @@ class TestIterServices:
         watcher = iterator._watcher
         del iterator
         assert_collected(iterator_ref, watcher, close=lambda i: i.close())
-        mock_zeroconf.return_value.close.assert_called_once()
+        mock_service_browser.return_value.cancel.assert_called_once()
+        mock_zeroconf.return_value.close.assert_not_called()  # shared, lives on
 
     def test_failed_zeroconf_stops_watcher(self, mock_local_discovery_dir, mocker):
         """If Zeroconf fails to start, the watcher for local services is stopped too."""
@@ -1204,6 +1419,8 @@ class TestIterServices:
             pytest.param('+-+', 1, ('added', 2), id='add, remove, add'),
             pytest.param('+-+-', 0, None, id='add, remove, add, remove'),
             pytest.param('+Y-', 1, ('removed', 1), id='add, yield, remove'),
+            pytest.param('+Y-Y+', 1, ('added', 2), id='add, yield, remove, re-add'),
+            pytest.param('+Y-Y+-', 0, None, id='add, yield, remove, re-add, remove'),
         ],
     )
     def test_collapse(
@@ -1232,3 +1449,119 @@ class TestIterServices:
             assert events[0].properties == {'v': str(expected_event[1])}
         else:
             assert expected_event is None
+
+
+def test_closed_shared_zeroconf_drops_record_operations(mock_zeroconf):
+    """Once the exit hook ran, no instance is started and queued records are dropped."""
+    ipc._SharedZeroconf.instance()
+    ipc._SharedZeroconf.close()
+    with pytest.raises(RuntimeError, match='closed'):
+        ipc._SharedZeroconf.instance()
+    ipc._SharedZeroconf.unregister(
+        zeroconf.ServiceInfo('_t._tcp.local.', 'a._t._tcp.local.')
+    )
+    _zeroconf_idle()
+    mock_zeroconf.return_value.close.assert_called_once()
+    mock_zeroconf.return_value.unregister_service.assert_not_called()
+
+
+class TestTakeoverFromEventThread:
+    """A host replaced from inside its own request handler."""
+
+    def test_record_is_handed_over(self, mock_advertisement, mock_ports_file):
+        """The replaced host's late finalizer leaves the handed-over record alone."""
+        zeroconf = mock_advertisement['zeroconf'].return_value
+        kwargs = {'uuid': uuid4(), 'remote': True}
+        hosts = {}
+
+        def replace(request):
+            hosts['second'] = ipc.ServiceHost(
+                'a', 'test_service', _noop_handler, **kwargs
+            )
+            return 'replaced'
+
+        first = ipc.ServiceHost('a', 'test_service', replace, **kwargs)
+        with ipc.ServiceClient(
+            'test_service', address=first.rep_tcp_addr, remote=False
+        ) as c:
+            assert c.request('go', timeout=5) == 'replaced'
+        assert _wait_until(lambda: not first._event_thread.is_alive())  # finalized
+        _zeroconf_idle()
+        zeroconf.register_service.assert_called_once()  # no fresh registration
+        zeroconf.unregister_service.assert_not_called()  # handed over, not withdrawn
+        hosts['second'].close()
+        _zeroconf_idle()
+        zeroconf.unregister_service.assert_called_once()
+
+
+def test_update_resolves_the_name_the_worker_settled_on(mock_zeroconf):
+    """An update is published under the replaced record's name as renamed by then."""
+    zeroconf = mock_zeroconf.return_value
+    previous = zeroconf_info('a')
+    zeroconf.register_service.side_effect = lambda info, **_: setattr(
+        info, 'name', 'a (2).' + info.type
+    )
+    ipc._SharedZeroconf.register(previous, replacing=None)
+    new = zeroconf_info('a')
+    ipc._SharedZeroconf.register(new, replacing=previous)
+    _zeroconf_idle()
+    assert zeroconf.update_service.call_args[0][0].name.startswith('a (2).')
+
+
+def zeroconf_info(name: str, port: int = 5555) -> zeroconf.ServiceInfo:
+    return zeroconf.ServiceInfo(
+        '_t._tcp.local.',
+        f'{name}._t._tcp.local.',
+        port=port,
+        addresses=[b'\xc0\xa8\x01d'],
+    )
+
+
+class TestServiceListener:
+    """The Zeroconf listener feeding the service iterator."""
+
+    @pytest.fixture
+    def listener(self, mocker):
+        mocker.patch.object(ipc, '_local_ip_addresses', return_value=set())
+        q = queue.Queue()
+        return ipc._ServiceListenerIterator(q, {}), q
+
+    def test_port_change_is_a_removal_and_an_addition(self, listener, mocker):
+        listener, q = listener
+        zc = mocker.MagicMock(spec=zeroconf.Zeroconf)
+        zc.get_service_info.return_value = zeroconf_info('a', 5555)
+        listener.add_service(zc, '_t._tcp.local.', 'a._t._tcp.local.')
+        listener.update_service(zc, '_t._tcp.local.', 'a._t._tcp.local.')  # unchanged
+        zc.get_service_info.return_value = zeroconf_info('a', 5556)
+        listener.update_service(zc, '_t._tcp.local.', 'a._t._tcp.local.')
+        events = [q.get_nowait() for _ in range(q.qsize())]
+        assert [(e.kind, e.address) for e in events] == [
+            ('added', 'tcp://192.168.1.100:5555'),
+            ('removed', 'tcp://192.168.1.100:5555'),
+            ('added', 'tcp://192.168.1.100:5556'),
+        ]
+
+
+@pytest.mark.parametrize(
+    ('primary', 'interfaces', 'expected'),
+    [
+        ('10.0.0.5', set(), '10.0.0.5'),
+        ('127.0.0.1', {'10.0.0.7', 'fe80::1', '127.0.0.1', '10.0.0.5'}, '10.0.0.5'),
+        ('127.0.0.1', {'fe80::1', '127.0.0.1'}, '127.0.0.1'),
+    ],
+)
+def test_advertised_ipv4(mocker, primary, interfaces, expected):
+    """Without a route out, an interface's address is advertised instead of loopback."""
+    mocker.patch.object(ipc, 'get_local_ipv4', return_value=primary)
+    mocker.patch.object(
+        ipc, '_local_ip_addresses', return_value=set(map(ip_address, interfaces))
+    )
+    assert ipc._advertised_ipv4() == expected
+
+
+def test_remote_error_survives_pickling():
+    """RemoteError carries its ErrorData through pickle, e.g. across processes."""
+    error = ipc.RemoteError(ipc.ErrorData('ValueError', 'boom', ('boom',), None))
+    restored = pickle.loads(pickle.dumps(error))  # noqa: S301
+    assert isinstance(restored, ipc.RemoteError)
+    assert restored.original_error == error.original_error

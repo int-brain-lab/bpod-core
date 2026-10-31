@@ -9,11 +9,10 @@ from time import perf_counter_ns
 from typing import ClassVar
 
 import msgspec
-import polars as pl
 from cachetools import FIFOCache
 from xxhash import xxh3_64 as _xxh3_64
 
-from bpod_core.bpod._threads import _build_event_lookup
+from bpod_core.bpod._threads import _build_event_tables, _EventTables
 from bpod_core.bpod.constants import (
     _CHANNEL_BASE_NAME_CONDITION,
     _CHANNEL_BASE_NAME_GLOBAL_COUNTER,
@@ -109,8 +108,8 @@ class StateMachineCompiler:
     n_softcodes: int
     """Number of softcodes per USB channel."""
 
-    event_lookup: pl.DataFrame
-    """Event metadata for decoding a trial's events."""
+    event_tables: _EventTables
+    """Lookup tables for decoding a trial's events."""
 
     hardware_hash: bytes
     """Hash of the hardware configuration and the tables derived from it."""
@@ -134,7 +133,9 @@ class StateMachineCompiler:
         self._threshold_voltages = dict(threshold_voltages)
         self.serial_event_allocation = self._compile_input_events()
         self._compile_output_actions()
-        self.event_lookup = _build_event_lookup(self._input_events, self.actions)
+        self.event_tables = _build_event_tables(
+            self._input_events, self.actions, self.resettable_actions
+        )
         self.hardware_hash = self._compute_hardware_hash()
 
     def _compile_input_events(self) -> bytes:
@@ -466,7 +467,8 @@ class StateMachineCompiler:
                     )
 
             # validate actions
-            if bad_actions := set(state.actions).difference(valid_actions):
+            action_set = set(state.actions)
+            if bad_actions := action_set.difference(valid_actions):
                 bad_action = bad_actions.pop()
                 if bad_action in self._global_timer_actions:
                     detail = ' - no global timer has been set'
@@ -541,15 +543,19 @@ class StateMachineCompiler:
                                 'attributed (upstream firmware quirk)'
                             )
             for key in self._global_timer_actions:
-                value = state.actions.get(key)
-                if value is not None and value not in global_timer_ids:
+                if (
+                    key in action_set
+                    and (value := state.actions[key]) not in global_timer_ids
+                ):
                     raise ValueError(
                         f"Invalid value {value} for action '{key}' in state "
                         f"'{state_name}' - Global Timer {value} has not been set"
                     )
             for key in self._global_counter_actions:
-                value = state.actions.get(key)
-                if value is not None and value not in global_counter_ids:
+                if (
+                    key in action_set
+                    and (value := state.actions[key]) not in global_counter_ids
+                ):
                     raise ValueError(
                         f"Invalid value {value} for action '{key}' in state "
                         f"'{state_name}' - Global Counter {value} has not been set"
@@ -772,11 +778,14 @@ class StateMachineCompiler:
             for s in states
         ]
 
-        # the annotation EventThread uses to record get_data()'s reported value
-        # reports FlexIO ANALOG_OUTPUT in millivolts (what was actually applied to
-        # the pin), not the wire's raw DAC count
-        reported_state_actions = [
-            {k: _counts_to_mv(v) if k in analog_outputs else v for k, v in a.items()}
+        # the annotation EventThread uses to record get_data()'s reported value,
+        # keyed by action index; FlexIO ANALOG_OUTPUT is reported in millivolts (what
+        # was actually applied to the pin), not the wire's raw DAC count
+        state_action_indices = [
+            {
+                action_indices[k]: _counts_to_mv(v) if k in analog_outputs else v
+                for k, v in a.items()
+            }
             for a in state_actions
         ]
 
@@ -785,7 +794,7 @@ class StateMachineCompiler:
             fsm_hash=state_machine_hash,
             state_names=state_names,
             state_transition_matrix=state_transition_matrix,
-            state_actions=reported_state_actions,
+            state_action_indices=state_action_indices,
             use_back_op=use_back_op,
             state_lookup=dict(enumerate(state_names)),
         )
@@ -817,6 +826,9 @@ class StateMachineCompiler:
             number of transitions, event_idx is relative to the range's first event,
             and target_idx is the target state index.
             """
+            if not any(transitions_per_state):  # unused range: a zero count per state
+                fsm_bytes.extend(bytes(len(transitions_per_state)))
+                return
             for transitions in transitions_per_state:
                 fsm_bytes.append(len(transitions) // 2)
                 fsm_bytes.extend(transitions)
@@ -933,7 +945,7 @@ class StateMachineCompiler:
 
         # GLOBAL TIMER TRIGGERS AND CANCELS (bitmasks, one bit per timer)
         for key in ('GlobalTimerTrig', 'GlobalTimerCancel'):
-            bitmasks = [1 << s.actions[key] if key in s.actions else 0 for s in states]
+            bitmasks = [1 << a[key] if key in a else 0 for a in state_actions]
             extend_packed(fsm_bytes, bitmasks, format_string)
 
         # GLOBAL TIMER ONSET TRIGGERS
