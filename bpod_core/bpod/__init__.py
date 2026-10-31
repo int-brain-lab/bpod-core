@@ -10,12 +10,13 @@ import weakref
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from queue import Empty, SimpleQueue
-from time import perf_counter_ns, time_ns
+from time import monotonic, perf_counter_ns, time_ns
 from types import TracebackType
 from typing import (
     Any,
     Concatenate,
     Literal,
+    NoReturn,
     ParamSpec,
     TypeVar,
     cast,
@@ -37,6 +38,7 @@ from bpod_core.bpod._threads import (
     EventThread,
     ReadThread,
     SoftcodeThread,
+    join_until,
 )
 from bpod_core.bpod.abc import AbstractBpod
 from bpod_core.bpod.constants import (
@@ -356,9 +358,28 @@ class Bpod(SerialDevice, AbstractBpod):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        """Exit context and close connection."""
+        """Exit context and close connection.
+
+        Leaving on an exception stops a running state machine instead of waiting for it.
+        """
         self._bpod_finalizer.detach()
-        self._shutdown()
+        try:
+            if exc_type is not None:
+                self._abort_trial(exc_type)
+        finally:
+            self._shutdown()
+
+    def _abort_trial(self, reason: type[BaseException]) -> None:
+        """Stop the running state machine; give the trial up if the Bpod won't stop."""
+        if not self.is_running:
+            return
+        logger.warning('Stopping the state machine: leaving on %s', reason.__name__)
+        try:
+            self.stop_state_machine()
+        except TimeoutError as e:
+            logger.warning('%s - giving the trial up', e)
+            if (read_thread := self._read_thread) is not None:
+                read_thread.cancel()
 
     def _shutdown(self) -> None:
         """Close the connection, then end the IPC service and softcode thread."""
@@ -391,9 +412,10 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         Close the connection to the Bpod.
 
-        Waits for any running trial to finish before closing the serial port. The IPC
-        service stays up, so that remote clients can still reach this object; a newer
-        :class:`Bpod` for the same device takes the service over.
+        Waits for any running trial to finish before closing the serial port; if that
+        wait is interrupted, the state machine is stopped first. The IPC service stays
+        up, so that remote clients can still reach this object; a newer :class:`Bpod`
+        for the same device takes the service over.
 
         .. note::
             Prefer using :class:`Bpod` as a context manager, which opens and closes the
@@ -401,10 +423,21 @@ class Bpod(SerialDevice, AbstractBpod):
 
         Raises
         ------
+        BpodError
+            If the connection was lost during the trial, once the port is closed.
         SerialException
             If the port could not be closed.
         """
-        self.wait()
+        try:
+            self.wait()
+        except BaseException as e:  # don't leave the trial running on the Bpod
+            self._abort_trial(type(e))
+            raise
+        finally:
+            self._close_ports()
+
+    def _close_ports(self) -> None:
+        """Stop analog sampling, request the disconnect and close the serial ports."""
         serial0_open = hasattr(self, '_serial') and getattr(
             self._serial, 'is_open', False
         )
@@ -420,7 +453,6 @@ class Bpod(SerialDevice, AbstractBpod):
                 reply = self._serial.query(b'X', _IDLE_STOP_REPLY_SIZE)
                 if not reply.startswith(_IDLE_STOP_REPLY_HEADER):
                     logger.warning('Unexpected reply to stop command: %s', reply.hex())
-        self._softcode_thread.drain()
         if self._analog_reader_thread is not None:
             self._analog_reader_thread.stop()  # thread stopped, serial still open
             self._analog_reader_thread = None
@@ -1297,6 +1329,8 @@ class Bpod(SerialDevice, AbstractBpod):
                 'Waiting for state machine #%d to finish ...',
                 previous_read_thread.trial_number,
             )
+            # a plain join: the machine is queued on the Bpod already, so the handoff
+            # to its threads must not be interrupted
             previous_read_thread.join()
         leftover, leftover_received_ns = (
             (previous_read_thread.leftover, previous_read_thread.leftover_received_ns)
@@ -1319,7 +1353,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # backlog - this keeps trial streams strictly sequential on the PUB/SUB channel.
         previous_event_thread = self._event_thread
         if previous_event_thread is not None and previous_event_thread.is_alive():
-            previous_event_thread.join()
+            previous_event_thread.join()  # see above
         event_thread.start()
 
         # set private class attributes
@@ -1345,31 +1379,40 @@ class Bpod(SerialDevice, AbstractBpod):
         """Check if a state machine is queued to run after the current one."""
         return self.is_running and self.is_ready
 
-    def wait(self) -> None:
+    def wait(self, timeout: float | None = None) -> None:
         """
         Wait for the currently running state machine to finish.
 
-        Blocks until the state machine's reader and event threads complete - i.e., until
-        all of the trial's events have been recorded and published. If no state machine
-        is currently running, this method returns immediately.
+        Blocks until the trial's events have been recorded and published and the
+        softcodes received so far have been handled. If no state machine is running,
+        this method returns immediately.
+
+        Parameters
+        ----------
+        timeout : float or None, default: None
+            Seconds to wait before giving up. ``None`` waits indefinitely.
 
         Raises
         ------
+        TimeoutError
+            If the state machine hasn't finished within `timeout` seconds.
         BpodError
             If the connection to the Bpod was lost during the trial. The events received
             up to then are kept.
         """
+        deadline = None if timeout is None else monotonic() + timeout
         read_thread = self._read_thread  # snapshot for thread-safety
         if read_thread is not None and read_thread.is_alive():
             logger.debug(
-                'Waiting for state machine #%d to finish ...',
-                read_thread.trial_number,
+                'Waiting for state machine #%d to finish ...', read_thread.trial_number
             )
-            read_thread.join()
-
-        event_thread = self._event_thread  # snapshot for thread-safety
-        if event_thread is not None and event_thread.is_alive():
-            event_thread.join()
+        for thread in (read_thread, self._event_thread):
+            if thread is not None and not join_until(thread, deadline):
+                raise TimeoutError(
+                    f'Trial #{thread.trial_number} did not finish within {timeout:g} s'
+                )
+        if not self._softcode_thread.drain(deadline):
+            raise TimeoutError(f'Softcode handlers still busy after {timeout:g} s')
 
         if read_thread is not None and (error := read_thread.error) is not None:
             read_thread.error = None  # report it once
@@ -1538,7 +1581,7 @@ class Bpod(SerialDevice, AbstractBpod):
         )
 
     @override
-    def stop_state_machine(self) -> None:
+    def stop_state_machine(self, timeout: float | None = 1.0) -> None:
         if not self.is_running:
             return
         if self._analog_channel_names:
@@ -1550,8 +1593,13 @@ class Bpod(SerialDevice, AbstractBpod):
         logger.debug('Stopping state machine')
         self.serial0.write(b'X')
         self._analog_recording = False  # the Bpod stops analog sampling on 'X'
-        if self._read_thread is not None:
-            self._read_thread.join()
+        read_thread = self._read_thread  # snapshot for thread-safety
+        deadline = None if timeout is None else monotonic() + timeout
+        if read_thread is not None and not join_until(read_thread, deadline):
+            raise TimeoutError(
+                f'The Bpod did not end trial #{read_thread.trial_number} within '
+                f'{timeout:g} s of the stop command'
+            )
 
     @override
     @property
@@ -1924,6 +1972,15 @@ def _allocate_module_events(modules: list[Module], n_requested: list[int]) -> li
     return n_events
 
 
+_REMOTE_REPLY_MARGIN_S = 1.0
+"""Extra wait for a reply beyond the remote method's own timeout."""
+
+_REMOTE_ERRORS: dict[str, type[Exception]] = {
+    cls.__name__: cls for cls in (BpodError, RuntimeError, TimeoutError, ValueError)
+}
+"""Errors of the host's methods that a :class:`RemoteBpod` raises as the same type."""
+
+
 class RemoteBpod(AbstractBpod):
     """Proxy for a :class:`Bpod` instance running in another process.
 
@@ -2037,7 +2094,13 @@ class RemoteBpod(AbstractBpod):
             self._zmq.request(request_data=_RequestBye(), reply_type=str, timeout=1.0)
         self._zmq.close()
 
-    def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+    def _remote_call(
+        self,
+        method: str,
+        *args: Any,
+        reply_timeout: float | None = None,
+        **kwargs: Any,
+    ) -> Any:
         """
         Perform a remote procedure call.
 
@@ -2047,6 +2110,8 @@ class RemoteBpod(AbstractBpod):
             The name of the remote method to invoke.
         *args : Any
             Positional arguments to pass to the remote method.
+        reply_timeout : float, optional
+            Seconds to wait for the host's reply; ``None`` waits indefinitely.
         **kwargs : Any
             Keyword arguments to pass to the remote method.
 
@@ -2054,19 +2119,29 @@ class RemoteBpod(AbstractBpod):
         -------
         Any
             The result returned from the remote method.
+
+        Raises
+        ------
+        BpodError, RuntimeError, TimeoutError, ValueError
+            As raised by the remote method.
+        TimeoutError
+            If the host doesn't reply within `reply_timeout` seconds.
         """
         try:
             return self._zmq.request(
                 request_data=_RequestCall(method_name=method, args=args, kwargs=kwargs),
                 reply_type=_ReplyGeneric,
+                timeout=reply_timeout,
             ).value
         except RemoteError as e:
-            match e.original_error.name:
-                case 'RuntimeError':
-                    raise RuntimeError(e.original_error.message) from e
-                case 'ValueError':
-                    raise ValueError(e.original_error.message) from e
-            raise
+            self._raise_local(e)
+
+    @staticmethod
+    def _raise_local(error: RemoteError) -> NoReturn:
+        """Raise the host's error as the matching local type, else the RemoteError."""
+        if (cls := _REMOTE_ERRORS.get(error.original_error.name)) is not None:
+            raise cls(error.original_error.message) from error
+        raise error
 
     def _handshake(self) -> None:
         reply = self._zmq.request(
@@ -2120,9 +2195,7 @@ class RemoteBpod(AbstractBpod):
                 reply_type=bytes,
             )
         except RemoteError as e:
-            if e.original_error.name == 'BpodError':
-                raise BpodError(e.original_error.message) from e
-            raise
+            self._raise_local(e)
 
         return pl.scan_ipc(reply) if lazy else pl.read_ipc(reply)
 
@@ -2148,12 +2221,7 @@ class RemoteBpod(AbstractBpod):
 
     @override
     def reset_session_clock(self) -> bool:
-        try:
-            return self._remote_call('reset_session_clock') is True
-        except RemoteError as e:
-            if e.original_error.name == 'BpodError':
-                raise BpodError(e.original_error.message) from e
-            raise
+        return self._remote_call('reset_session_clock') is True
 
     @override
     @validate_call()
@@ -2181,8 +2249,13 @@ class RemoteBpod(AbstractBpod):
         return self._remote_call('set_status_led', enable) or False
 
     @override
-    def stop_state_machine(self) -> None:
-        self._remote_call('stop_state_machine')
+    def stop_state_machine(self, timeout: float | None = 1.0) -> None:
+        self._remote_call(
+            'stop_state_machine',
+            timeout=timeout,
+            # the host's own TimeoutError arrives before the reply times out
+            reply_timeout=None if timeout is None else timeout + _REMOTE_REPLY_MARGIN_S,
+        )
 
     @override
     def update_modules(self) -> None:

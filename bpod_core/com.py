@@ -9,7 +9,7 @@ from collections.abc import Callable, Collection, Iterable, Iterator
 from contextlib import AbstractContextManager
 from struct import Struct
 from types import TracebackType
-from typing import Any, Literal, overload
+from typing import Any, Literal, cast, overload
 
 from serial import Serial, SerialException
 from serial.threaded import Protocol, ReaderThread
@@ -329,14 +329,14 @@ class ExtendedSerial(Serial):
         Block until at least one byte is pending, then return all pending bytes.
 
         On POSIX, the port's file descriptor is waited on and read directly, in one
-        call each; elsewhere :meth:`read` is used. The wait ignores the port's timeout
-        and :meth:`cancel_read`. A read returns at most what the OS hands out at once,
-        on Linux about 4 KB.
+        call each; elsewhere :meth:`read` is used. The wait ignores the port's timeout;
+        :meth:`cancel_read` ends it with an empty result. A read returns at most what
+        the OS hands out at once, on Linux about 4 KB.
 
         Returns
         -------
         bytes
-            The pending bytes, at least one.
+            The pending bytes, at least one - or none after :meth:`cancel_read`.
 
         Raises
         ------
@@ -346,8 +346,12 @@ class ExtendedSerial(Serial):
         if not _DIRECT_READ:
             return self.read(max(1, self.in_waiting))
         fd = self.fileno()  # raises if the port is closed
+        abort = cast('int', self.pipe_abort_read_r)  # written to by cancel_read()
         try:
-            select.select([fd], [], [])
+            ready, _, _ = select.select([fd, abort], [], [])
+            if abort in ready:
+                os.read(abort, 1000)  # consume the cancellation
+                return b''
             data = os.read(fd, _READ_SIZE)
         except OSError as e:
             raise SerialException(f'read failed: {e}') from e

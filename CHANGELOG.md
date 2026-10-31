@@ -8,8 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Bpod.wait(timeout=...)` raises a `TimeoutError` when the state machine hasn't
+  finished in time.
+- `stop_state_machine(timeout=...)` waits at most `timeout` seconds (one by default) for
+  the Bpod to end the trial and raises a `TimeoutError` otherwise.
+
 ### Fixed
 
+- `Bpod.close()` finishes its cleanup before raising a connection lost during the
+  trial.
 - validation messages for invalid state names and operators no longer substitute
   braces in the input, e.g. `{pattern}`.
 - `misc.ValidatedDict` stores a coerced key in its validated form, e.g. `'1'` as `1`.
@@ -61,6 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - all IPC hosts and service browsers of a process share one Zeroconf instance,
   started on first use and closed at exit; closing a remote host no longer waits for
   its goodbye packets.
+- `wait()` also waits for the trial's softcode handlers to have run.
+- `wait()` and `stop_state_machine()` can be interrupted with Ctrl+C while they wait
+  for a trial, despite polars' signal handler.
+- leaving the `Bpod` context manager on an exception stops a running state machine
+  instead of waiting for it, as does `Bpod.close()` when its wait is interrupted; if
+  the Bpod doesn't end the trial, the reader gives it up.
 
 ## [0.1.0a15] - 2026-10-23
 

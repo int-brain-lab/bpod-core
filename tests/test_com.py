@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import struct
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock, call
 
@@ -32,22 +33,23 @@ class TestExtendedSerial:
         mock_serial.write(b'x')
         mock_serial.super_write.assert_called_with(b'x')
 
-    @pytest.mark.skipif(
-        os.name != 'posix', reason='direct reads need a file descriptor'
-    )
-    def test_read_waiting_takes_all_pending_bytes(self):
+    def test_read_waiting_takes_all_pending_bytes(self, pty_port):
         """On POSIX, one call returns everything pending on the port; EOF raises."""
-        master, slave = os.openpty()
-        try:
-            with com.ExtendedSerial(os.ttyname(slave)) as port:
-                os.write(master, b'abc')
-                os.write(master, b'de')
-                assert port.read_waiting() == b'abcde'
-                os.close(master)
-                with pytest.raises(SerialException):  # hung up
-                    port.read_waiting()
-        finally:
-            os.close(slave)
+        master, port = pty_port
+        os.write(master, b'abc')
+        os.write(master, b'de')
+        assert port.read_waiting() == b'abcde'
+        os.close(master)
+        with pytest.raises(SerialException):  # hung up
+            port.read_waiting()
+
+    def test_read_waiting_ends_on_cancel(self, pty_port):
+        """cancel_read() from another thread ends the wait with an empty result."""
+        master, port = pty_port
+        threading.Timer(0.05, port.cancel_read).start()
+        assert port.read_waiting() == b''
+        os.write(master, b'a')
+        assert port.read_waiting() == b'a'  # reading goes on afterwards
 
     def test_read_waiting_falls_back_to_read(self, mock_serial, mocker):
         """Without descriptors, read() takes what is waiting or waits for one byte."""

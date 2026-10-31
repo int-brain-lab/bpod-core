@@ -17,6 +17,7 @@ import pytest
 from serial import SerialException
 
 from bpod_core.bpod._threads import (
+    _EVENTS_STOP,
     _SOFTCODE_STOP,
     _TRIAL_DATA_SCHEMA,
     EventThread,
@@ -24,6 +25,7 @@ from bpod_core.bpod._threads import (
     SoftcodeThread,
     _build_event_tables,
     _EventID,
+    join_until,
 )
 from bpod_core.bpod.structs import (
     BpodEventUnion,
@@ -137,6 +139,26 @@ class TestReadThread:
             return thread, q_events, q_softcodes
 
         return _make
+
+    def test_cancel_ends_the_thread_without_the_bpod(self, pty_port):
+        """cancel() ends a reader waiting on a silent port; no error is recorded."""
+        _, port = pty_port  # a real port: the mock serial never blocks
+        q_events = SimpleQueue()
+        thread = ReadThread(
+            serial=port,
+            state_machine_hash=b'',
+            trial=0,
+            cycle_period_us=1,
+            queue_events=q_events,
+            queue_softcodes=SimpleQueue(),
+        )
+        thread.start()
+        thread.join(timeout=0.05)
+        assert thread.is_alive()  # waiting for the confirmation byte
+        thread.cancel()  # joins the thread
+        assert not thread.is_alive()
+        assert thread.error is None
+        assert q_events.get(timeout=1) is _EVENTS_STOP
 
     def test_initial_events_enqueued(self, make_thread):
         """START_FSM and START_STATE are the first two events enqueued."""
@@ -1014,12 +1036,13 @@ class TestSoftcodeThread:
         thread.stop()
         assert 'no handler' not in caplog.text
 
-    def test_drain_waits_for_queued_softcodes(self):
-        """drain() returns only once the softcodes queued before it are handled."""
+    @pytest.fixture
+    def gated_thread(self):
+        """A started SoftcodeThread slow to pick up its next softcode, and its gate."""
         received = []
         gate = threading.Event()
 
-        class GatedQueue(SimpleQueue):  # a thread slow to pick up its next softcode
+        class GatedQueue(SimpleQueue):
             def get(self, *args, **kwargs):
                 gate.wait()
                 return super().get(*args, **kwargs)
@@ -1028,6 +1051,13 @@ class TestSoftcodeThread:
         thread = SoftcodeThread(handler_slot=slot)
         thread.queue = GatedQueue()
         thread.start()
+        yield thread, gate, received
+        gate.set()
+        thread.stop()
+
+    def test_drain_waits_for_queued_softcodes(self, gated_thread):
+        """drain() returns only once the softcodes queued before it are handled."""
+        thread, gate, received = gated_thread
         thread.queue.put(_RawSoftcode(5, 0, 0))
         drainer = threading.Thread(target=thread.drain, daemon=True)
         drainer.start()
@@ -1037,7 +1067,14 @@ class TestSoftcodeThread:
         drainer.join(timeout=2)
         assert not drainer.is_alive()
         assert received == [5]
-        thread.stop()
+
+    def test_drain_deadline(self, gated_thread, caplog):
+        """drain(deadline) reports whether the softcodes were handled in time."""
+        thread, gate, _ = gated_thread
+        assert not thread.drain(time.monotonic() + 0.05)
+        assert 'Waiting for softcodes' not in caplog.text  # unbounded waits warn
+        gate.set()
+        assert thread.drain(time.monotonic() + 2)
 
     def test_drain_after_stop(self, make_thread):
         """drain() returns once the thread stops, even before reaching its marker."""
@@ -1064,6 +1101,28 @@ class TestSoftcodeThread:
         thread = make_thread(handler=handler)
         thread.queue.put(_RawSoftcode(1, 0, 0))
         assert done.wait(timeout=2)
+
+
+class TestJoinUntil:
+    def test_true_once_the_thread_ends(self, blocked_thread):
+        threading.Timer(0.02, blocked_thread.release.set).start()
+        assert join_until(blocked_thread, time.monotonic() + 2)
+        assert not blocked_thread.is_alive()
+
+    def test_false_at_the_deadline(self, blocked_thread):
+        t0 = time.monotonic()
+        assert not join_until(blocked_thread, t0 + 0.05)
+        assert 0.05 <= time.monotonic() - t0 < 0.5
+        assert blocked_thread.is_alive()
+
+    def test_joins_in_slices(self, blocked_thread, mocker):
+        """Even an unbounded wait returns to Python regularly: Ctrl+C gets through."""
+        join = mocker.spy(blocked_thread, 'join')
+        mocker.patch('bpod_core.bpod._threads._JOIN_SLICE_S', 0.01)
+        threading.Timer(0.05, blocked_thread.release.set).start()
+        assert join_until(blocked_thread, None)
+        assert join.call_count > 1
+        assert all(call.args[0] <= 0.01 for call in join.call_args_list)
 
 
 def test_polars_imports_numpy_ma_lazily():

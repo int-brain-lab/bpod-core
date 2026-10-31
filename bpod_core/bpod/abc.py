@@ -235,9 +235,20 @@ class AbstractBpod(AbstractContextManager):
         """
 
     @abstractmethod
-    def stop_state_machine(self) -> None:
+    def stop_state_machine(self, timeout: float | None = 1.0) -> None:
         """
         Stop the currently running state machine.
+
+        Parameters
+        ----------
+        timeout : float or None, default: 1.0
+            Seconds to wait for the Bpod to end the trial. ``None`` waits indefinitely.
+
+        Raises
+        ------
+        TimeoutError
+            If the Bpod hasn't ended the trial within `timeout` seconds. The state
+            machine still counts as running.
 
         Notes
         -----

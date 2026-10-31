@@ -50,6 +50,9 @@ _INITIAL_BUFFER_SIZE = 2048
 _OUTPUT_ID_OFFSET = 1000
 """Event ID offset for output action events."""
 
+_DRAIN_GRACE_S = 0.01
+"""Wait for a drain marker past the deadline: an idle thread reaches it at once."""
+
 _SOFTCODE_STOP = _RawSoftcode(-1, 0, 0)
 """Sentinel that ends :class:`SoftcodeThread` once the softcodes before it are done."""
 
@@ -58,6 +61,31 @@ class _DrainMarker(_RawSoftcode):
     """Queued by :meth:`SoftcodeThread.drain`; ``done`` is set once it is reached."""
 
     done: threading.Event
+
+
+class _ReadCancelledError(Exception):
+    """Raised inside :class:`ReadThread` once :meth:`ReadThread.cancel` took effect."""
+
+
+_JOIN_SLICE_S = 0.5
+"""Longest single wait on a thread: between slices, Ctrl+C reaches the caller.
+
+polars installs a SIGINT handler with ``SA_RESTART`` (pola-rs/polars#21739), so an
+unbounded ``Thread.join`` would swallow Ctrl+C until the thread ends.
+"""
+
+
+def join_until(thread: threading.Thread, deadline: float | None) -> bool:
+    """Wait for `thread` to end, until `deadline` (:func:`time.monotonic`) if given.
+
+    Returns True once the thread has ended, False if the deadline passed first.
+    """
+    while thread.is_alive():
+        remaining = _JOIN_SLICE_S if deadline is None else deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        thread.join(min(remaining, _JOIN_SLICE_S))
+    return True
 
 
 _EVENT_DTYPE = np.dtype(
@@ -259,10 +287,10 @@ class ReadThread(threading.Thread):
     in the buffer until the rest of it has arrived. This keeps the number of system
     calls per packet low at high event and softcode rates, without adding latency.
 
-    The thread runs until the Bpod reports the end of the trial; there is no way to
-    stop it from outside. To end a trial early, use
-    :meth:`~bpod_core.bpod.Bpod.stop_state_machine`, which makes the Bpod end the trial
-    and report it as usual.
+    The thread runs until the Bpod reports the end of the trial. To end a trial early,
+    use :meth:`~bpod_core.bpod.Bpod.stop_state_machine`, which makes the Bpod end the
+    trial and report it as usual; :meth:`cancel` ends the thread without the Bpod's
+    cooperation, leaving the trial's data incomplete.
 
     After the loop, the thread takes the 12-byte end-of-trial packet (``uInt32`` cycle
     count + ``uInt64`` µs timestamp, unpacked via :attr:`_struct_exit`) and enqueues
@@ -341,6 +369,15 @@ class ReadThread(threading.Thread):
         self.leftover = b''
         self.leftover_received_ns = 0
 
+    def cancel(self) -> None:
+        """End the thread without waiting for the trial; its data stays incomplete."""
+        self._serial.cancel_read()
+        if self is threading.current_thread():
+            return
+        self.join(timeout=1)
+        if self.is_alive():
+            logger.warning('Read thread did not terminate')
+
     def _fill(self) -> int:
         """Read all bytes pending on the serial port, blocking until there is one.
 
@@ -351,6 +388,8 @@ class ReadThread(threading.Thread):
         except OSError as error:  # including SerialException, e.g., when unplugged
             self.error = error
             raise
+        if not chunk:  # read_waiting() returns nothing only after cancel_read()
+            raise _ReadCancelledError
         self._buffer += chunk
         self._received_ns = time.perf_counter_ns()
         return len(chunk)
@@ -509,6 +548,8 @@ class ReadThread(threading.Thread):
                 ]
             )
 
+        except _ReadCancelledError:
+            logger.debug('Reading of trial #%d cancelled', self._trial)
         finally:
             if batch:  # e.g. the packets parsed before an unknown opcode
                 self._queue_events.put(batch)
@@ -619,6 +660,11 @@ class EventThread(threading.Thread):
     def stop(self) -> None:
         """Signal the FSM thread to stop."""
         self.queue.put(_EVENTS_STOP)
+
+    @property
+    def trial_number(self) -> int:
+        """The zero-based trial number."""
+        return self._trial
 
     def _append(
         self,
@@ -927,18 +973,28 @@ class SoftcodeThread(threading.Thread):
         self._handler_slot = weakref.ref(handler_slot)
         self._pc_base_ns: int = 0  # perf_counter_ns equivalent of session clock t=0
 
-    def drain(self) -> None:
-        """Block until the softcodes queued so far have been handled."""
+    def drain(self, deadline: float | None = None) -> bool:
+        """Block until the softcodes queued so far have been handled.
+
+        Returns False if they weren't by `deadline` (a :func:`time.monotonic` value),
+        after one short grace period. Returns True right away from a handler, which
+        would wait for itself, and once the thread has ended and handles nothing more.
+        """
         if self is threading.current_thread() or not self.is_alive():
-            return  # a handler would wait for itself; a dead thread handles nothing
+            return True
         marker = _DrainMarker(-2, 0, 0)
         marker.done = threading.Event()
         self.queue.put(marker)
-        if not marker.done.wait(timeout=0.1):
-            logger.warning('Waiting for softcodes to be processed ...')
-            while not marker.done.wait(timeout=0.1):
-                if not self.is_alive():  # stopped before reaching the marker
-                    return
+        warned = False
+        while True:
+            remaining = 0.1 if deadline is None else deadline - time.monotonic()
+            if remaining <= 0:
+                return marker.done.wait(_DRAIN_GRACE_S) or not self.is_alive()
+            if marker.done.wait(min(remaining, 0.1)) or not self.is_alive():
+                return True  # handled, or the thread stopped before the marker
+            if deadline is None and not warned:
+                logger.warning('Waiting for softcodes to be processed ...')
+                warned = True
 
     def stop(self) -> None:
         """Process the softcodes still queued, then end the thread."""

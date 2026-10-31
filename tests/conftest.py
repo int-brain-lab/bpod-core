@@ -1,6 +1,10 @@
+import contextlib
 import gc
+import os
 import re
 import struct
+import threading
+from collections.abc import Iterator
 from unittest.mock import PropertyMock
 
 import pytest
@@ -148,6 +152,48 @@ def mock_ext_serial(mocker):
     # tests may mark the port open; pyserial's real close() would then run on garbage
     # collection, after the patches above are gone
     extended_serial.is_open = False
+
+
+@pytest.fixture
+def pty_port() -> Iterator[tuple[int, ExtendedSerial]]:
+    """A port opened on a pseudo-terminal, and the master descriptor that feeds it."""
+    if os.name != 'posix':
+        pytest.skip('needs a pseudo-terminal')
+    master, slave = os.openpty()
+    try:
+        with ExtendedSerial(os.ttyname(slave)) as port:
+            yield master, port
+    finally:
+        with contextlib.suppress(OSError):  # a test may hang up the master itself
+            os.close(master)
+        os.close(slave)
+
+
+class BlockedThread(threading.Thread):
+    """A thread that ends once `release` is set; stands in for a trial's reader."""
+
+    trial_number = 7
+    error: OSError | None = None
+
+    def __init__(self) -> None:
+        super().__init__(daemon=True)
+        self.release = threading.Event()
+
+    def run(self) -> None:
+        self.release.wait()
+
+    def cancel(self) -> None:
+        self.release.set()
+
+
+@pytest.fixture
+def blocked_thread() -> Iterator[BlockedThread]:
+    """A started thread that ends once its `release` event is set."""
+    thread = BlockedThread()
+    thread.start()
+    yield thread
+    thread.release.set()
+    thread.join(timeout=2)
 
 
 @pytest.fixture
