@@ -413,10 +413,11 @@ class Bpod(SerialDevice, AbstractBpod):
             # until explicitly told to stop - even after a trial ends naturally via
             # '>exit' - so the next connection's discovery handshake would race stray
             # bytes. Read the Bpod's reply, so it isn't taken for stray bytes below.
-            with contextlib.suppress(SerialException):  # the Bpod may be unplugged
-                self._serial.write(b'X')
-                with self._serial.temporary_timeout(0.2):
-                    reply = self._serial.read(_IDLE_STOP_REPLY_SIZE)
+            with (
+                contextlib.suppress(SerialException),  # the Bpod may be unplugged
+                self._serial.temporary_timeout(0.2),
+            ):
+                reply = self._serial.query(b'X', _IDLE_STOP_REPLY_SIZE)
                 if not reply.startswith(_IDLE_STOP_REPLY_HEADER):
                     logger.warning('Unexpected reply to stop command: %s', reply.hex())
         self._softcode_thread.drain()
@@ -867,7 +868,7 @@ class Bpod(SerialDevice, AbstractBpod):
         enabled = {i.index: i.enabled for i in self.inputs.values()}
         enable = [enabled.get(idx, True) for idx in range(self._hardware.n_inputs)]
         self.serial0.write_struct(f'<c{self._hardware.n_inputs}?', b'E', *enable)
-        return self.serial0.read(1) == b'\x01'
+        return self.serial0.verify()
 
     @override
     @_requires_idle
