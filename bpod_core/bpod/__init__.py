@@ -96,6 +96,7 @@ from bpod_core.constants import (
     FMT_UINT8,
     FMT_UINT16_LE,
     UINT32_MAX,
+    TeensyModel,
     TeensyPID,
 )
 from bpod_core.fsm import StateMachine
@@ -293,6 +294,9 @@ class Bpod(SerialDevice, AbstractBpod):
 
             # get firmware version and machine type; enforce version requirements
             self._get_version_info()
+            self._rename_serial_device(
+                f'Bpod Finite State Machine {self._version.machine_str}'
+            )
 
             # get the Bpod's onboard hardware configuration
             self._get_hardware_configuration()
@@ -316,11 +320,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 self._flex_io.reset()
 
             # log hardware information
-            logger.info(
-                'Connected to Bpod Finite State Machine %s on %s',
-                self.version.machine_str,
-                self.port,
-            )
+            logger.info('Connected to %s on %s', self._serial_device_name, self.port)
             if self.serial1 is not None:
                 logger.info(
                     'Secondary serial port available for connections on %s',
@@ -720,7 +720,6 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         logger.debug('Retrieving version information')
         v_major, machine_type = self.serial0.query_struct(b'F', '<2H')
-        machine_type_str = MACHINE_TYPES.get(machine_type, 'unknown')
         v_minor = (
             self.serial0.query_struct(b'f', FMT_UINT16_LE)[0] if v_major > 22 else 0
         )
@@ -738,6 +737,7 @@ class Bpod(SerialDevice, AbstractBpod):
         pcv_rev = (
             self.serial0.query_struct(b'v', FMT_UINT8)[0] if v_major > 22 else None
         )
+        machine_type_str = _machine_name(machine_type, self._bcd_device, pcv_rev)
         self._version = VersionInfo(
             v_firmware, machine_type, machine_type_str, pcv_rev, bpod_core_version
         )
@@ -2347,6 +2347,19 @@ def discover_bpod(
     )
     for p in _discover_bpod_ports(ports):
         yield BpodInfo(port=p.device, serial_number=str(p.serial_number))
+
+
+def _machine_name(machine_type: int, teensy: int | None, pcb: int | None) -> str:
+    """Name a Bpod as precisely as its machine type, Teensy model and PCB tell."""
+    if machine_type == 3 and teensy == TeensyModel.TEENSY_3_6:
+        if pcb == 0:
+            return 'r2.0-2.3'
+        return 'r2.4' if pcb == 4 else 'r2.0-2.4'
+    if machine_type == 3 and teensy == TeensyModel.TEENSY_4_1:
+        return 'r2.5'
+    if machine_type == 4 and pcb in range(4):
+        return f'2+ r1.{pcb}'
+    return MACHINE_TYPES.get(machine_type, 'unknown')
 
 
 def _discover_bpod_ports(ports: Iterable[ListPortInfo]) -> Iterator[ListPortInfo]:
