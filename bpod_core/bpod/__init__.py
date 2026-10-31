@@ -121,6 +121,10 @@ _SESSION_CLOCK_MAX_ERROR_NS = 5_000_000  # 5 ms
 # code 255 (end of trial), then 2 x uInt32 cycle counts and a uInt64 timestamp
 _IDLE_STOP_REPLY_HEADER = b'\x01\x01\xff'
 _IDLE_STOP_REPLY_SIZE = len(_IDLE_STOP_REPLY_HEADER) + 16
+# after the stop, a given-up trial is drained until the Bpod is quiet for 0.2 s, for at
+# most a second, in case it keeps sending
+_STOP_DRAIN_QUIET_S = 0.2
+_STOP_DRAIN_MAX_S = 1.0
 
 
 _S = TypeVar('_S')
@@ -458,14 +462,12 @@ class Bpod(SerialDevice, AbstractBpod):
             self._serial, 'is_open', False
         )
         if serial0_open and self._out_of_sync:
-            # a given-up trial may still be running on the Bpod: stop it and swallow its
-            # report, so that the next connection's handshake is answered
-            with (
-                contextlib.suppress(SerialException),  # the Bpod may be unplugged
-                self._serial.temporary_timeout(0.2),
-            ):
-                self._serial.query(b'X', 4096)  # whatever arrives within the timeout
-        if serial0_open and self._analog_reader_thread is not None:
+            # a given-up trial may still be running on the Bpod: stop it (and analog
+            # sampling with it) and swallow everything it sends, so that the next
+            # connection's handshake is answered
+            with contextlib.suppress(OSError):  # the Bpod may be unplugged
+                self._stop_and_drain(self._serial)
+        elif serial0_open and self._analog_reader_thread is not None:
             # firmware keeps streaming FlexIO analog samples on its own serial port
             # until explicitly told to stop - even after a trial ends naturally via
             # '>exit' - so the next connection's discovery handshake would race stray
@@ -486,10 +488,7 @@ class Bpod(SerialDevice, AbstractBpod):
             # discard any analog samples firmware sent (or was still sending) up to
             # the 'X' above, so a stale byte can't be misread as the next
             # connection's discovery-handshake response
-            # the Bpod may be unplugged: checking for pending bytes then raises a plain
-            # OSError, which SerialException derives from
-            with contextlib.suppress(OSError):
-                self._discard_stray_bytes(self._flexio_serial, 'the FlexIO serial port')
+            self._discard_stray_bytes(self._flexio_serial, 'the FlexIO serial port')
             self._flexio_serial.close()
         if hasattr(self, 'serial0'):
             # the Bpod may have been unplugged
@@ -499,15 +498,26 @@ class Bpod(SerialDevice, AbstractBpod):
             # discard anything unread at this point - we're about to abandon the
             # connection either way, so this just keeps a straggler byte from
             # confusing the next connection's own handshake on this port
-            with contextlib.suppress(OSError):  # see above
-                self._discard_stray_bytes(self._serial, 'serial0')
+            self._discard_stray_bytes(self._serial, 'serial0')
         super().close()
         self._out_of_sync = False  # the next open() handshakes
 
     @staticmethod
+    def _stop_and_drain(serial: ExtendedSerial) -> None:
+        """Send the stop command, then read until the Bpod is quiet (see above)."""
+        serial.write(b'X')
+        deadline = monotonic() + _STOP_DRAIN_MAX_S
+        with serial.temporary_timeout(_STOP_DRAIN_QUIET_S):
+            while serial.read(max(1, serial.in_waiting)) and monotonic() < deadline:
+                pass
+
+    @staticmethod
     def _discard_stray_bytes(serial: ExtendedSerial, name: str) -> None:
         """Read and discard any bytes waiting on `serial`, logging how many."""
-        discarded = serial.read_all()
+        try:
+            discarded = serial.read_all()
+        except OSError:  # unplugged: pyserial raises OSError, not SerialException
+            return
         if discarded:
             logger.warning(
                 'Discarded %d stray byte(s) from %s before closing it',

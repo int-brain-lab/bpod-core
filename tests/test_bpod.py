@@ -1577,7 +1577,9 @@ class TestStopStateMachine:
         mock_bpod_2p.open()
         assert mock_bpod_2p.reset_session_clock()
 
-    def test_close_stops_a_given_up_trial(self, mock_bpod_2p, blocked_reader, mocker):
+    def test_close_stops_a_given_up_trial(
+        self, mock_bpod_2p, blocked_reader, mocker, caplog
+    ):
         """Closing after a give-up stops the trial first, for the next handshake."""
         with pytest.raises(TimeoutError):
             mock_bpod_2p.stop_state_machine(timeout=0.05)
@@ -1585,9 +1587,21 @@ class TestStopStateMachine:
         serial0 = mock_bpod_2p.serial0
         serial0.is_open = True
         serial0.last_write = b''
-        mock_bpod_2p.close()
+        serial0.response_buffer.extend(bytes(5000))  # events unread since the give-up
+        serial0.mock_responses[b'X'] = b'\x01\x01\xff' + bytes(16)
+        with caplog.at_level(logging.WARNING):
+            mock_bpod_2p.close()
         assert serial0.last_write == b'X'
         disconnect.assert_called_once()
+        assert 'stray' not in caplog.text  # all of it read before the disconnect
+
+    def test_drain_of_a_given_up_trial_is_bounded(self, mocker):
+        """A Bpod that keeps sending after the stop is drained for a limited time."""
+        mocker.patch('bpod_core.bpod._STOP_DRAIN_MAX_S', 0.05)
+        serial = MagicMock(spec=ExtendedSerial, in_waiting=1)
+        serial.read.return_value = b'\x00'
+        Bpod._stop_and_drain(serial)
+        serial.write.assert_called_once_with(b'X')
 
     def test_warns_about_analog_sampling(self, running, caplog):
         """With an analog input, stopping warns that analog sampling stops too."""
@@ -2015,6 +2029,13 @@ def test_close_after_unplug(mock_bpod_2p, mock_ext_serial, mocker):
     close = mocker.spy(mock_ext_serial, 'close')
     mock_bpod_2p.close()
     close.assert_called_once()
+
+
+def test_discard_stray_bytes_after_unplug():
+    """Checking an unplugged port for stray bytes, as close() does, doesn't raise."""
+    serial = MagicMock(spec=ExtendedSerial)
+    serial.read_all.side_effect = OSError(5, 'Input/output error')
+    Bpod._discard_stray_bytes(serial, 'the FlexIO serial port')
 
 
 def test_close_after_lost_connection(mock_bpod_2p, mock_ext_serial, mocker):
