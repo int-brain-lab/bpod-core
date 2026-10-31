@@ -24,6 +24,7 @@ from bpod_core.bpod import (
     Output,
     RemoteBpod,
     _allocate_module_events,
+    _discover_bpod_ports,
 )
 from bpod_core.bpod._threads import SoftcodeThread
 from bpod_core.bpod.constants import (
@@ -54,6 +55,36 @@ from bpod_core.ipc import ErrorData, RemoteError, ServiceHost
 
 # the Bpod fixtures patch this method; keep the original for testing it directly
 _DETECT_ADDITIONAL_SERIAL_PORTS = Bpod._detect_additional_serial_ports
+
+
+class TestDiscoverBpodPorts:
+    """Tests for _discover_bpod_ports(), which probes ports for an idle Bpod."""
+
+    @pytest.fixture
+    def bpod_2p(self, make_port_info, other_ports_2p):
+        """The three serial ports of a Bpod 2+."""
+        return [make_port_info('COM3', pid=TeensyPID.TRIPLE_SERIAL), *other_ports_2p]
+
+    def test_other_interfaces_are_skipped(self, bpod_2p, mock_serial_discovery):
+        """Ports on interfaces other than 0 are skipped without being opened."""
+        for port, interface in zip(bpod_2p, (0, 2, 4), strict=True):
+            port.location = f'1-2:x.{interface}'
+        mock_serial_discovery.return_value = False  # not idle: every port is tried
+        assert list(_discover_bpod_ports(bpod_2p)) == []
+        assert [c.kwargs['port'] for c in mock_serial_discovery.call_args_list] == [
+            'COM3'
+        ]
+
+    def test_other_ports_of_a_found_bpod_are_skipped(
+        self, bpod_2p, make_port_info, mock_serial_discovery
+    ):
+        """Without interface numbers, a Bpod's ports are skipped once it answered."""
+        other = make_port_info('COM6', serial_number='67890')
+        assert list(_discover_bpod_ports([*bpod_2p, other])) == [bpod_2p[0], other]
+        assert [c.kwargs['port'] for c in mock_serial_discovery.call_args_list] == [
+            'COM3',
+            'COM6',
+        ]
 
 
 class TestBpodIdentifyBpod:
@@ -1667,6 +1698,17 @@ def test_other_ports_enumerated_again_if_missing(
     )
     assert serial1 is not None
     assert flexio_serial is not None
+
+
+def test_other_ports_probed_in_interface_order(mock_bpod_2p, mocker, other_ports_2p):
+    """The other ports are probed by USB interface, whatever their names' order."""
+    flexio, secondary = other_ports_2p
+    flexio.location, secondary.location = '1-2:x.4', '1-2:x.2'
+    mock_bpod_2p._port_info.pid = TeensyPID.TRIPLE_SERIAL
+    mocker.patch('bpod_core.bpod.ExtendedSerial')
+    probe = mocker.patch('bpod_core.bpod.verify_serial_discovery', return_value=True)
+    _DETECT_ADDITIONAL_SERIAL_PORTS(mock_bpod_2p, other_ports_2p)
+    assert [c.args[0] for c in probe.call_args_list] == ['COM5', 'COM4']
 
 
 def test_missing_flexio_port_suggests_power_cycle(mock_bpod_2p, mocker, make_port_info):

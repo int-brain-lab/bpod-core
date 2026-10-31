@@ -913,6 +913,17 @@ def find_ports(
     return _filter_ports(sorted(comports()), **locals())
 
 
+def _usb_interface_number(port: ListPortInfo) -> int | None:
+    """The number of the USB interface behind a port, if its location tells.
+
+    pyserial ends the location of a port on a composite USB device with the
+    configuration and interface on Linux (e.g., ``3-2:1.0``) and with ``x`` and the
+    interface on Windows (``1-2:x.0``); macOS doesn't report the interface.
+    """
+    match = re.search(r':\w+\.(\d+)$', port.location or '')
+    return int(match[1]) if match else None
+
+
 def _filter_ports(
     ports: Iterable[ListPortInfo], **filters: Filter[Any] | None
 ) -> list[ListPortInfo]:

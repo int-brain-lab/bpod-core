@@ -504,6 +504,24 @@ class TestFindPorts:
         assert len(result) == 3
 
 
+@pytest.mark.parametrize(
+    ('location', 'expected'),
+    [
+        ('3-2:1.0', 0),  # Linux
+        ('3-2.1:1.4', 4),  # Linux, behind a hub
+        ('1-2:x.2', 2),  # Windows
+        ('20-1.2', None),  # macOS
+        ('3-2', None),  # a device with a single interface
+        (None, None),
+    ],
+)
+def test_usb_interface_number(make_port_info, location, expected):
+    """The interface number is read from the end of pyserial's location."""
+    port = make_port_info('/dev/ttyACM0')
+    port.location = location
+    assert com._usb_interface_number(port) == expected
+
+
 class TestVerifySerialDiscovery:
     @pytest.fixture
     def mock_serial(self, mocker):

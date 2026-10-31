@@ -86,6 +86,7 @@ from bpod_core.com import (
     ExtendedSerial,
     SerialDevice,
     _filter_ports,
+    _usb_interface_number,
     find_ports,
     verify_serial_discovery,
 )
@@ -827,7 +828,7 @@ class Bpod(SerialDevice, AbstractBpod):
         logger.debug('Detecting additional USB-serial ports')
 
         def other_ports(candidates: list[ListPortInfo]) -> list[ListPortInfo]:
-            return [
+            ports = [
                 p
                 for p in _filter_ports(
                     candidates,
@@ -836,6 +837,9 @@ class Bpod(SerialDevice, AbstractBpod):
                 )
                 if p.device != self.port
             ]
+            # by USB interface where known, so the secondary port comes first: COM
+            # port numbers on Windows need not follow the interfaces' order
+            return sorted(ports, key=lambda p: _usb_interface_number(p) or 0)
 
         # First, assemble a list of candidate ports: the Bpod's other USB-serial ports.
         # Right after the Bpod was plugged in, the OS may not have registered all of
@@ -2344,8 +2348,16 @@ def discover_bpod(
 
 
 def _discover_bpod_ports(ports: Iterable[ListPortInfo]) -> Iterator[ListPortInfo]:
-    """Yield the serial ports in `ports` on which an idle Bpod answers a discovery."""
+    """Yield the serial ports in `ports` on which an idle Bpod answers a discovery.
+
+    Only a Bpod's first serial port, on USB interface 0, sends discovery bytes. Its
+    other ports are skipped without being opened: by their interface number where the
+    platform reports it, else once the Bpod has answered on one of its ports.
+    """
+    found: set[str] = set()  # serial numbers of the Bpods that answered
     for p in ports:
+        if _usb_interface_number(p) or p.serial_number in found:  # 0 or None: probe
+            continue
         # an unconnected Bpod sends its discovery byte at regular intervals, and recent
         # firmware also when DTR is asserted
         if verify_serial_discovery(
@@ -2354,6 +2366,8 @@ def _discover_bpod_ports(ports: Iterable[ListPortInfo]) -> Iterator[ListPortInfo
             timeout=DISCOVERY_TIMEOUT,
             raise_dtr=True,
         ):
+            if p.serial_number:
+                found.add(p.serial_number)
             yield p
 
 

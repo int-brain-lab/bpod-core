@@ -59,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state machines and `Bpod.get_data` gained 10-20%.
 - connecting to a Bpod enumerates the serial ports once instead of three times;
   `com.SerialDevice` also accepts a `ListPortInfo` as port.
+- `discover_bpod` no longer probes a Bpod's other serial ports, which never answer:
+  it finds a Bpod 2+ in under 10 ms instead of 230 ms.
 - the builder methods of `StateMachine` validate their arguments through the models
   instead of `validate_call`: validation errors are titled after the model (e.g.
   `State`) rather than the method, unknown keyword arguments raise a `TypeError`, and
