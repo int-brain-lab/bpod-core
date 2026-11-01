@@ -67,6 +67,7 @@ jobs:
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
+          cache-dependency-glob: uv.lock  # changes with every dependency change
           prune-cache: true
           cache-python: true
       - name: sync dependencies
@@ -88,6 +89,7 @@ jobs:
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true
+          cache-dependency-glob: uv.lock  # changes with every dependency change
           prune-cache: true
           cache-python: true
       - name: sync dependencies
