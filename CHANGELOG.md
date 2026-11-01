@@ -6,61 +6,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0a16] - 2026-11-01
 
 ### Added
 
+- experimental support for the Bpod State Machine 0.7-1.0 (Arduino Due) with firmware
+  v23.
 - `Bpod.wait(timeout=...)` raises a `TimeoutError` when the state machine hasn't
   finished in time.
 - `stop_state_machine(timeout=...)` waits at most `timeout` seconds (one by default) for
   the Bpod to end the trial; otherwise it gives the trial up and raises a
   `TimeoutError`, and the connection has to be reopened.
-- experimental support for the Bpod State Machine 0.7-1.0 (Arduino Due) with firmware
-  v23.
+- support for Python 3.15.
 
 ### Fixed
 
-- `Bpod.close()` finishes its cleanup before raising a connection lost during the
-  trial.
-- closing a connection after a trial was given up stops the state machine first, so
-  that the next connection's handshake is answered.
-- closing an unplugged `Bpod` no longer raises an `OSError`.
-- validation messages for invalid state names and operators no longer substitute
-  braces in the input, e.g. `{pattern}`.
-- `misc.ValidatedDict` stores a coerced key in its validated form, e.g. `'1'` as `1`.
-- connecting discards discovery bytes before the handshake, which could otherwise fail
-  with firmware that sends one when the port is opened; discovery raises DTR once
-  the port is open (`verify_serial_discovery(raise_dtr=True)`) to request that byte,
-  so connecting no longer waits for the next periodic one.
-- closing a `Bpod`, or any IPC host or client, no longer waits up to 100 ms for its
-  event loop's receive timeout: the loop is woken by a message.
-- a `Bpod` created after closing another one for the same device takes over its IPC
-  service, network advertisement included, instead of failing to bind the same
-  addresses.
-- a process's first trial no longer ends about 10 ms late: `numpy.ma`, which polars 2.1
-  imports on its first DataFrame conversion, is imported with bpod-core.
-- every handshake ends with a session clock reset, also on reopening the connection; a
-  reset the firmware answers late (about 50 ms on Bpod r2.0) is repeated, so
-  timestamps stay aligned to the host clock.
-- a `RemoteBpod` connecting by one of the host machine's own network addresses is
-  recognized as local: it upgrades to the IPC transport and skips compressing trial
-  data. The upgrade is verified and reverted if the host doesn't answer there.
-- a service that disappears and comes back is reported again by `iter_services` and
-  `discover_remote_bpod`; a record changing its address or port is reported as a removal
-  and an addition.
-- `RemoteBpod.close()` returns within a second when the host is gone, instead of
-  waiting for a goodbye reply forever.
-- a host without a route to the internet advertises one of its interface addresses via
-  Zeroconf instead of the loopback address.
-- `RemoteError` survives pickling, e.g. when raised in a worker process.
-- softcode handling no longer ends when a global timer on the softcode channel turns
-  off.
-- stopping a queued trial that the Bpod never started logs a warning, instead of
-  reading the Bpod's reply as the trial's data.
-- on Windows, `iter_services` no longer stops reporting local services when one of
-  them closes.
-- reopening a `Bpod` unlocks its FlexIO channel types and analog sampling rate, as the
-  error message says, and its next trials record analog samples again.
 - `run()` waits for the state machine sent before to start: sent while the Bpod still
   loaded that one, e.g. right after a session's first trial, the next one garbled the
   trial data. If it doesn't start within a second, `run()` gives that trial up and
@@ -69,7 +29,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the next `wait()`, `run()`, `close()` or other command raise a `BpodError`, and the
   connection has to be reopened, instead of the reader thread dying with a traceback
   and the data staying incomplete without notice.
+- every handshake ends with a session clock reset, also on reopening the connection,
+  and a reset the firmware answers late (about 50 ms on Bpod r2.0) is repeated, so
+  timestamps stay aligned to the host clock.
+- reopening a `Bpod` unlocks its FlexIO channel types and analog sampling rate, as the
+  error message says, and its next trials record analog samples again.
 - `set_relay(True)` turns a module's relay on again after a reopen.
+- connecting no longer fails with firmware that sends a discovery byte when the port is
+  opened, and no longer waits for the Bpod's next periodic discovery byte.
+- `Bpod.close()` finishes its cleanup before raising a connection lost during the
+  trial, and closing an unplugged `Bpod` no longer raises an `OSError`.
+- stopping a queued trial that the Bpod never started logs a warning, instead of
+  reading the Bpod's reply as the trial's data.
+- softcode handling no longer ends when a global timer on the softcode channel turns
+  off.
+- `wait()` no longer returns about 10 ms late after a process's first trial.
+- a `Bpod` created after closing another one for the same device takes over its IPC
+  service, network advertisement included, instead of failing to bind the same
+  addresses.
+- closing a `Bpod`, or any IPC host or client, no longer waits up to 100 ms for its
+  event loop, and closing a remote host no longer waits for its goodbye packets.
+- `RemoteBpod.close()` returns within a second when the host is gone, instead of
+  waiting for a goodbye reply forever.
+- a `RemoteBpod` connecting by one of the host machine's own network addresses is
+  recognized as local: it uses the IPC transport and skips compressing trial data.
+- `iter_services` and `discover_remote_bpod` report a service that disappears and
+  comes back again, and a record changing its address or port as a removal and an
+  addition. On Windows, `iter_services` no longer stops reporting local services when
+  one of them closes.
+- a host without a route to the internet advertises one of its interface addresses via
+  Zeroconf instead of the loopback address.
+- `RemoteError` survives pickling, e.g. when raised in a worker process.
 
 ### Changed
 
@@ -78,35 +68,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same values as before; the app port and softcodes from global timers get them as set.
 - the softcode channels have no number, like their actions: `SoftCode` and
   `SoftCodeApp` for global timers, conditions, `Bpod.inputs` and `Bpod.outputs`.
-- building state machines is two to three times faster, loading them from a file up
-  to seven times, and `Bpod.run` returns about 40% sooner. Validating and compiling
-  state machines and `Bpod.get_data` gained 10-20%.
-- connecting to a Bpod enumerates the serial ports once instead of three times;
-  `com.SerialDevice` also accepts a `ListPortInfo` as port.
-- `discover_bpod` no longer probes a Bpod's other serial ports, which never answer:
-  it finds a Bpod 2+ in under 10 ms instead of 230 ms. Ports of Teensy models no Bpod
-  is built on are skipped too.
+- `Bpod.version.machine_str` names the Bpod as precisely as its Teensy model and PCB
+  revision tell, e.g. `r2.5` or `2+ r1.2` instead of `r2.0-2.5` or `2+ r1.0`.
 - the builder methods of `StateMachine` validate their arguments through the models
   instead of `validate_call`: validation errors are titled after the model (e.g.
   `State`) rather than the method, unknown keyword arguments raise a `TypeError`, and
   a `Transitions` or `Actions` instance passed to `add_state` is stored by reference.
 - state names and operators must be strings; `bytes` are no longer coerced.
-- the IPC transport is used wherever libzmq supports it, instead of only on POSIX.
-- the reader hands the packets of one serial read to the event thread as one batch:
-  fewer thread wake-ups at high event rates.
-- the reader takes everything pending on the port in one read
-  (`com.ExtendedSerial.read_waiting`, direct on POSIX), halving its CPU time.
-- the warning about a timing violation reports how far the host fell behind in
-  reading the serial port: a full buffer stalls the Bpod's state machine cycle.
-- all IPC hosts and service browsers of a process share one Zeroconf instance,
-  started on first use and closed at exit; closing a remote host no longer waits for
-  its goodbye packets.
 - `wait()` also waits for the trial's softcode handlers to have run.
 - `wait()` and `stop_state_machine()` can be interrupted with Ctrl+C while they wait
   for a trial, despite polars' signal handler.
 - leaving the `Bpod` context manager on an exception stops a running state machine
   instead of waiting for it, as does `Bpod.close()` when its wait is interrupted; if
   the Bpod doesn't end the trial, the reader gives it up.
+- building state machines is two to three times faster, loading them from a file up
+  to seven times, and `Bpod.run` returns about 40% sooner. Validating and compiling
+  state machines and `Bpod.get_data` gained 10-20%.
+- connecting to a Bpod enumerates the serial ports once instead of three times, and
+  `discover_bpod` finds a Bpod 2+ in under 10 ms instead of 230 ms: it skips a Bpod's
+  other serial ports and Teensy models no Bpod is built on.
+- reading trials takes half the CPU time and fewer thread wake-ups at high event rates.
+- the warning about a timing violation reports how far the host fell behind in
+  reading the serial port: a full buffer stalls the Bpod's state machine cycle.
+- local `RemoteBpod` connections use the IPC transport wherever libzmq supports it,
+  instead of only on POSIX.
+- `filelock` is no longer capped below version 4.
 
 ### Removed
 
@@ -465,6 +451,8 @@ Just a quick bugfix release ...
 ## [0.1.0a0] - 2025-04-17
 
 First alpha release. Nothing works.
+
+[0.1.0a16]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a16
 
 [0.1.0a15]: https://github.com/int-brain-lab/bpod-core/releases/tag/0.1.0a15
 

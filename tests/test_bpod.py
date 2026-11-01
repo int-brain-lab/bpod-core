@@ -541,10 +541,12 @@ _SLOW = _SESSION_CLOCK_MAX_ERROR_NS * 4
 
 
 class TestResetSessionClock:
-    def test_reset_session_clock(self, mock_bpod, caplog):
+    def test_reset_session_clock(self, mock_bpod, mocker, caplog):
         """Test successful reset of session clock."""
         caplog.set_level(logging.DEBUG)
         mock_bpod.serial0.mock_responses = {rb'\*': b'\x01'}
+        # a fast round trip: a slow CI runner would make the reset repeat and log it
+        mocker.patch('bpod_core.bpod.perf_counter_ns', side_effect=[0, _FAST])
         assert Bpod.reset_session_clock(mock_bpod) is True
         assert len(caplog.records) == 1
         assert caplog.records[0].levelname == 'DEBUG'
