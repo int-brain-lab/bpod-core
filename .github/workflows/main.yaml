@@ -99,9 +99,10 @@ jobs:
       - name: run tox
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # the doctests check the documentation's code, the same on every platform
-          SKIP_ENV: linting|formatting|typing|combine${{ runner.os != 'Linux' && '|doctest' || '' }}
-        run: uv run tox --skip-env "$SKIP_ENV" --fail-fast -p --parallel-no-spinner -- -ci
+          # read by tox itself, whatever the shell (PowerShell on Windows); the doctests
+          # check the documentation's code, the same on every platform
+          TOX_SKIP_ENV: linting|formatting|typing|combine${{ runner.os != 'Linux' && '|doctest' || '' }}
+        run: uv run tox --fail-fast -p --parallel-no-spinner -- -ci
       - name: test summary
         # one section per Python version in the job summary, listing failures and skips
         if: always()
