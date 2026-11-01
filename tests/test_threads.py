@@ -1174,12 +1174,20 @@ class TestJoinUntil:
 
     def test_joins_in_slices(self, blocked_thread, mocker):
         """Even an unbounded wait returns to Python regularly: Ctrl+C gets through."""
-        join = mocker.spy(blocked_thread, 'join')
         mocker.patch('bpod_core.bpod._threads._JOIN_SLICE_S', 0.01)
-        threading.Timer(0.05, blocked_thread.release.set).start()
+        timeouts = []
+        join = blocked_thread.join
+
+        def counted_join(timeout=None):
+            timeouts.append(timeout)
+            if len(timeouts) == 3:  # the thread ends only after a few slices
+                blocked_thread.release.set()
+            join(timeout)
+
+        mocker.patch.object(blocked_thread, 'join', side_effect=counted_join)
         assert join_until(blocked_thread, None)
-        assert join.call_count > 1
-        assert all(call.args[0] <= 0.01 for call in join.call_args_list)
+        assert len(timeouts) >= 3
+        assert all(timeout <= 0.01 for timeout in timeouts)
 
 
 def test_polars_imports_numpy_ma_lazily():
