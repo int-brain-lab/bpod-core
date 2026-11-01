@@ -64,6 +64,7 @@ jobs:
         with:
           enable-cache: true
           prune-cache: true
+          cache-python: true
       - name: sync dependencies
         run: uv sync --no-default-groups --group tox
       - run: uv run tox -m 'typing' --fail-fast -p --parallel-no-spinner
@@ -84,6 +85,7 @@ jobs:
         with:
           enable-cache: true
           prune-cache: true
+          cache-python: true
       - name: sync dependencies
         run: uv sync --no-default-groups --group tox --group ci
       - name: provide a runtime directory
