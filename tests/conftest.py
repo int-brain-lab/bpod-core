@@ -233,7 +233,7 @@ class BlockedThread(threading.Thread):
     """A thread that ends once `release` is set; stands in for a trial's reader."""
 
     trial_number = 7
-    error: OSError | None = None
+    error: Exception | None = None
 
     def __init__(self) -> None:
         super().__init__(daemon=True)
@@ -332,6 +332,7 @@ def mock_bpod(mocker, mock_ext_serial, mock_settings):
     mock_bpod.is_running = False
     mock_bpod._time_reference = mocker.MagicMock(spec=_TimeReferences)
     mock_bpod._softcode_thread = mocker.MagicMock()
+    mock_bpod.modules = {}  # an instance attribute, not in the spec
     mock_bpod.serial0 = mock_ext_serial
     mock_bpod._identify_bpod.side_effect = lambda *args, **kwargs: Bpod._identify_bpod(
         mock_bpod,

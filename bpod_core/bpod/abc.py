@@ -199,10 +199,16 @@ class AbstractBpod(AbstractContextManager):
 
         Raises
         ------
+        BpodError
+            If the connection to the Bpod was lost, or a trial before was given up or
+            couldn't be read: the connection then has to be reopened.
         RuntimeError
             If called without an argument and no state machine has been run yet, or
             the hardware configuration has changed since (e.g. through
             :meth:`update_modules`).
+        TimeoutError
+            If the state machine sent before didn't start within a second: that trial
+            was given up, and the connection has to be reopened.
         ValueError
             If the state machine is invalid or exceeds hardware limitations, or if
             ``trial_number`` is out of range.

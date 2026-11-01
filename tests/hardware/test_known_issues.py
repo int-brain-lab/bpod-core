@@ -44,12 +44,12 @@ def test_deferred_state_machine_start(bpod, fuzz_seed):
     fsm = StateMachine()
     fsm.add_state('A', transitions={'Tup': '>exit'})
 
-    for _ in range(500):
-        fsm.states['A'].timer = rng.uniform(0, 0.0005)
-        bpod.run(fsm)  # sent while the previous trial runs
     try:
+        for _ in range(500):
+            fsm.states['A'].timer = rng.uniform(0, 0.0005)
+            bpod.run(fsm)  # sent while the previous trial runs
         bpod.wait(timeout=0.1)
-    except TimeoutError:
+    except TimeoutError:  # from run(), waiting for the machine before to start
         pytest.fail('a queued state machine never started')
 
 
@@ -77,9 +77,9 @@ def test_back_flag(bpod, run_guarded):
 @pytest.mark.known_firmware_issue(f'{FIRMWARE_PRS}/6')
 def test_global_timer_on_flex_output(bpod, flex_loopback):
     """A state change leaves a Flex output driven by a global timer alone."""
-    events = _trial_events(bpod, _timer_across_states('Flex1'))
-    (high, on), (low, off) = _timed(events, 'Flex4_')
-    assert (high, low) == ('Flex4_High', 'Flex4_Low')
+    edges = _timed(_trial_events(bpod, _timer_across_states('Flex1')), 'Flex4_')
+    assert [name for name, _ in edges] == ['Flex4_High', 'Flex4_Low'], edges
+    (_, on), (_, off) = edges
     assert abs(off - on - 200) <= 2  # the timer's 20 ms, in cycles
 
 

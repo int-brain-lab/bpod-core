@@ -298,7 +298,6 @@ class TestReadThread:
         ]
         assert order == ['events3', 'softcode', 'events2', 'events1']
 
-    @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
     def test_parsed_events_survive_an_unknown_opcode(self, make_thread):
         """The cycles parsed before a bad packet reach the event thread."""
         data = _CONFIRM_OK + _start() + _opcode1([42], n_cycles=1) + bytes([7, 0])
@@ -308,6 +307,7 @@ class TestReadThread:
         event_indices = [i for _, i in _timed_events(q_events)]
         assert event_indices[:3] == [_EventID.START_FSM, _EventID.START_STATE, 42]
         assert event_indices[-1] == _EventID.STOP_SENTINEL
+        assert 'unknown opcode' in str(thread.error)  # kept for Bpod.wait()
 
     @pytest.mark.parametrize('softcode', [0, 3])  # 0: a global timer's value_off
     def test_softcode_enqueued(self, make_thread, softcode):
@@ -324,7 +324,6 @@ class TestReadThread:
         thread.join(timeout=2)
         assert [item.softcode for item in _drain(q_softcodes)] == [softcode]
 
-    @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
     def test_error_is_kept(self, make_thread):
         """A lost connection ends the trial, keeping the error and the events so far."""
         data = _CONFIRM_OK + _start(100) + _opcode1([42], n_cycles=5)
@@ -462,7 +461,6 @@ class TestReadThread:
         event_indices = [i for _, i in _timed_events(q_events)]
         assert _EventID.START_FSM in event_indices
 
-    @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
     def test_fsm_confirmation_failure(self, make_thread):
         """Sends STOP_SENTINEL and exits when Bpod sends a zero confirmation byte."""
         data = _CONFIRM_FAIL  # no further data needed
@@ -472,6 +470,7 @@ class TestReadThread:
         assert not thread.is_alive()
         event_indices = [i for _, i in _timed_events(q_events)]
         assert event_indices == [_EventID.STOP_SENTINEL]
+        assert 'not confirmed' in str(thread.error)
 
     def test_trial_started_once_confirmed(self, pty_port):
         """`trial_started` is set by the confirmation, while the trial goes on."""
@@ -484,7 +483,6 @@ class TestReadThread:
         assert thread.is_alive()
         thread.cancel()
 
-    @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
     def test_trial_started_once_ended_without_a_start(self, make_thread):
         """An unconfirmed trial sets `trial_started` too: there is nothing to await."""
         thread, _, _ = make_thread(_CONFIRM_FAIL)

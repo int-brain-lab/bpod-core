@@ -63,7 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error message says, and its next trials record analog samples again.
 - `run()` waits for the state machine sent before to start: sent while the Bpod still
   loaded that one, e.g. right after a session's first trial, the next one garbled the
-  trial data.
+  trial data. If it doesn't start within a second, `run()` gives that trial up and
+  raises a `TimeoutError`, and the connection has to be reopened.
+- a trial whose data can't be read from the Bpod, e.g. after a firmware fault, makes
+  the next `wait()`, `run()`, `close()` or other command raise a `BpodError`, and the
+  connection has to be reopened, instead of the reader thread dying with a traceback
+  and the data staying incomplete without notice.
+- `set_relay(True)` turns a module's relay on again after a reopen.
 
 ### Changed
 

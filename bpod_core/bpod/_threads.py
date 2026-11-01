@@ -309,7 +309,8 @@ class ReadThread(threading.Thread):
     one is queued; they are kept in :attr:`leftover` for the next ``ReadThread``.
     A :attr:`~_EventID.STOP_SENTINEL` is always enqueued in ``finally`` so
     :class:`EventThread` can detect termination regardless of how the trial ended. If
-    the connection to the Bpod is lost, the exception is kept in :attr:`error`.
+    the connection to the Bpod is lost or its stream can't be read, the exception is
+    kept in :attr:`error`.
 
     Parameters
     ----------
@@ -341,8 +342,9 @@ class ReadThread(threading.Thread):
     leftover_received_ns: int
     """When :attr:`leftover` was received (:func:`time.perf_counter_ns`)."""
 
-    error: OSError | None = None
-    """The exception that ended the thread, if the connection to the Bpod was lost."""
+    error: Exception | None = None
+    """The exception that ended the thread: a lost connection (:class:`OSError`), or a
+    stream that couldn't be read, e.g. an unknown opcode."""
 
     trial_started: threading.Event
     """Set once the Bpod has confirmed the trial's start, or the thread has ended."""
@@ -399,11 +401,7 @@ class ReadThread(threading.Thread):
 
         Returns how many there were: the host's read backlog at that moment.
         """
-        try:
-            chunk = self._serial.read_waiting()
-        except OSError as error:  # including SerialException, e.g., when unplugged
-            self.error = error
-            raise
+        chunk = self._serial.read_waiting()
         if not chunk:  # the port's timeout elapsed (off POSIX only): nothing yet
             return 0
         self._buffer += chunk
@@ -452,7 +450,7 @@ class ReadThread(threading.Thread):
 
             # confirm the state machine
             if not self._take(1)[0]:
-                raise RuntimeError(
+                raise RuntimeError(  # noqa: TRY301 - kept in `error`, see below
                     f'State machine #{self._trial} not confirmed by Bpod'
                 )
             self.trial_started.set()
@@ -528,7 +526,7 @@ class ReadThread(threading.Thread):
 
                         # HANDLE UNKNOWN OPCODES
                         else:
-                            raise RuntimeError(
+                            raise RuntimeError(  # noqa: TRY301 - see above
                                 f'Received unknown opcode from Bpod: {opcode}'
                             )
                         pos += size
@@ -593,6 +591,8 @@ class ReadThread(threading.Thread):
 
         except ReadCancelled:
             logger.debug('Reading of trial #%d cancelled', self._trial)
+        except Exception as error:  # noqa: BLE001 - reported by Bpod.wait(), run()
+            self.error = error  # e.g. SerialException when unplugged
         finally:
             self.trial_started.set()  # also if it never started: nothing to wait for
             if batch:  # e.g. the packets parsed before an unknown opcode
