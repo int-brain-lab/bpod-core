@@ -70,8 +70,9 @@ jobs:
           prune-cache: true
           cache-python: true
       - name: sync dependencies
-        run: uv sync --no-default-groups --group tox
-      - run: uv run tox -m 'typing' --fail-fast -p --parallel-no-spinner
+        # tox alone: each tox environment installs its own dependencies from the lock
+        run: uv sync --only-group tox
+      - run: uv run --no-sync tox -m 'typing' --fail-fast -p --parallel-no-spinner
   tox:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -90,7 +91,7 @@ jobs:
           prune-cache: true
           cache-python: true
       - name: sync dependencies
-        run: uv sync --no-default-groups --group tox --group ci
+        run: uv sync --only-group tox  # see above
       - name: provide a runtime directory
         # the local service advertisements live in the runtime directory; platformdirs
         # warns unless XDG_RUNTIME_DIR points to a directory with mode 0700 (Linux only)
@@ -102,7 +103,7 @@ jobs:
           # read by tox itself, whatever the shell (PowerShell on Windows); the doctests
           # check the documentation's code, the same on every platform
           TOX_SKIP_ENV: linting|formatting|typing|combine${{ runner.os != 'Linux' && '|doctest' || '' }}
-        run: uv run tox --fail-fast -p --parallel-no-spinner -- -ci
+        run: uv run --no-sync tox --fail-fast -p --parallel-no-spinner -- -ci
       - name: test summary
         # one section per Python version in the job summary, listing failures and skips
         if: always()
