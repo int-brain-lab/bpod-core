@@ -25,14 +25,14 @@ from bpod_core.bpod import (
     RemoteBpod,
     _allocate_module_events,
     _discover_bpod_ports,
+    _find_bpod_ports,
     _machine_name,
+    discover_bpod,
 )
 from bpod_core.bpod._threads import SoftcodeThread
 from bpod_core.bpod.constants import (
     _REMOTE_CALL_METHODS,
     _REMOTE_DATA_METHODS,
-    PIDS_BPOD,
-    VIDS_BPOD,
     FlexIOChannelType,
     FlexIOThresholdMode,
     FlexIOThresholdPolarity,
@@ -44,11 +44,14 @@ from bpod_core.bpod.structs import (
     _RequestCall,
     _RequestData,
 )
-from bpod_core.com import ExtendedSerial, SerialDevice, find_ports
+from bpod_core.com import ExtendedSerial, SerialDevice
 from bpod_core.constants import (
+    PID_DUE_NATIVE,
     STRUCT_INT16_LE,
     STRUCT_UINT8,
     UINT32_MAX,
+    VID_ARDUINO,
+    VID_TEENSY,
     TeensyModel,
     TeensyPID,
 )
@@ -92,6 +95,15 @@ class TestDiscoverBpodPorts:
         ports = [make_port_info(device, serial_number=device) for device in models]
         assert [p.device for p in _discover_bpod_ports(ports)] == ['COM4', 'COM5']
 
+    def test_teensy_model_looked_up_only_for_teensy_ports(
+        self, make_port_info, mock_serial_discovery, mocker
+    ):
+        """An Arduino Due's port is probed without asking for its Teensy model."""
+        read_bcd_device = mocker.patch('bpod_core.bpod._read_bcd_device')
+        due = make_port_info('COM4', vid=VID_ARDUINO, pid=PID_DUE_NATIVE)
+        assert list(_discover_bpod_ports([due])) == [due]
+        read_bcd_device.assert_not_called()
+
     def test_other_ports_of_a_found_bpod_are_skipped(
         self, bpod_2p, make_port_info, mock_serial_discovery
     ):
@@ -104,6 +116,55 @@ class TestDiscoverBpodPorts:
         ]
 
 
+def test_bpod_ports_match_vendor_and_product_together(mock_comports, make_port_info):
+    """Teensy ports and the Due's native port are Bpod ports; mixed IDs are not."""
+    ids = {
+        'COM3': (VID_TEENSY, TeensyPID.TRIPLE_SERIAL),
+        'COM4': (VID_ARDUINO, PID_DUE_NATIVE),
+        'COM5': (VID_ARDUINO, 0x003D),  # the Due's programming port
+        'COM6': (VID_ARDUINO, TeensyPID.SERIAL),
+        'COM7': (VID_TEENSY, PID_DUE_NATIVE),
+    }
+    mock_comports.return_value = [
+        make_port_info(port, vid=v, pid=p) for port, (v, p) in ids.items()
+    ]
+    assert [p.device for p in _find_bpod_ports()] == ['COM3', 'COM4']
+
+
+def test_discovered_without_serial_number(mock_comports, make_port_info):
+    """A port without a serial number is discovered as 'unknown', as on connecting."""
+    mock_comports.return_value = [
+        make_port_info('COM4', serial_number=None, vid=VID_ARDUINO, pid=PID_DUE_NATIVE)
+    ]
+    assert [b.serial_number for b in discover_bpod()] == ['unknown']
+
+
+class TestBpod10:
+    """A Bpod 0.7-1.0, on an Arduino Due: supported experimentally."""
+
+    def test_connects_with_a_single_serial_port(self, mock_bpod_10, caplog):
+        """It connects without a secondary port, warning that its support is new."""
+        assert mock_bpod_10.version.machine_str == '0.7-1.0'
+        assert mock_bpod_10.serial_number == 'unknown'
+        assert mock_bpod_10.serial1 is None
+        with pytest.raises(RuntimeError, match='does not have FlexIO channels'):
+            _ = mock_bpod_10.flex_io
+        logs = [r.getMessage() for r in caplog.get_records('setup')]
+        assert 'Support for Bpod Finite State Machine 0.7-1.0 is experimental' in logs
+
+    def test_channels(self, mock_bpod_10):
+        """Its BNC, wire, port and valve channels compile into state machines."""
+        compiler = mock_bpod_10._compiler
+        assert {'TTLIn2_Low', 'Wire2_High', 'Port8_High'} <= set(
+            compiler.input_event_names
+        )
+        assert 'Wire3_High' not in compiler.input_event_names  # 2 inputs, 3 outputs
+        fsm = StateMachine()
+        actions = {'TTLOut2': 1, 'Wire3': 1, 'PWM8': 255, 'Valve8': 1}
+        fsm.add_state('a', 0.01, {'Tup': '>exit', 'Wire2_High': '>exit'}, actions)
+        compiler.compile(state_machine=fsm)
+
+
 class TestBpodIdentifyBpod:
     @pytest.fixture
     def mock_bpod(self, mock_bpod):
@@ -113,7 +174,7 @@ class TestBpodIdentifyBpod:
     @staticmethod
     def identify(**kwargs):
         """Identify a Bpod among the enumerated ports, as the constructor does."""
-        return Bpod._identify_bpod(find_ports(vid=VIDS_BPOD, pid=PIDS_BPOD), **kwargs)
+        return Bpod._identify_bpod(_find_bpod_ports(), **kwargs)
 
     @pytest.mark.usefixtures('mock_comports')
     def test_automatic_success(self, mock_bpod):
@@ -232,7 +293,7 @@ class TestGetVersionInfo:
     def test_get_version_info_unsupported_hardware(self, mock_bpod):
         """Test failure when hardware version is unsupported."""
         mock_bpod.serial0.mock_responses = {
-            b'F': struct.pack('<2H', 23, 2),  # Firmware version 23, Bpod type 2
+            b'F': struct.pack('<2H', 23, 1),  # Firmware version 23, Bpod 0.5
             b'f': STRUCT_INT16_LE.pack(1),  # Minor firmware version 1
         }
         with pytest.raises(BpodError, match=r'hardware .* is not supported'):
@@ -1063,7 +1124,7 @@ class TestRun:
         # 200 mV -> round(200 * 4095/5000) = 164 DAC counts
         assert struct.pack('<HHH', 1, idx, 164) in mock_bpod_2p.serial0.last_write
 
-    @pytest.mark.parametrize('bpod', ['mock_bpod_25', 'mock_bpod_2p'])
+    @pytest.mark.parametrize('bpod', ['mock_bpod_10', 'mock_bpod_25', 'mock_bpod_2p'])
     def test_action_value_fits_one_byte(self, bpod, request):
         """Action values other than FlexIO analog outputs fit one byte."""
         bpod = request.getfixturevalue(bpod)

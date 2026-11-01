@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `stop_state_machine(timeout=...)` waits at most `timeout` seconds (one by default) for
   the Bpod to end the trial; otherwise it gives the trial up and raises a
   `TimeoutError`, and the connection has to be reopened.
+- experimental support for the Bpod State Machine 0.7-1.0 (Arduino Due) with firmware
+  v23.
 
 ### Fixed
 
@@ -96,6 +98,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - leaving the `Bpod` context manager on an exception stops a running state machine
   instead of waiting for it, as does `Bpod.close()` when its wait is interrupted; if
   the Bpod doesn't end the trial, the reader gives it up.
+
+### Removed
+
+- `bpod.constants.VIDS_BPOD` and `PIDS_BPOD`: Bpod ports are matched by vendor and
+  product ID together, as listed in `bpod.constants.USB_IDS_BPOD`.
 
 ## [0.1.0a15] - 2026-10-23
 

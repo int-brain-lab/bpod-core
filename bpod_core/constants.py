@@ -86,6 +86,17 @@ class TeensyPID(IntEnum):
     """Product ID of Teensy microcontrollers with triple USB serial ports."""
 
 
+VID_ARDUINO: int = 0x2341
+"""Vendor ID of Arduino boards."""
+
+PID_DUE_NATIVE: int = 0x003E
+"""Product ID of the native USB port of an Arduino Due, which a Bpod 0.7-1.0 uses.
+
+The Due's programming port (0x003D) is not one: opening it resets the Due. Opening and
+closing the native port at 1200 baud erases the Due's firmware.
+"""
+
+
 class TeensyModel(IntEnum):
     """Teensy models, as reported in the USB device release number (bcdDevice).
 

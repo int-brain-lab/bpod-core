@@ -8,8 +8,9 @@ Requirements
 ------------
 
 bpod-core requires **Python 3.10 or later** and is supported on Linux, macOS, and
-Windows. It is compatible with Bpod Finite State Machines r2 and newer. Older hardware
-revisions are not supported as of now.
+Windows. It is compatible with Bpod Finite State Machines r2 and newer and, as an
+experimental feature, with the State Machine 0.7-1.0 (Arduino Due), all with firmware v23
+or later. The State Machine 0.5 is not supported.
 
 Virtual Environment
 -------------------

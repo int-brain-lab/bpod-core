@@ -58,8 +58,7 @@ from bpod_core.bpod.constants import (
     MIN_BPOD_HW_VERSION,
     N_SERIAL_EVENTS_DEFAULT,
     NON_BPOD_TEENSY_MODELS,
-    PIDS_BPOD,
-    VIDS_BPOD,
+    USB_IDS_BPOD,
     FlexIOChannelType,
 )
 from bpod_core.bpod.errors import BpodError, BpodKeyError
@@ -98,6 +97,7 @@ from bpod_core.constants import (
     FMT_UINT8,
     FMT_UINT16_LE,
     UINT32_MAX,
+    VID_TEENSY,
     TeensyModel,
     TeensyPID,
 )
@@ -285,7 +285,7 @@ class Bpod(SerialDevice, AbstractBpod):
         try:
             # enumerating serial ports is slow, so it is done once: for identifying the
             # Bpod by port or serial number and for detecting its additional ports
-            bpod_ports = find_ports(vid=VIDS_BPOD, pid=PIDS_BPOD)
+            bpod_ports = _find_bpod_ports()
             port_info = self._identify_bpod(bpod_ports, port, serial_number)
             super().__init__(port=port_info, open_connection=True)
             self._serial_number = port_info.serial_number or 'unknown'
@@ -330,6 +330,10 @@ class Bpod(SerialDevice, AbstractBpod):
                 self._serial_number,
                 self.version.pcb,
             )
+            if self._version.machine == 2:
+                logger.warning(
+                    'Support for %s is experimental', self._serial_device_name
+                )
 
             # start ZeroMQ service
             self._start_zmq(use_zeroconf=remote)
@@ -678,7 +682,7 @@ class Bpod(SerialDevice, AbstractBpod):
         Parameters
         ----------
         ports : list of ListPortInfo
-            The serial ports with a Bpod vendor and product ID, see :func:`find_ports`.
+            The serial ports of supported Bpods, as found by ``_find_bpod_ports()``.
         port : str, optional
             The port of the device.
         serial_number : str, optional
@@ -855,11 +859,12 @@ class Bpod(SerialDevice, AbstractBpod):
         }
         candidate_ports = other_ports(ports)
         if len(candidate_ports) < n_other_ports.get(self._port_info.pid, 0):
-            candidate_ports = other_ports(find_ports(vid=VIDS_BPOD, pid=PIDS_BPOD))
+            candidate_ports = other_ports(_find_bpod_ports())
 
-        # Then, try to find the secondary USB-serial port
+        # Then, try to find the secondary USB-serial port, which the 'Z' softcode
+        # channel (SoftCodeApp) belongs to
         serial1 = None
-        if self._version.firmware >= (23, 0):
+        if b'Z' in self._hardware.input_description:
             for port in candidate_ports:
                 if verify_serial_discovery(
                     port.device,
@@ -875,9 +880,9 @@ class Bpod(SerialDevice, AbstractBpod):
             if serial1 is None:
                 raise BpodError('Could not detect secondary serial port')
 
-        # State Machine 2+ uses a third USB-serial port for FlexIO
+        # and the third USB-serial port, for the FlexIO channels (State Machine 2+)
         flexio_serial = None
-        if self.version.machine == 4:
+        if self._hardware.n_flexio:
             for port in candidate_ports:
                 if verify_serial_discovery(
                     port.device,
@@ -2351,11 +2356,9 @@ def discover_bpod(
 
         devices = list(discover_bpod())
     """
-    ports = find_ports(
-        vid=VIDS_BPOD, pid=PIDS_BPOD, device=port, serial_number=serial_number
-    )
+    ports = _find_bpod_ports(device=port, serial_number=serial_number)
     for p in _discover_bpod_ports(ports):
-        yield BpodInfo(port=p.device, serial_number=str(p.serial_number))
+        yield BpodInfo(port=p.device, serial_number=p.serial_number or 'unknown')
 
 
 def _machine_name(machine_type: int, teensy: int | None, pcb: int | None) -> str:
@@ -2371,6 +2374,17 @@ def _machine_name(machine_type: int, teensy: int | None, pcb: int | None) -> str
     return MACHINE_TYPES.get(machine_type, 'unknown')
 
 
+def _find_bpod_ports(
+    device: str | None = None, serial_number: str | None = None
+) -> list[ListPortInfo]:
+    """The serial ports of supported Bpods, by USB vendor and product ID together.
+
+    Matching them separately would also open, e.g., an Arduino with a Teensy product ID.
+    """
+    ports = find_ports(device=device, serial_number=serial_number)
+    return [p for p in ports if (p.vid, p.pid) in USB_IDS_BPOD]
+
+
 def _discover_bpod_ports(ports: Iterable[ListPortInfo]) -> Iterator[ListPortInfo]:
     """Yield the serial ports in `ports` on which an idle Bpod answers a discovery.
 
@@ -2384,7 +2398,7 @@ def _discover_bpod_ports(ports: Iterable[ListPortInfo]) -> Iterator[ListPortInfo
         if (
             _usb_interface_number(p)  # 0 or None: probe
             or p.serial_number in found
-            or _read_bcd_device(p) in NON_BPOD_TEENSY_MODELS
+            or (p.vid == VID_TEENSY and _read_bcd_device(p) in NON_BPOD_TEENSY_MODELS)
         ):
             continue
         # an unconnected Bpod sends its discovery byte at regular intervals, and recent

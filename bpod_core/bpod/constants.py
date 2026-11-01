@@ -7,16 +7,21 @@ from uuid import UUID
 import platformdirs
 from pydantic import Field
 
-from bpod_core.constants import VID_TEENSY, TeensyModel, TeensyPID
+from bpod_core.constants import (
+    PID_DUE_NATIVE,
+    VID_ARDUINO,
+    VID_TEENSY,
+    TeensyModel,
+    TeensyPID,
+)
 
 BPOD_UUID_NAMESPACE = UUID('9dbb7a76-cb73-4b16-aaf7-f574f4d218f6')
 """UUID namespace for Bpod devices"""
 
-VIDS_BPOD = [VID_TEENSY]
-"""Vendor IDs of supported Bpod devices"""
-
-PIDS_BPOD = [TeensyPID.SERIAL, TeensyPID.DUAL_SERIAL, TeensyPID.TRIPLE_SERIAL]
-"""List of Product IDs of supported Bpod devices"""
+USB_IDS_BPOD = frozenset(
+    {(VID_TEENSY, pid) for pid in TeensyPID} | {(VID_ARDUINO, PID_DUE_NATIVE)}
+)
+"""The (vendor ID, product ID) of the USB serial ports of supported Bpod devices."""
 
 NON_BPOD_TEENSY_MODELS = frozenset(TeensyModel) - {
     TeensyModel.TEENSY_3_6,
@@ -27,8 +32,8 @@ NON_BPOD_TEENSY_MODELS = frozenset(TeensyModel) - {
 MIN_BPOD_FW_VERSION = (23, 0)
 """minimum supported firmware version (major, minor)"""
 
-MIN_BPOD_HW_VERSION = 3
-"""minimum supported hardware version"""
+MIN_BPOD_HW_VERSION = 2
+"""minimum supported hardware version; 2 (Bpod 0.7-1.0) is experimental"""
 
 MAX_BPOD_HW_VERSION = 4
 """maximum supported hardware version"""
@@ -60,7 +65,7 @@ CHANNEL_TYPES_OUTPUT.update(
 )
 N_SERIAL_EVENTS_DEFAULT = 15
 VALID_OPERATORS = {'>exit', '>back'}
-MACHINE_TYPES = {3: 'r2.0-2.5', 4: '2+'}
+MACHINE_TYPES = {2: '0.7-1.0', 3: 'r2.0-2.5', 4: '2+'}
 """Names of the machine types, unless the Teensy model and PCB revision tell more."""
 CONFIG_PATH = platformdirs.user_config_path(appname='bpod-core', appauthor=False)
 DISCOVERY_BYTE = b'\xde'

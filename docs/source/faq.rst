@@ -79,6 +79,13 @@ should solve these issues by:
   with the connection
 - Configuring serial ports with appropriate low-level settings (raw mode, no echo)
 
+A Bpod 0.7-1.0 runs on an Arduino Due, which the Teensy rules don't cover: add your user
+to the ``dialout`` group, and keep ModemManager off the Due with a udev rule such as
+
+.. code-block:: text
+
+   ATTRS{idVendor}=="2341", ATTRS{idProduct}=="003e", ENV{ID_MM_DEVICE_IGNORE}="1"
+
 My Bpod reports events on ports nothing is connected to
 -------------------------------------------------------
 On a Bpod State Machine r2.0 to r2.2, the input of a behavior port floats while nothing

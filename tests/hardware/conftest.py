@@ -75,16 +75,21 @@ def fuzz_seed(pytestconfig: pytest.Config) -> int:
 
 @pytest.fixture
 def logged_warnings(caplog: pytest.LogCaptureFixture) -> Callable[[], list[str]]:
-    """The messages logged at WARNING or above so far."""
+    """The messages logged at WARNING or above so far.
+
+    Not the notice of a Bpod whose support is experimental, logged on every connection.
+    """
     return lambda: [
-        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and r.msg != 'Support for %s is experimental'
     ]
 
 
 @pytest.fixture
 def flex_io(bpod: Bpod) -> AbstractFlexIO:
     """The Bpod's FlexIO channels; skips on a Bpod without them."""
-    if not bpod.flex_io:
+    if not bpod._hardware.n_flexio:  # flex_io raises then
         pytest.skip('needs FlexIO channels (Bpod 2+)')
     return bpod.flex_io
 
@@ -125,9 +130,10 @@ def loopbacks(bpod_info: BpodInfo) -> dict[str, str]:
     The probe runs before the test that first asks, so before that test connects.
     """
     with Bpod(port=bpod_info.port) as bpod:
-        if bpod.flex_io:
+        has_flex_io = bpod._hardware.n_flexio > 0  # else flex_io raises
+        if has_flex_io:
             _wire_flex(bpod.flex_io)
-        outputs = [o for o in LOOPBACKS if bpod.flex_io or not o.startswith('Flex')]
+        outputs = [o for o in LOOPBACKS if has_flex_io or not o.startswith('Flex')]
         probe = _chain(('Probe', 0.02, dict.fromkeys(outputs, 1)))
         edges = {(event, t) for _, event, t in _trial_events(bpod, probe)}
         # a cycle after the output, not, e.g., mains hum on an unwired input

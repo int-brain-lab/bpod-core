@@ -15,7 +15,7 @@ from bpod_core import ipc
 from bpod_core.bpod import Bpod
 from bpod_core.bpod.structs import _TimeReferences
 from bpod_core.com import ExtendedSerial
-from bpod_core.constants import VID_TEENSY, TeensyPID
+from bpod_core.constants import PID_DUE_NATIVE, VID_ARDUINO, VID_TEENSY, TeensyPID
 
 _HARDWARE_TESTS = Path(__file__).parent / 'hardware'
 
@@ -89,6 +89,20 @@ fixture_bpod_25 = {
     b'H': b'\x00\x01d\x00i\x05\x10\x08\x10\rUUUUUXZBBPPPP\x11UUUUUXZBBPPPPVVVV',
     b'M': b'\x00\x00\x00\x00\x00',
     b'E[\\x00\\x01]{13}': b'\x01',
+}
+
+# Bpod 0.7-1.0 (Arduino Due) with firmware version 23: 3 modules, 2 BNC, 2 wire inputs
+# and 3 wire outputs, 8 ports and 8 valves; feature profile 0 (5 timers, counters and
+# conditions) and 3-byte serial messages, as the preconfigured v23 build
+fixture_bpod_10 = {
+    **fixture_bpod_all,
+    b'F': b'\x17\x00\x02\x00',
+    b'H': (
+        b'\x00\x01d\x00<\x03\x05\x05\x05\x10UUUXBBWWPPPPPPPP'
+        b'\x19UUUXBBWWWPPPPPPPPVVVVVVVV'
+    ),
+    b'M': b'\x00\x00\x00',
+    b'E[\\x00\\x01]{16}': b'\x01',
 }
 
 # FlexIO.reset() on connect sends a single combined write for all 4 channels
@@ -353,6 +367,26 @@ def mock_bpod_25(
     mocker.patch(
         'bpod_core.bpod.Bpod._detect_additional_serial_ports', return_value=(None, None)
     )
+    mocker.patch('bpod_core.bpod.ServiceHost')
+    return Bpod('COM3')
+
+
+@pytest.fixture
+def mock_bpod_10(
+    mock_comports,
+    mock_ext_serial,
+    *,
+    mock_settings,
+    mocker,
+    mock_advertisement,
+    make_port_info,
+):
+    """A Bpod 0.7-1.0 on an Arduino Due's native port, which has no serial number."""
+    mock_comports.return_value = [
+        make_port_info('COM3', serial_number=None, vid=VID_ARDUINO, pid=PID_DUE_NATIVE)
+    ]
+    mock_ext_serial.mock_responses.update(fixture_bpod_10)
+    mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.ServiceHost')
     return Bpod('COM3')
 
