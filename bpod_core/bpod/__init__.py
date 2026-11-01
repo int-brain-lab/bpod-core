@@ -502,6 +502,7 @@ class Bpod(SerialDevice, AbstractBpod):
             self._discard_stray_bytes(self._serial, 'serial0')
         super().close()
         self._out_of_sync = False  # the next open() handshakes
+        self._state_machine_started = False  # and may set up FlexIO again
 
     @staticmethod
     def _stop_and_drain(serial: ExtendedSerial) -> None:

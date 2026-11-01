@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reading the Bpod's reply as the trial's data.
 - on Windows, `iter_services` no longer stops reporting local services when one of
   them closes.
+- reopening a `Bpod` unlocks its FlexIO channel types and analog sampling rate, as the
+  error message says, and its next trials record analog samples again.
 
 ### Changed
 

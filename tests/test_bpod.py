@@ -1178,6 +1178,19 @@ class TestFlexIOSettings:
         with pytest.raises(BpodError, match='Cannot change FlexIO channel types'):
             mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
 
+    def test_lock_released_by_reconnecting(self, mock_bpod_2p, mocker):
+        """Reconnecting unlocks channel types; the next run records analog samples."""
+        mock_bpod_2p._state_machine_started = True
+        mock_bpod_2p.close()
+        mock_bpod_2p.open()
+        mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        start_reader = mocker.patch.object(Bpod, '_start_analog_reader')
+        mocker.patch.object(Bpod, '_run_state_machine')  # no trial threads
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        mock_bpod_2p.run(fsm)
+        start_reader.assert_called_once()
+
     def test_other_settings_unaffected_by_lock(self, mock_bpod_2p):
         """Thresholds and reads per sample stay changeable between trials."""
         mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
