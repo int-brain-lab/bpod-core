@@ -44,7 +44,7 @@ from bpod_core.bpod.structs import (
     _RequestCall,
     _RequestData,
 )
-from bpod_core.com import ExtendedSerial, find_ports
+from bpod_core.com import ExtendedSerial, SerialDevice, find_ports
 from bpod_core.constants import (
     STRUCT_INT16_LE,
     STRUCT_UINT8,
@@ -1484,6 +1484,25 @@ class TestClose:
         mock_bpod_2p.close()
         reader_thread.stop.assert_called_once()
         assert mock_bpod_2p._analog_reader_thread is None
+
+    def test_forgets_analog_channels(self, mock_bpod_2p):
+        """Closing forgets the analog channels: the next connection may record none."""
+        mock_bpod_2p._analog_reader_thread = MagicMock()
+        mock_bpod_2p._analog_channel_names = ('Flex1',)
+        mock_bpod_2p._analog_sample_period_us = 1000
+        mock_bpod_2p.close()
+        assert mock_bpod_2p._analog_channel_names == ()
+        assert mock_bpod_2p._analog_sample_period_us == 0
+
+    def test_resets_connection_state_if_closing_fails(self, mock_bpod_2p, mocker):
+        """A port that fails to close still leaves the next connection unlocked."""
+        mocker.patch.object(SerialDevice, 'close', side_effect=SerialException)
+        mock_bpod_2p._out_of_sync = True
+        mock_bpod_2p._state_machine_started = True
+        with pytest.raises(SerialException):
+            mock_bpod_2p.close()
+        assert not mock_bpod_2p._out_of_sync
+        assert not mock_bpod_2p._state_machine_started
 
     def test_keeps_buffered_analog_samples_on_close(self, mock_bpod_2p):
         """Samples buffered since the last periodic flush are kept on close."""

@@ -485,6 +485,8 @@ class Bpod(SerialDevice, AbstractBpod):
             self._analog_reader_thread = None
             self._analog_recording = False
             self._flush_analog_buffer()  # samples since the last periodic flush
+            self._analog_channel_names = ()  # the next connection may record none
+            self._analog_sample_period_us = 0
         if self._flexio_serial is not None and self._flexio_serial.is_open:
             # discard any analog samples firmware sent (or was still sending) up to
             # the 'X' above, so a stale byte can't be misread as the next
@@ -500,9 +502,11 @@ class Bpod(SerialDevice, AbstractBpod):
             # connection either way, so this just keeps a straggler byte from
             # confusing the next connection's own handshake on this port
             self._discard_stray_bytes(self._serial, 'serial0')
-        super().close()
-        self._out_of_sync = False  # the next open() handshakes
-        self._state_machine_started = False  # and may set up FlexIO again
+        try:
+            super().close()
+        finally:
+            self._out_of_sync = False  # the next open() handshakes
+            self._state_machine_started = False  # and may set up FlexIO again
 
     @staticmethod
     def _stop_and_drain(serial: ExtendedSerial) -> None:
