@@ -182,6 +182,9 @@ class BlockedThread(threading.Thread):
     def run(self) -> None:
         self.release.wait()
 
+    def expect_stop(self) -> None:
+        pass
+
     def cancel(self) -> None:
         self.release.set()
         self.join(timeout=2)

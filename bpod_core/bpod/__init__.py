@@ -34,6 +34,8 @@ from typing_extensions import override
 from bpod_core import __version__ as bpod_core_version
 from bpod_core.bpod._compiler import StateMachineCompiler, _name_channels
 from bpod_core.bpod._threads import (
+    _IDLE_STOP_REPLY_HEADER,
+    _IDLE_STOP_REPLY_SIZE,
     _TRIAL_DATA_SCHEMA,
     EventThread,
     ReadThread,
@@ -121,10 +123,6 @@ _ANALOG_FLUSH_INTERVAL_NS = 100_000_000  # 100 ms
 # so its timestamps are off by up to half the round trip; a slow reset is repeated
 _SESSION_CLOCK_RESET_ATTEMPTS = 3
 _SESSION_CLOCK_MAX_ERROR_NS = 5_000_000  # 5 ms
-# while idle, the Bpod answers 'X' with a trial-end report: opcode 1, one event, event
-# code 255 (end of trial), then 2 x uInt32 cycle counts and a uInt64 timestamp
-_IDLE_STOP_REPLY_HEADER = b'\x01\x01\xff'
-_IDLE_STOP_REPLY_SIZE = len(_IDLE_STOP_REPLY_HEADER) + 16
 # after the stop, a given-up trial is drained until the Bpod is quiet for 0.2 s, for at
 # most a second, in case it keeps sending
 _STOP_DRAIN_QUIET_S = 0.2
@@ -1635,9 +1633,11 @@ class Bpod(SerialDevice, AbstractBpod):
                 'next state machine starts'
             )
         logger.debug('Stopping state machine')
+        read_thread = self._read_thread  # snapshot for thread-safety
+        if read_thread is not None:
+            read_thread.expect_stop()
         self.serial0.write(b'X')
         self._analog_recording = False  # the Bpod stops analog sampling on 'X'
-        read_thread = self._read_thread  # snapshot for thread-safety
         deadline = None if timeout is None else monotonic() + timeout
         if read_thread is not None and not join_until(read_thread, deadline):
             # give the trial up: its data stays incomplete, and the Bpod may still be

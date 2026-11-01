@@ -1651,6 +1651,20 @@ class TestStopStateMachine:
         assert mock_bpod_2p.serial0.last_write == b'X'
         assert not mock_bpod_2p.is_running  # the reader was cancelled
 
+    def test_reader_told_before_the_stop(self, running, mocker):
+        """The reader learns of the stop before the Bpod can answer it."""
+        serial0 = running.serial0
+        serial0.last_write = b''
+        written_before = []
+        reader = mocker.MagicMock(is_alive=lambda: False)
+        reader.expect_stop.side_effect = lambda: written_before.append(
+            serial0.last_write
+        )
+        running._read_thread = reader
+        running.stop_state_machine()
+        assert written_before == [b'']
+        assert serial0.last_write == b'X'
+
     def test_given_up_trial_needs_a_reopen(self, mock_bpod_2p, blocked_reader):
         """After a trial was given up, the stream is suspect until the next reopen."""
         with pytest.raises(TimeoutError):

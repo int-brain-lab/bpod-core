@@ -472,6 +472,32 @@ class TestReadThread:
         event_indices = [i for _, i in _timed_events(q_events)]
         assert event_indices == [_EventID.STOP_SENTINEL]
 
+    def test_stop_found_the_bpod_idle(self, make_thread, caplog):
+        """A stop the Bpod answers as idle, never having started the trial, ends it.
+
+        The thread takes the reply, rather than the trial's start, and enqueues no
+        events.
+        """
+        idle_reply = _opcode1([255], n_cycles=7) + _exit_data(7, 1234)
+        thread, q_events, _ = make_thread(idle_reply + b'\x99')
+        thread.expect_stop()
+        thread.start()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        assert [i for _, i in _timed_events(q_events)] == [_EventID.STOP_SENTINEL]
+        assert thread._buffer == b'\x99'  # exactly the reply was taken
+        assert 'Trial #0 never started' in caplog.text
+
+    def test_stop_during_the_trial_reads_the_trial(self, make_thread):
+        """A stop sent while the trial runs doesn't change how the trial is read."""
+        data = _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(0, 0)
+        thread, q_events, _ = make_thread(data)
+        thread.expect_stop()
+        thread.start()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        assert _EventID.START_FSM in [i for _, i in _timed_events(q_events)]
+
     def test_timing_violation_warning(self, make_thread, caplog):
         """Logs a WARNING when cycle/micros discrepancy exceeds 1 ms."""
         # cycle-based duration: 5 * 1 = 5 µs; actual: 2000 µs; discrepancy: 1995 > 1000

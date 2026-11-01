@@ -50,6 +50,11 @@ _INITIAL_BUFFER_SIZE = 2048
 _OUTPUT_ID_OFFSET = 1000
 """Event ID offset for output action events."""
 
+# while idle, the Bpod answers 'X' with a trial-end report: opcode 1, one event, event
+# code 255 (end of trial), then 2 x uInt32 cycle counts and a uInt64 timestamp
+_IDLE_STOP_REPLY_HEADER = b'\x01\x01\xff'
+_IDLE_STOP_REPLY_SIZE = len(_IDLE_STOP_REPLY_HEADER) + 16
+
 _DRAIN_GRACE_S = 0.1
 """Wait for a drain marker past the deadline: an idle thread reaches it at once.
 
@@ -289,7 +294,9 @@ class ReadThread(threading.Thread):
     The thread runs until the Bpod reports the end of the trial. To end a trial early,
     use :meth:`~bpod_core.bpod.Bpod.stop_state_machine`, which makes the Bpod end the
     trial and report it as usual; :meth:`cancel` ends the thread without the Bpod's
-    cooperation, leaving the trial's data incomplete.
+    cooperation, leaving the trial's data incomplete. If the Bpod never started the
+    state machine, it answers the stop as an idle Bpod; told of the stop by
+    :meth:`expect_stop`, the thread then ends without events.
 
     After the loop, the thread takes the 12-byte end-of-trial packet (``uInt32`` cycle
     count + ``uInt64`` µs timestamp, unpacked via :attr:`_struct_exit`) and enqueues
@@ -367,6 +374,11 @@ class ReadThread(threading.Thread):
         self._received_ns = initial_received_ns
         self.leftover = b''
         self.leftover_received_ns = 0
+        self._stop_expected = False
+
+    def expect_stop(self) -> None:
+        """Call just before sending the stop command."""
+        self._stop_expected = True
 
     def cancel(self) -> None:
         """End the thread without waiting for the trial; its data stays incomplete."""
@@ -393,19 +405,46 @@ class ReadThread(threading.Thread):
         self._received_ns = time.perf_counter_ns()
         return len(chunk)
 
+    def _fill_to(self, n_bytes: int) -> None:
+        """Read until the buffer holds at least ``n_bytes`` bytes."""
+        while len(self._buffer) < n_bytes:
+            self._fill()
+
     def _take(self, n_bytes: int) -> bytes:
         """Remove and return the next ``n_bytes`` bytes, reading more as needed."""
-        buffer = self._buffer
-        while len(buffer) < n_bytes:
-            self._fill()
-        data = bytes(buffer[:n_bytes])
-        del buffer[:n_bytes]
+        self._fill_to(n_bytes)
+        data = bytes(self._buffer[:n_bytes])
+        del self._buffer[:n_bytes]
         return data
+
+    def _stopped_idle(self) -> bool:
+        """Whether the Bpod answered the stop as idle, never having started the trial.
+
+        Takes the reply if so. The Bpod sends it only after the stop, so the first
+        byte tells whether a stop was expected by then. A trial that started is taken
+        for the reply if its start time begins with the reply's bytes: 1 in 65,536
+        stops that cross the trial's start.
+        """
+        self._fill_to(1)
+        if not self._stop_expected:
+            return False
+        self._fill_to(len(_IDLE_STOP_REPLY_HEADER))
+        if not self._buffer.startswith(_IDLE_STOP_REPLY_HEADER):
+            return False
+        self._take(_IDLE_STOP_REPLY_SIZE)
+        return True
 
     def run(self) -> None:
         """Execute the ReadThread."""
         batch: list[_RawEvents] = []  # the packets of one read, handed over together
         try:
+            if self._stopped_idle():
+                logger.warning(
+                    'Trial #%d never started: the Bpod was idle when stopped',
+                    self._trial,
+                )
+                return
+
             # confirm the state machine
             if not self._take(1)[0]:
                 raise RuntimeError(
