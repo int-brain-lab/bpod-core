@@ -33,7 +33,8 @@ dependencies = [
   "packaging>=14",
   "pyyaml>=6",
   "platformdirs>=2.3,<5",
-  "filelock>=3.0.6",
+  "filelock>=3.0.6; python_version < '3.11'",
+  "filelock>=4.2.1; python_version >= '3.11'", # security fixes, none for Python 3.10
   "psutil>=5.9",
   "polars>=1.32.3,<3",
   "xxhash>=3",
