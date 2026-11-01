@@ -764,13 +764,12 @@ class TestModuleRelay:
         assert f'Enabling relay for module {module.name}' in caplog.text
         assert module.relay
 
-    def test_reopen_disables_the_relay(self, mock_bpod_25, mock_ext_serial):
-        """The handshake of a reopen disables the relays, as the firmware does."""
+    def test_close_disables_the_relay(self, mock_bpod_25, mock_ext_serial):
+        """Closing disables the relays, as the firmware's disconnect does."""
         mock_ext_serial.mock_responses[rb'J'] = b''
         module = _first(mock_bpod_25.modules)
         module.set_relay(True)
         mock_bpod_25.close()
-        mock_bpod_25.open()
         assert not module.relay
 
 
@@ -2269,30 +2268,48 @@ class TestMisreadTrial:
             mock_bpod_2p.run(fsm)
 
     @pytest.mark.usefixtures('misread_reader')
-    def test_run_raises_before_sending(self, mock_bpod_2p, fsm):
-        """run() sends nothing onto a stream that is out of step."""
+    def test_run_raises_before_compiling(self, mock_bpod_2p, fsm):
+        """run() neither sends onto a stream out of step nor keeps the machine."""
         mock_bpod_2p.serial0.last_write = b''
-        with pytest.raises(BpodError, match='Could not read trial #3'):
+        with pytest.raises(BpodError, match='out of sync'):
             mock_bpod_2p.run(fsm)
         assert not mock_bpod_2p.serial0.last_write.startswith(b'C')
+        assert not mock_bpod_2p.is_ready
 
-    @pytest.mark.usefixtures('misread_reader')
-    def test_idle_commands_raise(self, mock_bpod_2p):
-        """Commands for an idle Bpod learn of the misread trial too."""
-        with pytest.raises(BpodError, match='Could not read trial #3'):
+    def test_commands_leave_the_error_to_wait(self, mock_bpod_2p, misread_reader):
+        """Other commands refuse to run, and wait() still reports the trial."""
+        with pytest.raises(BpodError, match='out of sync') as e:
             mock_bpod_2p.set_status_led(True)
+        assert e.value.__cause__ is misread_reader
+        with pytest.raises(BpodError, match='Could not read trial #3'):
+            mock_bpod_2p.wait()
 
-    def test_handoff_raises(self, mock_bpod_2p, blocked_reader, fsm):
+    def test_handoff_raises(self, mock_bpod_2p, blocked_reader, fsm, mocker):
         """A trial misread while the next one is queued fails that run(), once sent."""
+        join = blocked_reader.join
 
-        def misread() -> None:
+        def misread_then_join(*args, **kwargs) -> None:  # the handoff, after sending
             blocked_reader.error = RuntimeError('Received unknown opcode from Bpod: 0')
             blocked_reader.release.set()
+            join(*args, **kwargs)
 
-        threading.Timer(0.05, misread).start()
-        with pytest.raises(BpodError, match='Could not read trial #7'):
+        mocker.patch.object(blocked_reader, 'join', side_effect=misread_then_join)
+        with pytest.raises(BpodError, match='out of sync'):
             mock_bpod_2p.run(fsm)
         assert mock_bpod_2p.serial0.last_write.startswith(b'C')  # queued already
+
+    def test_closing_forgets_an_unreported_error(self, mock_bpod_2p, misread_reader):
+        """The next connection doesn't fail on a misread trial nobody reported."""
+        mock_bpod_2p._close_ports()  # e.g. after Ctrl+C in close()'s wait
+        mock_bpod_2p._check_in_sync()
+
+
+def test_lost_connection_needs_a_reopen(mock_bpod_2p, lost_reader):
+    """After a lost connection, commands are refused until the connection reopens."""
+    with pytest.raises(BpodError, match='Lost connection'):
+        mock_bpod_2p.wait()
+    with pytest.raises(BpodError, match='close and reopen'):
+        mock_bpod_2p.set_status_led(True)
 
 
 class TestWait:

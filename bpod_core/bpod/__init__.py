@@ -266,7 +266,6 @@ class Bpod(SerialDevice, AbstractBpod):
             remote = os.getenv('BPOD_OVERRIDE_REMOTE') in ('True', 'true', '1')
 
         # initialize members
-        self.modules = SuggestionMapping({}, name='module', error_class=BpodKeyError)
         self._fsm_annotations: _StateMachineLookup | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
         self._analog_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
@@ -404,31 +403,33 @@ class Bpod(SerialDevice, AbstractBpod):
             logger.warning('Could not stop the state machine: %s', e)
 
     def _check_in_sync(self) -> None:
-        """Refuse commands on a stream that can't be trusted, until it is reopened."""
-        self._raise_reader_error(self._read_thread)
-        if self._out_of_sync:
+        """Refuse commands on a stream that can't be trusted, until it is reopened.
+
+        A reader's error is left for :meth:`wait` to report.
+        """
+        read_thread = self._read_thread
+        error = None if read_thread is None else read_thread.error
+        if self._out_of_sync or error is not None:
             raise BpodError(
                 'The connection has been out of sync since a trial was given up or '
                 'could not be read: close and reopen it.'
-            )
+            ) from error
 
     def _raise_reader_error(self, read_thread: ReadThread | None) -> None:
-        """Raise what ended `read_thread`'s trial, once.
-
-        A stream that couldn't be read leaves the connection out of sync.
-        """
+        """Raise what ended `read_thread`'s trial, once; the stream stays untrusted."""
         if read_thread is None or (error := read_thread.error) is None:
             return
         read_thread.error = None  # report it once
+        self._out_of_sync = True  # the Bpod may still be sending
         trial = read_thread.trial_number
         if isinstance(error, OSError):
             message = f'Lost connection to the Bpod during trial #{trial}'
-            raise BpodError(message) from error
-        self._out_of_sync = True  # the stream can't be parsed from here on
-        raise BpodError(
-            f'Could not read trial #{trial} from the Bpod ({error}): close and reopen '
-            'the connection'
-        ) from error
+        else:
+            message = (
+                f'Could not read trial #{trial} from the Bpod ({error}): close and '
+                'reopen the connection'
+            )
+        raise BpodError(message) from error
 
     def _give_up(self, read_thread: ReadThread, what: str) -> NoReturn:
         """Give `read_thread`'s trial up: the Bpod did not do `what` in time."""
@@ -542,6 +543,11 @@ class Bpod(SerialDevice, AbstractBpod):
         finally:
             self._out_of_sync = False  # the next open() handshakes
             self._state_machine_started = False  # and may set up FlexIO again
+            if self._read_thread is not None:  # an error nobody reported is moot now
+                self._read_thread.error = None
+            # the disconnect disabled the relays (no modules if the setup failed early)
+            for module in getattr(self, 'modules', {}).values():
+                module._relay_is_enabled = False  # noqa: SLF001 - same module
 
     @staticmethod
     def _stop_and_drain(serial: ExtendedSerial) -> None:
@@ -956,9 +962,6 @@ class Bpod(SerialDevice, AbstractBpod):
             raise BpodError(failed) from e
         finally:
             self.serial0.reset_input_buffer()
-        # the handshake disabled the relays of the modules found before a reopen
-        for module in self.modules.values():
-            module._relay_is_enabled = False  # noqa: SLF001 - same module
         # the handshake restarted the Bpod's session clock: align the host's reference
         if not self.reset_session_clock():
             raise BpodError(f'{failed}: no reply to the session clock reset')
@@ -1283,11 +1286,32 @@ class Bpod(SerialDevice, AbstractBpod):
         trial_number: int | None = None,
         validate: bool = True,
     ) -> None:
-        self._check_in_sync()  # allowed while running, but not on a suspect stream
         if trial_number is None:
             trial_number = self._next_fsm_index + 1
         if not 0 <= trial_number <= UINT32_MAX:
             raise ValueError(f'trial_number must be between 0 and {UINT32_MAX}')
+
+        self._check_in_sync()  # allowed while running, but not on a suspect stream
+
+        # the Bpod holds one state machine besides the running one: the one sent before
+        # must have started, as this one would otherwise reset its confirmation. Before
+        # compiling, so that leaving early leaves nothing behind.
+        previous_read_thread = self._read_thread
+        if previous_read_thread is not None and (
+            not previous_read_thread.trial_started.is_set()
+        ):
+            logger.debug(
+                'Waiting for state machine #%d to start ...',
+                previous_read_thread.trial_number,
+            )
+            # a second at most, so Ctrl+C gets through; nothing has been sent yet
+            if not previous_read_thread.trial_started.wait(_START_TIMEOUT_S):
+                trial = previous_read_thread.trial_number
+                self._give_up(
+                    previous_read_thread,
+                    f'start trial #{trial} within {_START_TIMEOUT_S:g} s',
+                )
+            self._check_in_sync()  # the reader may have failed instead
         debugging = logger.isEnabledFor(logging.DEBUG)
         self._disable_all_module_relays()
 
@@ -1347,25 +1371,6 @@ class Bpod(SerialDevice, AbstractBpod):
                 self._fsm_annotations,
                 self._compiler.hardware_hash,
             )
-
-        # the Bpod holds one state machine besides the running one: the one sent before
-        # must have started, as this one would otherwise reset its confirmation
-        previous_read_thread = self._read_thread
-        if previous_read_thread is not None and (
-            not previous_read_thread.trial_started.is_set()
-        ):
-            logger.debug(
-                'Waiting for state machine #%d to start ...',
-                previous_read_thread.trial_number,
-            )
-            # a second at most, so Ctrl+C gets through; nothing has been sent yet
-            if not previous_read_thread.trial_started.wait(_START_TIMEOUT_S):
-                trial = previous_read_thread.trial_number
-                self._give_up(
-                    previous_read_thread,
-                    f'start trial #{trial} within {_START_TIMEOUT_S:g} s',
-                )
-        self._raise_reader_error(previous_read_thread)  # not onto a misread stream
 
         # count the trial only now, so that a rejected call doesn't use up its number
         self._next_fsm_index = trial_number
@@ -1438,7 +1443,7 @@ class Bpod(SerialDevice, AbstractBpod):
             # a plain join: the machine is queued on the Bpod already, so the handoff
             # to its threads must not be interrupted
             previous_read_thread.join()
-        self._raise_reader_error(previous_read_thread)  # its leftover can't be trusted
+        self._check_in_sync()  # a failed reader's leftover can't be trusted
         leftover, leftover_received_ns = (
             (previous_read_thread.leftover, previous_read_thread.leftover_received_ns)
             if previous_read_thread is not None

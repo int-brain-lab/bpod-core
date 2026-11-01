@@ -477,11 +477,13 @@ class TestReadThread:
         master, port = pty_port  # a real port: the mock serial never blocks
         thread, _ = _reader(port)
         thread.start()
-        assert not thread.trial_started.wait(0.05)  # no confirmation yet
-        os.write(master, _CONFIRM_OK)
-        assert thread.trial_started.wait(1)
-        assert thread.is_alive()
-        thread.cancel()
+        try:
+            assert not thread.trial_started.wait(0.05)  # no confirmation yet
+            os.write(master, _CONFIRM_OK)
+            assert thread.trial_started.wait(1)
+            assert thread.is_alive()
+        finally:
+            thread.cancel()
 
     def test_trial_started_once_ended_without_a_start(self, make_thread):
         """An unconfirmed trial sets `trial_started` too: there is nothing to await."""

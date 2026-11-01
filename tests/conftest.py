@@ -242,7 +242,10 @@ class BlockedThread(threading.Thread):
         self.trial_started.set()  # the trial runs
 
     def run(self) -> None:
-        self.release.wait()
+        try:
+            self.release.wait()
+        finally:
+            self.trial_started.set()  # as a ReadThread's, once it ends
 
     def expect_stop(self) -> None:
         pass
@@ -332,7 +335,6 @@ def mock_bpod(mocker, mock_ext_serial, mock_settings):
     mock_bpod.is_running = False
     mock_bpod._time_reference = mocker.MagicMock(spec=_TimeReferences)
     mock_bpod._softcode_thread = mocker.MagicMock()
-    mock_bpod.modules = {}  # an instance attribute, not in the spec
     mock_bpod.serial0 = mock_ext_serial
     mock_bpod._identify_bpod.side_effect = lambda *args, **kwargs: Bpod._identify_bpod(
         mock_bpod,

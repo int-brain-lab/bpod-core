@@ -591,7 +591,8 @@ class ReadThread(threading.Thread):
 
         except ReadCancelled:
             logger.debug('Reading of trial #%d cancelled', self._trial)
-        except Exception as error:  # noqa: BLE001 - reported by Bpod.wait(), run()
+        except Exception as error:  # noqa: BLE001 - reported by Bpod.wait()
+            logger.error('Reading trial #%d failed: %s', self._trial, error)  # noqa: TRY400
             self.error = error  # e.g. SerialException when unplugged
         finally:
             self.trial_started.set()  # also if it never started: nothing to wait for
