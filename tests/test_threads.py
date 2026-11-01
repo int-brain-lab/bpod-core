@@ -998,6 +998,19 @@ class TestSoftcodeThread:
         assert done.wait(timeout=2)
         assert received == [7]
 
+    def test_softcode_below_zero_handled(self, make_thread):
+        """A softcode of -1 reaches the handler, and the thread keeps running.
+
+        A global timer on the softcode channel sends its value_off of 0 as is, which
+        the reader decodes as -1.
+        """
+        received = []
+        thread = make_thread(handler=received.append)
+        thread.queue.put(_RawSoftcode(-1, 0, 0))
+        assert thread.drain(time.monotonic() + 2)
+        assert received == [-1]
+        assert thread.is_alive()
+
     def test_stop(self, make_thread):
         """stop() handles the queued softcodes first, then ends the thread."""
         received = []

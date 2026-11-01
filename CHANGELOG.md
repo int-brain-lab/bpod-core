@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - a host without a route to the internet advertises one of its interface addresses via
   Zeroconf instead of the loopback address.
 - `RemoteError` survives pickling, e.g. when raised in a worker process.
+- softcode handling no longer ends when a global timer on the softcode channel turns
+  off.
 - stopping a queued trial that the Bpod never started logs a warning, instead of
   reading the Bpod's reply as the trial's data.
 

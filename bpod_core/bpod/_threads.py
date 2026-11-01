@@ -9,7 +9,7 @@ from collections.abc import Callable, Collection
 from enum import IntEnum, auto
 from functools import cached_property
 from queue import SimpleQueue
-from typing import NamedTuple, cast, get_args
+from typing import NamedTuple, get_args
 
 import numpy as np
 
@@ -1058,10 +1058,10 @@ class SoftcodeThread(threading.Thread):
 
         # enter the reading loop
         while (item := queue.get()) is not _SOFTCODE_STOP:
-            softcode, received_ns, micros_us = item
-            if softcode < 0:  # a marker from drain(): the softcodes before it are done
-                cast('_DrainMarker', item).done.set()
+            if isinstance(item, _DrainMarker):  # the softcodes before it are done
+                item.done.set()
                 continue
+            softcode, received_ns, micros_us = item
             handler = None if (slot := handler_slot()) is None else slot.handler
             if handler is not None:
                 try:
