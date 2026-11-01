@@ -94,7 +94,7 @@ class _RawSoftcode(NamedTuple):
     """Raw softcode data from the Bpod device."""
 
     softcode: int
-    """Zero-based softcode value."""
+    """The softcode, as the Bpod sent it."""
     received_ns: int
     """``time.perf_counter_ns()`` captured immediately after the serial read."""
     micros_us: int

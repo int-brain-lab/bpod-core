@@ -51,10 +51,18 @@ logger = logging.getLogger(__name__)
 def _name_channels(
     description: bytes, channel_types: Mapping[bytes, str]
 ) -> list[tuple[bytes, str]]:
-    """Pair each channel of a hardware I/O description with its name, e.g. 'Port1'."""
+    """Pair each channel of a hardware I/O description with its name, e.g. 'Port1'.
+
+    The softcode channels, one of each kind, have no number: 'SoftCode', like MATLAB.
+    """
     io_keys = [bytes([io_key]) for io_key in description]
     return [
-        (io_key, f'{channel_types[io_key]}{io_keys[:idx].count(io_key) + 1}')
+        (
+            io_key,
+            channel_types[io_key]
+            if io_key in b'XZ'
+            else f'{channel_types[io_key]}{io_keys[:idx].count(io_key) + 1}',
+        )
         for idx, io_key in enumerate(io_keys)
     ]
 
@@ -292,6 +300,7 @@ class StateMachineCompiler:
         self.actions = []
         non_bindable_actions: list[str] = []
         self.resettable_actions = []  # reset by the Bpod at each state
+        self._softcode_actions: set[str] = set()
 
         # compile actions for output channels
         counters = dict.fromkeys(CHANNEL_TYPES_OUTPUT, 0)
@@ -300,6 +309,7 @@ class StateMachineCompiler:
                 name = list(self._modules)[counters[io_key]]
             elif io_key in b'XZ':  # SoftCode, SoftCodeApp
                 name = CHANNEL_TYPES_OUTPUT[io_key]
+                self._softcode_actions.add(name)
             elif io_key in b'FVPBW':  # Flex, Valve, PWM, TTL, Wire
                 name = f'{CHANNEL_TYPES_OUTPUT[io_key]}{counters[io_key] + 1}'
                 self.resettable_actions.append(name)
@@ -498,11 +508,11 @@ class StateMachineCompiler:
                         f"Invalid value {action_value!r} for action '{action_name}' "
                         f"in state '{state_name}' - must not exceed {UINT8_MAX}"
                     )
-                # the Bpod sends softcodes as one byte, and bpod-core sends them +1
-                if 'SoftCode' in action_name and action_value >= UINT8_MAX:
+                if action_value == 0 and action_name in self._softcode_actions:
                     raise ValueError(
-                        f"Invalid value {action_value!r} for action '{action_name}' "
-                        f"in state '{state_name}' - must not exceed {UINT8_MAX - 1}"
+                        f"Invalid value 0 for action '{action_name}' in state "
+                        f"'{state_name}' - must be 1 to {UINT8_MAX} (0 sends no "
+                        'softcode)'
                     )
                 if is_flexio_analog_output and not 0 <= action_value <= 5000:
                     raise ValueError(
@@ -856,9 +866,7 @@ class StateMachineCompiler:
             for action_name, action_value in actions.items():
                 if (key_idx := action_indices[action_name]) < i1:
                     tmp_list[counter_pos] += 1
-                    tmp_list.extend(
-                        (key_idx, action_value + ('SoftCode' in action_name))
-                    )
+                    tmp_list.extend((key_idx, action_value))
         extend_packed(
             fsm_bytes, tmp_list, FMT_UINT16_LE if version.machine == 4 else FMT_UINT8
         )

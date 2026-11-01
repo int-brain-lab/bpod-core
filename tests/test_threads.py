@@ -64,8 +64,8 @@ def _opcode1(events: list[int], n_cycles: int) -> bytes:
 
 
 def _opcode2(softcode: int) -> bytes:
-    """Encode an opcode-2 (softcode) packet. param is 1-based on the wire."""
-    return bytes([2, softcode + 1])
+    """Encode an opcode-2 (softcode) packet."""
+    return bytes([2, softcode])
 
 
 def _reader(serial) -> tuple[ReadThread, SimpleQueue]:
@@ -309,19 +309,20 @@ class TestReadThread:
         assert event_indices[:3] == [_EventID.START_FSM, _EventID.START_STATE, 42]
         assert event_indices[-1] == _EventID.STOP_SENTINEL
 
-    def test_softcode_enqueued(self, make_thread):
-        """Opcode-2 packet places zero-based softcode on the softcode queue."""
+    @pytest.mark.parametrize('softcode', [0, 3])  # 0: a global timer's value_off
+    def test_softcode_enqueued(self, make_thread, softcode):
+        """Opcode-2 packet places the softcode, as sent, on the softcode queue."""
         data = (
             _CONFIRM_OK
             + _start()
-            + _opcode2(3)
+            + _opcode2(softcode)
             + _opcode1([255], n_cycles=0)
             + _exit_data(0, 0)
         )
         thread, _, q_softcodes = make_thread(data)
         thread.start()
         thread.join(timeout=2)
-        assert [item.softcode for item in _drain(q_softcodes)] == [3]
+        assert [item.softcode for item in _drain(q_softcodes)] == [softcode]
 
     @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
     def test_error_is_kept(self, make_thread):
@@ -997,19 +998,6 @@ class TestSoftcodeThread:
         thread.queue.put(_RawSoftcode(7, 0, 0))
         assert done.wait(timeout=2)
         assert received == [7]
-
-    def test_softcode_below_zero_handled(self, make_thread):
-        """A softcode of -1 reaches the handler, and the thread keeps running.
-
-        A global timer on the softcode channel sends its value_off of 0 as is, which
-        the reader decodes as -1.
-        """
-        received = []
-        thread = make_thread(handler=received.append)
-        thread.queue.put(_RawSoftcode(-1, 0, 0))
-        assert thread.drain(time.monotonic() + 2)
-        assert received == [-1]
-        assert thread.is_alive()
 
     def test_stop(self, make_thread):
         """stop() handles the queued softcodes first, then ends the thread."""

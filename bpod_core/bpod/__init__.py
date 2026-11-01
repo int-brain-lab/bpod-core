@@ -1209,7 +1209,8 @@ class Bpod(SerialDevice, AbstractBpod):
         Parameters
         ----------
         softcode : int
-            The softcode value to send.
+            Which softcode to send, 0 to one less than the number the hardware takes:
+            the state machine sees it as event ``SoftCode<softcode>``.
 
         Raises
         ------
@@ -1689,6 +1690,9 @@ class Bpod(SerialDevice, AbstractBpod):
         self, softcode_handler: Callable[[int], None] | None = None
     ) -> None:
         """Set the handler function for softcodes sent from the Bpod.
+
+        A state's ``SoftCode`` action sends its value, 1 to 255. A global timer on the
+        softcode channel sends its ``value_on`` and ``value_off``, 0 included.
 
         Parameters
         ----------

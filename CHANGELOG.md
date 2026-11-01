@@ -58,6 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- softcode actions (`SoftCode`, `SoftCodeApp`) are sent as is, like MATLAB's, not one
+  higher: they take 1 to 255, and 0 (none to the Bpod) is rejected. Handlers get the
+  same values as before; the app port and softcodes from global timers get them as set.
+- the softcode channels have no number, like their actions: `SoftCode` and
+  `SoftCodeApp` for global timers, conditions, `Bpod.inputs` and `Bpod.outputs`.
 - building state machines is two to three times faster, loading them from a file up
   to seven times, and `Bpod.run` returns about 40% sooner. Validating and compiling
   state machines and `Bpod.get_data` gained 10-20%.

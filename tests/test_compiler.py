@@ -1,5 +1,6 @@
 """Tests for the state machine compiler, built without a (mocked) Bpod."""
 
+import struct
 from collections.abc import Mapping, Sequence
 
 import msgspec
@@ -151,9 +152,9 @@ class TestValidateAndCompile:
                 id='action value beyond one byte',
             ),
             pytest.param(
-                lambda fsm: fsm.add_state('a', 1, actions={'SoftCode': 255}),
-                'must not exceed 254',
-                id='softcode beyond one byte',
+                lambda fsm: fsm.add_state('a', 1, actions={'SoftCode': 0}),
+                r'must be 1 to 255 \(0 sends no softcode\)',
+                id='softcode of none',
             ),
             pytest.param(
                 lambda fsm: fsm.add_state('a', 1, actions={'AnalogThreshEnable': 17}),
@@ -202,6 +203,22 @@ class TestValidateAndCompile:
         with pytest.raises(ValueError, match=match):
             compiler.validate(fsm)
 
+    @pytest.mark.parametrize('action', ['SoftCode', 'SoftCodeApp'])
+    def test_softcodes_are_sent_as_is(self, action):
+        """A softcode action's value is the byte the Bpod sends, like MATLAB's."""
+        fsm = StateMachine()
+        fsm.add_state('a', 1, actions={action: 7})
+        compiler = make_compiler()
+        fsm_bytes, _ = compiler.compile(state_machine=fsm)
+        assert struct.pack('<HHH', 1, compiler.actions.index(action), 7) in fsm_bytes
+
+    def test_global_timer_drives_a_softcode_channel_by_its_action_name(self):
+        """A global timer's softcode channel is named like the action, as in MATLAB."""
+        fsm = StateMachine()
+        fsm.set_global_timer(0, duration=1, channel='SoftCode', value_on=5)
+        fsm.add_state('a', 1, actions={'GlobalTimerTrig': 0})
+        make_compiler().validate(fsm)
+
     def test_values_at_the_limits_are_compiled(self):
         """The valid counterparts of the rejected values compile."""
         fsm = StateMachine()
@@ -210,7 +227,8 @@ class TestValidateAndCompile:
         fsm.set_global_counter(index=0, event='Port1_High', threshold=5)
         fsm.set_condition(index=0, channel='Port1', value=True)
         actions = {
-            'SoftCode': 254,
+            'SoftCode': 255,
+            'SoftCodeApp': 255,
             'AnalogThreshEnable': 1,
             'GlobalCounterReset': 0,
             'GlobalTimerTrig': 0,

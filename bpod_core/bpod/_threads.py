@@ -282,7 +282,7 @@ class ReadThread(threading.Thread):
       cycle) become one :class:`~bpod_core.bpod.structs._RawEvents`. The packets parsed
       from one read are pushed to ``queue_events`` together, as one list. An ``EXIT``
       byte (255) marks the end of the trial.
-    - **Opcode 2** – softcodes: the ``param`` byte (1-indexed) is forwarded to
+    - **Opcode 2** – softcodes: the ``param`` byte (the softcode) is forwarded to
       ``queue_softcodes``.
 
     **Chunked reads:** rather than reading packet by packet, the thread reads all bytes
@@ -513,12 +513,11 @@ class ReadThread(threading.Thread):
                         #       they are always preceded by a state change in the same
                         #       cycle. We can thus use the last available timestamp.
                         elif opcode == 2:
-                            softcode = param - 1  # subtract 1 for zero-based indexing
                             if batch:  # the state change of this cycle comes first
                                 q_events.put(batch)
                                 batch = []
                             q_softcodes.put(
-                                _RawSoftcode(softcode, received_ns, last_micros_us)
+                                _RawSoftcode(param, received_ns, last_micros_us)
                             )
 
                         # HANDLE UNKNOWN OPCODES
