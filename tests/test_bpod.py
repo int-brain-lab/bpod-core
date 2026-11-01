@@ -670,6 +670,26 @@ class TestFlexIOChannelsNotInInputsOutputs:
         assert mock_ext_serial.last_write == b'E' + bytes(5) + b'\x01' * 11
 
 
+@pytest.mark.parametrize(
+    ('is_connected', 'firmware_version', 'expected'),
+    [
+        (True, 6, 'RotaryEncoder1 on module port 1'),
+        (True, None, 'RotaryEncoder1'),
+        (False, None, 'unused module port'),
+    ],
+)
+def test_module_repr(is_connected, firmware_version, expected):
+    """A module names itself and its port, or the port as unused."""
+    module = Module(
+        _bpod=MagicMock(),
+        index=0,
+        name='RotaryEncoder1',
+        is_connected=is_connected,
+        firmware_version=firmware_version,
+    )
+    assert repr(module) == expected
+
+
 class TestModuleRelay:
     def test_set_relay(self, mock_bpod_25, mock_ext_serial, caplog):
         """Switching a relay sends 'J' with the module's index and logs it."""

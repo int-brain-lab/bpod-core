@@ -1865,7 +1865,7 @@ class Module:
         if not self.is_connected:
             return 'unused module port'
         if self.firmware_version:
-            return f'{self.name} on module port {self.index + 1})'
+            return f'{self.name} on module port {self.index + 1}'
         return self.name
 
     @_requires_idle
