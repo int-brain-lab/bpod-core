@@ -463,8 +463,10 @@ class LocalServiceAdvertisement:
 
         if service_dir.exists():
             for lock_file in service_dir.glob('*.lock'):  # left behind by readers
+                # on Windows, a lock still held (its service closing) can't be removed
                 if not lock_file.with_suffix('.json').exists():
-                    lock_file.unlink(missing_ok=True)
+                    with contextlib.suppress(OSError):
+                        lock_file.unlink(missing_ok=True)
             for service_file in service_dir.glob('*.json'):
                 lock_file = service_file.with_suffix('.lock')
                 try:
@@ -476,8 +478,9 @@ class LocalServiceAdvertisement:
 
                 # Remove stale service file if process no longer exists
                 if not pid_exists(info.pid):
-                    service_file.unlink(missing_ok=True)
-                    lock_file.unlink(missing_ok=True)
+                    with contextlib.suppress(OSError):
+                        service_file.unlink(missing_ok=True)
+                        lock_file.unlink(missing_ok=True)
                     continue
 
                 # Check if properties match

@@ -55,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off.
 - stopping a queued trial that the Bpod never started logs a warning, instead of
   reading the Bpod's reply as the trial's data.
+- on Windows, `iter_services` no longer stops reporting local services when one of
+  them closes.
 
 ### Changed
 

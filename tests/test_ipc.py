@@ -214,6 +214,28 @@ class TestLocalServiceAdvertisement:
         assert not ad.service_file.exists()
         assert not mock_local_discovery_dir.exists()
 
+    def test_discover_keeps_a_lock_it_cannot_remove(
+        self, mock_local_discovery_dir, mocker
+    ):
+        """A lock file Windows won't remove, still held by a closing service, is kept.
+
+        discover() goes on to report the other services.
+        """
+        with ipc.LocalServiceAdvertisement(
+            service_name='service_name',
+            service_type='service_type',
+            address='tcp://127.0.0.1:5555',
+            pid=os.getpid(),
+        ) as ad:
+            ad.service_file.with_name('closing.lock').touch()  # its .json is gone
+            unlink = mocker.patch.object(
+                Path, 'unlink', side_effect=PermissionError('in use')
+            )
+            results = list(ipc.LocalServiceAdvertisement.discover('service_type'))
+            unlink.assert_called_once()
+            mocker.stopall()  # the advertisement cleans up as usual
+            assert [result.address for result in results] == ['tcp://127.0.0.1:5555']
+
     def test_discover_nonexistent_service(self, mock_local_discovery_dir):
         """discover() returns empty iterator for unknown service types."""
         assert list(ipc.LocalServiceAdvertisement.discover('nonexistent')) == []
