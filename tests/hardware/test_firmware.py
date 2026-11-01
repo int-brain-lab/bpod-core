@@ -20,6 +20,7 @@ from ._helpers import (
     _chain,
     _counted,
     _counter_trial,
+    _large,
     _probe_module,
     _pulse,
     _timed,
@@ -473,6 +474,26 @@ class TestTrials:
         gaps = _trial_gaps(bpod.get_data())
         cycle = bpod._hardware.cycle_period_us
         assert all(abs(gap - cycle) <= 2 for gap in gaps), f'µs between trials: {gaps}'
+
+    def test_machine_sent_while_the_one_before_loads(self, bpod, run_guarded):
+        """Machines run back to back from idle, the first slow to load, both run.
+
+        The Bpod holds one state machine besides the running one, so `run()` waits for
+        the first to start before sending the second; sent earlier, the second reset
+        the first one's confirmation and the event stream got out of step. One try in
+        four or so got through regardless, so the test tries five times.
+        """
+        large, small = _large(), _chain(('A', 0.005, {}))
+
+        def trials() -> None:
+            for _ in range(5):
+                bpod.run(large)  # from idle: returns once it is sent
+                bpod.run(small)  # sent once the large machine has started
+                bpod.wait()
+
+        run_guarded(trials, timeout=2)
+        data = bpod.get_data()
+        assert (data['Type'] == 'TrialEnd').sum() == 10, 'trials read to their end'
 
     def test_queued_machine_loads_intact(self, bpod, fuzz_seed, run_guarded):
         """A machine loaded during a busy trial sends exactly its own softcodes.

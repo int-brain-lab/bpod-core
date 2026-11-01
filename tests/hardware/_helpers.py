@@ -118,6 +118,24 @@ def _trial_events(
     return [(state, event, round(us / cycle)) for state, event, us in rows.rows()]
 
 
+def _large() -> StateMachine:
+    """A trial of 20 ms in a machine slow to load: dead-event transitions everywhere.
+
+    Only the first state runs. The others, and every state's transitions on the events
+    of global timers and counters that nothing starts, only make the machine large.
+    """
+    fsm = StateMachine()
+    dead = [f'GlobalTimer{i}_{edge}' for i in range(16) for edge in ('Start', 'End')]
+    dead += [f'GlobalCounter{i}_End' for i in range(8)]
+    names = [f's{i}' for i in range(250)]
+    for i, name in enumerate(names):
+        other = names[(i + 1) % len(names)]
+        fsm.add_state(name, transitions=dict.fromkeys(dead, other))
+    fsm.states['s0'].timer = 0.02
+    fsm.states['s0'].transitions['Tup'] = '>exit'
+    return fsm
+
+
 def _timed(events: Events, prefix: str) -> list[tuple[str, int]]:
     """The events starting with `prefix`, with their cycles."""
     return [(event, cycle) for _, event, cycle in events if event.startswith(prefix)]

@@ -238,6 +238,8 @@ class BlockedThread(threading.Thread):
     def __init__(self) -> None:
         super().__init__(daemon=True)
         self.release = threading.Event()
+        self.trial_started = threading.Event()
+        self.trial_started.set()  # the trial runs
 
     def run(self) -> None:
         self.release.wait()

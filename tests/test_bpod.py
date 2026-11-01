@@ -1143,6 +1143,23 @@ class TestRun:
         mock_bpod_25.run(fsm_basic)
         assert mock_bpod_25.serial0.last_write.startswith(b'C')
 
+    def test_waits_for_the_machine_sent_before_to_start(
+        self, fsm_basic, mock_bpod_2p, blocked_reader, mocker
+    ):
+        """A state machine is sent once the one sent before has started, not earlier.
+
+        The Bpod holds one state machine besides the running one.
+        """
+        mocker.patch.object(Bpod, '_run_state_machine')  # no threads outliving the test
+        blocked_reader.trial_started.clear()  # sent, but still loading on the Bpod
+        runner = threading.Thread(target=mock_bpod_2p.run, args=(fsm_basic,))
+        runner.start()
+        runner.join(0.05)
+        assert not mock_bpod_2p.serial0.last_write.startswith(b'C')
+        blocked_reader.trial_started.set()
+        runner.join(2)
+        assert mock_bpod_2p.serial0.last_write.startswith(b'C')
+
     @pytest.mark.parametrize('trial_number', [-1, UINT32_MAX + 1])
     def test_run_rejects_out_of_range_trial_number(
         self, fsm_basic, mock_bpod_25, trial_number

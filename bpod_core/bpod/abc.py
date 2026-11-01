@@ -215,7 +215,10 @@ class AbstractBpod(AbstractContextManager):
         will then begin executing the state machine as soon as possible — immediately
         if the device is idle or right after the current state machine finishes.
         Subsequent calls of this method will result in continuous acquisition and zero
-        inter-trial downtime (as long as the Bpod's run queue stays filled).
+        inter-trial downtime (as long as the Bpod's run queue stays filled). The Bpod
+        holds one state machine besides the running one: if the one sent before hasn't
+        started yet, e.g. right after a session's first trial, this method first waits
+        until it has.
         """
 
     @abstractmethod

@@ -296,7 +296,8 @@ class ReadThread(threading.Thread):
     trial and report it as usual; :meth:`cancel` ends the thread without the Bpod's
     cooperation, leaving the trial's data incomplete. If the Bpod never started the
     state machine, it answers the stop as an idle Bpod; told of the stop by
-    :meth:`expect_stop`, the thread then ends without events.
+    :meth:`expect_stop`, the thread then ends without events. :attr:`trial_started`
+    tells when the Bpod has started the trial, or the thread has ended without it.
 
     After the loop, the thread takes the 12-byte end-of-trial packet (``uInt32`` cycle
     count + ``uInt64`` µs timestamp, unpacked via :attr:`_struct_exit`) and enqueues
@@ -343,6 +344,9 @@ class ReadThread(threading.Thread):
     error: OSError | None = None
     """The exception that ended the thread, if the connection to the Bpod was lost."""
 
+    trial_started: threading.Event
+    """Set once the Bpod has confirmed the trial's start, or the thread has ended."""
+
     backlog: int = 0
     """The most bytes a read of the trial's main loop found pending on the serial port.
 
@@ -375,6 +379,7 @@ class ReadThread(threading.Thread):
         self.leftover = b''
         self.leftover_received_ns = 0
         self._stop_expected = False
+        self.trial_started = threading.Event()
 
     def expect_stop(self) -> None:
         """Call just before sending the stop command."""
@@ -450,6 +455,7 @@ class ReadThread(threading.Thread):
                 raise RuntimeError(
                     f'State machine #{self._trial} not confirmed by Bpod'
                 )
+            self.trial_started.set()
             logger.info(
                 'Starting state machine %s / trial #%d', self._fsm_hash, self._trial
             )
@@ -588,6 +594,7 @@ class ReadThread(threading.Thread):
         except ReadCancelled:
             logger.debug('Reading of trial #%d cancelled', self._trial)
         finally:
+            self.trial_started.set()  # also if it never started: nothing to wait for
             if batch:  # e.g. the packets parsed before an unknown opcode
                 self._queue_events.put(batch)
             self._queue_events.put(_EVENTS_STOP)

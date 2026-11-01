@@ -36,6 +36,7 @@ from bpod_core.bpod._compiler import StateMachineCompiler, _name_channels
 from bpod_core.bpod._threads import (
     _IDLE_STOP_REPLY_HEADER,
     _IDLE_STOP_REPLY_SIZE,
+    _JOIN_SLICE_S,
     _TRIAL_DATA_SCHEMA,
     EventThread,
     ReadThread,
@@ -1313,6 +1314,20 @@ class Bpod(SerialDevice, AbstractBpod):
                 self._fsm_annotations,
                 self._compiler.hardware_hash,
             )
+
+        # the Bpod holds one state machine besides the running one: the one sent before
+        # must have started, as this one would otherwise reset its confirmation
+        previous_read_thread = self._read_thread
+        if previous_read_thread is not None and (
+            not previous_read_thread.trial_started.is_set()
+        ):
+            logger.debug(
+                'Waiting for state machine #%d to start ...',
+                previous_read_thread.trial_number,
+            )
+            # in slices, so that Ctrl+C gets through; nothing has been sent yet
+            while not previous_read_thread.trial_started.wait(_JOIN_SLICE_S):
+                pass
 
         # count the trial only now, so that a rejected call doesn't use up its number
         self._next_fsm_index = trial_number

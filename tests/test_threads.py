@@ -473,6 +473,25 @@ class TestReadThread:
         event_indices = [i for _, i in _timed_events(q_events)]
         assert event_indices == [_EventID.STOP_SENTINEL]
 
+    def test_trial_started_once_confirmed(self, pty_port):
+        """`trial_started` is set by the confirmation, while the trial goes on."""
+        master, port = pty_port  # a real port: the mock serial never blocks
+        thread, _ = _reader(port)
+        thread.start()
+        assert not thread.trial_started.wait(0.05)  # no confirmation yet
+        os.write(master, _CONFIRM_OK)
+        assert thread.trial_started.wait(1)
+        assert thread.is_alive()
+        thread.cancel()
+
+    @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
+    def test_trial_started_once_ended_without_a_start(self, make_thread):
+        """An unconfirmed trial sets `trial_started` too: there is nothing to await."""
+        thread, _, _ = make_thread(_CONFIRM_FAIL)
+        thread.start()
+        thread.join(timeout=2)
+        assert thread.trial_started.is_set()
+
     def test_stop_found_the_bpod_idle(self, make_thread, caplog):
         """A stop the Bpod answers as idle, never having started the trial, ends it.
 

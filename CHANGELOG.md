@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them closes.
 - reopening a `Bpod` unlocks its FlexIO channel types and analog sampling rate, as the
   error message says, and its next trials record analog samples again.
+- `run()` waits for the state machine sent before to start: sent while the Bpod still
+  loaded that one, e.g. right after a session's first trial, the next one garbled the
+  trial data.
 
 ### Changed
 
