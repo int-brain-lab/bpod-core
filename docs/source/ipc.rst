@@ -59,18 +59,18 @@ Clients do not normally need to know these addresses: the host advertises itself
 
 Which transport a connection ends up using is negotiated during the handshake: a client
 on the same machine as the host is upgraded from TCP to a Unix domain socket
-(an abstract socket on Linux) where available, which avoids the network stack
-altogether. Clients on another machine communicate over TCP.
+(an abstract socket on Linux) wherever libzmq supports the ``ipc`` transport, which
+avoids the network stack altogether. Clients on another machine communicate over TCP.
 
 
 Hosting a Bpod service
 ----------------------
 
 There is nothing to enable — the service is started by the
-:class:`~bpod_core.bpod.Bpod` constructor and shut down when the instance is closed. By
-default it is only advertised and reachable on the local machine (the TCP sockets bind
-to loopback). Pass ``remote=True`` to bind on all interfaces and advertise via
-Zeroconf:
+:class:`~bpod_core.bpod.Bpod` constructor and ends with the context manager, or when
+the instance is garbage-collected. By default it is only advertised and reachable on
+the local machine (the TCP sockets bind to loopback). Pass ``remote=True`` to bind on
+all interfaces and advertise via Zeroconf:
 
 .. code-block:: python
    :caption: Hosting a Bpod that can be reached from other machines.
@@ -80,9 +80,10 @@ Zeroconf:
    with Bpod(serial_number='14260000', remote=True) as bpod:
        input('Press Enter to shut down the service ...')
 
-The hosting process must stay alive for as long as clients need the device — closing
-the :class:`~bpod_core.bpod.Bpod` instance also removes the advertisement and closes
-both channels.
+The hosting process must stay alive for as long as clients need the device — when the
+:class:`~bpod_core.bpod.Bpod` instance goes, so do the advertisement and both channels.
+:meth:`~bpod_core.bpod.Bpod.close` alone closes the serial connection and keeps the
+service up, so that remote clients can still reach the device.
 
 For the common case of a process that does nothing but own the hardware, bpod-core
 ships a command line entry point that does exactly the above:
@@ -101,7 +102,9 @@ host itself.
 .. tip::
 
    A service is identified by the device's serial number, so the TCP ports of a given
-   Bpod are stable across restarts of the hosting process.
+   Bpod are stable across restarts of the hosting process. Within a process, a new
+   :class:`~bpod_core.bpod.Bpod` for a device that is already being served takes the
+   running service over, addresses and network advertisement included.
 
 
 Connecting with RemoteBpod
@@ -202,7 +205,10 @@ remote instance:
      - Returns the trial data as a Polars :class:`~polars.DataFrame` (see
        :doc:`/data_format`), or a :class:`~polars.LazyFrame` with ``lazy=True``.
    * - :meth:`~bpod_core.bpod.RemoteBpod.stop_state_machine`
-     - Aborts the state machine currently running on the host.
+     - Aborts the state machine currently running on the host. The reply is awaited a
+       second longer than ``timeout``; a host busy queuing a state machine may answer
+       later still, in which case the ``TimeoutError`` is the client's and the host
+       stops the trial afterwards.
    * - :meth:`~bpod_core.bpod.RemoteBpod.reset_session_clock`
      - Resets the device's session clock.
    * - :meth:`~bpod_core.bpod.RemoteBpod.set_status_led`
@@ -298,7 +304,9 @@ The machinery underneath is generic and not tied to the Bpod itself. The
 the handshake and the transport upgrade described above; the message types being
 exchanged are supplied by the caller as `msgspec`_ tagged unions. The Bpod service
 is simply one instantiation of that pair, with its own request, reply and event
-unions.
+unions. All hosts and service browsers of a process share one Zeroconf instance,
+started on first use and closed at exit, and a host whose UUID is in use by a live host
+of the process replaces it.
 
 .. seealso::
 

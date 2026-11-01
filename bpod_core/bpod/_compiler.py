@@ -9,11 +9,10 @@ from time import perf_counter_ns
 from typing import ClassVar
 
 import msgspec
-import polars as pl
 from cachetools import FIFOCache
 from xxhash import xxh3_64 as _xxh3_64
 
-from bpod_core.bpod._threads import _build_event_lookup
+from bpod_core.bpod._threads import _build_event_tables, _EventTables
 from bpod_core.bpod.constants import (
     _CHANNEL_BASE_NAME_CONDITION,
     _CHANNEL_BASE_NAME_GLOBAL_COUNTER,
@@ -52,10 +51,18 @@ logger = logging.getLogger(__name__)
 def _name_channels(
     description: bytes, channel_types: Mapping[bytes, str]
 ) -> list[tuple[bytes, str]]:
-    """Pair each channel of a hardware I/O description with its name, e.g. 'Port1'."""
+    """Pair each channel of a hardware I/O description with its name, e.g. 'Port1'.
+
+    The softcode channels, one of each kind, have no number: 'SoftCode', like MATLAB.
+    """
     io_keys = [bytes([io_key]) for io_key in description]
     return [
-        (io_key, f'{channel_types[io_key]}{io_keys[:idx].count(io_key) + 1}')
+        (
+            io_key,
+            channel_types[io_key]
+            if io_key in b'XZ'
+            else f'{channel_types[io_key]}{io_keys[:idx].count(io_key) + 1}',
+        )
         for idx, io_key in enumerate(io_keys)
     ]
 
@@ -109,8 +116,8 @@ class StateMachineCompiler:
     n_softcodes: int
     """Number of softcodes per USB channel."""
 
-    event_lookup: pl.DataFrame
-    """Event metadata for decoding a trial's events."""
+    event_tables: _EventTables
+    """Lookup tables for decoding a trial's events."""
 
     hardware_hash: bytes
     """Hash of the hardware configuration and the tables derived from it."""
@@ -134,7 +141,9 @@ class StateMachineCompiler:
         self._threshold_voltages = dict(threshold_voltages)
         self.serial_event_allocation = self._compile_input_events()
         self._compile_output_actions()
-        self.event_lookup = _build_event_lookup(self._input_events, self.actions)
+        self.event_tables = _build_event_tables(
+            self._input_events, self.actions, self.resettable_actions
+        )
         self.hardware_hash = self._compute_hardware_hash()
 
     def _compile_input_events(self) -> bytes:
@@ -291,6 +300,7 @@ class StateMachineCompiler:
         self.actions = []
         non_bindable_actions: list[str] = []
         self.resettable_actions = []  # reset by the Bpod at each state
+        self._softcode_actions: set[str] = set()
 
         # compile actions for output channels
         counters = dict.fromkeys(CHANNEL_TYPES_OUTPUT, 0)
@@ -299,6 +309,7 @@ class StateMachineCompiler:
                 name = list(self._modules)[counters[io_key]]
             elif io_key in b'XZ':  # SoftCode, SoftCodeApp
                 name = CHANNEL_TYPES_OUTPUT[io_key]
+                self._softcode_actions.add(name)
             elif io_key in b'FVPBW':  # Flex, Valve, PWM, TTL, Wire
                 name = f'{CHANNEL_TYPES_OUTPUT[io_key]}{counters[io_key] + 1}'
                 self.resettable_actions.append(name)
@@ -466,7 +477,8 @@ class StateMachineCompiler:
                     )
 
             # validate actions
-            if bad_actions := set(state.actions).difference(valid_actions):
+            action_set = set(state.actions)
+            if bad_actions := action_set.difference(valid_actions):
                 bad_action = bad_actions.pop()
                 if bad_action in self._global_timer_actions:
                     detail = ' - no global timer has been set'
@@ -496,11 +508,11 @@ class StateMachineCompiler:
                         f"Invalid value {action_value!r} for action '{action_name}' "
                         f"in state '{state_name}' - must not exceed {UINT8_MAX}"
                     )
-                # the Bpod sends softcodes as one byte, and bpod-core sends them +1
-                if 'SoftCode' in action_name and action_value >= UINT8_MAX:
+                if action_value == 0 and action_name in self._softcode_actions:
                     raise ValueError(
-                        f"Invalid value {action_value!r} for action '{action_name}' "
-                        f"in state '{state_name}' - must not exceed {UINT8_MAX - 1}"
+                        f"Invalid value 0 for action '{action_name}' in state "
+                        f"'{state_name}' - must be 1 to {UINT8_MAX} (0 sends no "
+                        'softcode)'
                     )
                 if is_flexio_analog_output and not 0 <= action_value <= 5000:
                     raise ValueError(
@@ -541,15 +553,19 @@ class StateMachineCompiler:
                                 'attributed (upstream firmware quirk)'
                             )
             for key in self._global_timer_actions:
-                value = state.actions.get(key)
-                if value is not None and value not in global_timer_ids:
+                if (
+                    key in action_set
+                    and (value := state.actions[key]) not in global_timer_ids
+                ):
                     raise ValueError(
                         f"Invalid value {value} for action '{key}' in state "
                         f"'{state_name}' - Global Timer {value} has not been set"
                     )
             for key in self._global_counter_actions:
-                value = state.actions.get(key)
-                if value is not None and value not in global_counter_ids:
+                if (
+                    key in action_set
+                    and (value := state.actions[key]) not in global_counter_ids
+                ):
                     raise ValueError(
                         f"Invalid value {value} for action '{key}' in state "
                         f"'{state_name}' - Global Counter {value} has not been set"
@@ -772,11 +788,14 @@ class StateMachineCompiler:
             for s in states
         ]
 
-        # the annotation EventThread uses to record get_data()'s reported value
-        # reports FlexIO ANALOG_OUTPUT in millivolts (what was actually applied to
-        # the pin), not the wire's raw DAC count
-        reported_state_actions = [
-            {k: _counts_to_mv(v) if k in analog_outputs else v for k, v in a.items()}
+        # the annotation EventThread uses to record get_data()'s reported value,
+        # keyed by action index; FlexIO ANALOG_OUTPUT is reported in millivolts (what
+        # was actually applied to the pin), not the wire's raw DAC count
+        state_action_indices = [
+            {
+                action_indices[k]: _counts_to_mv(v) if k in analog_outputs else v
+                for k, v in a.items()
+            }
             for a in state_actions
         ]
 
@@ -785,7 +804,7 @@ class StateMachineCompiler:
             fsm_hash=state_machine_hash,
             state_names=state_names,
             state_transition_matrix=state_transition_matrix,
-            state_actions=reported_state_actions,
+            state_action_indices=state_action_indices,
             use_back_op=use_back_op,
             state_lookup=dict(enumerate(state_names)),
         )
@@ -817,6 +836,9 @@ class StateMachineCompiler:
             number of transitions, event_idx is relative to the range's first event,
             and target_idx is the target state index.
             """
+            if not any(transitions_per_state):  # unused range: a zero count per state
+                fsm_bytes.extend(bytes(len(transitions_per_state)))
+                return
             for transitions in transitions_per_state:
                 fsm_bytes.append(len(transitions) // 2)
                 fsm_bytes.extend(transitions)
@@ -844,9 +866,7 @@ class StateMachineCompiler:
             for action_name, action_value in actions.items():
                 if (key_idx := action_indices[action_name]) < i1:
                     tmp_list[counter_pos] += 1
-                    tmp_list.extend(
-                        (key_idx, action_value + ('SoftCode' in action_name))
-                    )
+                    tmp_list.extend((key_idx, action_value))
         extend_packed(
             fsm_bytes, tmp_list, FMT_UINT16_LE if version.machine == 4 else FMT_UINT8
         )
@@ -933,7 +953,7 @@ class StateMachineCompiler:
 
         # GLOBAL TIMER TRIGGERS AND CANCELS (bitmasks, one bit per timer)
         for key in ('GlobalTimerTrig', 'GlobalTimerCancel'):
-            bitmasks = [1 << s.actions[key] if key in s.actions else 0 for s in states]
+            bitmasks = [1 << a[key] if key in a else 0 for a in state_actions]
             extend_packed(fsm_bytes, bitmasks, format_string)
 
         # GLOBAL TIMER ONSET TRIGGERS

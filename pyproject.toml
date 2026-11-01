@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "bpod-core"
-version = "0.1.0a15"
+version = "0.1.0a16"
 description = "A modern Python interface for Bpod Finite State Machines."
 authors = [{ name = "Florian Rau", email = "bimac@users.noreply.github.com" }]
 classifiers = [
@@ -17,6 +17,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Topic :: Scientific/Engineering",
   "Typing :: Typed",
 ]
@@ -32,7 +33,7 @@ dependencies = [
   "packaging>=14",
   "pyyaml>=6",
   "platformdirs>=2.3,<5",
-  "filelock>=3.0.6,<4",
+  "filelock>=3.0.6",
   "psutil>=5.9",
   "polars>=1.32.3,<3",
   "xxhash>=3",
@@ -53,6 +54,7 @@ dev = [
   { include-group = "doc" },
   { include-group = "lint" },
   { include-group = "test" },
+  { include-group = "tox" },
   { include-group = "typing" },
 ]
 doc = [
@@ -79,7 +81,6 @@ lint = [
 test = [
   { include-group = "typing" },
   { include-group = "lint" },
-  { include-group = "tox" },
   "pytest-cov>=6.1",
   "pytest>=8.3",
   "ruff>=0.11",
@@ -88,6 +89,7 @@ test = [
   "pytest-qt>=4.5",
   "pyside6-essentials>=6.11",
   "pytest-xvfb>=3.1",
+  "pytest-benchmark>=5.1",
 ]
 typing = [
   "appdirs-stubs>=0.1",
@@ -100,8 +102,8 @@ typing = [
   "types-pyyaml>=6",
 ]
 tox = [
-  "tox>=4.36",
-  "tox-uv>=0.7",
+  "tox>=4.67.4",
+  "tox-uv>=1.37.2",
 ]
 ci = [
   "coveralls>=4.0.1",
@@ -142,6 +144,7 @@ source-exclude = [
 
 [tool.uv.dependency-groups]
 doc = { requires-python = ">=3.14" }
+tox = { requires-python = ">=3.11" }
 
 [tool.ruff]
 include = ["bpod_core/**/*.py", "tests/**/*.py", "examples/**/*.py", "docs/source/**/*.py"]
@@ -243,5 +246,8 @@ source_pkgs = ["bpod_core"]
 relative_files = true
 
 [tool.pytest.ini_options]
-addopts = "--cov=bpod_core --doctest-modules"
+addopts = "--doctest-modules -rsx"
 testpaths = ["tests/", "bpod_core/"]
+markers = [
+  "known_firmware_issue(url=None, run=True): fails on the stock Bpod firmware; url is the fix if there is one, run=False if failing hangs the Bpod",
+]

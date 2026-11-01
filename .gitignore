@@ -279,3 +279,6 @@ AGENTS.md
 CLAUDE.md
 GEMINI.md
 opencode.json
+
+# pytest-benchmark results
+.benchmarks/

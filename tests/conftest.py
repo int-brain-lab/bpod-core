@@ -1,15 +1,66 @@
+import contextlib
 import gc
+import os
 import re
 import struct
+import threading
+from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import PropertyMock
 
 import pytest
+from serial.tools.list_ports_common import ListPortInfo
 
 from bpod_core import ipc
 from bpod_core.bpod import Bpod
 from bpod_core.bpod.structs import _TimeReferences
 from bpod_core.com import ExtendedSerial
-from bpod_core.constants import VID_TEENSY, TeensyPID
+from bpod_core.constants import PID_DUE_NATIVE, VID_ARDUINO, VID_TEENSY, TeensyPID
+
+_HARDWARE_TESTS = Path(__file__).parent / 'hardware'
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        '--hardware',
+        action='store_true',
+        help='run the tests in tests/hardware, and only them, on a connected Bpod',
+    )
+    parser.addoption(
+        '--seed',
+        type=int,
+        help='seed for the randomized hardware tests; a run prints the seed it used',
+    )
+    parser.addoption(
+        '--fixed-firmware',
+        action='store_true',
+        help='the Bpod runs a firmware with the fixes: known issues must not fail',
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Run only the tests in tests/hardware with --hardware, and leave them out without.
+
+    With --cov, the hardware tests still run untraced: tracing would distort their
+    timings.
+    """
+    hardware: list[pytest.Item] = []
+    others: list[pytest.Item] = []
+    for item in items:
+        is_hardware = item.path.is_relative_to(_HARDWARE_TESTS)
+        (hardware if is_hardware else others).append(item)
+    if config.getoption('--hardware'):
+        config.hook.pytest_deselected(items=others)
+        items[:] = hardware
+        if not config.getoption('no_cov', False):  # pytest-cov's pause() needs coverage
+            for item in hardware:
+                item.add_marker(pytest.mark.no_cover)
+    else:
+        config.hook.pytest_deselected(items=hardware)
+        items[:] = others
+
 
 fixture_bpod_all = {
     b'6': b'5',
@@ -38,6 +89,20 @@ fixture_bpod_25 = {
     b'H': b'\x00\x01d\x00i\x05\x10\x08\x10\rUUUUUXZBBPPPP\x11UUUUUXZBBPPPPVVVV',
     b'M': b'\x00\x00\x00\x00\x00',
     b'E[\\x00\\x01]{13}': b'\x01',
+}
+
+# Bpod 0.7-1.0 (Arduino Due) with firmware version 23: 3 modules, 2 BNC, 2 wire inputs
+# and 3 wire outputs, 8 ports and 8 valves; feature profile 0 (5 timers, counters and
+# conditions) and 3-byte serial messages, as the preconfigured v23 build
+fixture_bpod_10 = {
+    **fixture_bpod_all,
+    b'F': b'\x17\x00\x02\x00',
+    b'H': (
+        b'\x00\x01d\x00<\x03\x05\x05\x05\x10UUUXBBWWPPPPPPPP'
+        b'\x19UUUXBBWWWPPPPPPPPVVVVVVVV'
+    ),
+    b'M': b'\x00\x00\x00',
+    b'E[\\x00\\x01]{16}': b'\x01',
 }
 
 # FlexIO.reset() on connect sends a single combined write for all 4 channels
@@ -80,15 +145,26 @@ def mock_serial_discovery(mocker):
 
 
 @pytest.fixture
-def mock_comports(mocker, mock_serial_discovery):
+def make_port_info():
+    """Factory for the port info of a Bpod's USB serial port."""
+
+    def make_port_info(
+        device, *, serial_number='12345', vid=VID_TEENSY, pid=TeensyPID.SERIAL
+    ):
+        port_info = ListPortInfo(device)
+        port_info.serial_number = serial_number
+        port_info.vid = vid
+        port_info.pid = pid
+        return port_info
+
+    return make_port_info
+
+
+@pytest.fixture
+def mock_comports(mocker, mock_serial_discovery, make_port_info):
     """Fixture to mock available COM ports."""
-    mock_port_info = mocker.MagicMock()
-    mock_port_info.device = 'COM3'
-    mock_port_info.serial_number = '12345'
-    mock_port_info.vid = VID_TEENSY
-    mock_port_info.pid = TeensyPID.SERIAL
     mock_comports = mocker.patch('bpod_core.com.comports')
-    mock_comports.return_value = [mock_port_info]
+    mock_comports.return_value = [make_port_info('COM3')]
     return mock_comports
 
 
@@ -128,10 +204,64 @@ def mock_ext_serial(mocker):
     mocker.patch(f'{tmp}.reset_input_buffer')
     mocker.patch(f'{tmp}._reconfigure_port')  # e.g. a timeout set while open
     mocker.patch(f'{tmp}.in_waiting', new_callable=PropertyMock, side_effect=in_waiting)
+    mocker.patch(  # the port isn't open, so the direct read would refuse it
+        'bpod_core.com.ExtendedSerial.read_waiting',
+        side_effect=lambda: read(max(1, in_waiting())),
+    )
     yield extended_serial
     # tests may mark the port open; pyserial's real close() would then run on garbage
     # collection, after the patches above are gone
     extended_serial.is_open = False
+
+
+@pytest.fixture
+def pty_port() -> Iterator[tuple[int, ExtendedSerial]]:
+    """A port opened on a pseudo-terminal, and the master descriptor that feeds it."""
+    if os.name != 'posix':
+        pytest.skip('needs a pseudo-terminal')
+    master, slave = os.openpty()
+    try:
+        with ExtendedSerial(os.ttyname(slave)) as port:
+            yield master, port
+    finally:
+        with contextlib.suppress(OSError):  # a test may hang up the master itself
+            os.close(master)
+        os.close(slave)
+
+
+class BlockedThread(threading.Thread):
+    """A thread that ends once `release` is set; stands in for a trial's reader."""
+
+    trial_number = 7
+    error: Exception | None = None
+
+    def __init__(self) -> None:
+        super().__init__(daemon=True)
+        self.release = threading.Event()
+        self.trial_started = threading.Event()
+        self.trial_started.set()  # the trial runs
+
+    def run(self) -> None:
+        try:
+            self.release.wait()
+        finally:
+            self.trial_started.set()  # as a ReadThread's, once it ends
+
+    def expect_stop(self) -> None:
+        pass
+
+    def cancel(self) -> None:
+        self.release.set()
+        self.join(timeout=2)
+
+
+@pytest.fixture
+def blocked_thread() -> Iterator[BlockedThread]:
+    """A started thread that ends once its `release` event is set."""
+    thread = BlockedThread()
+    thread.start()
+    yield thread
+    thread.cancel()
 
 
 @pytest.fixture
@@ -156,8 +286,20 @@ def assert_collected():
 
 @pytest.fixture
 def fast_event_loop(mocker):
-    """Shorten the IPC event loops' poll interval, so that they stop quickly."""
+    """Shorten the IPC poll interval: requests notice close() / deadlines sooner, and
+    an idle host refreshes its subscriber flag sooner. Stopping doesn't depend on it."""
     mocker.patch('bpod_core.ipc._EVENT_LOOP_POLL_MS', 5)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_shared_zeroconf(mocker):
+    """Start each test without a shared Zeroconf instance, and close the one it made."""
+    mocker.patch.object(ipc._SharedZeroconf, '_instance', None)
+    mocker.patch.object(ipc._SharedZeroconf, '_closed', False)
+    mocker.patch.object(ipc.ServiceHost, '_registrations', {})
+    yield
+    ipc._SharedZeroconf._queue.join()  # no record operation spills into the next test
+    ipc._SharedZeroconf.close()
 
 
 @pytest.fixture
@@ -235,11 +377,37 @@ def mock_bpod_25(
 
 
 @pytest.fixture
-def mock_bpod_2p(
-    mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
+def mock_bpod_10(
+    mock_comports,
+    mock_ext_serial,
+    *,
+    mock_settings,
+    mocker,
+    mock_advertisement,
+    make_port_info,
 ):
+    """A Bpod 0.7-1.0 on an Arduino Due's native port, which has no serial number."""
+    mock_comports.return_value = [
+        make_port_info('COM3', serial_number=None, vid=VID_ARDUINO, pid=PID_DUE_NATIVE)
+    ]
+    mock_ext_serial.mock_responses.update(fixture_bpod_10)
+    mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
+    mocker.patch('bpod_core.bpod.ServiceHost')
+    return Bpod('COM3')
+
+
+@pytest.fixture
+def mock_ext_serial_2p(mock_ext_serial, mocker):
+    """A mocked main serial port answering like a Bpod 2+."""
     mock_ext_serial.mock_responses.update(fixture_bpod_2p)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
+    return mock_ext_serial
+
+
+@pytest.fixture
+def mock_bpod_2p(
+    mock_comports, mock_ext_serial_2p, mock_settings, mocker, mock_advertisement
+):
     mocker.patch(
         'bpod_core.bpod.Bpod._detect_additional_serial_ports', return_value=(None, None)
     )

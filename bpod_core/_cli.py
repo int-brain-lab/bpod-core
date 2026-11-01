@@ -2,17 +2,18 @@
 
 import argparse
 import logging
-import os
 import signal
 import threading
 from types import FrameType
+
+import zmq
 
 from bpod_core.bpod import Bpod, bpod_core_version
 
 
 def _bpod_cli() -> int:
     # Configure CLI interface and arguments
-    transport = 'TCP or Unix sockets' if os.name == 'posix' else 'TCP'
+    transport = 'TCP or Unix sockets' if zmq.has('ipc') else 'TCP'
     parser = argparse.ArgumentParser(
         prog='bpod',
         description=f'Launches a Bpod process that can be connected to via {transport}',

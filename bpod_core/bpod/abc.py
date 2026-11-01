@@ -199,10 +199,16 @@ class AbstractBpod(AbstractContextManager):
 
         Raises
         ------
+        BpodError
+            If the connection to the Bpod was lost, or a trial before was given up or
+            couldn't be read: the connection then has to be reopened.
         RuntimeError
             If called without an argument and no state machine has been run yet, or
             the hardware configuration has changed since (e.g. through
             :meth:`update_modules`).
+        TimeoutError
+            If the state machine sent before didn't start within a second: that trial
+            was given up, and the connection has to be reopened.
         ValueError
             If the state machine is invalid or exceeds hardware limitations, or if
             ``trial_number`` is out of range.
@@ -215,7 +221,10 @@ class AbstractBpod(AbstractContextManager):
         will then begin executing the state machine as soon as possible — immediately
         if the device is idle or right after the current state machine finishes.
         Subsequent calls of this method will result in continuous acquisition and zero
-        inter-trial downtime (as long as the Bpod's run queue stays filled).
+        inter-trial downtime (as long as the Bpod's run queue stays filled). The Bpod
+        holds one state machine besides the running one: if the one sent before hasn't
+        started yet, e.g. right after a session's first trial, this method first waits
+        until it has.
         """
 
     @abstractmethod
@@ -235,9 +244,22 @@ class AbstractBpod(AbstractContextManager):
         """
 
     @abstractmethod
-    def stop_state_machine(self) -> None:
+    def stop_state_machine(self, timeout: float | None = 1.0) -> None:
         """
         Stop the currently running state machine.
+
+        Parameters
+        ----------
+        timeout : float or None, default: 1.0
+            Seconds to wait for the Bpod to end the trial. ``None`` waits indefinitely.
+
+        Raises
+        ------
+        TimeoutError
+            If the Bpod hasn't ended the trial within `timeout` seconds. The trial is
+            then given up: it no longer counts as running, its data stays incomplete,
+            and the connection has to be closed and reopened before the next command
+            or state machine.
 
         Notes
         -----

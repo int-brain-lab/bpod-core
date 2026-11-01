@@ -62,8 +62,8 @@ class _StateMachineLookup(NamedTuple):
     """Names of all states, indexed by state index."""
     state_transition_matrix: list[list[int]]
     """Target state per state and event: ``n_states`` lists of 255 state indices."""
-    state_actions: list[dict[str, int]]
-    """Per-state mapping of action name to value."""
+    state_action_indices: list[dict[int, int]]
+    """Per-state mapping of action index to value."""
     use_back_op: bool
     """Whether the ``>back`` operator is used."""
     state_lookup: dict[int, str]
@@ -94,7 +94,7 @@ class _RawSoftcode(NamedTuple):
     """Raw softcode data from the Bpod device."""
 
     softcode: int
-    """Zero-based softcode value."""
+    """The softcode, as the Bpod sent it."""
     received_ns: int
     """``time.perf_counter_ns()`` captured immediately after the serial read."""
     micros_us: int
