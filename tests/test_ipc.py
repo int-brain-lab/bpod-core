@@ -227,12 +227,14 @@ class TestLocalServiceAdvertisement:
             address='tcp://127.0.0.1:5555',
             pid=os.getpid(),
         ) as ad:
-            ad.service_file.with_name('closing.lock').touch()  # its .json is gone
+            closing = ad.service_file.with_name('closing.lock')  # its .json is gone
+            closing.touch()
             unlink = mocker.patch.object(
-                Path, 'unlink', side_effect=PermissionError('in use')
+                Path, 'unlink', autospec=True, side_effect=PermissionError('in use')
             )
             results = list(ipc.LocalServiceAdvertisement.discover('service_type'))
-            unlink.assert_called_once()
+            # filelock also removes its own lock files on Windows, ignoring errors
+            assert closing in [call.args[0] for call in unlink.call_args_list]
             mocker.stopall()  # the advertisement cleans up as usual
             assert [result.address for result in results] == ['tcp://127.0.0.1:5555']
 
