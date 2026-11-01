@@ -8,8 +8,11 @@ trial data, lost or misordered softcodes, wrong output resets, visits that don't
 the machine, and timing violations. It also predicts the events of the features the
 machines use: the host's answers to softcodes, outputs read back on the inputs wired to
 them (Flex1 to Flex4, TTLOut1 to TTLIn1), global timers that loop a set number of times
-or are cancelled, and global counters that are reset. A watchdog ends a machine the
-Bpod never finishes. Failures name the seed and dump the batch's machines.
+or are cancelled, and global counters that are reset, and the app softcodes received on
+the secondary port. While the machines run, the host and an app on the secondary port
+also send softcodes no state reacts to, for more traffic during the uploads. A watchdog
+ends a machine the Bpod never finishes. Failures name the seed and dump the batch's
+machines.
 """
 
 import json
@@ -18,13 +21,14 @@ import threading
 import time
 from bisect import bisect_right
 from collections import Counter
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Iterator
 from itertools import pairwise
 from pathlib import Path
 from typing import NamedTuple
 
 import polars as pl
 import pytest
+import serial
 
 from bpod_core.bpod import Bpod
 from bpod_core.constants import UINT8_MAX
@@ -56,6 +60,8 @@ class _Limits(NamedTuple):
     """The PWM output channels, used as actions besides softcodes: harmless unwired."""
     loopbacks: dict[str, str]
     """The outputs wired to inputs, mapped to the inputs: states and timers set them."""
+    app_port: bool = False
+    """Whether the Bpod has a secondary USB serial port for app softcodes."""
 
     @property
     def dead_event(self) -> str:
@@ -70,6 +76,11 @@ class _Limits(NamedTuple):
     def answer(self, softcode: int) -> int | None:
         """The host's answer to `softcode`, if it answers it."""
         return softcode - self.answered if softcode >= self.answered else None
+
+    @property
+    def spare_softcode(self) -> int:
+        """A host softcode no state reacts to, sent as extra traffic: no answer."""
+        return self.n_softcodes - 1
 
 
 class _Case(NamedTuple):
@@ -106,6 +117,7 @@ class _Trial(NamedTuple):
     end: int
     control: int
     n_events: int
+    app_softcodes: list[int]
 
 
 class _Fuzzer(NamedTuple):
@@ -128,6 +140,7 @@ def fuzzer(bpod: Bpod, fuzz_seed: int, tmp_path: Path) -> _Fuzzer:
         n_softcodes=bpod._compiler.n_softcodes,
         leds=sorted(name for name, out in bpod.outputs.items() if out.io_type == b'P'),
         loopbacks={},
+        app_port=bpod.serial1 is not None,
     )
     softcodes: list[int] = []
 
@@ -138,6 +151,17 @@ def fuzzer(bpod: Bpod, fuzz_seed: int, tmp_path: Path) -> _Fuzzer:
 
     bpod.set_softcode_handler(handle)
     return _Fuzzer(bpod, limits, fuzz_seed, softcodes, tmp_path)
+
+
+@pytest.fixture
+def app_port(bpod: Bpod) -> Iterator[serial.Serial | None]:
+    """The Bpod's secondary USB serial port as an app opens it, if it has one."""
+    if bpod.serial1 is None:
+        yield None
+        return
+    with serial.Serial(bpod.serial1.port, timeout=0.05) as port:
+        port.reset_input_buffer()
+        yield port
 
 
 def _seconds(cycles: int, limits: _Limits) -> float:
@@ -174,6 +198,8 @@ def _extras(rng: Rng, limits: _Limits, p_softcode: float = 0.5) -> dict[str, int
     actions: dict[str, int] = {}
     if rng.random() < p_softcode:
         actions['SoftCode'] = rng.randrange(1, limits.answered)  # left unanswered
+    if limits.app_port and rng.random() < p_softcode / 2:
+        actions['SoftCodeApp'] = rng.randint(1, UINT8_MAX)
     n_leds = min(len(limits.leds), rng.choice((0, 0, 1, 2)))
     for led in rng.sample(limits.leds, n_leds):
         actions[led] = rng.randint(1, 255)  # never 0, which a reset row also carries
@@ -203,7 +229,7 @@ def _random_chain(
         transitions = {'Tup': following[name]}
         actions = _extras(rng, limits, p_softcode)
         if rng.random() < 0.1:
-            answer = rng.randrange(limits.n_softcodes)
+            answer = rng.randrange(limits.spare_softcode)
             actions['SoftCode'] = limits.answered + answer
             transitions[f'SoftCode{answer}'] = following[name]
             cycles = ANSWER_TIMEOUT_CYCLES
@@ -233,6 +259,11 @@ def _level_softcodes(rng: Rng, limits: _Limits) -> _Case:
 def _level_big(rng: Rng, limits: _Limits) -> _Case:
     """As many states as the Bpod takes."""
     return _random_chain(rng, limits, limits.max_states, (1, 20))
+
+
+def _level_mixed(rng: Rng, limits: _Limits) -> _Case:
+    """Small and large machines at random: a large one may load as a trial ends."""
+    return rng.choice((_level_chain, _level_big))(rng, limits)
 
 
 def _arm(fsm: StateMachine, first: str, limits: _Limits) -> None:
@@ -367,6 +398,7 @@ LEVELS: dict[str, Callable[[Rng, _Limits], _Case]] = {
     'chain': _level_chain,
     'softcodes': _level_softcodes,
     'big': _level_big,
+    'mixed': _level_mixed,
     'cycles': _level_cycles,
     'timers': _level_timers,
 }
@@ -387,8 +419,8 @@ def _visits(
 
 def _check_outputs(
     case: _Case, frame: pl.DataFrame, visits: list[_Visit], leds: Collection[str]
-) -> list[int]:
-    """Check the output rows of every visit; return the softcodes recorded, in order."""
+) -> tuple[list[int], list[int]]:
+    """Check the output rows of every visit; return the softcodes and app softcodes."""
     rows = frame.with_row_index('row').filter(pl.col('Type') == 'OutputAction')
     outputs = list(zip(rows['row'], rows['Channel'], rows['Value'], strict=True))
     visit_rows = [visit.row for visit in visits]
@@ -396,14 +428,17 @@ def _check_outputs(
     for row, channel, value in outputs:  # the rows following each StateStart
         if (i := bisect_right(visit_rows, row) - 1) >= 0:
             segments[i].append((channel, value))
-    softcodes: list[int] = []
+    softcodes: dict[str, list[int]] = {'SoftCode': [], 'SoftCodeApp': []}
     lit: set[str] = set()
     for visit, segment in zip(visits, segments, strict=True):
         actions = case.fsm.states[visit.state].actions
-        codes = [val for ch, val in segment if ch == 'SoftCode']
-        expected = [actions['SoftCode']] if 'SoftCode' in actions else []
-        assert codes == expected, f'softcode rows on entering {visit.state}: {codes}'
-        softcodes += codes
+        for channel, recorded in softcodes.items():
+            codes = [val for ch, val in segment if ch == channel]
+            expected = [actions[channel]] if channel in actions else []
+            assert codes == expected, (
+                f'{channel} rows on entering {visit.state}: {codes}'
+            )
+            recorded.extend(codes)
         seen: dict[str, int] = {}
         for ch, val in segment:
             if ch in leds:
@@ -417,7 +452,7 @@ def _check_outputs(
     assert reset_at_end >= lit, (
         f'LEDs left on at the end of the trial: {lit - reset_at_end}'
     )
-    return softcodes
+    return softcodes['SoftCode'], softcodes['SoftCodeApp']
 
 
 def _actions(case: _Case, visits: list[_Visit], action: str) -> list[tuple[int, int]]:
@@ -606,6 +641,8 @@ def _check_trial(case: _Case, frame: pl.DataFrame, limits: _Limits) -> _Trial:
         _Event(str(name), channel, value, t)
         for kind, name, channel, value, t in zip(types, *columns, cycles, strict=True)
         if kind == 'InputEvent'
+        and channel != 'SoftCodeApp'  # sent as extra traffic: no state reacts to them
+        and not (channel == 'SoftCode' and value == limits.spare_softcode)
     ]
     deviations: list[int] = []
     if case.path is not None:
@@ -635,13 +672,15 @@ def _check_trial(case: _Case, frame: pl.DataFrame, limits: _Limits) -> _Trial:
     assert all(abs(d) <= TOLERANCE_CYCLES for d in deviations), (
         f'spans off by {sorted(set(deviations))} cycles'
     )
+    softcodes, app_softcodes = _check_outputs(case, frame, visits, limits.leds)
     return _Trial(
-        _check_outputs(case, frame, visits, limits.leds),
+        softcodes,
         deviations,
         start,
         end,
         times[types.index('TrialEndControl')],
         len(events),
+        app_softcodes,
     )
 
 
@@ -675,16 +714,52 @@ def _softcode_mismatch(received: list[int], results: list[_Trial]) -> str:
 class _Batch:
     """Runs a case's machines on a worker thread and collects their trial data."""
 
-    def __init__(self, bpod: Bpod, cases: list[_Case], mode: str) -> None:
+    def __init__(
+        self,
+        bpod: Bpod,
+        cases: list[_Case],
+        mode: str,
+        spare_softcode: int,
+        app_port: serial.Serial | None = None,
+    ) -> None:
         self.bpod, self.cases, self.mode = bpod, cases, mode
+        self.spare_softcode = spare_softcode
+        self.app_port = app_port
+        self.app_received = bytearray()
+        """The app softcodes received on the app port."""
         self.frames: list[pl.DataFrame] = []
         self.current = 0
         """Index of the machine being run, or queued."""
         self.cancelled = threading.Event()
         self.wall = self.cpu = 0.0
 
+    def _send_spare_softcodes(self, done: threading.Event) -> None:
+        """Send spare softcodes, also as an app, every 0.5-5 ms while a trial runs."""
+        rng = random.Random()  # noqa: S311 - timing only, never part of a check
+        message = bytes((ord('~'), self.spare_softcode))
+        while not done.wait(rng.uniform(0.0005, 0.005)):
+            if self.bpod.is_running:  # send_softcode() would warn between trials
+                self.bpod.serial0.write(message)
+                if self.app_port is not None:  # one of the app's softcode events
+                    self.app_port.write(bytes((rng.randrange(self.spare_softcode),)))
+
+    def _read_app_port(self, done: threading.Event) -> None:
+        """Collect the app softcodes, including those still arriving after `done`."""
+        port = self.app_port
+        assert port is not None
+        while not done.is_set():
+            self.app_received += port.read(max(1, port.in_waiting))
+        time.sleep(0.1)  # the last trial's, still in the USB buffers
+        self.app_received += port.read(port.in_waiting)
+
     def run(self) -> None:
         bpod = self.bpod
+        done = threading.Event()
+        threads = [threading.Thread(target=self._send_spare_softcodes, args=(done,))]
+        if self.app_port is not None:
+            threads.append(threading.Thread(target=self._read_app_port, args=(done,)))
+        for thread in threads:
+            thread.start()
         wall, cpu = time.perf_counter(), time.process_time()
         try:
             for index, case in enumerate(self.cases):
@@ -697,6 +772,9 @@ class _Batch:
             bpod.wait()  # queued: the last machine; paced: nothing left
         finally:
             self.wall, self.cpu = time.perf_counter() - wall, time.process_time() - cpu
+            done.set()
+            for thread in threads:
+                thread.join()
         # the machines run so far, collected outside the timing
         self.frames = [bpod.get_data(concat=False) for _ in range(self.current + 1)]
 
@@ -706,7 +784,7 @@ def _known_issues(level: str, mode: str) -> list[pytest.MarkDecorator]:
     if level == 'cycles' and mode != 'paced':
         # a queued machine without `>back` after one with it never ends
         return [pytest.mark.known_firmware_issue(f'{FIRMWARE_PRS}/3')]
-    if level in ('softcodes', 'big') and mode == 'analog':
+    if level in ('softcodes', 'big', 'mixed') and mode == 'analog':
         # loading a large queued machine in the timer interrupt loses cycles, which
         # delays the analog samples against the trials (no pull request yet)
         return [pytest.mark.known_firmware_issue()]
@@ -728,6 +806,7 @@ def test_random_machines(  # noqa: PLR0917 - fixtures
     mode: str,
     fuzzer: _Fuzzer,
     loopbacks: dict[str, str],
+    app_port: serial.Serial | None,
     logged_warnings,
     record_property,
     run_guarded,
@@ -750,7 +829,7 @@ def test_random_machines(  # noqa: PLR0917 - fixtures
     limits = limits._replace(loopbacks=wired)
     rng = random.Random(f'{fuzzer.seed}:{level}:{mode}')  # noqa: S311
     cases = [LEVELS[level](rng, limits) for _ in range(N_TRIALS)]
-    batch = _Batch(bpod, cases, mode)
+    batch = _Batch(bpod, cases, mode, limits.spare_softcode, app_port)
     expected_s = _seconds(sum(_nominal_trial(case, limits) for case in cases), limits)
 
     def describe(index: int) -> str:
@@ -790,6 +869,7 @@ def test_random_machines(  # noqa: PLR0917 - fixtures
     record_property('states', f'{min(n_states)}-{max(n_states)}')
     record_property('events', f'{min(n_events)}-{max(n_events)}')
     record_property('softcodes', len(recorded))
+    record_property('app', sum(len(trial.app_softcodes) for trial in results))
     record_property(
         'gap', f'{max(b.start - a.end for a, b in pairwise(results)):.0f} µs'
     )
@@ -803,6 +883,21 @@ def test_random_machines(  # noqa: PLR0917 - fixtures
         softcodes = {'received': fuzzer.softcodes, 'recorded': recorded_by_trial}
         (fuzzer.dump_dir / 'softcodes.json').write_text(json.dumps(softcodes))
         pytest.fail(f'{_softcode_mismatch(fuzzer.softcodes, results)}: {where}')
+    sent_app = bytes(code for trial in results for code in trial.app_softcodes)
+    if bytes(batch.app_received) != sent_app:
+        received = bytes(batch.app_received)
+        first = next(
+            (
+                i
+                for i, (a, b) in enumerate(zip(received, sent_app, strict=False))
+                if a != b
+            ),
+            min(len(received), len(sent_app)),
+        )
+        pytest.fail(
+            f'app port received {len(received)} app softcodes, {len(sent_app)} '
+            f'recorded; first difference at {first}: {describe(0)}'
+        )
     if check_analog is not None:
         check_analog(pl.concat(batch.frames))
     if warnings := logged_warnings():  # e.g. the library's timing violation
@@ -817,7 +912,7 @@ def test_watchdog_stops_a_runaway_machine(fuzzer: _Fuzzer, run_guarded):
     bpod = fuzzer.bpod
     forever = StateMachine()
     forever.add_state('forever')  # no transitions: runs until stopped
-    batch = _Batch(bpod, [_Case(forever, None)], 'paced')
+    batch = _Batch(bpod, [_Case(forever, None)], 'paced', fuzzer.limits.spare_softcode)
     with pytest.raises(
         pytest.fail.Exception, match=r'within 0\.1 s: a state without transitions'
     ):
