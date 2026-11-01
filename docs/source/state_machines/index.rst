@@ -248,8 +248,8 @@ turning on an output channel:
    :linenos:
    :lineno-start: 9
 
-   fsm.states['Hello'].actions = {'TTLOut0': 1}
-   fsm.states['World'].actions = {'TTLOut1': 1}
+   fsm.states['Hello'].actions = {'TTLOut1': 1}
+   fsm.states['World'].actions = {'TTLOut2': 1}
 
 And with that, our `Hello, World!` example is complete:
 
@@ -281,11 +281,11 @@ transitions, and actions) directly in the call to
    fsm.add_state(name='Hello',
                  timer=1.5,
                  transitions={'Tup': 'World'},
-                 actions={'TTLOut0': 1})
+                 actions={'TTLOut1': 1})
    fsm.add_state(name='World',
                  timer=1.0,
                  transitions={'Tup': '>exit'},
-                 actions={'TTLOut1': 1})
+                 actions={'TTLOut2': 1})
 
 .. testcode:: hello_world
    :hide:
