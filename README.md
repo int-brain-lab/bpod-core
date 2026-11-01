@@ -3,8 +3,8 @@
 A modern Python interface for Bpod Finite State Machines.
 
 > [!NOTE]
-> bpod-core is in alpha. It is tested extensively, on Bpod hardware too, but its API may
-> still change between releases, and some features are still missing.
+> bpod-core is still in alpha. It is well tested, including on hardware, but its API may
+> still change between releases and some features are yet to come.
 
 bpod-core is a Python library for running behavioral experiments on Bpod hardware. You
 describe the trial logic as a finite state machine; bpod-core validates it, runs it on a
