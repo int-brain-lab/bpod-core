@@ -144,9 +144,9 @@ source-exclude = [
 ]
 
 [tool.uv.dependency-groups]
-doc = { requires-python = ">=3.15" }
-tox = { requires-python = ">=3.15" }
-publish = { requires-python = ">=3.15" }
+doc = { requires-python = ">=3.14" }
+tox = { requires-python = ">=3.14" }
+publish = { requires-python = ">=3.14" }
 
 [tool.ruff]
 include = ["bpod_core/**/*.py", "tests/**/*.py", "examples/**/*.py", "docs/source/**/*.py"]

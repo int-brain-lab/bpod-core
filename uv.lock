@@ -51,6 +51,7 @@ version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a1/98/7e457a3b014976887a050561955c0b76e1e7e2d6e27b78ecef2ef80518f2/anyio-4.16.0.tar.gz", hash = "sha256:59bb03251907983d1603d27c3087ddb1e93299ea2163adcdba37899a4fb12ffb", size = 310971, upload-time = "2026-11-01T11:20:07.282Z" }
 wheels = [
@@ -190,12 +191,12 @@ ci = [
 dev = [
     { name = "appdirs-stubs" },
     { name = "docutils-stubs" },
-    { name = "matplotlib", marker = "python_full_version >= '3.15'" },
+    { name = "matplotlib", marker = "python_full_version >= '3.14'" },
     { name = "mypy" },
-    { name = "myst-parser", marker = "python_full_version >= '3.15'" },
+    { name = "myst-parser", marker = "python_full_version >= '3.14'" },
     { name = "packaging" },
-    { name = "pandas", marker = "python_full_version >= '3.15'" },
-    { name = "pyarrow", marker = "python_full_version >= '3.15'" },
+    { name = "pandas", marker = "python_full_version >= '3.14'" },
+    { name = "pyarrow", marker = "python_full_version >= '3.14'" },
     { name = "pyside6-essentials" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
@@ -204,20 +205,20 @@ dev = [
     { name = "pytest-qt" },
     { name = "pytest-xvfb" },
     { name = "ruff" },
-    { name = "shibuya", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-autobuild", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-autodoc-typehints", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-copybutton", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-design", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-github-style", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-jsonschema", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-llm", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-sitemap", marker = "python_full_version >= '3.15'" },
-    { name = "sphinxext-opengraph", marker = "python_full_version >= '3.15'" },
-    { name = "tox", marker = "python_full_version >= '3.15'" },
-    { name = "tox-uv", marker = "python_full_version >= '3.15'" },
+    { name = "shibuya", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-autobuild", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-autodoc-typehints", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-copybutton", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-design", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-github-style", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-jsonschema", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-llm", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-sitemap", marker = "python_full_version >= '3.14'" },
+    { name = "sphinxext-opengraph", marker = "python_full_version >= '3.14'" },
+    { name = "tox", marker = "python_full_version >= '3.14'" },
+    { name = "tox-uv", marker = "python_full_version >= '3.14'" },
     { name = "types-cachetools" },
     { name = "types-docutils" },
     { name = "types-psutil" },
@@ -225,28 +226,28 @@ dev = [
     { name = "types-pyyaml" },
 ]
 doc = [
-    { name = "matplotlib", marker = "python_full_version >= '3.15'" },
-    { name = "myst-parser", marker = "python_full_version >= '3.15'" },
-    { name = "pandas", marker = "python_full_version >= '3.15'" },
-    { name = "pyarrow", marker = "python_full_version >= '3.15'" },
-    { name = "shibuya", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-autobuild", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-autodoc-typehints", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-copybutton", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-design", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-github-style", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-jsonschema", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-llm", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.15'" },
-    { name = "sphinx-sitemap", marker = "python_full_version >= '3.15'" },
-    { name = "sphinxext-opengraph", marker = "python_full_version >= '3.15'" },
+    { name = "matplotlib", marker = "python_full_version >= '3.14'" },
+    { name = "myst-parser", marker = "python_full_version >= '3.14'" },
+    { name = "pandas", marker = "python_full_version >= '3.14'" },
+    { name = "pyarrow", marker = "python_full_version >= '3.14'" },
+    { name = "shibuya", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-autobuild", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-autodoc-typehints", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-copybutton", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-design", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-github-style", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-jsonschema", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-llm", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.14'" },
+    { name = "sphinx-sitemap", marker = "python_full_version >= '3.14'" },
+    { name = "sphinxext-opengraph", marker = "python_full_version >= '3.14'" },
 ]
 lint = [
     { name = "ruff" },
 ]
 publish = [
-    { name = "pypi-attestations", marker = "python_full_version >= '3.15'" },
+    { name = "pypi-attestations", marker = "python_full_version >= '3.14'" },
 ]
 test = [
     { name = "appdirs-stubs" },
@@ -268,8 +269,8 @@ test = [
     { name = "types-pyyaml" },
 ]
 tox = [
-    { name = "tox", marker = "python_full_version >= '3.15'" },
-    { name = "tox-uv", marker = "python_full_version >= '3.15'" },
+    { name = "tox", marker = "python_full_version >= '3.14'" },
+    { name = "tox-uv", marker = "python_full_version >= '3.14'" },
 ]
 typing = [
     { name = "appdirs-stubs" },
@@ -283,10 +284,10 @@ typing = [
 ]
 
 [package.group-requires-python]
-dev = ">=3.15,>=3.15"
-doc = ">=3.15"
-publish = ">=3.15"
-tox = ">=3.15"
+dev = ">=3.14,>=3.14"
+doc = ">=3.14"
+publish = ">=3.14"
+tox = ">=3.14"
 
 [package.metadata]
 requires-dist = [
@@ -319,12 +320,12 @@ ci = [
 dev = [
     { name = "appdirs-stubs", specifier = ">=0.1" },
     { name = "docutils-stubs", specifier = ">=0.0.22" },
-    { name = "matplotlib", marker = "python_full_version >= '3.15'", specifier = ">=3.10" },
+    { name = "matplotlib", marker = "python_full_version >= '3.14'", specifier = ">=3.10" },
     { name = "mypy", specifier = ">=2.3" },
-    { name = "myst-parser", marker = "python_full_version >= '3.15'", specifier = ">=5.1" },
+    { name = "myst-parser", marker = "python_full_version >= '3.14'", specifier = ">=5.1" },
     { name = "packaging", specifier = ">=25.0" },
-    { name = "pandas", marker = "python_full_version >= '3.15'", specifier = ">=2.3" },
-    { name = "pyarrow", marker = "python_full_version >= '3.15'", specifier = ">=23.0" },
+    { name = "pandas", marker = "python_full_version >= '3.14'", specifier = ">=2.3" },
+    { name = "pyarrow", marker = "python_full_version >= '3.14'", specifier = ">=23.0" },
     { name = "pyside6-essentials", specifier = ">=6.11" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-benchmark", specifier = ">=5.1" },
@@ -334,20 +335,20 @@ dev = [
     { name = "pytest-xvfb", specifier = ">=3.1" },
     { name = "ruff", specifier = ">=0.9" },
     { name = "ruff", specifier = ">=0.11" },
-    { name = "shibuya", marker = "python_full_version >= '3.15'", specifier = ">=2026.7.12" },
-    { name = "sphinx", marker = "python_full_version >= '3.15'", specifier = "~=9.1" },
-    { name = "sphinx-autobuild", marker = "python_full_version >= '3.15'", specifier = ">=2024.10.3" },
-    { name = "sphinx-autodoc-typehints", marker = "python_full_version >= '3.15'", specifier = ">=3.10" },
-    { name = "sphinx-copybutton", marker = "python_full_version >= '3.15'", specifier = ">=0.5" },
-    { name = "sphinx-design", marker = "python_full_version >= '3.15'", specifier = ">=0.6" },
-    { name = "sphinx-github-style", marker = "python_full_version >= '3.15'", specifier = ">=1.2" },
-    { name = "sphinx-jsonschema", marker = "python_full_version >= '3.15'", specifier = ">=1.19" },
-    { name = "sphinx-llm", marker = "python_full_version >= '3.15'", specifier = ">=1.1.0" },
-    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.15'", specifier = ">=1.1.0" },
-    { name = "sphinx-sitemap", marker = "python_full_version >= '3.15'", specifier = ">=2.9.0" },
-    { name = "sphinxext-opengraph", marker = "python_full_version >= '3.15'", specifier = ">=0.13" },
-    { name = "tox", marker = "python_full_version >= '3.15'", specifier = ">=4.67.4" },
-    { name = "tox-uv", marker = "python_full_version >= '3.15'", specifier = ">=1.37.2" },
+    { name = "shibuya", marker = "python_full_version >= '3.14'", specifier = ">=2026.7.12" },
+    { name = "sphinx", marker = "python_full_version >= '3.14'", specifier = "~=9.1" },
+    { name = "sphinx-autobuild", marker = "python_full_version >= '3.14'", specifier = ">=2024.10.3" },
+    { name = "sphinx-autodoc-typehints", marker = "python_full_version >= '3.14'", specifier = ">=3.10" },
+    { name = "sphinx-copybutton", marker = "python_full_version >= '3.14'", specifier = ">=0.5" },
+    { name = "sphinx-design", marker = "python_full_version >= '3.14'", specifier = ">=0.6" },
+    { name = "sphinx-github-style", marker = "python_full_version >= '3.14'", specifier = ">=1.2" },
+    { name = "sphinx-jsonschema", marker = "python_full_version >= '3.14'", specifier = ">=1.19" },
+    { name = "sphinx-llm", marker = "python_full_version >= '3.14'", specifier = ">=1.1.0" },
+    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.14'", specifier = ">=1.1.0" },
+    { name = "sphinx-sitemap", marker = "python_full_version >= '3.14'", specifier = ">=2.9.0" },
+    { name = "sphinxext-opengraph", marker = "python_full_version >= '3.14'", specifier = ">=0.13" },
+    { name = "tox", marker = "python_full_version >= '3.14'", specifier = ">=4.67.4" },
+    { name = "tox-uv", marker = "python_full_version >= '3.14'", specifier = ">=1.37.2" },
     { name = "types-cachetools", specifier = ">=7" },
     { name = "types-docutils", specifier = ">=0.22" },
     { name = "types-psutil", specifier = ">=7" },
@@ -355,25 +356,25 @@ dev = [
     { name = "types-pyyaml", specifier = ">=6" },
 ]
 doc = [
-    { name = "matplotlib", marker = "python_full_version >= '3.15'", specifier = ">=3.10" },
-    { name = "myst-parser", marker = "python_full_version >= '3.15'", specifier = ">=5.1" },
-    { name = "pandas", marker = "python_full_version >= '3.15'", specifier = ">=2.3" },
-    { name = "pyarrow", marker = "python_full_version >= '3.15'", specifier = ">=23.0" },
-    { name = "shibuya", marker = "python_full_version >= '3.15'", specifier = ">=2026.7.12" },
-    { name = "sphinx", marker = "python_full_version >= '3.15'", specifier = "~=9.1" },
-    { name = "sphinx-autobuild", marker = "python_full_version >= '3.15'", specifier = ">=2024.10.3" },
-    { name = "sphinx-autodoc-typehints", marker = "python_full_version >= '3.15'", specifier = ">=3.10" },
-    { name = "sphinx-copybutton", marker = "python_full_version >= '3.15'", specifier = ">=0.5" },
-    { name = "sphinx-design", marker = "python_full_version >= '3.15'", specifier = ">=0.6" },
-    { name = "sphinx-github-style", marker = "python_full_version >= '3.15'", specifier = ">=1.2" },
-    { name = "sphinx-jsonschema", marker = "python_full_version >= '3.15'", specifier = ">=1.19" },
-    { name = "sphinx-llm", marker = "python_full_version >= '3.15'", specifier = ">=1.1.0" },
-    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.15'", specifier = ">=1.1.0" },
-    { name = "sphinx-sitemap", marker = "python_full_version >= '3.15'", specifier = ">=2.9.0" },
-    { name = "sphinxext-opengraph", marker = "python_full_version >= '3.15'", specifier = ">=0.13" },
+    { name = "matplotlib", marker = "python_full_version >= '3.14'", specifier = ">=3.10" },
+    { name = "myst-parser", marker = "python_full_version >= '3.14'", specifier = ">=5.1" },
+    { name = "pandas", marker = "python_full_version >= '3.14'", specifier = ">=2.3" },
+    { name = "pyarrow", marker = "python_full_version >= '3.14'", specifier = ">=23.0" },
+    { name = "shibuya", marker = "python_full_version >= '3.14'", specifier = ">=2026.7.12" },
+    { name = "sphinx", marker = "python_full_version >= '3.14'", specifier = "~=9.1" },
+    { name = "sphinx-autobuild", marker = "python_full_version >= '3.14'", specifier = ">=2024.10.3" },
+    { name = "sphinx-autodoc-typehints", marker = "python_full_version >= '3.14'", specifier = ">=3.10" },
+    { name = "sphinx-copybutton", marker = "python_full_version >= '3.14'", specifier = ">=0.5" },
+    { name = "sphinx-design", marker = "python_full_version >= '3.14'", specifier = ">=0.6" },
+    { name = "sphinx-github-style", marker = "python_full_version >= '3.14'", specifier = ">=1.2" },
+    { name = "sphinx-jsonschema", marker = "python_full_version >= '3.14'", specifier = ">=1.19" },
+    { name = "sphinx-llm", marker = "python_full_version >= '3.14'", specifier = ">=1.1.0" },
+    { name = "sphinx-notfound-page", marker = "python_full_version >= '3.14'", specifier = ">=1.1.0" },
+    { name = "sphinx-sitemap", marker = "python_full_version >= '3.14'", specifier = ">=2.9.0" },
+    { name = "sphinxext-opengraph", marker = "python_full_version >= '3.14'", specifier = ">=0.13" },
 ]
 lint = [{ name = "ruff", specifier = ">=0.9" }]
-publish = [{ name = "pypi-attestations", marker = "python_full_version >= '3.15'", specifier = ">=0.0.30" }]
+publish = [{ name = "pypi-attestations", marker = "python_full_version >= '3.14'", specifier = ">=0.0.30" }]
 test = [
     { name = "appdirs-stubs", specifier = ">=0.1" },
     { name = "docutils-stubs", specifier = ">=0.0.22" },
@@ -395,8 +396,8 @@ test = [
     { name = "types-pyyaml", specifier = ">=6" },
 ]
 tox = [
-    { name = "tox", marker = "python_full_version >= '3.15'", specifier = ">=4.67.4" },
-    { name = "tox-uv", marker = "python_full_version >= '3.15'", specifier = ">=1.37.2" },
+    { name = "tox", marker = "python_full_version >= '3.14'", specifier = ">=4.67.4" },
+    { name = "tox-uv", marker = "python_full_version >= '3.14'", specifier = ">=1.37.2" },
 ]
 typing = [
     { name = "appdirs-stubs", specifier = ">=0.1" },
@@ -3594,6 +3595,7 @@ version = "3.17.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "sphinx" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/a9/cfe13ff89678c6d310a8a9060333b7823bae1dbce9615c7032be89aaec20/sphinx_autodoc_typehints-3.17.4.tar.gz", hash = "sha256:a5ddd545192380292f13dd9fc232717a0925fbc66617bc51b3db1e0480db0fec", size = 511398, upload-time = "2026-10-27T19:18:44.225Z" }
 wheels = [
