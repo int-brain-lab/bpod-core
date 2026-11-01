@@ -89,6 +89,7 @@ test = [
   "pytest-qt>=4.5",
   "pyside6-essentials>=6.11",
   "pytest-xvfb>=3.1",
+  "pytest-benchmark>=5.1",
 ]
 typing = [
   "appdirs-stubs>=0.1",
@@ -245,5 +246,8 @@ source_pkgs = ["bpod_core"]
 relative_files = true
 
 [tool.pytest.ini_options]
-addopts = "--cov=bpod_core --doctest-modules -rs"
+addopts = "--doctest-modules -rsx"
 testpaths = ["tests/", "bpod_core/"]
+markers = [
+  "known_firmware_issue(url=None, run=True): fails on the stock Bpod firmware; url is the fix if there is one, run=False if failing hangs the Bpod",
+]

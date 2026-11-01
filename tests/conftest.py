@@ -5,6 +5,7 @@ import re
 import struct
 import threading
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import PropertyMock
 
 import pytest
@@ -15,6 +16,51 @@ from bpod_core.bpod import Bpod
 from bpod_core.bpod.structs import _TimeReferences
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import VID_TEENSY, TeensyPID
+
+_HARDWARE_TESTS = Path(__file__).parent / 'hardware'
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        '--hardware',
+        action='store_true',
+        help='run the tests in tests/hardware, and only them, on a connected Bpod',
+    )
+    parser.addoption(
+        '--seed',
+        type=int,
+        help='seed for the randomized hardware tests; a run prints the seed it used',
+    )
+    parser.addoption(
+        '--fixed-firmware',
+        action='store_true',
+        help='the Bpod runs a firmware with the fixes: known issues must not fail',
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Run only the tests in tests/hardware with --hardware, and leave them out without.
+
+    With --cov, the hardware tests still run untraced: tracing would distort their
+    timings.
+    """
+    hardware: list[pytest.Item] = []
+    others: list[pytest.Item] = []
+    for item in items:
+        is_hardware = item.path.is_relative_to(_HARDWARE_TESTS)
+        (hardware if is_hardware else others).append(item)
+    if config.getoption('--hardware'):
+        config.hook.pytest_deselected(items=others)
+        items[:] = hardware
+        if not config.getoption('no_cov', False):  # pytest-cov's pause() needs coverage
+            for item in hardware:
+                item.add_marker(pytest.mark.no_cover)
+    else:
+        config.hook.pytest_deselected(items=hardware)
+        items[:] = others
+
 
 fixture_bpod_all = {
     b'6': b'5',

@@ -74,8 +74,8 @@ uv run ruff format          # auto-format code
 
 Adding `--fix` to `ruff check` will automatically correct fixable issues.
 
-After running `tox` or `pytest`, you can generate a coverage report to assess how
-much of the code is covered by the unit-tests:
+After running `tox`, or `pytest --cov=bpod_core`, you can generate a coverage report to
+assess how much of the code is covered by the unit-tests:
 
 ```console
 uv run coverage report
@@ -89,6 +89,34 @@ uv run coverage html
 
 You'll find the HTML report in the folder `htmlcov`, where you can open `index.html`
 in a web browser to view detailed coverage statistics.
+
+### Hardware Tests
+
+The tests in `tests/hardware` run on a connected Bpod. `--hardware` selects them, and
+only them:
+
+```console
+uv run pytest --hardware
+```
+
+They use the first idle Bpod found; set `BPOD_OVERRIDE_PORT` or
+`BPOD_OVERRIDE_SERIAL_NUMBER` to choose one. Add `--benchmark-autosave` to keep a run's
+timings and `--benchmark-compare` to compare against the previous one. The randomized
+tests print the seed they used; `--seed N` replays it, and a failing machine is written
+to the test's temporary directory.
+
+A bare Bpod runs most of the tests. The rest skip, and the randomized tests leave out
+some checks, unless it is wired up as follows:
+
+- a BNC cable from TTL Out 1 to TTL In 1, or two wires, centre and shell: a TTL input is
+  an optocoupler between the two.
+- on a Bpod 2+, a wire from Flex1 to Flex4.
+- any Bpod module, on module port 2 or higher for all of the module tests.
+
+Tests marked `known_firmware_issue` fail on the stock Bpod firmware and are reported as
+expected failures; the marker links to the fix, if there is one. Those whose failure
+would hang the Bpod don't run. On a firmware that carries the fixes, add
+`--fixed-firmware` to treat the tests of fixed issues as regular tests.
 
 ## Building the Documentation
 
