@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- importing bpod-core takes about 50 ms less: psutil and PyYAML are imported when first
+  needed.
+
 ### Security
 
 - on Python 3.11 and newer, bpod-core requires `filelock` 4.2.1 or newer, which fixes

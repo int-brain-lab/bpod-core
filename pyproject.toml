@@ -206,6 +206,10 @@ ignore = [
 ]
 allowed-confusables = ["–"]
 
+[tool.ruff.lint.flake8-tidy-imports]
+# imported only where needed, as they take import time but serve only a few features
+banned-module-level-imports = ["psutil", "yaml"]
+
 [tool.ruff.lint.per-file-ignores]
 "!bpod_core/**.py" = [
   "ANN", # flake8-annotations
@@ -216,6 +220,7 @@ allowed-confusables = ["–"]
   "PT"       # flake8-pytest-style
 ]
 "tests/**.py" = [
+  "TID253", # banned module-level imports: the tests' import time doesn't matter
   "ARG001", # Unused function argument
   "ARG002", # Unused method argument
   "PERF", # Perflint

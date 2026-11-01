@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, cast
 
 import msgspec
-import yaml
 from cachetools import FIFOCache
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
@@ -29,9 +28,6 @@ from xxhash import xxh3_64 as _xxh3_64
 
 from bpod_core.constants import UINT16_MAX, UINT32_MAX
 from bpod_core.misc import ValidatedDict, suggest_similar
-
-# libyaml's C loader is about seven times faster; fall back to pure Python without it
-_YAML_LOADER = getattr(yaml, 'CSafeLoader', yaml.SafeLoader)
 
 
 class _CheckData(NamedTuple):
@@ -1016,8 +1012,12 @@ class StateMachine(BaseModel, title='State Machine'):
             If the YAML string is not valid or does not represent a
             :class:`StateMachine`.
         """
+        import yaml  # imported where needed, see pyproject.toml
+
+        # libyaml's C loader is about seven times faster; fall back to pure Python
+        loader = getattr(yaml, 'CSafeLoader', yaml.SafeLoader)
         try:
-            return cls.model_validate(yaml.load(yaml_str, Loader=_YAML_LOADER))  # noqa: S506
+            return cls.model_validate(yaml.load(yaml_str, Loader=loader))  # noqa: S506
         except (ValidationError, yaml.YAMLError, UnicodeError) as e:
             # libyaml raises UnicodeError for a str it can't encode, e.g. with a lone
             # surrogate, where the pure-Python loader raises a YAMLError

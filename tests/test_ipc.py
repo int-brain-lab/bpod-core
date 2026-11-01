@@ -208,7 +208,7 @@ class TestLocalServiceAdvertisement:
             pid=99999999,  # non-existent PID
         ) as ad:
             assert ad.service_file.exists()
-            mocker.patch('bpod_core.ipc.pid_exists', return_value=False)
+            mocker.patch('psutil.pid_exists', return_value=False)
             results = list(ipc.LocalServiceAdvertisement.discover('service_type'))
             assert len(results) == 0
         assert not ad.service_file.exists()
@@ -309,7 +309,7 @@ def test_local_ip_addresses(mocker):
     """Interface addresses are parsed, zone IDs dropped, link-local and junk skipped."""
     snic = _Snic
     mocker.patch.object(
-        ipc,
+        psutil,
         'net_if_addrs',
         return_value={
             'lo': [snic(socket.AF_INET, '127.0.0.1'), snic(socket.AF_INET6, '::1')],
@@ -332,7 +332,7 @@ def test_local_ip_addresses(mocker):
 
 def test_local_ip_addresses_unavailable(mocker):
     """An OS refusing to list interfaces falls back to the primary address."""
-    mocker.patch.object(ipc, 'net_if_addrs', side_effect=OSError)
+    mocker.patch.object(psutil, 'net_if_addrs', side_effect=OSError)
     mocker.patch.object(ipc, 'get_local_ipv4', return_value='10.0.0.7')
     assert ipc._local_ip_addresses() == {ip_address('10.0.0.7')}
 
