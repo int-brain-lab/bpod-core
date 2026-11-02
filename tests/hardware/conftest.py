@@ -61,6 +61,10 @@ def bpod(bpod_info: BpodInfo, pytestconfig: pytest.Config) -> Iterator[Bpod]:
         if bpod.is_running:  # left running by a failed test
             with contextlib.suppress(TimeoutError):  # given up; replug if it persists
                 bpod.stop_state_machine()
+        if bpod.serial0.is_open and not pytestconfig.getoption('--fixed-firmware'):
+            # without PR #4, disconnecting writes past the module relay flags at the
+            # index of the input read last, which hangs a Bpod r2.0: read one in range
+            next(iter(bpod.inputs.values())).read()
 
 
 @pytest.fixture(scope='session')
