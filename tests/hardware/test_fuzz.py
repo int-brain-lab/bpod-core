@@ -900,7 +900,9 @@ def test_random_machines(  # noqa: PLR0917 - fixtures
         )
     if check_analog is not None:
         check_analog(pl.concat(batch.frames))
-    if warnings := logged_warnings():  # e.g. the library's timing violation
+    # e.g. the library's timing violation, but not a late start: machines are sent as
+    # fast as they can be, also behind short trials, and the table shows the gaps
+    if warnings := [w for w in logged_warnings() if ' ms late: ' not in w]:
         worst = cycles.index(max(cycles))
         pytest.fail(
             f'{warnings}\nworst cycle {cycles[worst]:.2f} µs: {describe(worst)}'

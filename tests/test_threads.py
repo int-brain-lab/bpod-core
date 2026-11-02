@@ -26,6 +26,7 @@ from bpod_core.bpod._threads import (
     SoftcodeThread,
     _build_event_tables,
     _EventID,
+    _LateStarts,
     join_until,
 )
 from bpod_core.bpod.structs import (
@@ -78,6 +79,7 @@ def _reader(serial) -> tuple[ReadThread, SimpleQueue]:
         cycle_period_us=1,
         queue_events=q_events,
         queue_softcodes=SimpleQueue(),
+        late_starts=_LateStarts(),
     )
     return thread, q_events
 
@@ -137,6 +139,7 @@ class TestReadThread:
             serial=None,
             initial_bytes: bytes = b'',
             initial_received_ns: int = 0,
+            previous_end_us: int | None = None,
         ):
             mock_ext_serial.response_buffer.extend(data)
             q_events: SimpleQueue[list[_RawEvents]] = SimpleQueue()
@@ -150,6 +153,8 @@ class TestReadThread:
                 queue_softcodes=q_softcodes,
                 initial_bytes=initial_bytes,
                 initial_received_ns=initial_received_ns,
+                late_starts=_LateStarts(),
+                previous_end_us=previous_end_us,
             )
             return thread, q_events, q_softcodes
 
@@ -289,6 +294,7 @@ class TestReadThread:
             cycle_period_us=1,
             queue_events=calls.events,
             queue_softcodes=calls.softcodes,
+            late_starts=_LateStarts(),
         )
         thread.start()
         thread.join(timeout=2)
@@ -529,6 +535,56 @@ class TestReadThread:
             thread.start()
             thread.join(timeout=2)
         assert 'timing' in caplog.text.lower()
+
+    @pytest.mark.parametrize(
+        ('previous_end_us', 'start_us', 'late'),
+        [
+            (1000, 1100, False),
+            (1000, 1150, False),
+            (1000, 1151, True),
+            (None, 99_999, False),
+        ],
+    )
+    def test_late_start(self, make_thread, previous_end_us, start_us, late):
+        """A queued trial starting over half a cycle after its due cycle is late."""
+        end_us = start_us + 100
+        data = _CONFIRM_OK + _start(start_us) + _opcode1([255], n_cycles=1)
+        thread, _, _ = make_thread(
+            data + _exit_data(1, end_us),
+            cycle_period_us=100,
+            previous_end_us=previous_end_us,
+        )
+        thread.start()
+        thread.join(timeout=2)
+        assert thread._late_starts.count == late
+        assert thread.end_micros_us == end_us
+
+
+class TestLateStarts:
+    def test_longest_yet_is_a_warning_and_all_are_counted(self, caplog):
+        """A start later than all before it warns; the others are debug messages."""
+        late_starts = _LateStarts()
+        with caplog.at_level(logging.DEBUG, logger='bpod_core.bpod._threads'):
+            late_starts.record(3, 2300)
+            late_starts.record(7, 900)
+            late_starts.record(9, 3000)
+            late_starts.summarize()
+            late_starts.summarize()  # the connection closed twice: counted once
+        text = "Trial #%d started %.1f ms late: its state machine wasn't ready in time"
+        assert [(r.levelname, r.getMessage()) for r in caplog.records] == [
+            ('WARNING', text % (3, 2.3)),
+            ('DEBUG', text % (7, 0.9)),
+            ('WARNING', text % (9, 3.0)),
+            ('WARNING', '3 trials started late, by up to 3.0 ms'),
+        ]
+
+    def test_no_count_after_a_single_late_start(self, caplog):
+        """A single late start, warned about already, isn't counted again."""
+        late_starts = _LateStarts()
+        late_starts.record(3, 2300)
+        caplog.clear()
+        late_starts.summarize()
+        assert caplog.records == []
 
 
 def _make_fsm(

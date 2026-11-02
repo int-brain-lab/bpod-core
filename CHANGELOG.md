@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- a warning when a queued trial starts late, because its state machine wasn't ready
+  when the trial before ended.
+
 ### Fixed
 
 - `run()` raises a `ValueError` for a state machine of more than 49,999 bytes: the Bpod

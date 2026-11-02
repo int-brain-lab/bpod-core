@@ -71,6 +71,7 @@ serial connection is closed and any running trial is allowed to finish on exit.
        self._bpod_finalizer = SimpleNamespace(detach=lambda: None)
        self._serial_device_finalizer = SimpleNamespace(detach=lambda: None)
        self._softcode_thread = MagicMock()
+       self._late_starts = MagicMock()
        self._serial = None
        self._serial_number = '14260000'
        # validate and compile like the real Bpod, without sending to hardware

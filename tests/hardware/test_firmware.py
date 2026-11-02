@@ -466,8 +466,8 @@ class TestTrials:
         data = bpod.get_data()
         assert data.filter(pl.col('Type') == 'TrialEnd').height == 1
 
-    def test_queued_trials_follow_one_cycle_apart(self, bpod):
-        """A queued trial starts one cycle after the trial before it ends."""
+    def test_queued_trials_follow_one_cycle_apart(self, bpod, logged_warnings):
+        """A queued trial starts one cycle after the trial before, without warning."""
         fsm = _chain(('A', 0.003, {}))
         for _ in range(5):
             bpod.run(fsm)
@@ -475,6 +475,7 @@ class TestTrials:
         gaps = _trial_gaps(bpod.get_data())
         cycle = bpod._hardware.cycle_period_us
         assert all(abs(gap - cycle) <= 2 for gap in gaps), f'µs between trials: {gaps}'
+        assert logged_warnings() == []
 
     def test_machine_sent_while_the_one_before_loads(self, bpod, run_guarded):
         """Machines run back to back from idle, the first slow to load, both run.

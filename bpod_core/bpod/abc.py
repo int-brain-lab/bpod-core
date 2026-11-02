@@ -224,7 +224,10 @@ class AbstractBpod(AbstractContextManager):
         inter-trial downtime (as long as the Bpod's run queue stays filled). The Bpod
         holds one state machine besides the running one: if the one sent before hasn't
         started yet, e.g. right after a session's first trial, this method first waits
-        until it has.
+        until it has. If a trial sent while the one before runs starts over 1.5 cycles
+        after that one ends, the process connected to the Bpod logs it: as a warning if
+        it is the connection's longest delay so far, else at debug level. All are
+        counted when the connection closes.
         """
 
     @abstractmethod

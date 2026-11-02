@@ -92,6 +92,39 @@ def join_until(thread: threading.Thread, deadline: float | None) -> bool:
     return True
 
 
+class _LateStarts:
+    """A connection's trials that started over 1.5 cycles after the trial before ended.
+
+    A start later than all before it is logged as a warning, the others at debug level;
+    :meth:`summarize` counts them all.
+    """
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.longest_us = 0
+
+    def record(self, trial: int, late_us: int) -> None:
+        """Log that `trial` started `late_us` µs after the cycle it should have."""
+        logger.log(
+            logging.WARNING if late_us > self.longest_us else logging.DEBUG,
+            "Trial #%d started %.1f ms late: its state machine wasn't ready in time",
+            trial,
+            late_us / 1000,
+        )
+        self.count += 1
+        self.longest_us = max(self.longest_us, late_us)
+
+    def summarize(self) -> None:
+        """Log how many trials started late, if more than the first, and start over."""
+        if self.count > 1:
+            logger.warning(
+                '%d trials started late, by up to %.1f ms',
+                self.count,
+                self.longest_us / 1000,
+            )
+        self.count = self.longest_us = 0
+
+
 _EVENT_DTYPE = np.dtype(
     [
         ('Time', 'datetime64[us]'),
@@ -332,6 +365,12 @@ class ReadThread(threading.Thread):
     initial_received_ns : int, default: 0
         When ``initial_bytes`` were received (:func:`time.perf_counter_ns`), i.e., the
         previous ``ReadThread``'s :attr:`leftover_received_ns`.
+    late_starts : _LateStarts
+        Where a late start is recorded.
+    previous_end_us : int or None, default: None
+        The end of the trial before, i.e., the previous ``ReadThread``'s
+        :attr:`end_micros_us`, if this trial should start a cycle after it: a start
+        later than that is recorded in ``late_starts``.
     """
 
     _struct_exit = struct.Struct('<IQ')
@@ -341,6 +380,9 @@ class ReadThread(threading.Thread):
 
     leftover_received_ns: int
     """When :attr:`leftover` was received (:func:`time.perf_counter_ns`)."""
+
+    end_micros_us: int | None = None
+    """The trial's end, in µs of the Bpod's clock, once the thread has read it."""
 
     error: Exception | None = None
     """The exception that ended the thread: a lost connection (:class:`OSError`), or a
@@ -368,6 +410,8 @@ class ReadThread(threading.Thread):
         queue_softcodes: SimpleQueue[_RawSoftcode],
         initial_bytes: bytes = b'',
         initial_received_ns: int = 0,
+        late_starts: _LateStarts,
+        previous_end_us: int | None = None,
     ) -> None:
         super().__init__(name='ReadThread', daemon=True)
         self._serial = serial
@@ -376,6 +420,8 @@ class ReadThread(threading.Thread):
         self._cycle_period_us = cycle_period_us
         self._queue_events = queue_events
         self._queue_softcodes = queue_softcodes
+        self._late_starts = late_starts
+        self._previous_end_us = previous_end_us
         self._buffer = bytearray(initial_bytes)
         self._received_ns = initial_received_ns
         self.leftover = b''
@@ -461,6 +507,11 @@ class ReadThread(threading.Thread):
             # read the starting timestamps of the state machine
             # we do this early to get an accurate timestamp for the system clock
             (start_micros_us,) = STRUCT_UINT64_LE.unpack(self._take(8))
+            if (previous_end_us := self._previous_end_us) is not None:
+                # queued: due a cycle after the trial before
+                late_us = start_micros_us - previous_end_us - self._cycle_period_us
+                if late_us > self._cycle_period_us / 2:
+                    self._late_starts.record(self._trial, late_us)
 
             # assign members to local variables to avoid repeated attribute lookups
             buffer = self._buffer
@@ -554,6 +605,7 @@ class ReadThread(threading.Thread):
                 batch = []
             self.backlog = backlog
             _, end_micros_us = self._struct_exit.unpack(self._take(12))
+            self.end_micros_us = end_micros_us
 
             # anything beyond belongs to the next trial, if one has been queued
             self.leftover = bytes(buffer)

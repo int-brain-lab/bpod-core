@@ -5,6 +5,7 @@ import struct
 import threading
 import time
 import weakref
+from itertools import chain, repeat
 from types import SimpleNamespace
 from unittest.mock import MagicMock, PropertyMock
 from uuid import uuid4
@@ -845,6 +846,37 @@ class TestIsRunning:
         with pytest.raises(SerialException):
             mock_bpod_25.run(fsm)
         assert not mock_bpod_25.is_running
+
+
+class TestLateStartCheck:
+    @pytest.mark.parametrize(
+        ('running', 'at_handoff', 'previous_end_us'),
+        [(True, True, 1234), (True, False, 1234), (False, False, None)],
+    )
+    def test_only_a_trial_sent_during_another_is_checked(
+        self, mock_bpod_25, mock_threads, running, at_handoff, previous_end_us
+    ):
+        """A trial sent while the one before runs gets that one's end to check."""
+        read_thread_class, _ = mock_threads
+        mock_bpod_25._read_thread = MagicMock(
+            error=None,
+            end_micros_us=1234,
+            trial_number=0,
+            **{'is_alive.side_effect': chain([running], repeat(at_handoff))},
+        )
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        mock_bpod_25.run(fsm)
+        kwargs = read_thread_class.call_args.kwargs
+        assert kwargs['previous_end_us'] == previous_end_us
+
+    def test_late_starts_counted_when_closing(self, mock_bpod_25, caplog):
+        """Closing the connection counts its late starts."""
+        mock_bpod_25._late_starts.record(1, 500)
+        mock_bpod_25._late_starts.record(2, 900)
+        with caplog.at_level(logging.WARNING):
+            mock_bpod_25.close()
+        assert '2 trials started late, by up to 0.9 ms' in caplog.text
 
 
 class TestGetData:
@@ -2380,7 +2412,7 @@ def test_next_reader_gets_leftover(mock_bpod_2p, mock_threads):
         is_alive=lambda: False,
     )
     mock_bpod_2p._fsm_annotations = MagicMock()
-    mock_bpod_2p._run_state_machine()
+    mock_bpod_2p._run_state_machine(queued=False)
     kwargs = read_thread_class.call_args.kwargs
     assert kwargs['initial_bytes'] == b'\x01next'
     assert kwargs['initial_received_ns'] == 42

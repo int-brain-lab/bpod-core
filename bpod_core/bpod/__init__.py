@@ -40,6 +40,7 @@ from bpod_core.bpod._threads import (
     EventThread,
     ReadThread,
     SoftcodeThread,
+    _LateStarts,
     join_until,
 )
 from bpod_core.bpod.abc import AbstractBpod
@@ -205,6 +206,7 @@ class Bpod(SerialDevice, AbstractBpod):
     _event_thread: EventThread | None = None
     _starting_state_machine: bool = False
     _state_machine_started: bool = False  # fixes FlexIO channel types and rate
+    _late_starts: _LateStarts
     _zmq: ServiceHost[_BpodRequestUnion, list[BpodEventUnion]]
     _next_fsm_index: int = -1
     _serial_buffer = bytearray()  # buffer for TrialReader thread
@@ -266,6 +268,7 @@ class Bpod(SerialDevice, AbstractBpod):
             remote = os.getenv('BPOD_OVERRIDE_REMOTE') in ('True', 'true', '1')
 
         # initialize members
+        self._late_starts = _LateStarts()
         self._fsm_annotations: _StateMachineLookup | None = None
         self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
         self._analog_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
@@ -548,6 +551,7 @@ class Bpod(SerialDevice, AbstractBpod):
             # the disconnect disabled the relays (no modules if the setup failed early)
             for module in getattr(self, 'modules', {}).values():
                 module._relay_is_enabled = False  # noqa: SLF001 - same module
+            self._late_starts.summarize()
 
     @staticmethod
     def _stop_and_drain(serial: ExtendedSerial) -> None:
@@ -1292,6 +1296,7 @@ class Bpod(SerialDevice, AbstractBpod):
             raise ValueError(f'trial_number must be between 0 and {UINT32_MAX}')
 
         self._check_in_sync()  # allowed while running, but not on a suspect stream
+        queued = self.is_running  # so due a cycle after the trial before
 
         # the Bpod holds one state machine besides the running one: the one sent before
         # must have started, as this one would otherwise reset its confirmation. Before
@@ -1407,7 +1412,7 @@ class Bpod(SerialDevice, AbstractBpod):
                 self.serial0.write(message)
 
             # Start threads
-            self._run_state_machine()
+            self._run_state_machine(queued=queued)
         finally:
             self._starting_state_machine = False
 
@@ -1416,7 +1421,7 @@ class Bpod(SerialDevice, AbstractBpod):
         if self._analog_first_trial_time_us is None:
             self._analog_first_trial_time_us = time_us
 
-    def _run_state_machine(self) -> None:
+    def _run_state_machine(self, *, queued: bool) -> None:
         state_machine_lookup = cast('_StateMachineLookup', self._fsm_annotations)
 
         # initialize new threads
@@ -1449,6 +1454,11 @@ class Bpod(SerialDevice, AbstractBpod):
             if previous_read_thread is not None
             else (b'', 0)
         )
+        previous_end_us = (
+            previous_read_thread.end_micros_us
+            if queued and previous_read_thread is not None
+            else None
+        )
         read_thread = ReadThread(
             serial=self.serial0,
             state_machine_hash=state_machine_lookup.fsm_hash,
@@ -1458,6 +1468,8 @@ class Bpod(SerialDevice, AbstractBpod):
             queue_softcodes=self._softcode_thread.queue,
             initial_bytes=leftover,
             initial_received_ns=leftover_received_ns,
+            late_starts=self._late_starts,
+            previous_end_us=previous_end_us,
         )
         read_thread.start()
 
