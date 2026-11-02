@@ -324,6 +324,7 @@ class TestInputs:
     @pytest.mark.parametrize('channel', ['Port1', 'TTLIn1'])
     def test_virtual_input_event(self, bpod, channel):
         """Overriding an input during a trial reports its edge as an event."""
+        bpod.inputs[channel].enabled = True  # the bpod fixture may have disabled it
         fsm = StateMachine()
         fsm.add_state(
             'Wait', timer=1, transitions={f'{channel}_High': '>exit', 'Tup': '>exit'}

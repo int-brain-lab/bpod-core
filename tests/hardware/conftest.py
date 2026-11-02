@@ -57,6 +57,13 @@ def bpod(bpod_info: BpodInfo, pytestconfig: pytest.Config) -> Iterator[Bpod]:
                 f'{info.firmware[0]}.{info.firmware[1]}, '
                 f'serial number {bpod_info.serial_number} at {bpod_info.port}'
             )
+        if bpod.version.machine_str == 'r2.0-2.3':
+            # up to r2.2, the port inputs have no pull-up: unplugged, they pick up mains
+            # hum, whose events break the tests comparing a trial's events (r2.3 has
+            # one, but reports the same)
+            for channel in bpod.inputs.values():
+                if channel.io_type == b'P':
+                    channel.enabled = False
         yield bpod
         if bpod.is_running:  # left running by a failed test
             with contextlib.suppress(TimeoutError):  # given up; replug if it persists
