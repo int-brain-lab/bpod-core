@@ -4,12 +4,13 @@ import datetime as dt
 import re
 import threading
 from collections.abc import Mapping
+from math import inf
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, cast
 
 import msgspec
-from cachetools import FIFOCache
+from cachetools import LRUCache
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
     BaseModel,
@@ -24,6 +25,7 @@ from pydantic import (
 from pydantic_core import PydanticCustomError
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 from pydantic_extra_types.color import Color, ColorType
+from typing_extensions import override
 from xxhash import xxh3_64 as _xxh3_64
 
 from bpod_core.constants import UINT16_MAX, UINT32_MAX
@@ -55,8 +57,21 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
 
 _timedelta_adapter = TypeAdapter(dt.timedelta)
 
+_STATE_NAME_PATTERN = re.compile(r'^(?!>)(?!exit$)(?!back$).+$')
+_OPERATOR_PATTERN = re.compile(r'^>.+$')
+
+
+# The wrap validators below return early for values certain to pass: calling the handler
+# is what makes them slow. Anything else takes the handler, which words the errors, and
+# checks that strings beyond ASCII are valid Unicode.
+
 
 def _validate_seconds(v: Any, h: ValidatorFunctionWrapHandler) -> float:
+    # every field using this accepts these; larger ints may not convert to a float
+    if type(v) is float and 0.0 <= v < inf:
+        return v
+    if type(v) is int and 0 <= v < 2**53:
+        return float(v)
     try:
         return cast('float', h(v))
     except ValidationError as e1:
@@ -80,6 +95,8 @@ def _validate_state_timer(v: Any, h: ValidatorFunctionWrapHandler) -> float:
 
 
 def _validate_state_name(v: Any, h: ValidatorFunctionWrapHandler) -> 'StateName':
+    if type(v) is str and v.isascii() and _STATE_NAME_PATTERN.match(v):
+        return v
     try:
         return cast('StateName', h(v))
     except ValidationError as e:
@@ -125,6 +142,17 @@ def _validate_operator(v: Any, h: ValidatorFunctionWrapHandler) -> 'Operator':
             detail = f"Invalid State Machine Operator '{v}' - {detail}"
             raise PydanticCustomError(error_type, detail) from e
         raise
+
+
+def _validate_target(v: Any, h: ValidatorFunctionWrapHandler) -> 'Target':
+    # also spares operators from first failing as a state name
+    if (
+        type(v) is str
+        and v.isascii()
+        and (_STATE_NAME_PATTERN.match(v) or _OPERATOR_PATTERN.match(v))
+    ):
+        return v
+    return cast('Target', h(v))
 
 
 def _validate_binary_string(v: Any) -> Any:
@@ -306,7 +334,7 @@ StateName = Annotated[
         title='State Name',
         description='The name of the state',
         min_length=1,
-        pattern=re.compile(r'^(?!>)(?!exit$)(?!back$).+$'),
+        pattern=_STATE_NAME_PATTERN,
         strict=True,
     ),
     WrapValidator(_validate_state_name),
@@ -327,13 +355,16 @@ Operator = Annotated[
     Field(
         title='State Machine Operator',
         description='A state machine operator',
-        pattern=re.compile(r'^>.+$'),
+        pattern=_OPERATOR_PATTERN,
         min_length=2,
         examples=['>exit', '>back'],
         strict=True,
     ),
     WrapValidator(_validate_operator),
 ]
+
+Target = Annotated[StateName | Operator, WrapValidator(_validate_target)]
+"""A valid target of a state transition."""
 
 
 class Actions(ValidatedDict[OutputActionName, OutputActionValue], title='Actions'):
@@ -346,16 +377,12 @@ class Actions(ValidatedDict[OutputActionName, OutputActionValue], title='Actions
         ) -> None: ...
 
 
-class Transitions(
-    ValidatedDict[Event, StateName | Operator], title='State Transitions'
-):
+class Transitions(ValidatedDict[Event, Target], title='State Transitions'):
     """A collection of state transitions."""
 
     if TYPE_CHECKING:
 
-        def __init__(
-            self, root: dict[Event, StateName | Operator] | None = ...
-        ) -> None: ...
+        def __init__(self, root: dict[Event, Target] | None = ...) -> None: ...
 
 
 class State(BaseModel, title='State'):
@@ -430,6 +457,19 @@ class States(ValidatedDict[StateName, State], title='States'):
 
     model_config = ConfigDict(json_schema_extra={'additionalProperties': False})
 
+    @override
+    def __setitem__(self, key: StateName, value: State) -> None:
+        # a State is valid already, so only a key that may not be needs validating
+        if (
+            type(value) is State
+            and type(key) is str
+            and key.isascii()
+            and _STATE_NAME_PATTERN.match(key)
+        ):
+            self.root[key] = value
+        else:
+            super().__setitem__(key, value)
+
     @property
     def transition_targets(self) -> set[str]:
         """A set of all transition targets."""
@@ -499,7 +539,7 @@ class StateMachine(BaseModel, title='State Machine'):
     )
     """A dictionary of conditions."""
 
-    _validation_cache: ClassVar[FIFOCache[bytes, _CheckData]] = FIFOCache(maxsize=1024)
+    _validation_cache: ClassVar[LRUCache[bytes, _CheckData]] = LRUCache(maxsize=128)
     """Cache holding hashes of successfully validated state machine instances."""
 
     _validation_lock: ClassVar[threading.Lock] = threading.Lock()
@@ -517,7 +557,7 @@ class StateMachine(BaseModel, title='State Machine'):
         self,
         name: StateName,
         timer: StateTimer = 0.0,
-        transitions: Mapping[Event, StateName | Operator] | None = None,
+        transitions: Mapping[Event, Target] | None = None,
         actions: Mapping[OutputActionName, OutputActionValue] | None = None,
         comment: StateComment | None = None,
     ) -> None:

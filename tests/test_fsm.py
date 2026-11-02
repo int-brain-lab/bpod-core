@@ -1,4 +1,4 @@
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
 from pathlib import Path
 
 import msgspec
@@ -6,7 +6,15 @@ import numpy as np
 import pytest
 from pydantic import ValidationError, create_model
 
-from bpod_core.fsm import State, StateMachine, Transitions, dec_hook, enc_hook
+from bpod_core.fsm import (
+    GlobalTimer,
+    State,
+    StateMachine,
+    States,
+    Transitions,
+    dec_hook,
+    enc_hook,
+)
 
 
 class TestEncDecHooks:
@@ -497,6 +505,70 @@ class TestValidation:
         fsm = StateMachine()
         fsm.add_state('a', actions={'PWM1': 65535})
         assert fsm.states['a'].actions == {'PWM1': 65535}
+
+
+def _skipping_early_returns(value: object) -> object:
+    """`value` as an instance of a subclass, which early returns don't accept."""
+    return type('Subclass', (type(value),), {})(value)
+
+
+def _set_state(name: str) -> States:
+    states = States()
+    states[name] = State()
+    return states
+
+
+def _outcome(validate: Callable[..., object], value: object) -> str:
+    """What `validate` makes of `value`; a string, to compare NaN and -0.0 as well."""
+    try:
+        return repr(validate(value))
+    except ValidationError:
+        return 'invalid'
+
+
+class TestEarlyReturns:
+    @pytest.mark.parametrize(
+        'validate',
+        [lambda s: Transitions({'Tup': s}), lambda s: States({s: State()}), _set_state],
+    )
+    @pytest.mark.parametrize(
+        'value', ['a', '>x', 'exit', 'back', '>', '', 'a\n', '>\n', 'é', 'a\ud800']
+    )
+    def test_strings(self, validate, value):
+        """A string gets the same result with an early return as without one."""
+        assert _outcome(validate, value) == _outcome(
+            validate, _skipping_early_returns(value)
+        )
+
+    @pytest.mark.parametrize(
+        'validate',
+        [
+            lambda t: State(timer=t).timer,
+            lambda t: GlobalTimer(duration=t).duration,
+            lambda t: GlobalTimer(duration=1, onset_delay=t).onset_delay,
+            lambda t: GlobalTimer(duration=1, loop_interval=t).loop_interval,
+        ],
+    )
+    @pytest.mark.parametrize(
+        'value',
+        [
+            *(0.0, -0.0, 1.5, 5e-324, -1.0, np.inf, -np.inf, np.nan),
+            *(0, 1, -1, 2**53 - 1, 2**53, 2**53 + 1, 10**309),
+        ],
+    )
+    def test_seconds(self, validate, value):
+        """A number gets the same result with an early return as without one."""
+        assert _outcome(validate, value) == _outcome(
+            validate, _skipping_early_returns(value)
+        )
+
+    def test_setting_a_state_stores_it(self):
+        """A valid name and state are stored as they are; others are still validated."""
+        states, state = States(), State()
+        states['a'] = state
+        states['b'] = {'timer': 1}
+        assert states['a'] is state
+        assert states['b'].timer == 1.0
 
 
 class TestCheck:
