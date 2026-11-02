@@ -19,6 +19,7 @@ from bpod_core.bpod.constants import (
     _CHANNEL_BASE_NAME_GLOBAL_TIMER,
     CHANNEL_TYPES_INPUT,
     CHANNEL_TYPES_OUTPUT,
+    MAX_STATE_MACHINE_BYTES,
     VALID_OPERATORS,
     FlexIOChannelType,
 )
@@ -991,7 +992,12 @@ class StateMachineCompiler:
             fsm_bytes.append(0)
 
         # HEADER
-        struct.pack_into('<?H', fsm_bytes, 0, use_back_op, len(fsm_bytes) - 3)
+        if (n_bytes := len(fsm_bytes) - 3) > MAX_STATE_MACHINE_BYTES:
+            raise ValueError(
+                f'The state machine needs {n_bytes:,} bytes - the Bpod takes up to '
+                f'{MAX_STATE_MACHINE_BYTES:,}: use fewer states, transitions or actions'
+            )
+        struct.pack_into('<?H', fsm_bytes, 0, use_back_op, n_bytes)
 
         # store the compiled state machine for future use, as immutable bytes
         compiled = (bytes(fsm_bytes), annotations)

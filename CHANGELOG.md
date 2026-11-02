@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `run()` refuses a state machine that compiles to more than 49,999 bytes with a
+  `ValueError`: the Bpod doesn't load one that large, and ran its bytes as commands.
+
 ### Security
 
 - on Python 3.11 and newer, bpod-core requires `filelock` 4.2.1 or newer, which fixes

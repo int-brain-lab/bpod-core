@@ -134,6 +134,18 @@ class TestValidateAndCompile:
         ):
             make_compiler().validate(fsm)
 
+    def test_state_machine_too_large_for_the_bpod_is_rejected(self):
+        """A state machine compiling to more bytes than the Bpod takes is rejected."""
+        events = [f'Serial{i}_{j}' for i in (1, 2, 3) for j in range(15)]
+        events += [f'GlobalTimer{i}_{e}' for i in range(16) for e in ('Start', 'End')]
+        events += [f'Port{i}_{level}' for i in range(1, 6) for level in ('High', 'Low')]
+        events += [f'GlobalCounter{i}_End' for i in range(8)]
+        fsm = StateMachine()
+        for i in range(255):
+            fsm.add_state(f's{i}', 1, dict.fromkeys(events, f's{(i + 1) % 255}'))
+        with pytest.raises(ValueError, match='needs 52,538 bytes - the Bpod takes'):
+            make_compiler().compile(state_machine=fsm)
+
     def test_compiled_state_machines_are_shared_across_instances(self):
         """Compilers for the same hardware reuse each other's immutable results."""
         fsm = StateMachine()
