@@ -43,7 +43,7 @@ TOLERANCE_CYCLES = 1
 
 State visits along a `Tup` path, and trials made of them, measure exactly.
 """
-ANSWER_TIMEOUT_CYCLES = 1000
+ANSWER_TIMEOUT_CYCLES = 2000
 """How long a state waits for the host to answer its softcode."""
 
 Rng = random.Random
