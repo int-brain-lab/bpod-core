@@ -994,8 +994,9 @@ class StateMachineCompiler:
         # HEADER
         if (n_bytes := len(fsm_bytes) - 3) > MAX_STATE_MACHINE_BYTES:
             raise ValueError(
-                f'The state machine needs {n_bytes:,} bytes - the Bpod takes up to '
-                f'{MAX_STATE_MACHINE_BYTES:,}: use fewer states, transitions or actions'
+                f'State machine compiles to {n_bytes:,} bytes - the Bpod supports up '
+                f'to {MAX_STATE_MACHINE_BYTES:,}: use fewer states, transitions or '
+                'actions'
             )
         struct.pack_into('<?H', fsm_bytes, 0, use_back_op, n_bytes)
 

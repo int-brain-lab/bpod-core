@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `run()` refuses a state machine that compiles to more than 49,999 bytes with a
-  `ValueError`: the Bpod doesn't load one that large, and ran its bytes as commands.
+- `run()` raises a `ValueError` for a state machine of more than 49,999 bytes: the Bpod
+  doesn't load one that large, and took its bytes for commands.
 
 ### Security
 

@@ -143,7 +143,7 @@ class TestValidateAndCompile:
         fsm = StateMachine()
         for i in range(255):
             fsm.add_state(f's{i}', 1, dict.fromkeys(events, f's{(i + 1) % 255}'))
-        with pytest.raises(ValueError, match='needs 52,538 bytes - the Bpod takes'):
+        with pytest.raises(ValueError, match='compiles to 52,538 bytes'):
             make_compiler().compile(state_machine=fsm)
 
     def test_compiled_state_machines_are_shared_across_instances(self):
