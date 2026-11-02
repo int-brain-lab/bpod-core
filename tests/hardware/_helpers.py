@@ -136,6 +136,47 @@ def _large() -> StateMachine:
     return fsm
 
 
+def _largest(bpod: Bpod) -> StateMachine:
+    """A trial through every state in turn, in about the largest machine the Bpod takes.
+
+    Each state lasts a cycle, the last 100 ms: long enough for the next machine to
+    arrive meanwhile, also over full-speed USB. Transitions on events that never fire -
+    global timers and counters nothing starts, softcodes nobody sends, module ports
+    without a module - fill the machine up to the firmware's limit.
+    """
+    dead = [
+        event
+        for event in bpod.input_event_names
+        if event.startswith(('GlobalTimer', 'GlobalCounter', 'SoftCode'))
+    ]
+    for module in bpod.modules.values():
+        if not module.is_connected:
+            dead += module.event_names
+    names = [f's{i}' for i in range(bpod._hardware.max_states - 1)]
+
+    def machine(n_dead: int) -> StateMachine:
+        """The trial, with `n_dead` dead transitions spread over its states."""
+        fsm = _chain(*((name, 1e-4, {}) for name in names[:-1]), (names[-1], 0.1, {}))
+        for i, state in enumerate(fsm.states.values()):
+            n = n_dead // len(names) + (i < n_dead % len(names))
+            state.transitions.update(dict.fromkeys(dead[:n], names[0]))
+        return fsm
+
+    def fits(n_dead: int) -> bool:
+        fsm = machine(n_dead)
+        try:
+            bpod._compiler.compile(state_machine=fsm, validate=False)
+        except ValueError:  # more bytes than the Bpod takes
+            return False
+        return True
+
+    low, high = 0, len(names) * len(dead)  # the most dead transitions that fit
+    while low < high:
+        middle = (low + high + 1) // 2
+        low, high = (middle, high) if fits(middle) else (low, middle - 1)
+    return machine(low)
+
+
 def _timed(events: Events, prefix: str) -> list[tuple[str, int]]:
     """The events starting with `prefix`, with their cycles."""
     return [(event, cycle) for _, event, cycle in events if event.startswith(prefix)]

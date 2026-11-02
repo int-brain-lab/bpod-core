@@ -21,6 +21,7 @@ from ._helpers import (
     _counted,
     _counter_trial,
     _large,
+    _largest,
     _probe_module,
     _pulse,
     _timed,
@@ -494,6 +495,23 @@ class TestTrials:
         run_guarded(trials, timeout=2)
         data = bpod.get_data()
         assert (data['Type'] == 'TrialEnd').sum() == 10, 'trials read to their end'
+
+    def test_largest_machine_runs_intact(self, bpod, run_guarded):
+        """The largest state machine the Bpod takes runs as sent, alone and queued.
+
+        Its trial ends every state in turn on its timer: a table loaded wrong, or a
+        dead transition that fired, would leave that path.
+        """
+        fsm = _largest(bpod)
+
+        def trials() -> None:
+            for _ in range(4):
+                bpod.run(fsm)  # the first from idle, the others queued
+            bpod.wait()
+
+        run_guarded(trials, timeout=5)
+        tups = bpod.get_data().filter(pl.col('Event').cast(pl.String) == 'Tup')
+        assert tups['State'].cast(pl.String).to_list() == list(fsm.states) * 4
 
     def test_queued_machine_loads_intact(self, bpod, fuzz_seed, run_guarded):
         """A machine loaded during a busy trial sends exactly its own softcodes.
