@@ -593,7 +593,7 @@ def _make_fsm(
     state_action_indices: list[dict[int, int]] | None = None,
 ) -> _StateMachineLookup:
     """Build a minimal CompiledStateMachine for testing."""
-    mat = [[state] * 255 for state in range(n_states)]
+    mat = [bytearray((state,)) * 255 for state in range(n_states)]
     for (state, event), target in (transitions or {}).items():
         mat[state][event] = target
     state_names = [f'S{i}' for i in range(n_states)]

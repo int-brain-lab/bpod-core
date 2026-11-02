@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run()` raises a `ValueError` for a state machine of more than 49,999 bytes: the Bpod
   doesn't load one that large, and took its bytes for commands.
 
+### Changed
+
+- building and compiling state machines takes 25-30% less time.
+- the state machine caches keep the 128 most recently used machines rather than the
+  last 1024. With many large machines, this and a smaller transition matrix cut
+  garbage collection pauses from about 200 ms to 20-50 ms, and memory by a factor of 8.
+
 ### Security
 
 - on Python 3.11 and newer, bpod-core requires `filelock` 4.2.1 or newer, which fixes

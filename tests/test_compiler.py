@@ -103,6 +103,58 @@ class TestTables:
 
 
 class TestValidateAndCompile:
+    @pytest.mark.parametrize(
+        ('n_states', 'last_target', 'expected'),
+        [(255, '>exit', 255), (254, '>exit', 254), (254, '>back', 255)],
+    )
+    def test_largest_targets_fit_the_transition_matrix(
+        self, n_states, last_target, expected
+    ):
+        """The exit and back targets of the largest machines fit a row's bytes."""
+        fsm = StateMachine()
+        for i in range(n_states - 1):
+            fsm.add_state(f's{i}', 1, {'Tup': f's{i + 1}'})
+        fsm.add_state(f's{n_states - 1}', 1, {'Tup': last_target})
+        _, lookup = make_compiler().compile(state_machine=fsm)
+        assert expected in lookup.state_transition_matrix[-1]
+
+    def test_events_without_a_transition_keep_the_state(self):
+        """A matrix row defaults to its own state, which EventThread relies on."""
+        fsm = StateMachine()
+        fsm.add_state('a', 1, {'Tup': 'b'})
+        fsm.add_state('b', 1, {'Tup': '>exit'})
+        _, lookup = make_compiler().compile(state_machine=fsm)
+        rows = lookup.state_transition_matrix
+        assert [row.count(i) for i, row in enumerate(rows)] == [254, 254]
+
+    @pytest.mark.parametrize(
+        ('timer', 'counter', 'action', 'message'),
+        [
+            (False, False, 'GlobalTimerTrig', 'no global timer has been set'),
+            (False, True, 'GlobalTimerCancel', 'no global timer has been set'),
+            (False, False, 'GlobalCounterReset', 'no global counter has been set'),
+            (True, False, 'GlobalCounterReset', 'no global counter has been set'),
+        ],
+    )
+    def test_action_needs_its_timer_or_counter(self, timer, counter, action, message):
+        """Global timer and counter actions need one to be set, whichever others are."""
+        fsm = StateMachine()
+        if timer:
+            fsm.set_global_timer(0, duration=1)
+        if counter:
+            fsm.set_global_counter(0, 'Port1_High', 1)
+        fsm.add_state('a', 1, actions={action: 0})
+        with pytest.raises(ValueError, match=message):
+            make_compiler().validate(fsm)
+
+    def test_unknown_timer_channel_is_rejected_with_a_suggestion(self):
+        """A misspelled global timer channel is rejected, suggesting the closest."""
+        fsm = StateMachine()
+        fsm.set_global_timer(0, duration=1, channel='Valv1')
+        fsm.add_state('a', 1)
+        with pytest.raises(ValueError, match=r"'Valv1'.*did you mean 'Valve1'"):
+            make_compiler().validate(fsm)
+
     def test_unknown_event_is_rejected_with_a_suggestion(self):
         """A misspelled event name is rejected, suggesting the closest valid one."""
         fsm = StateMachine()
@@ -248,3 +300,64 @@ class TestValidateAndCompile:
         fsm.add_state('a', 1, actions=actions)
         compiler = make_compiler((AI, OFF, OFF, OFF), {'Flex1': [2500, 2500]})
         compiler.compile(state_machine=fsm)
+
+
+class TestCaching:
+    def test_recurring_machine_outlives_one_offs(self):
+        """A machine compiled again stays cached while one-off machines drop out."""
+
+        def machine(timer: float) -> StateMachine:
+            fsm = StateMachine()
+            fsm.add_state('a', timer, {'Tup': '>exit'})
+            return fsm
+
+        compiler = make_compiler()
+        recurring = machine(1)
+        first = compiler.compile(state_machine=recurring)
+        for i in range(compiler._compilation_cache.maxsize + 1):
+            compiler.compile(state_machine=machine(2 + i))
+            assert compiler.compile(state_machine=recurring) is first
+
+
+class TestActionSections:
+    @pytest.mark.parametrize('action', ['AnalogThreshEnable', 'AnalogThreshDisable'])
+    def test_zero_threshold_bitmask_sends_nothing(self, action):
+        """A zero bitmask arms or disarms nothing, like leaving the action out."""
+        with_action, without = StateMachine(), StateMachine()
+        with_action.add_state('a', 1, actions={action: 0})
+        without.add_state('a', 1)
+        compiler = make_compiler()
+        compiled, _ = compiler.compile(state_machine=with_action)
+        assert compiled == compiler.compile(state_machine=without)[0]
+
+    @pytest.mark.parametrize(
+        ('action', 'bitmasks'),
+        [('GlobalTimerTrig', (0b100, 0)), ('GlobalTimerCancel', (0, 0b100))],
+    )
+    def test_timer_bitmasks(self, action, bitmasks):
+        """Triggers come before cancels, with one bit per global timer."""
+        fsm = StateMachine()
+        fsm.set_global_timer(2, duration=1)
+        fsm.add_state('a', 1, actions={action: 2})
+        compiled, _ = make_compiler().compile(state_machine=fsm)
+        # from the end: footer, 3 uint32 per timer, state timer, onset trigger per timer
+        end = -(1 + 3 * 3 * 4 + 4 + 3 * 2)
+        assert compiled[end - 4 : end] == struct.pack('<2H', *bitmasks)
+
+    @pytest.mark.parametrize(
+        ('firmware', 'n_footer_bytes', 'resets'),
+        [((22, 0), 0, bytes((0, 2, 0))), ((23, 0), 1, bytes((1, 1, 2)))],
+    )
+    def test_counter_resets(self, firmware, n_footer_bytes, resets):
+        """Firmware 23 lists the states that reset a counter; older gets every state."""
+        fsm = StateMachine()
+        fsm.set_global_counter(1, 'Port1_High', 5)
+        fsm.add_state('a', 1, {'Tup': 'b'})
+        fsm.add_state('b', 1, {'Tup': 'c'}, {'GlobalCounterReset': 1})
+        fsm.add_state('c', 1, {'Tup': '>exit'})
+        version = msgspec.structs.replace(VERSION, firmware=firmware)
+        compiled, _ = make_compiler(version=version).compile(state_machine=fsm)
+        # from the end: footer, counter thresholds, state timers, triggers and cancels,
+        # the 2 counts of the threshold sections
+        end = -(n_footer_bytes + 2 * 4 + 3 * 4 + 2 * 3 * 2 + 2)
+        assert compiled[end - 3 : end] == resets

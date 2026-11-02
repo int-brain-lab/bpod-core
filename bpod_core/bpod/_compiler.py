@@ -9,7 +9,7 @@ from time import perf_counter_ns
 from typing import ClassVar
 
 import msgspec
-from cachetools import FIFOCache
+from cachetools import LRUCache
 from xxhash import xxh3_64 as _xxh3_64
 
 from bpod_core.bpod._threads import _build_event_tables, _EventTables
@@ -93,12 +93,12 @@ class StateMachineCompiler:
         needed for channels configured as analog inputs.
     """
 
-    _validation_cache: ClassVar[FIFOCache[tuple[bytes, bytes], _ValidationData]] = (
-        FIFOCache(maxsize=1024)
+    _validation_cache: ClassVar[LRUCache[tuple[bytes, bytes], _ValidationData]] = (
+        LRUCache(maxsize=128)
     )
     _compilation_cache: ClassVar[
-        FIFOCache[tuple[bytes, bytes, bool], tuple[bytes, _StateMachineLookup]]
-    ] = FIFOCache(maxsize=1024)
+        LRUCache[tuple[bytes, bytes, bool], tuple[bytes, _StateMachineLookup]]
+    ] = LRUCache(maxsize=128)
     # all compilers share the caches, possibly from several threads
     _cache_lock: ClassVar[threading.Lock] = threading.Lock()
 
@@ -139,9 +139,23 @@ class StateMachineCompiler:
         self._version = version
         self._modules = {name: list(events) for name, events in modules.items()}
         self._flexio_types = dict(flexio_channel_types)
+        self._flexio_channel_types = tuple(self._flexio_types.values())
         self._threshold_voltages = dict(threshold_voltages)
         self.serial_event_allocation = self._compile_input_events()
         self._compile_output_actions()
+
+        # what validate() accepts, by whether global timers and counters are set
+        self._valid_input_events = frozenset(self.input_event_names)
+        actions = frozenset(self.action_names)
+        timer_actions = frozenset(self._global_timer_actions)
+        counter_actions = frozenset(self._global_counter_actions)
+        self._valid_actions = {
+            (True, True): actions,
+            (True, False): actions - counter_actions,
+            (False, True): actions - timer_actions,
+            (False, False): actions - timer_actions - counter_actions,
+        }
+
         self.event_tables = _build_event_tables(
             self._input_events, self.actions, self.resettable_actions
         )
@@ -167,7 +181,6 @@ class StateMachineCompiler:
         event_channels: list[str | None] = []
         event_values: list[int | None] = []
         non_bindable_events: list[str] = []
-        flexio_types = tuple(self._flexio_types.values())
 
         # physical input channel events
         counters = dict.fromkeys(CHANNEL_TYPES_INPUT, 0)
@@ -195,7 +208,7 @@ class StateMachineCompiler:
                         ev_names = [f'{channel}_{s}' for s in ('Trig0', 'Trig1')]
                         ev_values = list(self._threshold_voltages[channel])
                         if is_flexio_threshold_ambiguous(
-                            flexio_types, counters[io_key]
+                            self._flexio_channel_types, counters[io_key]
                         ):
                             non_bindable_events.extend(ev_names)
                     case _:
@@ -350,7 +363,6 @@ class StateMachineCompiler:
 
     def _compute_hardware_hash(self) -> bytes:
         """Compute a hash for the current hardware configuration."""
-        flexio_channel_types = tuple(self._flexio_types.values())
         return _xxh3_64(
             msgspec.msgpack.encode(
                 (
@@ -359,7 +371,7 @@ class StateMachineCompiler:
                     self._version.machine,
                     self._input_events.names,
                     self.actions,
-                    flexio_channel_types,
+                    self._flexio_channel_types,
                 ),
                 order='deterministic',
             )
@@ -441,16 +453,12 @@ class StateMachineCompiler:
                 )
 
         # define valid input events and actions
-        valid_input_events = set(self.input_event_names)
-        valid_actions = set(self.action_names)
-        if not global_timer_ids:
-            # TODO: remove global timer events from valid_input_events
-            valid_actions -= set(self._global_timer_actions)
-        if not global_counter_ids:
-            # TODO: remove global counter events from valid_input_events
-            valid_actions -= set(self._global_counter_actions)
-        if not condition_ids:
-            pass  # TODO: remove condition events from valid_input_events
+        # TODO: remove the events of unset global timers, global counters and conditions
+        #       from valid_input_events
+        valid_input_events = self._valid_input_events
+        valid_actions = self._valid_actions[
+            bool(global_timer_ids), bool(global_counter_ids)
+        ]
 
         # validate states
         max_time_uint32 = UINT32_MAX / self._hardware.cycle_frequency
@@ -521,11 +529,9 @@ class StateMachineCompiler:
                         f"'{action_name}' in state '{state_name}' - FlexIO analog "
                         f'output actions must be between 0 and 5000 (mV)'
                     )
-                if (
-                    action_name in ('AnalogThreshEnable', 'AnalogThreshDisable')
-                    and self._flexio_types
+                if action_name in ('AnalogThreshEnable', 'AnalogThreshDisable') and (
+                    channel_types := self._flexio_channel_types
                 ):
-                    channel_types = list(self._flexio_types.values())
                     if int(action_value) >> len(channel_types):
                         raise ValueError(
                             f'Invalid value {action_value!r} for action '
@@ -575,7 +581,7 @@ class StateMachineCompiler:
         # validate global timers
         if global_timer_ids:
             for timer_id, timer in state_machine.global_timers.items():
-                if timer.channel not in (*self._physical_output_channels, None):
+                if timer.channel not in self._timer_channel_indices:
                     raise ValueError(
                         f"Invalid channel '{timer.channel}' for Global Timer {timer_id}"
                         + suggest_similar(
@@ -756,19 +762,30 @@ class StateMachineCompiler:
         condition_channel_indices = self._condition_channel_indices
         timer_channel_indices = self._timer_channel_indices
 
-        # indexed transitions per state
-        state_transition_indices = [
-            [(event_indices[e], target_indices[t]) for e, t in s.transitions.items()]
-            for s in states
+        # sort each transition into the state transition matrix (n_states x 255 events)
+        # and the section of the wire format it belongs to: Tup, which defaults to the
+        # state itself, or the range of its event, as flat lists of relative event
+        # indices and target indices by state - for use in append_events closure
+        event_groups = self._event_groups
+        state_transition_matrix: list[bytearray] = []
+        tup_targets = bytearray(range(n_states))
+        grouped_transitions: list[dict[int, list[int]]] = [
+            {} for _ in self._input_event_ranges
         ]
-
-        # build the state transition matrix (n_states x 255 events)
-        state_transition_matrix = [[state_idx] * 255 for state_idx in range(n_states)]
-        for targets, transitions in zip(
-            state_transition_matrix, state_transition_indices, strict=True
-        ):
-            for event_idx, target_idx in transitions:
+        for state_idx, state in enumerate(states):
+            targets = bytearray((state_idx,)) * 255
+            state_transition_matrix.append(targets)
+            for event_name, target_name in state.transitions.items():
+                event_idx = event_indices[event_name]
+                target_idx = target_indices[target_name]
                 targets[event_idx] = target_idx
+                if (group := event_groups.get(event_idx)) is None:
+                    tup_targets[state_idx] = target_idx
+                else:
+                    group_idx, relative_idx = group
+                    grouped_transitions[group_idx].setdefault(state_idx, []).extend(
+                        (relative_idx, target_idx)
+                    )
 
         # FlexIO analog outputs take millivolts (0-5000), sent as DAC counts. Every
         # other value must already be an integer (enforced during validation) and
@@ -779,26 +796,45 @@ class StateMachineCompiler:
             if channel_type == FlexIOChannelType.ANALOG_OUTPUT
         }
 
-        # scale action values once, shared by the wire-encoding section further down
-        # and (for non-FlexIO actions) the annotation below
-        state_actions = [
-            {
-                k: _mv_to_counts(v) if k in analog_outputs else int(v)
-                for k, v in s.actions.items()
-            }
-            for s in states
-        ]
-
-        # the annotation EventThread uses to record get_data()'s reported value,
-        # keyed by action index; FlexIO ANALOG_OUTPUT is reported in millivolts (what
-        # was actually applied to the pin), not the wire's raw DAC count
-        state_action_indices = [
-            {
-                action_indices[k]: _counts_to_mv(v) if k in analog_outputs else v
-                for k, v in a.items()
-            }
-            for a in state_actions
-        ]
+        # sort each action into the section of the wire format it belongs to, and into
+        # the annotation EventThread uses to record get_data()'s reported value, keyed
+        # by action index; FlexIO ANALOG_OUTPUT is reported in millivolts (what was
+        # actually applied to the pin), not the wire's raw DAC count
+        first_special_action = action_indices['GlobalTimerTrig']
+        state_action_indices: list[dict[int, int]] = []
+        output_actions: list[int] = []  # per state: [count] [action_idx, value] ...
+        counter_resets: dict[int, int] = {}  # by state index: the value + 1
+        thresholds_enabled: list[int] = []  # [state_idx, bitmask] ...
+        thresholds_disabled: list[int] = []  # [state_idx, bitmask] ...
+        timer_triggers = [0] * n_states
+        timer_cancels = [0] * n_states
+        for state_idx, state in enumerate(states):
+            reported: dict[int, int] = {}
+            state_action_indices.append(reported)
+            count_pos = len(output_actions)
+            output_actions.append(0)
+            for name, value in state.actions.items():
+                action_idx = action_indices[name]
+                if name in analog_outputs:
+                    scaled = _mv_to_counts(value)
+                    reported[action_idx] = _counts_to_mv(scaled)
+                else:
+                    scaled = reported[action_idx] = int(value)
+                if action_idx < first_special_action:
+                    output_actions[count_pos] += 1
+                    output_actions.extend((action_idx, scaled))
+                elif name == 'GlobalTimerTrig':
+                    timer_triggers[state_idx] = 1 << scaled
+                elif name == 'GlobalTimerCancel':
+                    timer_cancels[state_idx] = 1 << scaled
+                elif name == 'GlobalCounterReset':
+                    counter_resets[state_idx] = scaled + 1
+                elif scaled == 0:  # no thresholds to arm or disarm
+                    continue
+                elif name == 'AnalogThreshEnable':
+                    thresholds_enabled.extend((state_idx, scaled))
+                else:
+                    thresholds_disabled.extend((state_idx, scaled))
 
         # build annotation data structure for event decoding in EventThread
         annotations = _StateMachineLookup(
@@ -817,30 +853,18 @@ class StateMachineCompiler:
         # at the very end of the compilation
         fsm_bytes = bytearray(3)
 
-        # transitions per event range and state, as flat lists of relative event
-        # indices and target indices - for use in append_events closure
-        grouped_transitions: list[list[list[int]]] = [
-            [[] for _ in states] for _ in self._input_event_ranges
-        ]
-        for state_idx, transitions in enumerate(state_transition_indices):
-            for event_idx, target_idx in transitions:
-                if (group := self._event_groups.get(event_idx)) is not None:
-                    group_idx, relative_idx = group
-                    grouped_transitions[group_idx][state_idx].extend(
-                        (relative_idx, target_idx)
-                    )
-
-        def append_events(transitions_per_state: list[list[int]]) -> None:
+        def append_events(transitions_by_state: dict[int, list[int]]) -> None:
             """Append each state's transitions for one range of events to fsm_bytes.
 
             For each state: [count] [event_idx, target_idx] ..., where count is the
             number of transitions, event_idx is relative to the range's first event,
             and target_idx is the target state index.
             """
-            if not any(transitions_per_state):  # unused range: a zero count per state
-                fsm_bytes.extend(bytes(len(transitions_per_state)))
+            if not transitions_by_state:  # unused range: a zero count per state
+                fsm_bytes.extend(bytes(n_states))
                 return
-            for transitions in transitions_per_state:
+            for state_idx in range(n_states):
+                transitions = transitions_by_state.get(state_idx, ())
                 fsm_bytes.append(len(transitions) // 2)
                 fsm_bytes.extend(transitions)
 
@@ -849,8 +873,7 @@ class StateMachineCompiler:
 
         # STATE TIMER TARGET INDICES (n_states bytes):
         # Target state index for each state's 'Tup' event (defaults to self)
-        tup_index = event_indices['Tup']
-        fsm_bytes.extend(targets[tup_index] for targets in state_transition_matrix)
+        fsm_bytes.extend(tup_targets)
 
         # INPUT EVENTS (variable length, per state):
         #   [count] [event_idx, target_idx] ...  for events on physical input channels
@@ -859,23 +882,16 @@ class StateMachineCompiler:
 
         # ACTIONS (variable length, per state):
         #   [count] [action_idx, value] ...  (8-bit on Bpod 0.5-1, 16-bit on Bpod 2+)
-        i1 = action_indices['GlobalTimerTrig']
-        tmp_list: list[int] = []
-        for actions in state_actions:
-            counter_pos = len(tmp_list)
-            tmp_list.append(0)
-            for action_name, action_value in actions.items():
-                if (key_idx := action_indices[action_name]) < i1:
-                    tmp_list[counter_pos] += 1
-                    tmp_list.extend((key_idx, action_value))
         extend_packed(
-            fsm_bytes, tmp_list, FMT_UINT16_LE if version.machine == 4 else FMT_UINT8
+            fsm_bytes,
+            output_actions,
+            FMT_UINT16_LE if version.machine == 4 else FMT_UINT8,
         )
 
         # REMAINING EVENTS (global timer starts/ends, global counter ends, conditions)
         #   [count] [event_idx, target_idx] ...  for each event
-        for transitions_per_state in remaining_transitions:
-            append_events(transitions_per_state)
+        for transitions_by_state in remaining_transitions:
+            append_events(transitions_by_state)
 
         if n_global_timers:
             # GLOBAL TIMER CHANNELS
@@ -921,27 +937,18 @@ class StateMachineCompiler:
             fsm_bytes.extend(c.value if c else 0 for c in conditions_list)
 
         if version.firmware < (23, 0):
-            fsm_bytes.extend(
-                actions.get('GlobalCounterReset', -1) + 1 for actions in state_actions
-            )
+            fsm_bytes.extend(counter_resets.get(i, 0) for i in range(n_states))
         else:
-            counter_idx = len(fsm_bytes)
-            fsm_bytes.append(0)
-            for state_idx, actions in enumerate(state_actions):
-                if (value := actions.get('GlobalCounterReset', -1)) >= 0:
-                    fsm_bytes[counter_idx] += 1
-                    fsm_bytes.extend([state_idx, value + 1])
+            fsm_bytes.append(len(counter_resets))
+            for state_idx, reset in counter_resets.items():
+                fsm_bytes.extend((state_idx, reset))
 
         # ANALOG THRESHOLDS (variable length, per action):
         #   [count] [state_idx, bitmask] ...  for states that arm/disarm thresholds
         if version.machine == 4:
-            for key in ('AnalogThreshEnable', 'AnalogThreshDisable'):
-                count_pos = len(fsm_bytes)
-                fsm_bytes.append(0)
-                for state_idx, actions in enumerate(state_actions):
-                    if bitmask := actions.get(key, 0):
-                        fsm_bytes[count_pos] += 1
-                        fsm_bytes.extend([state_idx, bitmask])
+            for thresholds in (thresholds_enabled, thresholds_disabled):
+                fsm_bytes.append(len(thresholds) // 2)
+                fsm_bytes.extend(thresholds)
 
         # Timer trigger/cancel bitmasks need enough bits to address all timers.
         # Use the smallest integer type that fits n_global_timers bits.
@@ -953,8 +960,7 @@ class StateMachineCompiler:
             format_string = FMT_UINT8
 
         # GLOBAL TIMER TRIGGERS AND CANCELS (bitmasks, one bit per timer)
-        for key in ('GlobalTimerTrig', 'GlobalTimerCancel'):
-            bitmasks = [1 << a[key] if key in a else 0 for a in state_actions]
+        for bitmasks in (timer_triggers, timer_cancels):
             extend_packed(fsm_bytes, bitmasks, format_string)
 
         # GLOBAL TIMER ONSET TRIGGERS
