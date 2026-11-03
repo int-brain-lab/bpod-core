@@ -4,7 +4,6 @@ from abc import abstractmethod
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from typing import Literal, overload
 
 import msgspec
 import polars as pl
@@ -103,16 +102,8 @@ class AbstractBpod(AbstractContextManager):
         """The Bpod's unique serial number."""
         return self._serial_number
 
-    @overload
-    def get_data(
-        self, *, concat: bool = ..., lazy: Literal[False] = False
-    ) -> pl.DataFrame: ...
-
-    @overload
-    def get_data(self, *, concat: bool = ..., lazy: Literal[True]) -> pl.LazyFrame: ...
-
     @abstractmethod
-    def get_data(self, *, concat=True, lazy=False):
+    def get_data(self, *, concat: bool = True) -> pl.DataFrame:
         """Return trial data from the data queue.
 
         Parameters
@@ -122,13 +113,10 @@ class AbstractBpod(AbstractContextManager):
             a single DataFrame, blocking until at least one is available.
             If ``False``, pop and return one DataFrame, blocking until one is
             available.
-        lazy : bool, default: False
-            If ``True``, return a :class:`polars.LazyFrame`.
-            If ``False``, return a :class:`polars.DataFrame`.
 
         Returns
         -------
-        DataFrame or LazyFrame
+        DataFrame
             One trial's data, or all available trials concatenated when ``concat=True``.
 
             Columns:
@@ -146,7 +134,8 @@ class AbstractBpod(AbstractContextManager):
         Raises
         ------
         BpodError
-            If the queue is empty and no state machine is currently running.
+            If the queue is empty and no state machine is currently running, or if a
+            trial couldn't be decoded. The other trials stay queued for the next call.
         """
         ...
 

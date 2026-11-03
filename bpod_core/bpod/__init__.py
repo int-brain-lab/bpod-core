@@ -15,12 +15,10 @@ from types import TracebackType
 from typing import (
     Any,
     Concatenate,
-    Literal,
     NoReturn,
     ParamSpec,
     TypeVar,
     cast,
-    overload,
 )
 from uuid import uuid5
 
@@ -136,6 +134,7 @@ _START_TIMEOUT_S = 1.0
 _S = TypeVar('_S')
 _P = ParamSpec('_P')
 _R = TypeVar('_R')
+_T = TypeVar('_T')
 
 
 def _requires_idle(
@@ -270,7 +269,7 @@ class Bpod(SerialDevice, AbstractBpod):
         # initialize members
         self._late_starts = _LateStarts()
         self._fsm_annotations: _StateMachineLookup | None = None
-        self._trial_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
+        self._trial_data: SimpleQueue[pl.DataFrame | BpodError] = SimpleQueue()
         self._analog_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
         self._analog_buffer = []
         self._analog_trial_number_by_sequence = []
@@ -1541,36 +1540,20 @@ class Bpod(SerialDevice, AbstractBpod):
 
         self._raise_reader_error(read_thread)
 
-    @overload
-    def peek_data(
-        self,
-        trigger_states: Collection[str] | None = ...,
-        *,
-        lazy: Literal[False] = False,
-    ) -> pl.DataFrame: ...
-
-    @overload
-    def peek_data(
-        self, trigger_states: Collection[str] | None = ..., *, lazy: Literal[True]
-    ) -> pl.LazyFrame: ...
-
-    def peek_data(self, trigger_states: Collection[str] | None = None, *, lazy=False):
-        """Return a snapshot of the current trial's data.
+    def peek_data(self, trigger_states: Collection[str] | None = None) -> pl.DataFrame:
+        """Return a snapshot of the current or, between trials, the last trial's data.
 
         Parameters
         ----------
         trigger_states : Collection of str, optional
             Block until at least one of the given states has been entered, then return
             the snapshot. If ``None`` (default), returns immediately.
-        lazy : bool, default: False
-            If ``True``, return a :class:`polars.LazyFrame`.
-            If ``False`` (default), return a :class:`polars.DataFrame`.
 
         Returns
         -------
-        DataFrame or LazyFrame
-            Events recorded so far in the current trial. Returns an empty DataFrame if
-            no trial is running.
+        DataFrame
+            Events recorded so far in the current trial, or those of the last trial if
+            none is running. Returns an empty DataFrame if no trial has run yet.
 
         Raises
         ------
@@ -1578,63 +1561,39 @@ class Bpod(SerialDevice, AbstractBpod):
             If one or several of the trigger states are not part of the state machine.
         """
         if self._event_thread is None:
-            empty = pl.DataFrame(schema=_TRIAL_DATA_SCHEMA)
-            return empty.lazy() if lazy else empty
-        data = self._event_thread.peek_data(trigger_states)
-        return data if lazy else data.collect(engine='in-memory')
-
-    @overload
-    def get_data(
-        self, *, concat: bool = ..., lazy: Literal[False] = False
-    ) -> pl.DataFrame: ...
-
-    @overload
-    def get_data(self, *, concat: bool = ..., lazy: Literal[True]) -> pl.LazyFrame: ...
+            return pl.DataFrame(schema=_TRIAL_DATA_SCHEMA)
+        return self._event_thread.peek_data(trigger_states)
 
     @override
-    def get_data(self, *, concat=True, lazy=False):
+    def get_data(self, *, concat: bool = True) -> pl.DataFrame:
         # the EventThread queues a trial's data as it ends: check it before the queue
         event_thread = self._event_thread
         busy = self.is_running or (event_thread is not None and event_thread.is_alive())
         if not busy and self._trial_data.empty():
             raise BpodError('No trial data available')
-        return self._drain_queue(self._trial_data, concat=concat, lazy=lazy)
+        items = self._pop_queue(self._trial_data, concat=concat)
+        if failures := [item for item in items if isinstance(item, BpodError)]:
+            # report one failed trial per call: all the others stay queued
+            for item in items:
+                if item is not failures[0]:
+                    self._trial_data.put(item)
+            raise failures[0]
+        frames = [item for item in items if isinstance(item, pl.DataFrame)]
+        return frames[0] if len(frames) == 1 else pl.concat(frames)
 
     @staticmethod
-    def _drain_queue(
-        queue: SimpleQueue[pl.LazyFrame],
-        *,
-        concat: bool,
-        lazy: bool,
-        how: Literal['vertical', 'diagonal_relaxed'] = 'vertical',
-    ) -> pl.DataFrame | pl.LazyFrame:
-        """Pop one or more LazyFrames from a queue, optionally concatenating them."""
-        frames = [queue.get()]
+    def _pop_queue(queue: SimpleQueue[_T], *, concat: bool) -> list[_T]:
+        """Pop a queue's next item, waiting for one; with `concat`, all the others."""
+        items = [queue.get()]
         if concat:
             try:
                 while True:
-                    frames.append(queue.get(block=False))
+                    items.append(queue.get(block=False))
             except Empty:
                 pass
-            data = pl.concat(frames, how=how)
-        else:
-            data = frames[0]
+        return items
 
-        # trial data is small: the in-memory engine avoids the streaming engine's
-        # start-up cost (polars 2 picks streaming by default)
-        return data if lazy else data.collect(engine='in-memory')
-
-    @overload
-    def get_analog_data(
-        self, *, concat: bool = ..., lazy: Literal[False] = False
-    ) -> pl.DataFrame: ...
-
-    @overload
-    def get_analog_data(
-        self, *, concat: bool = ..., lazy: Literal[True]
-    ) -> pl.LazyFrame: ...
-
-    def get_analog_data(self, *, concat=True, lazy=False):
+    def get_analog_data(self, *, concat: bool = True) -> pl.DataFrame:
         """
         Return FlexIO analog-input data from the data queue.
 
@@ -1645,13 +1604,10 @@ class Bpod(SerialDevice, AbstractBpod):
             a single DataFrame, blocking until at least one is available.
             If ``False``, pop and return one DataFrame, blocking until one is
             available.
-        lazy : bool, default: False
-            If ``True``, return a :class:`polars.LazyFrame`.
-            If ``False``, return a :class:`polars.DataFrame`.
 
         Returns
         -------
-        DataFrame or LazyFrame
+        DataFrame
             One row per sample, with the columns:
 
             - ``Time`` (``Datetime``, µs, UTC): absolute time of the sample;
@@ -1693,12 +1649,13 @@ class Bpod(SerialDevice, AbstractBpod):
             self._flush_analog_buffer()
             if self._analog_data.empty():
                 raise BpodError('No FlexIO analog input is recording')
-        return self._drain_queue(
-            self._analog_data,
-            concat=concat,
-            lazy=lazy,
-            how='diagonal_relaxed',
+        frames = self._pop_queue(self._analog_data, concat=concat)
+        data = (
+            frames[0] if len(frames) == 1 else pl.concat(frames, how='diagonal_relaxed')
         )
+        # the in-memory engine avoids the streaming engine's start-up cost (polars 2
+        # picks streaming by default)
+        return data.collect(engine='in-memory')
 
     @override
     def stop_state_machine(self, timeout: float | None = 1.0) -> None:
@@ -2300,16 +2257,8 @@ class RemoteBpod(AbstractBpod):
                 except Exception:
                     logger.exception('event_callback raised an exception')
 
-    @overload
-    def get_data(
-        self, *, concat: bool = ..., lazy: Literal[False] = False
-    ) -> pl.DataFrame: ...
-
-    @overload
-    def get_data(self, *, concat: bool = ..., lazy: Literal[True]) -> pl.LazyFrame: ...
-
     @override
-    def get_data(self, *, concat=True, lazy=False):
+    def get_data(self, *, concat: bool = True) -> pl.DataFrame:
         try:
             reply = self._zmq.request(
                 request_data=_RequestData(
@@ -2322,7 +2271,7 @@ class RemoteBpod(AbstractBpod):
         except RemoteError as e:
             self._raise_local(e)
 
-        return pl.scan_ipc(reply) if lazy else pl.read_ipc(reply)
+        return pl.read_ipc(reply)
 
     @override
     @property

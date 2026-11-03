@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - the state machine caches keep the 128 most recently used machines rather than the
   last 1024. With many large machines, this and a smaller transition matrix cut
   garbage collection pauses from about 200 ms to 20-50 ms, and memory by a factor of 8.
+- trial data is decoded as each trial ends rather than when it's fetched, so
+  `get_data()` returns sooner.
+
+### Removed
+
+- the `lazy` parameter of `get_data`, `peek_data` and `get_analog_data`.
 
 ### Security
 

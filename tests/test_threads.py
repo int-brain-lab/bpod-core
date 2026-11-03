@@ -29,6 +29,7 @@ from bpod_core.bpod._threads import (
     _LateStarts,
     join_until,
 )
+from bpod_core.bpod.errors import BpodError
 from bpod_core.bpod.structs import (
     BpodEventUnion,
     EventInput,
@@ -603,7 +604,6 @@ def _make_fsm(
         state_transition_matrix=mat,
         state_action_indices=state_action_indices or [{} for _ in range(n_states)],
         use_back_op=False,
-        state_lookup=dict(enumerate(state_names)),
     )
 
 
@@ -619,20 +619,21 @@ class TestEventThread:
             action_names: list[str] | None = None,
             resettable_actions: list[str] | None = None,
             event_names: list[str] | None = None,
+            event_values: list[int | None] | None = None,
             time_reference: _TimeReferences | None = None,
             publish: Callable[[list[BpodEventUnion]], object] | None = None,
             should_publish: Callable[[], bool] | None = None,
             on_trial_start: Callable[[int], None] | None = None,
             trial: int = 0,
-        ) -> tuple[EventThread, SimpleQueue[pl.LazyFrame]]:
+        ) -> tuple[EventThread, SimpleQueue[pl.DataFrame | BpodError]]:
             action_names = action_names or []
             event_names = event_names or ['Ev0', 'Tup']
             input_events = _InputEvents(
                 names=event_names,
                 channels=[None] * len(event_names),
-                values=[None] * len(event_names),
+                values=event_values or [None] * len(event_names),
             )
-            data_queue: SimpleQueue[pl.LazyFrame] = SimpleQueue()
+            data_queue: SimpleQueue[pl.DataFrame | BpodError] = SimpleQueue()
             thread = EventThread(
                 trial=trial,
                 fsm=fsm or _make_fsm(),
@@ -659,8 +660,10 @@ class TestEventThread:
             t.stop()
             t.join(timeout=2)
 
-    def _collect(self, data_queue: SimpleQueue[pl.LazyFrame]) -> pl.DataFrame:
-        return data_queue.get(timeout=2).collect()
+    def _next_trial(
+        self, data_queue: SimpleQueue[pl.DataFrame | BpodError]
+    ) -> pl.DataFrame | BpodError:
+        return data_queue.get(timeout=2)
 
     def test_stop_exits_thread(self, make_thread):
         """stop() causes the thread to exit cleanly."""
@@ -674,19 +677,19 @@ class TestEventThread:
         thread, data_queue = make_thread()
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
-        assert dict(df.schema) == _TRIAL_DATA_SCHEMA
+        df = self._next_trial(data_queue)
+        assert list(df.schema.items()) == list(_TRIAL_DATA_SCHEMA.items())
 
     def test_trial_number_beyond_uint16(self, make_thread):
-        """Trial numbers above 65535 are kept, not rejected when collecting."""
+        """Trial numbers above 65535 are kept."""
         thread, data_queue = make_thread(trial=70_000)
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,))])
         thread.stop()
         thread.join(timeout=2)
-        assert self._collect(data_queue)['Trial'].unique().to_list() == [70_000]
+        assert self._next_trial(data_queue)['Trial'].unique().to_list() == [70_000]
 
     def test_data_enqueued_on_stop(self, make_thread):
-        """A LazyFrame is pushed to data_queue when the thread exits."""
+        """A trial is pushed to data_queue when the thread exits."""
         thread, data_queue = make_thread()
         thread.stop()
         thread.join(timeout=2)
@@ -727,7 +730,7 @@ class TestEventThread:
         self._put_full_trial(thread)
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
 
         # the stream is framed by TrialStart / TrialEnd, terminated by the
         # trailing TrialEndControl record
@@ -764,9 +767,98 @@ class TestEventThread:
         self._put_full_trial(thread)
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         assert df.height > 0, 'trial data must be unaffected by the gate'
         assert published == []
+
+    def test_event_value_defaults_to_the_events_own(self, make_thread):
+        """An input event without a logged value reports its default, if it has one."""
+        thread, data_queue = make_thread(
+            event_names=['High', 'Low', 'Tup'],
+            event_values=[1, 0, None],
+            should_publish=lambda: False,
+        )
+        thread.queue.put(
+            [_RawEvents(micros_us=i, event_ids=(i,)) for i in range(3)],
+        )
+        thread.stop()
+        thread.join(timeout=2)
+        assert self._next_trial(data_queue)['Value'].to_list() == [1, 0, None]
+
+    def test_one_row_frame_is_a_copy_of_the_buffer(self, make_thread):
+        """A single element isn't strided, which would keep polars from copying it."""
+        thread, data_queue = make_thread()
+        thread.queue.put([_RawEvents(micros_us=10, event_ids=(0,))])
+        thread.stop()
+        thread.join(timeout=2)
+        frame = self._next_trial(data_queue)
+        thread._buffer['Time'][0] = 0
+        assert frame['Time'].dt.epoch('us').to_list() == [10]
+
+    def test_unknown_event_id_decodes_to_nulls(self, make_thread):
+        """An event code the hardware doesn't name is kept, with nothing to report."""
+        thread, data_queue = make_thread(should_publish=lambda: False)
+        thread.queue.put([_RawEvents(micros_us=10, event_ids=(200,))])
+        thread.stop()
+        thread.join(timeout=2)
+        row = self._next_trial(data_queue).row(0, named=True)
+        assert row['Time'].timestamp() == pytest.approx(10e-6)
+        assert row['Trial'] == 0
+        assert row['State'] == 'S0'
+        assert [row[c] for c in ('Type', 'Event', 'Channel', 'Value')] == [None] * 4
+
+    @pytest.mark.parametrize('error', [RuntimeError(), pl.exceptions.PanicException()])
+    def test_failed_decode_queues_the_error(self, mocker, make_thread, caplog, error):
+        """A trial that can't be decoded is logged; get_data() isn't left waiting."""
+        thread, data_queue = make_thread()
+        mocker.patch.object(thread, '_to_frame', side_effect=error)
+        thread.stop()
+        thread.join(timeout=2)
+        item = self._next_trial(data_queue)
+        assert isinstance(item, BpodError)
+        assert 'Failed to decode trial #0' in str(item)
+        assert item.__cause__ is error
+        assert 'Failed to decode trial #0' in caplog.text
+        assert thread._finished  # a blocking peek_data() isn't left waiting either
+
+    def test_publish_gate_is_checked_once_per_batch(self, mocker, make_thread):
+        """The gate's answer holds for one batch: subscribers can come and go."""
+        published = []
+        gate = mocker.Mock(side_effect=[False, True, False])
+        thread, _ = make_thread(publish=published.extend, should_publish=gate)
+        thread.queue.put(
+            [
+                _RawEvents(micros_us=10, event_ids=(0,)),
+                _RawEvents(micros_us=20, event_ids=(0,)),
+            ]
+        )
+        thread.queue.put([_RawEvents(micros_us=30, event_ids=(0,))])
+        thread.queue.put([_RawEvents(micros_us=40, event_ids=(0,))])
+        thread.stop()
+        thread.join(timeout=2)
+        assert [m.time_us for m in published if isinstance(m, EventInput)] == [30]
+
+    @pytest.mark.parametrize(
+        ('state', 'batches'),
+        [
+            ('S0', [(_EventID.START_STATE,)]),  # the initial state
+            ('S1', [(_EventID.START_STATE,), (0,)]),  # a transition, flag already set
+        ],
+    )
+    def test_peek_data_wakes_when_its_state_starts(self, make_thread, state, batches):
+        """A waiting peek_data returns once the state starts, before the trial ends."""
+        thread, _ = make_thread(fsm=_make_fsm(transitions={(0, 0): 1}))
+        snapshots = []
+        peeker = threading.Thread(
+            target=lambda: snapshots.append(thread.peek_data([state])), daemon=True
+        )
+        peeker.start()
+        for event_ids in batches:
+            time.sleep(0.02)  # let it block first, so that it depends on the wake-up
+            thread.queue.put([_RawEvents(micros_us=0, event_ids=event_ids)])
+        peeker.join(timeout=2)
+        assert snapshots
+        assert state in snapshots[0]['State'].to_list()
 
     def test_events_after_fsm_exit_trigger_no_transitions(self, make_thread, caplog):
         """Events arriving after an exit without successor are recorded but inert."""
@@ -782,7 +874,7 @@ class TestEventThread:
             thread.queue.put([_RawEvents(micros_us=20, event_ids=(0,))])  # after exit
             thread.stop()
             thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
 
         # the post-exit event is published but triggers no phantom transition
         state_messages = [
@@ -806,7 +898,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         assert df.height > 0
         assert isinstance(published[0], EventTrialStart)
         assert not any(
@@ -824,7 +916,7 @@ class TestEventThread:
             thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
             thread.stop()
             thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         assert df.height > 0
         assert any('publish' in record.message for record in caplog.records)
 
@@ -834,7 +926,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         assert 'Ev0' in df.filter(pl.col('Type') == 'InputEvent')['Event'].to_list()
 
     def test_event_timestamp(self, make_thread):
@@ -846,7 +938,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=100, event_ids=(0,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         ev = df.filter(pl.col('Event') == 'Ev0')
         assert (
             ev['Time'][0]
@@ -861,7 +953,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         types = df['Type'].cast(pl.String).to_list()
         assert 'StateEnd' in types
         assert 'StateStart' in types
@@ -873,7 +965,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         states = df['State'].drop_nulls().cast(pl.String).to_list()
         assert 'S0' in states
         assert 'S1' in states
@@ -895,7 +987,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=10, event_ids=(0, 1))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         rows = df.select(
             pl.col('Type').cast(pl.String),
             pl.col('Event').cast(pl.String),
@@ -917,7 +1009,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=20, event_ids=(1,))])  # S1's Tup, exits
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         rows = df.select(
             pl.col('Time').dt.epoch(time_unit='us'),
             pl.col('Type').cast(pl.String),
@@ -938,7 +1030,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=10, event_ids=(0, 1))])  # Ev0, then Tup
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         rows = df.select(
             pl.col('Type').cast(pl.String), pl.col('State').cast(pl.String)
         ).rows()
@@ -956,7 +1048,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         output = df.filter(pl.col('Type') == 'OutputAction')
         assert 'PWM1' in output['Channel'].cast(pl.String).to_list()
 
@@ -967,7 +1059,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         output = df.filter(pl.col('Channel') == 'Flex4')
         assert output['Value'].to_list() == [2048]
 
@@ -984,7 +1076,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])  # S0 → S1
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         ttl = df.filter(
             (pl.col('Type') == 'OutputAction') & (pl.col('Channel') == 'TTL1')
         )
@@ -1000,7 +1092,7 @@ class TestEventThread:
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])  # S0 → S1
         thread.stop()
         thread.join(timeout=2)
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         module = df.filter(pl.col('Channel') == 'Module1')
         assert module['Value'].to_list() == [3]
 
@@ -1011,7 +1103,7 @@ class TestEventThread:
         deadline = time.monotonic() + 2.0
         while thread._n_events == 0 and time.monotonic() < deadline:
             time.sleep(0.001)
-        df = thread.peek_data().collect()
+        df = thread.peek_data()
         assert len(df) > 0
 
     def test_peek_data_after_last_wake_up(self, mocker, make_thread):
@@ -1040,7 +1132,7 @@ class TestEventThread:
         thread.stop()
         thread.join(timeout=2)
         assert len(thread._buffer) == init_buffer_size * 2
-        df = self._collect(data_queue)
+        df = self._next_trial(data_queue)
         assert len(df.filter(pl.col('Event') == 'Ev0')) == n
 
 

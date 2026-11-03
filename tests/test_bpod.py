@@ -885,12 +885,42 @@ class TestGetData:
 
         def finish():
             time.sleep(0.05)
-            mock_bpod_25._trial_data.put(pl.LazyFrame({'Trial': [0]}))
+            mock_bpod_25._trial_data.put(pl.DataFrame({'Trial': [0]}))
 
         mock_bpod_25._read_thread = None
         mock_bpod_25._event_thread = threading.Thread(target=finish)
         mock_bpod_25._event_thread.start()
         assert mock_bpod_25.get_data()['Trial'].to_list() == [0]
+
+    def test_pops_queued_trials(self, mock_bpod_25):
+        """Queued trials come out one at a time, or all at once."""
+        for trial in range(3):
+            mock_bpod_25._trial_data.put(pl.DataFrame({'Trial': [trial]}))
+        assert mock_bpod_25.get_data(concat=False)['Trial'].to_list() == [0]
+        assert mock_bpod_25.get_data()['Trial'].to_list() == [1, 2]
+
+    def test_failed_trials_raise_and_keep_the_others(self, mock_bpod_25):
+        """Each failed trial raises once; the other trials stay available."""
+        for item in (
+            pl.DataFrame({'Trial': [0]}),
+            BpodError('Failed to decode trial #1'),
+            pl.DataFrame({'Trial': [2]}),
+            BpodError('Failed to decode trial #3'),
+        ):
+            mock_bpod_25._trial_data.put(item)
+        with pytest.raises(BpodError, match='trial #1'):
+            mock_bpod_25.get_data()
+        with pytest.raises(BpodError, match='trial #3'):
+            mock_bpod_25.get_data()
+        assert mock_bpod_25.get_data()['Trial'].to_list() == [0, 2]
+
+    def test_failed_trial_raises_when_popped_alone(self, mock_bpod_25):
+        """With `concat=False`, a failed trial raises in its turn."""
+        mock_bpod_25._trial_data.put(BpodError('Failed to decode trial #0'))
+        mock_bpod_25._trial_data.put(pl.DataFrame({'Trial': [1]}))
+        with pytest.raises(BpodError, match='trial #0'):
+            mock_bpod_25.get_data(concat=False)
+        assert mock_bpod_25.get_data(concat=False)['Trial'].to_list() == [1]
 
     def test_raises_without_data(self, mock_bpod_25):
         """Without a trial running or being processed, there's nothing to wait for."""
@@ -1347,7 +1377,7 @@ class TestFlexIOSettings:
         flex1.thresholds[0].voltage = 2500
         mock_bpod_2p._state_machine_started = True  # voltages stay changeable
         flex1.thresholds[1].voltage = 1000
-        lookup = mock_bpod_2p._compiler.event_tables.lookup.filter(
+        lookup = mock_bpod_2p._compiler.event_tables.decode_table.filter(
             pl.col('Event').cast(pl.String).str.starts_with('Flex1_Trig')
         )
         values = dict(

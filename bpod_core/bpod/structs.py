@@ -66,8 +66,6 @@ class _StateMachineLookup(NamedTuple):
     """Per-state mapping of action index to value."""
     use_back_op: bool
     """Whether the ``>back`` operator is used."""
-    state_lookup: dict[int, str]
-    """Mapping from state index to state name."""
 
 
 class _TimeReferences(NamedTuple):

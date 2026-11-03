@@ -843,7 +843,6 @@ class StateMachineCompiler:
             state_transition_matrix=state_transition_matrix,
             state_action_indices=state_action_indices,
             use_back_op=use_back_op,
-            state_lookup=dict(enumerate(state_names)),
         )
 
         # Initialize bytearray for the compiled state machine.

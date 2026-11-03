@@ -7,7 +7,6 @@ import time
 import weakref
 from collections.abc import Callable, Collection
 from enum import IntEnum, auto
-from functools import cached_property
 from queue import SimpleQueue
 from typing import NamedTuple, get_args
 
@@ -19,6 +18,7 @@ import numpy.ma
 import numpy.typing as npt
 import polars as pl
 
+from bpod_core.bpod.errors import BpodError
 from bpod_core.bpod.structs import (
     BpodEventType,
     BpodEventUnion,
@@ -127,7 +127,7 @@ class _LateStarts:
 
 _EVENT_DTYPE = np.dtype(
     [
-        ('Time', 'datetime64[us]'),
+        ('Time', np.int64),  # microseconds since the epoch
         ('event_id', np.int16),
         ('state_id', np.int16),
         ('value', np.int16),
@@ -180,9 +180,6 @@ _TRIAL_DATA_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
 }
 """Column schema for trial DataFrames returned by :meth:`~bpod_core.bpod.Bpod.get_data`
 and :meth:`~bpod_core.bpod.Bpod.peek_data`."""
-
-_TRIAL_DATA_COLUMNS = list(_TRIAL_DATA_SCHEMA)
-"""Column names of trial DataFrames, in order."""
 
 _SYNTHETIC_EVENT_LOOKUP = pl.DataFrame(
     {
@@ -253,12 +250,14 @@ class _EventTables(NamedTuple):
     rebuild them for every trial.
     """
 
-    lookup: pl.DataFrame
-    """Event metadata, see :func:`_build_event_lookup`."""
     event_info: dict[int, tuple[BpodEventType, str | None, str | None, int | None]]
     """Type, event name, channel and default value of each event ID."""
     resettable_indices: frozenset[int]
     """Indices of the outputs that the Bpod resets to 0 at each state transition."""
+    decode_table: pl.DataFrame
+    """Metadata by event ID, see :func:`_build_event_lookup`: nulls for unknown IDs."""
+    default_values: npt.NDArray[np.int32]
+    """Default value by event ID: -1 for none."""
 
 
 def _build_event_tables(
@@ -285,8 +284,11 @@ def _build_event_tables(
     """
     lookup = _build_event_lookup(input_events, action_names)
     action_indices = {name: i for i, name in enumerate(action_names)}
+    # room for every ID: the Bpod's event codes and action indices are single bytes
+    decode_table = pl.DataFrame(
+        {'event_id': pl.int_range(_OUTPUT_ID_OFFSET + 256, dtype=pl.Int16, eager=True)}
+    ).join(lookup, on='event_id', how='left', maintain_order='left')
     return _EventTables(
-        lookup=lookup,
         event_info={
             row['event_id']: (
                 row['Type'],
@@ -299,6 +301,11 @@ def _build_event_tables(
         resettable_indices=frozenset(
             action_indices[name] for name in resettable_actions
         ),
+        decode_table=decode_table,
+        default_values=decode_table['default_value']
+        .cast(pl.Int32)
+        .fill_null(-1)
+        .to_numpy(),
     )
 
 
@@ -673,9 +680,8 @@ class EventThread(threading.Thread):
     All events of a cycle are evaluated in the state the cycle started in; the first
     one leading elsewhere makes the transition.
 
-    When the trial ends (``STOP_SENTINEL`` received), the buffer is converted to a
-    :class:`polars.LazyFrame` and pushed onto *data_queue* for the caller to collect via
-    :meth:`~bpod_core.bpod.Bpod.get_data`.
+    When the trial ends (``STOP_SENTINEL`` received), its events are decoded and the
+    frame is pushed onto *data_queue*, for :meth:`~bpod_core.bpod.Bpod.get_data`.
 
     **Buffer design**: events are appended to a pre-allocated NumPy structured array
     (``_EVENT_DTYPE``) that doubles in size when full. The buffer is only written at
@@ -683,8 +689,8 @@ class EventThread(threading.Thread):
     ``0.._n_events-1`` are immutable once written.
 
     **Thread safety**: :meth:`peek_data` may be called from another thread while the
-    trial is running. It copies the buffer view before passing it to Polars, ensuring a
-    consistent snapshot.
+    trial is running. It only reads rows that are written already, which never change,
+    ensuring a consistent snapshot.
 
     Parameters
     ----------
@@ -692,8 +698,8 @@ class EventThread(threading.Thread):
         Zero-based trial index, used to populate the ``trial`` column.
     fsm : _StateMachineLookup
         Compiled state machine data for this trial.
-    data_queue : SimpleQueue of LazyFrame
-        Queue to push the completed trial DataFrame into.
+    data_queue : SimpleQueue of DataFrame or BpodError
+        Queue to push the completed trial DataFrame into, or the error decoding it.
     event_tables : _EventTables
         Pre-built lookup tables for decoding events, see :func:`_build_event_tables`.
     time_reference : _TimeReferences
@@ -704,9 +710,9 @@ class EventThread(threading.Thread):
         the queue. Return values are ignored. Publishing is best-effort: exceptions are
         logged but do not interrupt trial recording.
     publish_gate : Callable
-        Zero-argument callable consulted before resolving each message; returning False
-        skips that work entirely. Checked per message, so a subscriber appearing
-        mid-trial picks up the stream from there.
+        Zero-argument callable consulted once per batch of queued events; returning
+        False skips resolving their messages entirely. A subscriber appearing mid-trial
+        picks up the stream from the next batch.
     on_trial_start : Callable, optional
         Called once, with the trial's absolute start time (microseconds since epoch),
         when the synthetic ``TrialStart`` event is recorded. Unlike ``publish``, this
@@ -722,7 +728,7 @@ class EventThread(threading.Thread):
         *,
         trial: int,
         fsm: _StateMachineLookup,
-        data_queue: SimpleQueue[pl.LazyFrame],
+        data_queue: SimpleQueue[pl.DataFrame | BpodError],
         event_tables: _EventTables,
         time_reference: _TimeReferences,
         publish: Callable[[list[BpodEventUnion]], object],
@@ -738,16 +744,16 @@ class EventThread(threading.Thread):
         self._time_reference = time_reference
         self._publish = publish
         self._publish_gate = publish_gate
+        self._publishing = False  # the gate's answer for the current batch
         self._on_trial_start = on_trial_start
         self._buffer: npt.NDArray = np.empty(_INITIAL_BUFFER_SIZE, dtype=_EVENT_DTYPE)
         self._n_events: int = 0
         self._check_trigger = threading.Event()
         self._finished = False  # set before the final wake-up of peek_data()
-        self._event_lookup = event_tables.lookup.lazy()
+        self._event_tables = event_tables
         self._event_info = event_tables.event_info
         self._resettable_indices = event_tables.resettable_indices
         self._state_names = fsm.state_names
-        self._state_lookup = fsm.state_lookup
         self._fsm_hash_str = fsm.fsm_hash.hex()
 
         self._state_action_indices = fsm.state_action_indices
@@ -771,27 +777,26 @@ class EventThread(threading.Thread):
         value: int = -1,
     ) -> None:
         """Append an event to the buffer, growing it if necessary."""
-        if self._n_events == len(self._buffer):
-            new_buf = np.empty(len(self._buffer) * 2, dtype=_EVENT_DTYPE)
-            new_buf[: self._n_events] = self._buffer
-            self._buffer = new_buf
-        self._buffer[self._n_events] = (
+        n_events = self._n_events
+        buffer = self._buffer
+        if n_events == len(buffer):
+            new_buf = np.empty(n_events * 2, dtype=_EVENT_DTYPE)
+            new_buf[:n_events] = buffer
+            self._buffer = buffer = new_buf
+        buffer[n_events] = (
             time_bpod_us,
             event_index,
             state_id,
             value,
         )
-        self._n_events += 1
+        self._n_events = n_events + 1
 
-        if event_index == _EventID.START_FSM and self._on_trial_start is not None:
-            self._on_trial_start(time_bpod_us)
+        # Skip resolution and struct construction if nobody is listening.
+        if not self._publishing:
+            return
 
         # queue the event's message for _flush()
         try:
-            # Skip resolution and struct construction if nobody is listening.
-            if not self._publish_gate():
-                return
-
             kind, event, channel, default_value = self._event_info[event_index]
             message: BpodEventUnion
             match kind:
@@ -808,11 +813,11 @@ class EventThread(threading.Thread):
                     )
                 case 'StateStart':
                     message = EventStateStart(
-                        time_us=time_bpod_us, state=self._state_lookup[state_id]
+                        time_us=time_bpod_us, state=self._state_names[state_id]
                     )
                 case 'StateEnd':
                     message = EventStateEnd(
-                        time_us=time_bpod_us, state=self._state_lookup[state_id]
+                        time_us=time_bpod_us, state=self._state_names[state_id]
                     )
                 case 'TrialStart':
                     message = EventTrialStart(
@@ -851,6 +856,8 @@ class EventThread(threading.Thread):
         state_action_indices = self._state_action_indices
         resettable_indices = self._resettable_indices
         use_back_op = self._use_back_op
+        check_trigger = self._check_trigger
+        append = self._append
         target_exit = len(state_transition_matrix)
         target_back = 255
         current_state = 0
@@ -867,6 +874,7 @@ class EventThread(threading.Thread):
 
                 if (batch := event_queue.get()) is _EVENTS_STOP:
                     return
+                self._publishing = self._publish_gate()
                 # the packets of one read: the events of each cycle, or synthetic events
                 for bpod_count_us, event_ids in batch:
                     event_index = event_ids[0]
@@ -878,7 +886,7 @@ class EventThread(threading.Thread):
                     # the transition
                     if event_index < 255:
                         for event_id in event_ids:
-                            self._append(t_bpod_us, event_id, state_id=current_state)
+                            append(t_bpod_us, event_id, state_id=current_state)
                         if current_state < 0:  # FSM already exited - record events only
                             continue
                         transitions = state_transition_matrix[current_state]
@@ -889,7 +897,7 @@ class EventThread(threading.Thread):
                             continue  # no transition
                         # state exited without a successor
                         if target_state == target_exit:
-                            self._append(
+                            append(
                                 t_bpod_us,
                                 _EventID.END_STATE,
                                 state_id=current_state,
@@ -900,20 +908,20 @@ class EventThread(threading.Thread):
                             target_state = previous_state
 
                         # record end of current state, advance, record start of next
-                        self._append(
-                            t_bpod_us, _EventID.END_STATE, state_id=current_state
-                        )
+                        append(t_bpod_us, _EventID.END_STATE, state_id=current_state)
                         previous_state = current_state
                         current_state = target_state
-                        self._append(
-                            t_bpod_us, _EventID.START_STATE, state_id=current_state
-                        )
-                        self._check_trigger.set()
+                        append(t_bpod_us, _EventID.START_STATE, state_id=current_state)
+                        # set() takes a lock even if the flag is set. peek_data() can't
+                        # miss the event: it's in the buffer before this check, and
+                        # peek_data() clears the flag before reading the buffer
+                        if not check_trigger.is_set():
+                            check_trigger.set()
 
                     # start of the initial state
                     elif event_index == _EventID.START_STATE:
-                        self._append(t_bpod_us, event_index, state_id=current_state)
-                        self._check_trigger.set()
+                        append(t_bpod_us, event_index, state_id=current_state)
+                        check_trigger.set()
 
                     # end of the thread
 
@@ -923,16 +931,21 @@ class EventThread(threading.Thread):
                         # before the TrialEnd row
                         if event_index == _EventID.END_FSM_CYCLES:
                             if current_state >= 0:
-                                self._append(
+                                append(
                                     t_bpod_us,
                                     _EventID.END_STATE,
                                     state_id=current_state,
                                 )
                             for idx in sorted(active_outputs):
                                 output_id = _OUTPUT_ID_OFFSET + idx
-                                self._append(t_bpod_us, output_id, state_id=-1, value=0)
+                                append(t_bpod_us, output_id, state_id=-1, value=0)
                             active_outputs.clear()
-                        self._append(t_bpod_us, event_index, state_id=-1)
+                        append(t_bpod_us, event_index, state_id=-1)
+                        if (
+                            event_index == _EventID.START_FSM
+                            and self._on_trial_start is not None
+                        ):
+                            self._on_trial_start(t_bpod_us)
                         continue
 
                     # record output actions (initial state & after state transitions):
@@ -941,7 +954,7 @@ class EventThread(threading.Thread):
                     for idx in sorted(active_outputs.keys() | new_actions.keys()):
                         val = new_actions.get(idx, 0)
                         output_id = _OUTPUT_ID_OFFSET + idx
-                        self._append(
+                        append(
                             t_bpod_us,
                             output_id,
                             state_id=current_state,
@@ -964,42 +977,43 @@ class EventThread(threading.Thread):
         n = self._n_events
         return self._buffer[:n]
 
-    def _to_lazyframe(self, data: npt.NDArray) -> pl.LazyFrame:
-        """Convert a buffer array to a trial LazyFrame."""
-        return (
-            pl.from_numpy(data)
-            .lazy()
-            .join(self._event_lookup, on='event_id', how='left', maintain_order='left')
-            .with_columns(self._decode_exprs)
-            .select(_TRIAL_DATA_COLUMNS)
+    def _to_frame(self, data: npt.NDArray) -> pl.DataFrame:
+        """Decode events into a DataFrame with :data:`_TRIAL_DATA_SCHEMA`."""
+        tables = self._event_tables
+        n_events = len(data)
+        event_ids = data['event_id']
+        decoded = tables.decode_table
+        n_states = len(self._state_names)
+        # as unsigned, the -1 of no state is out of range too: both get the row of nulls
+        state_rows = np.minimum(data['state_id'].astype(np.uint16), n_states)
+        values = np.where(
+            data['value'] == -1, tables.default_values[event_ids], data['value']
         )
-
-    @cached_property
-    def _decode_exprs(self) -> tuple[pl.Expr, ...]:
-        """Expressions decoding the trial's raw events, shared by all of its frames.
-
-        Built on first use rather than in ``__init__``, which runs on the time-critical
-        path of :meth:`~bpod_core.bpod.Bpod.run`.
-        """
-        return (
-            pl.col('state_id')
-            .replace_strict(
-                self._state_lookup, return_dtype=pl.Categorical, default=None
-            )
-            .alias('State'),
-            pl.col('Time').dt.replace_time_zone('UTC'),
-            pl.lit(self._trial).cast(pl.UInt32).alias('Trial'),
-            pl.lit(self._fsm_hash_str).cast(pl.Categorical).alias('State Machine'),
-            pl.coalesce(pl.col('value').replace(-1, None), pl.col('default_value'))
-            .cast(pl.UInt16)
-            .alias('Value'),
+        return pl.DataFrame(
+            [
+                # a copy: polars would share a single row's memory with the buffer
+                pl.Series('Time', data['Time'].copy()).cast(_TRIAL_DATA_SCHEMA['Time']),
+                pl.Series('Trial', [self._trial], dtype=pl.UInt32).new_from_index(
+                    0, n_events
+                ),
+                pl.Series(
+                    'State Machine', [self._fsm_hash_str], dtype=pl.Categorical
+                ).new_from_index(0, n_events),
+                pl.Series('State', [*self._state_names, None], dtype=pl.Categorical)[
+                    state_rows
+                ],
+                decoded['Type'][event_ids],
+                decoded['Event'][event_ids],
+                decoded['Channel'][event_ids],
+                pl.Series('Value', values).cast(pl.UInt16, strict=False),
+            ]
         )
 
     def peek_data(
         self,
         trigger_states: Collection[str] | None = None,
-    ) -> pl.LazyFrame:
-        """Return a snapshot of events recorded so far as a :class:`polars.LazyFrame`.
+    ) -> pl.DataFrame:
+        """Return a snapshot of events recorded so far as a :class:`polars.DataFrame`.
 
         Safe to call from a different thread while the trial is running. The returned
         DataFrame reflects events up to the moment ``_n_events`` was read; one in-flight
@@ -1014,7 +1028,7 @@ class EventThread(threading.Thread):
 
         Returns
         -------
-        LazyFrame
+        DataFrame
             A snapshot of the recorded events.
 
         Raises
@@ -1023,7 +1037,7 @@ class EventThread(threading.Thread):
             If one or several of the trigger states are not part of the state machine.
         """
         if trigger_states is None:
-            return self._to_lazyframe(self._buffer_view.copy())
+            return self._to_frame(self._buffer_view)
         if unknown_states := (set(trigger_states) - set(self._state_names)):
             pt1 = f'Unknown trigger state{"s" if len(unknown_states) > 1 else ""}: '
             pt2 = ', '.join([f"'{u}'" for u in sorted(unknown_states)])
@@ -1034,12 +1048,23 @@ class EventThread(threading.Thread):
             view = self._buffer_view
             # check the flag rather than is_alive(): the thread outlives its last set()
             if np.any(np.isin(view['state_id'], target_ids)) or self._finished:
-                return self._to_lazyframe(view.copy())
+                return self._to_frame(view)
             self._check_trigger.wait()
 
     def _enqueue_data(self) -> None:
-        """Enqueue recorded events as a :class:`polars.LazyFrame`."""
-        self._data_queue.put(self._to_lazyframe(self._buffer_view))
+        """Enqueue the recorded events as a DataFrame, or the error decoding them.
+
+        Whoever waits in :meth:`~bpod_core.bpod.Bpod.get_data` gets an answer.
+        """
+        item: pl.DataFrame | BpodError
+        try:
+            item = self._to_frame(self._buffer_view)
+        # a panic in polars isn't an Exception
+        except (Exception, pl.exceptions.PanicException) as error:
+            logger.exception('Failed to decode trial #%d', self._trial)
+            item = BpodError(f'Failed to decode trial #{self._trial}')
+            item.__cause__ = error
+        self._data_queue.put(item)
 
 
 class SoftcodeThread(threading.Thread):

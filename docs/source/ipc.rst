@@ -203,7 +203,7 @@ remote instance:
        and enqueues it. The call returns once the host has accepted it.
    * - :meth:`~bpod_core.bpod.RemoteBpod.get_data`
      - Returns the trial data as a Polars :class:`~polars.DataFrame` (see
-       :doc:`/data_format`), or a :class:`~polars.LazyFrame` with ``lazy=True``.
+       :doc:`/data_format`).
    * - :meth:`~bpod_core.bpod.RemoteBpod.stop_state_machine`
      - Aborts the state machine currently running on the host. The reply is awaited a
        second longer than ``timeout``; a host busy queuing a state machine may answer

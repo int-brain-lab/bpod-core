@@ -23,9 +23,7 @@ from sphinx.ext.intersphinx import InventoryAdapter
 
 _REFERENCE_URL_MAP = {
     'polars.dataframe.frame.DataFrame': 'https://docs.pola.rs/py-polars/html/reference/dataframe',
-    'polars.lazyframe.frame.LazyFrame': 'https://docs.pola.rs/py-polars/html/reference/lazyframe',
     'polars.DataFrame': 'https://docs.pola.rs/py-polars/html/reference/dataframe',
-    'polars.LazyFrame': 'https://docs.pola.rs/py-polars/html/reference/lazyframe',
     # 'typing.Annotated': 'https://docs.python.org/3/library/typing.html#typing.Annotated',
     'pydantic_extra_types.color.ColorType': 'https://pydantic.dev/docs/validation/latest/api/pydantic-extra-types/pydantic_extra_types_color/',
     'MinLen': 'https://github.com/annotated-types/annotated-types',
