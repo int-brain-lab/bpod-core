@@ -845,8 +845,12 @@ class TestEventThread:
             ('S1', [(_EventID.START_STATE,), (0,)]),  # a transition, flag already set
         ],
     )
-    def test_peek_data_wakes_when_its_state_starts(self, make_thread, state, batches):
+    def test_peek_data_wakes_when_its_state_starts(
+        self, mocker, make_thread, state, batches
+    ):
         """A waiting peek_data returns once the state starts, before the trial ends."""
+        # long enough that only the wake-up can end its wait within the test
+        mocker.patch('bpod_core.bpod._threads._PEEK_RECHECK_S', 60)
         thread, _ = make_thread(fsm=_make_fsm(transitions={(0, 0): 1}))
         snapshots = []
         peeker = threading.Thread(
@@ -1119,6 +1123,20 @@ class TestEventThread:
         peek.start()
         peek.join(timeout=1)
         assert snapshots
+
+    def test_peek_data_recovers_from_a_lost_wake_up(self, make_thread):
+        """Another caller's clear() can't leave a blocking peek_data() waiting."""
+        thread, _ = make_thread()
+        snapshots = []
+        peeker = threading.Thread(
+            target=lambda: snapshots.append(thread.peek_data(['S1'])), daemon=True
+        )
+        peeker.start()
+        time.sleep(0.02)  # let it block first
+        thread._finished = True  # its final set() went to the other caller's clear()
+        peeker.join(timeout=2)
+        assert snapshots
+        assert snapshots[0].is_empty()
 
     def test_buffer_growth(self, mocker, make_thread):
         """Buffer doubles correctly."""

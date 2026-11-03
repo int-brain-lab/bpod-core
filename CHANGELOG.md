@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `run()` raises a `ValueError` for a state machine of more than 49,999 bytes: the Bpod
   doesn't load one that large, and took its bytes for commands.
+- a blocking `peek_data()` could wait forever if another caller was waiting at the
+  same time.
 
 ### Changed
 

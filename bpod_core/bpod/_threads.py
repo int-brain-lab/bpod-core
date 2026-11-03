@@ -71,6 +71,9 @@ class _DrainMarker(_RawSoftcode):
     done: threading.Event
 
 
+_PEEK_RECHECK_S = 0.1
+"""Longest wait of a blocking ``peek_data()``: another caller can clear its wake-up."""
+
 _JOIN_SLICE_S = 0.5
 """Longest single wait on a thread: between slices, Ctrl+C reaches the caller.
 
@@ -1049,7 +1052,7 @@ class EventThread(threading.Thread):
             # check the flag rather than is_alive(): the thread outlives its last set()
             if np.any(np.isin(view['state_id'], target_ids)) or self._finished:
                 return self._to_frame(view)
-            self._check_trigger.wait()
+            self._check_trigger.wait(_PEEK_RECHECK_S)
 
     def _enqueue_data(self) -> None:
         """Enqueue the recorded events as a DataFrame, or the error decoding them.
