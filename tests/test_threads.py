@@ -30,8 +30,10 @@ from bpod_core.bpod._threads import (
     SoftcodeThread,
     _build_event_tables,
     _EventID,
+    _EventTables,
     _LateStarts,
     _Recorder,
+    _Trial,
     join_until,
 )
 from bpod_core.bpod.errors import BpodError
@@ -75,13 +77,45 @@ def _opcode2(softcode: int) -> bytes:
     return bytes([2, softcode])
 
 
+def _make_event_tables(
+    names: list[str] | None = None,
+    values: list[int | None] | None = None,
+    actions: list[str] | None = None,
+    resettable: list[str] | None = None,
+) -> _EventTables:
+    """Build the lookup tables for a hardware with the given events and actions."""
+    names = names or ['Ev0', 'Tup']
+    actions = actions or []
+    return _build_event_tables(
+        _InputEvents(
+            names=names,
+            channels=[None] * len(names),
+            values=values or [None] * len(names),
+        ),
+        actions,
+        actions if resettable is None else resettable,
+    )
+
+
+def _make_trial(
+    number: int = 0,
+    fsm: _StateMachineLookup | None = None,
+    event_tables: _EventTables | None = None,
+) -> _Trial:
+    """Build a trial with a recorder, from a minimal FSM by default."""
+    fsm = fsm or _make_fsm()
+    recorder = _Recorder(
+        trial=number, fsm=fsm, event_tables=event_tables or _make_event_tables()
+    )
+    return _Trial(number=number, fsm_hash=fsm.fsm_hash, recorder=recorder)
+
+
 def _reader(serial) -> tuple[ReadThread, SimpleQueue]:
     """A ReadThread for trial 0 on `serial`, and its event queue."""
     q_events: SimpleQueue[list[_RawEvents]] = SimpleQueue()
     thread = ReadThread(
         serial=serial,
-        state_machine_hash=b'',
-        trial=0,
+        trial=_make_trial(),
         cycle_period_us=1,
         queue_events=q_events,
         queue_softcodes=SimpleQueue(),
@@ -152,8 +186,7 @@ class TestReadThread:
             q_softcodes: SimpleQueue[_RawSoftcode] = SimpleQueue()
             thread = ReadThread(
                 serial=serial or mock_ext_serial,
-                state_machine_hash=b'',
-                trial=0,
+                trial=_make_trial(),
                 cycle_period_us=cycle_period_us,
                 queue_events=q_events,
                 queue_softcodes=q_softcodes,
@@ -175,7 +208,7 @@ class TestReadThread:
         assert thread.is_alive()  # waiting for the confirmation byte
         thread.cancel()  # joins the thread
         assert not thread.is_alive()
-        assert thread.error is None
+        assert thread.trial.read_error is None
         assert q_events.get(timeout=1) is _EVENTS_STOP
 
     def test_cancel_after_the_trial_ended_withdraws_the_abort(self, pty_port):
@@ -198,7 +231,7 @@ class TestReadThread:
         serial.read_waiting.side_effect = [b'', data]
         thread, q_events = _reader(serial)
         thread.run()
-        assert thread.error is None
+        assert thread.trial.read_error is None
         assert len(_drain(q_events)) > 1  # events, not just the stop sentinel
 
     def test_initial_events_enqueued(self, make_thread):
@@ -295,8 +328,7 @@ class TestReadThread:
         calls = MagicMock()  # one parent records the order across both queues
         thread = ReadThread(
             serial=mock_ext_serial,
-            state_machine_hash=b'',
-            trial=0,
+            trial=_make_trial(),
             cycle_period_us=1,
             queue_events=calls.events,
             queue_softcodes=calls.softcodes,
@@ -319,7 +351,7 @@ class TestReadThread:
         event_indices = [i for _, i in _timed_events(q_events)]
         assert event_indices[:3] == [_EventID.START_FSM, _EventID.START_STATE, 42]
         assert event_indices[-1] == _EventID.STOP_SENTINEL
-        assert 'unknown opcode' in str(thread.error)  # kept for Bpod.wait()
+        assert 'unknown opcode' in str(thread.trial.read_error)  # kept for Bpod.wait()
 
     @pytest.mark.parametrize('softcode', [0, 3])  # 0: a global timer's value_off
     def test_softcode_enqueued(self, make_thread, softcode):
@@ -342,7 +374,7 @@ class TestReadThread:
         thread, q_events, _ = make_thread(b'', serial=_UnpluggedSerial(data))
         thread.start()
         thread.join(timeout=2)
-        assert isinstance(thread.error, SerialException)
+        assert isinstance(thread.trial.read_error, SerialException)
         events = [i for _, i in _timed_events(q_events)]
         assert 42 in events
         assert events[-1] == _EventID.STOP_SENTINEL
@@ -365,7 +397,7 @@ class TestReadThread:
         assert (105, 42) in events
         assert (105, 43) in events
         assert [item.softcode for item in _drain(q_softcodes)] == [3]
-        assert thread.leftover == b''
+        assert thread.trial.leftover == b''
 
     def test_leftover_is_handed_to_next_trial(self, make_thread):
         """Bytes read beyond a trial's end start the next reader's trial."""
@@ -380,15 +412,15 @@ class TestReadThread:
         thread, _, _ = make_thread(data)
         thread.start()
         thread.join(timeout=2)
-        assert thread.leftover == next_trial
-        assert thread.leftover_received_ns > 0
+        assert thread.trial.leftover == next_trial
+        assert thread.trial.leftover_received_ns > 0
 
         # the next reader starts from the leftover and reads the rest from the port;
         # the softcode in the leftover keeps the time it was received at
         next_thread, q_events, q_softcodes = make_thread(
             _opcode1([255], n_cycles=1) + _exit_data(1, 201),
-            initial_bytes=thread.leftover,
-            initial_received_ns=thread.leftover_received_ns,
+            initial_bytes=thread.trial.leftover,
+            initial_received_ns=thread.trial.leftover_received_ns,
         )
         next_thread.start()
         next_thread.join(timeout=2)
@@ -396,7 +428,7 @@ class TestReadThread:
         assert _timed_events(q_events)[0] == (200, _EventID.START_FSM)
         softcode = _drain(q_softcodes)[0]
         assert softcode.softcode == 4
-        assert softcode.received_ns == thread.leftover_received_ns
+        assert softcode.received_ns == thread.trial.leftover_received_ns
 
     def test_end_events_enqueued(self, make_thread):
         """END_FSM_CYCLES, END_FSM_MICROS, and STOP_SENTINEL are enqueued after exit."""
@@ -442,7 +474,6 @@ class TestReadThread:
         with caplog.at_level(logging.WARNING):
             thread.start()
             thread.join(timeout=2)
-        assert thread.backlog == len(body)
         assert f'Peak read backlog on the host: {len(body)} bytes' in caplog.text
 
     def test_timing_check_uses_exit_packet(self, make_thread, caplog):
@@ -482,7 +513,7 @@ class TestReadThread:
         assert not thread.is_alive()
         event_indices = [i for _, i in _timed_events(q_events)]
         assert event_indices == [_EventID.STOP_SENTINEL]
-        assert 'not confirmed' in str(thread.error)
+        assert 'not confirmed' in str(thread.trial.read_error)
 
     def test_trial_started_once_confirmed(self, pty_port):
         """`trial_started` is set by the confirmation, while the trial goes on."""
@@ -490,19 +521,12 @@ class TestReadThread:
         thread, _ = _reader(port)
         thread.start()
         try:
-            assert not thread.trial_started.wait(0.05)  # no confirmation yet
+            assert not thread.trial.started.wait(0.05)  # no confirmation yet
             os.write(master, _CONFIRM_OK)
-            assert thread.trial_started.wait(1)
+            assert thread.trial.started.wait(1)
             assert thread.is_alive()
         finally:
             thread.cancel()
-
-    def test_trial_started_once_ended_without_a_start(self, make_thread):
-        """An unconfirmed trial sets `trial_started` too: there is nothing to await."""
-        thread, _, _ = make_thread(_CONFIRM_FAIL)
-        thread.start()
-        thread.join(timeout=2)
-        assert thread.trial_started.is_set()
 
     def test_stop_found_the_bpod_idle(self, make_thread, caplog):
         """A stop the Bpod answers as idle, never having started the trial, ends it.
@@ -563,7 +587,45 @@ class TestReadThread:
         thread.start()
         thread.join(timeout=2)
         assert thread._late_starts.count == late
-        assert thread.end_micros_us == end_us
+        assert thread.trial.end_micros_us == end_us
+
+    def test_ended_is_set_last(self, make_thread, mocker):
+        """`ended` tells that everything the reader writes to the trial is there."""
+        data = _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(0, 7)
+        thread, q_events, _ = make_thread(data)
+        trial = thread.trial
+        seen = []
+        mocker.patch.object(
+            trial.ended,
+            'set',
+            side_effect=lambda: seen.append(
+                (trial.started.is_set(), trial.end_micros_us, q_events.empty())
+            ),
+        )
+        thread.start()
+        thread.join(timeout=2)
+        assert seen == [(True, 7, False)]
+
+    @pytest.mark.parametrize(
+        ('data', 'expect_stop'),
+        [
+            (
+                _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(0, 0),
+                False,
+            ),
+            (_CONFIRM_FAIL, False),  # the Bpod refused
+            (_opcode1([255], n_cycles=7) + _exit_data(7, 1234), True),  # stopped idle
+        ],
+    )
+    def test_started_and_ended_on_every_way_out(self, make_thread, data, expect_stop):
+        """Nobody is left waiting on the trial, however the reader ends."""
+        thread, _, _ = make_thread(data)
+        if expect_stop:
+            thread.expect_stop()
+        thread.start()
+        thread.join(timeout=2)
+        assert thread.trial.started.is_set()
+        assert thread.trial.ended.is_set()
 
 
 class TestLateStarts:
@@ -631,14 +693,8 @@ class TestRecorder:
         return _Recorder(
             trial=trial,
             fsm=_make_fsm()._replace(fsm_hash=b'\xab\xcd'),
-            event_tables=_build_event_tables(
-                _InputEvents(
-                    names=['Ev0', 'Tup', 'Low'],
-                    channels=[None, None, None],
-                    values=[None, 5, 0],
-                ),
-                ['Valve1'],
-                ['Valve1'],
+            event_tables=_make_event_tables(
+                ['Ev0', 'Tup', 'Low'], [None, 5, 0], ['Valve1']
             ),
         )
 
@@ -769,6 +825,46 @@ class TestRecorder:
         peeker.join(timeout=2)
         assert snapshots[0].is_empty()
 
+    def test_decode_frees_the_buffer_and_answers_with_the_frame(self):
+        """Once decoded, reads return the decoded frame, whatever is asked."""
+        recorder = self._make_recorder()
+        recorder.append(10, 0, 1)
+        frame = recorder.to_frame()
+        recorder.finish()
+        recorder.decode()
+        assert recorder._buffer.size == 0
+        assert recorder._buffer.base is None
+        for snapshot in (recorder.to_frame(), recorder.peek(), recorder.peek(['S0'])):
+            assert_frame_equal(snapshot, frame, categorical_as_str=True)
+
+    def test_decoded_frame_is_independent_of_its_copies(self):
+        """Changing a frame it returned in place changes nothing in the recorder."""
+        recorder = self._make_recorder()
+        recorder.append(10, 0, 1)
+        recorder.decode()
+        recorder.to_frame().drop_in_place('Time')
+        recorder.peek().drop_in_place('Time')
+        assert 'Time' in recorder.peek().columns
+
+    def test_read_overtaken_by_decode_returns_the_frame(self, mocker):
+        """A read that finds the buffer already emptied still gets the trial's rows."""
+        recorder = self._make_recorder()
+        recorder.append(10, 0, 1)
+        frame = recorder.to_frame()
+
+        def decoded_first():
+            recorder._frame = frame
+            recorder._buffer = np.empty(0, dtype=_EVENT_DTYPE)
+            return recorder._buffer
+
+        mocker.patch.object(
+            _Recorder,
+            '_buffer_view',
+            new_callable=mocker.PropertyMock,
+            side_effect=decoded_first,
+        )
+        assert recorder.to_frame().height == 1
+
     def test_snapshots_only_see_rows_written_in_full(self, mocker):
         """A snapshot at any moment holds each row once, also while the buffer grows."""
         mocker.patch('bpod_core.bpod._threads._INITIAL_BUFFER_SIZE', 2)
@@ -813,23 +909,15 @@ class TestEventThread:
             on_trial_start: Callable[[int], None] | None = None,
             trial: int = 0,
         ) -> tuple[EventThread, SimpleQueue[pl.DataFrame | BpodError]]:
-            action_names = action_names or []
-            event_names = event_names or ['Ev0', 'Tup']
-            input_events = _InputEvents(
-                names=event_names,
-                channels=[None] * len(event_names),
-                values=[None] * len(event_names),
+            fsm = fsm or _make_fsm()
+            event_tables = _make_event_tables(
+                event_names, None, action_names, resettable_actions
             )
             data_queue: SimpleQueue[pl.DataFrame | BpodError] = SimpleQueue()
             thread = EventThread(
-                trial=trial,
-                fsm=fsm or _make_fsm(),
+                trial=_make_trial(trial, fsm, event_tables),
+                fsm=fsm,
                 data_queue=data_queue,
-                event_tables=_build_event_tables(
-                    input_events,
-                    action_names,
-                    action_names if resettable_actions is None else resettable_actions,
-                ),
                 time_reference=time_reference or _TimeReferences(0, 0, 0),
                 publish=publish if publish is not None else lambda _: None,
                 publish_gate=should_publish
@@ -958,7 +1046,7 @@ class TestEventThread:
     def test_failed_decode_queues_the_error(self, mocker, make_thread, caplog, error):
         """A trial that can't be decoded is logged; get_data() isn't left waiting."""
         thread, data_queue = make_thread()
-        mocker.patch.object(thread.recorder, 'to_frame', side_effect=error)
+        mocker.patch.object(thread.trial.recorder, 'to_frame', side_effect=error)
         thread.stop()
         thread.join(timeout=2)
         item = self._next_trial(data_queue)
@@ -966,7 +1054,52 @@ class TestEventThread:
         assert 'Failed to decode trial #0' in str(item)
         assert item.__cause__ is error
         assert 'Failed to decode trial #0' in caplog.text
-        assert thread.recorder._finished  # a blocking peek isn't left waiting either
+        assert thread.trial.recorder._finished  # a blocking peek isn't left waiting
+        assert thread.trial.decoded.is_set()
+        assert thread.trial.decode_error is item
+        assert thread.trial.recorder._buffer.size > 0  # a later peek raises, too
+
+    def test_recorder_keeps_the_decoded_frame(self, make_thread):
+        """The queued frame is what the recorder holds, and the buffer is freed."""
+        thread, data_queue = make_thread()
+        thread.queue.put([_RawEvents(micros_us=10, event_ids=(0,))])
+        thread.stop()
+        thread.join(timeout=2)
+        recorder = thread.trial.recorder
+        assert thread.trial.decoded.is_set()
+        assert thread.trial.decode_error is None
+        assert recorder._buffer.size == 0
+        assert_frame_equal(
+            recorder.to_frame(), self._next_trial(data_queue), categorical_as_str=True
+        )
+
+    def test_recording_is_finished_before_decoding(self, mocker, make_thread):
+        """A slow or stuck decode can't hold up a blocking peek."""
+        thread, _ = make_thread()
+        recorder = thread.trial.recorder
+        finished = []
+        mocker.patch.object(
+            recorder,
+            'decode',
+            side_effect=lambda: finished.append(recorder._finished),
+        )
+        thread.stop()
+        thread.join(timeout=2)
+        assert finished == [True]
+
+    def test_trial_start_message_names_the_trial_and_its_machine(self, make_thread):
+        """The published trial start carries the trial's number and machine's hash."""
+        published = []
+        thread, _ = make_thread(
+            fsm=_make_fsm()._replace(fsm_hash=b'\xab\xcd'),
+            publish=published.extend,
+            trial=3,
+        )
+        thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_FSM,))])
+        thread.stop()
+        thread.join(timeout=2)
+        start = next(m for m in published if isinstance(m, EventTrialStart))
+        assert (start.trial, start.fsm_hash) == (3, 'abcd')
 
     def test_publish_gate_is_checked_once_per_batch(self, mocker, make_thread):
         """The gate's answer holds for one batch: subscribers can come and go."""

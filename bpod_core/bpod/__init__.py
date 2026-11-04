@@ -39,6 +39,8 @@ from bpod_core.bpod._threads import (
     ReadThread,
     SoftcodeThread,
     _LateStarts,
+    _Recorder,
+    _Trial,
     join_until,
 )
 from bpod_core.bpod.abc import AbstractBpod
@@ -1424,11 +1426,19 @@ class Bpod(SerialDevice, AbstractBpod):
         state_machine_lookup = cast('_StateMachineLookup', self._fsm_annotations)
 
         # initialize new threads
+        trial = _Trial(
+            number=self._next_fsm_index,
+            fsm_hash=state_machine_lookup.fsm_hash,
+            recorder=_Recorder(
+                trial=self._next_fsm_index,
+                fsm=state_machine_lookup,
+                event_tables=self._compiler.event_tables,
+            ),
+        )
         event_thread = EventThread(
-            trial=self._next_fsm_index,
+            trial=trial,
             fsm=state_machine_lookup,
             data_queue=self._trial_data,
-            event_tables=self._compiler.event_tables,
             time_reference=self._time_reference,
             publish=self._zmq.publish,
             publish_gate=lambda: self._zmq.has_subscribers,
@@ -1460,8 +1470,7 @@ class Bpod(SerialDevice, AbstractBpod):
         )
         read_thread = ReadThread(
             serial=self.serial0,
-            state_machine_hash=state_machine_lookup.fsm_hash,
-            trial=self._next_fsm_index,
+            trial=trial,
             cycle_period_us=self._hardware.cycle_period_us,
             queue_events=event_thread.queue,
             queue_softcodes=self._softcode_thread.queue,
