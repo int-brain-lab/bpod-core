@@ -16,6 +16,7 @@ from packaging.version import Version
 from bpod_core.bpod import Bpod, Module, discover_bpod
 from bpod_core.bpod.abc import AbstractFlexIO
 from bpod_core.bpod.constants import FlexIOChannelType
+from bpod_core.bpod.errors import BpodError
 from bpod_core.bpod.structs import BpodInfo
 
 from ._helpers import (
@@ -71,7 +72,8 @@ def bpod(bpod_info: BpodInfo, pytestconfig: pytest.Config) -> Iterator[Bpod]:
         if bpod.serial0.is_open and not pytestconfig.getoption('--fixed-firmware'):
             # without PR #4, disconnecting writes past the module relay flags at the
             # index of the input read last, which hangs a Bpod r2.0: read one in range
-            next(iter(bpod.inputs.values())).read()
+            with contextlib.suppress(BpodError):  # refused after a given-up trial
+                next(iter(bpod.inputs.values())).read()
 
 
 @pytest.fixture(scope='session')
