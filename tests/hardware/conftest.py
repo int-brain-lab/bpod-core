@@ -2,6 +2,7 @@
 
 import contextlib
 import functools
+import gc
 import logging
 import os
 import random
@@ -33,6 +34,17 @@ if pytest.version_tuple >= (9,) and (
     Version(version('pytest-benchmark')) <= Version('5.3.0')
 ):
     pytest.Function._nodeid = property(lambda self: self.nodeid)  # type: ignore[attr-defined]
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _freeze_collected_objects() -> None:
+    """Keep garbage collections short while the timing-bound tests run.
+
+    With every test collected, a full collection takes 45-70 ms and can land inside a
+    timing window. Frozen objects are no longer scanned.
+    """
+    gc.collect()
+    gc.freeze()
 
 
 @pytest.fixture(scope='session')

@@ -1,3 +1,4 @@
+import contextlib
 import inspect
 import logging
 import re
@@ -5,9 +6,8 @@ import struct
 import threading
 import time
 import weakref
-from itertools import chain, repeat
 from types import SimpleNamespace
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import DEFAULT, MagicMock, PropertyMock
 from uuid import uuid4
 
 import polars as pl
@@ -30,7 +30,12 @@ from bpod_core.bpod import (
     _machine_name,
     discover_bpod,
 )
-from bpod_core.bpod._threads import SoftcodeThread
+from bpod_core.bpod._threads import (
+    _TRIAL_DATA_SCHEMA,
+    _WAIT_SLICE_S,
+    SoftcodeThread,
+    _Trial,
+)
 from bpod_core.bpod.constants import (
     _REMOTE_CALL_METHODS,
     _REMOTE_DATA_METHODS,
@@ -58,6 +63,8 @@ from bpod_core.constants import (
 )
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ErrorData, RemoteError, ServiceHost
+
+from .conftest import make_trial
 
 # the Bpod fixtures patch this method; keep the original for testing it directly
 _DETECT_ADDITIONAL_SERIAL_PORTS = Bpod._detect_additional_serial_ports
@@ -802,18 +809,26 @@ class TestSendSoftcode:
 
 @pytest.fixture
 def mock_threads(mocker):
-    """Replace the trial threads with mocks that are never alive.
+    """Replace the trial threads with mocks that have finished once created.
 
     Returns the ReadThread and EventThread class mocks.
     """
-    classes = (
-        mocker.patch('bpod_core.bpod.ReadThread'),
-        mocker.patch('bpod_core.bpod.EventThread'),
+
+    def read(*, trial: _Trial, **_) -> object:
+        trial.started.set()
+        trial.ended.set()
+        read_thread_class.return_value.trial = trial
+        return DEFAULT
+
+    def decode(*, trial: _Trial, **_) -> object:
+        trial.decoded.set()
+        return DEFAULT
+
+    read_thread_class = mocker.patch('bpod_core.bpod.ReadThread', side_effect=read)
+    return (
+        read_thread_class,
+        mocker.patch('bpod_core.bpod.EventThread', side_effect=decode),
     )
-    for cls in classes:
-        cls.return_value.is_alive.return_value = False
-    classes[0].return_value.error = None  # the reader ended without an error
-    return classes
 
 
 class TestIsRunning:
@@ -830,15 +845,34 @@ class TestIsRunning:
         run() still waits for the previous event thread to drain.
         """
         observed = []
-        mock_bpod_25._read_thread = MagicMock(
-            error=None, **{'is_alive.return_value': False}
-        )
-        mock_bpod_25._event_thread = MagicMock(**{'is_alive.return_value': True})
+        mock_bpod_25._current = make_trial()
+        mock_bpod_25._event_thread = MagicMock()
         mock_bpod_25._event_thread.join.side_effect = lambda: observed.append(
             mock_bpod_25.is_running
         )
         mock_bpod_25.run(fsm)
         assert observed == [True]
+
+    def test_registered_before_sending(
+        self, fsm, mock_bpod_25, mock_ext_serial, mock_threads, mocker
+    ):
+        """A trial being sent counts as running, while peek stays on the last one."""
+        previous = make_trial()
+        mock_bpod_25._current = previous
+        seen = []
+        write = mock_ext_serial.write
+
+        def record_and_write(data):
+            if data[:1] == b'C':
+                current = mock_bpod_25._current
+                seen.append((mock_bpod_25.is_running, current is previous))
+            return write(data)
+
+        mocker.patch.object(mock_ext_serial, 'write', side_effect=record_and_write)
+        mock_bpod_25.run(fsm)
+        assert seen == [(True, True)]
+        assert mock_bpod_25._current is not previous
+        assert mock_bpod_25._queued is None
 
     def test_false_after_failed_send(self, fsm, mock_bpod_25, mock_ext_serial, mocker):
         """A state machine that couldn't be sent doesn't count as running."""
@@ -846,24 +880,69 @@ class TestIsRunning:
         with pytest.raises(SerialException):
             mock_bpod_25.run(fsm)
         assert not mock_bpod_25.is_running
+        assert not mock_bpod_25.is_ready
+        assert not mock_bpod_25._undelivered
+
+    def test_false_after_interrupted_registration(self, fsm, mock_bpod_25):
+        """Ctrl+C while the trial is being registered doesn't leave it running.
+
+        Nothing was sent, so the connection stays in sync.
+        """
+        lock = MagicMock()
+        lock.__enter__.side_effect = [KeyboardInterrupt, None]  # the 2nd: _drop
+        mock_bpod_25._undelivered_lock = lock
+        with pytest.raises(KeyboardInterrupt):
+            mock_bpod_25.run(fsm)
+        assert not mock_bpod_25.is_running
+        assert not mock_bpod_25._undelivered
+        assert not mock_bpod_25._out_of_sync
+        assert not mock_bpod_25._analog_trial_number_by_sequence
+
+    def test_get_data_moves_on_after_failed_send(
+        self, fsm, mock_bpod_25, mock_ext_serial, mocker
+    ):
+        """A get_data() waiting for a trial that couldn't be sent moves on at once."""
+        # long enough that only the failure can wake it within the test
+        mocker.patch('bpod_core.bpod._threads._WAIT_SLICE_S', 60)
+        results = []
+
+        def get_data() -> None:
+            with contextlib.suppress(BpodError):
+                results.append(mock_bpod_25.get_data())
+            results.append('returned')
+
+        waiter = threading.Thread(target=get_data, daemon=True)
+        write = mock_ext_serial.write
+
+        def wait_then_fail(data):
+            if data[:1] != b'C':
+                return write(data)
+            waiter.start()
+            time.sleep(0.02)  # it waits for the trial being sent
+            raise SerialException
+
+        mocker.patch.object(mock_ext_serial, 'write', side_effect=wait_then_fail)
+        with pytest.raises(SerialException):
+            mock_bpod_25.run(fsm)
+        waiter.join(2)
+        assert results == ['returned']
 
 
 class TestLateStartCheck:
     @pytest.mark.parametrize(
-        ('running', 'at_handoff', 'previous_end_us'),
-        [(True, True, 1234), (True, False, 1234), (False, False, None)],
+        ('running', 'previous_end_us'), [(True, 1234), (False, None)]
     )
     def test_only_a_trial_sent_during_another_is_checked(
-        self, mock_bpod_25, mock_threads, running, at_handoff, previous_end_us
+        self, mock_bpod_25, mock_threads, running, previous_end_us
     ):
         """A trial sent while the one before runs gets that one's end to check."""
         read_thread_class, _ = mock_threads
-        mock_bpod_25._read_thread = MagicMock(
-            error=None,
-            end_micros_us=1234,
-            trial_number=0,
-            **{'is_alive.side_effect': chain([running], repeat(at_handoff))},
-        )
+        previous = make_trial(end_micros_us=1234)
+        if running:
+            previous.ended.clear()
+            mock_bpod_25._read_thread = MagicMock()
+            mock_bpod_25._read_thread.join.side_effect = previous.ended.set
+        mock_bpod_25._current = previous
         fsm = StateMachine()
         fsm.add_state('a', 0, {'Tup': '>exit'})
         mock_bpod_25.run(fsm)
@@ -880,34 +959,54 @@ class TestLateStartCheck:
 
 
 class TestGetData:
-    def test_waits_for_event_thread(self, mock_bpod_25):
-        """Data the event thread is still processing is waited for."""
+    @staticmethod
+    def _queue(bpod: Bpod, *items: pl.DataFrame | BpodError) -> list[_Trial]:
+        """Add trials, decoded into the given frames or failed with the given errors."""
+        trials = []
+        for number, item in enumerate(items):
+            trial = make_trial(number)
+            if isinstance(item, BpodError):
+                trial.decode_error = item
+            else:
+                trial.recorder = MagicMock(**{'to_frame.return_value': item})
+            trials.append(trial)
+        bpod._undelivered.extend(trials)
+        return trials
 
-        def finish():
-            time.sleep(0.05)
-            mock_bpod_25._trial_data.put(pl.DataFrame({'Trial': [0]}))
-
-        mock_bpod_25._read_thread = None
-        mock_bpod_25._event_thread = threading.Thread(target=finish)
-        mock_bpod_25._event_thread.start()
+    def test_waits_for_the_trial_being_decoded(self, mock_bpod_25, mocker):
+        """A trial still being decoded is waited for, in slices: Ctrl+C gets through."""
+        (trial,) = self._queue(mock_bpod_25, pl.DataFrame({'Trial': [0]}))
+        trial.decoded.clear()
+        wait = mocker.spy(trial.decoded, 'wait')
+        threading.Timer(0.05, trial.decoded.set).start()
         assert mock_bpod_25.get_data()['Trial'].to_list() == [0]
+        wait.assert_called_with(_WAIT_SLICE_S)
 
     def test_pops_queued_trials(self, mock_bpod_25):
         """Queued trials come out one at a time, or all at once."""
-        for trial in range(3):
-            mock_bpod_25._trial_data.put(pl.DataFrame({'Trial': [trial]}))
+        frames = [pl.DataFrame({'Trial': [trial]}) for trial in range(3)]
+        self._queue(mock_bpod_25, *frames)
         assert mock_bpod_25.get_data(concat=False)['Trial'].to_list() == [0]
         assert mock_bpod_25.get_data()['Trial'].to_list() == [1, 2]
 
+    def test_concat_stops_at_a_trial_still_being_decoded(self, mock_bpod_25):
+        """Only decoded trials before it come out; the rest stay in order."""
+        frames = [pl.DataFrame({'Trial': [trial]}) for trial in range(3)]
+        trials = self._queue(mock_bpod_25, *frames)
+        trials[1].decoded.clear()
+        assert mock_bpod_25.get_data()['Trial'].to_list() == [0]
+        trials[1].decoded.set()
+        assert mock_bpod_25.get_data()['Trial'].to_list() == [1, 2]
+
     def test_failed_trials_raise_and_keep_the_others(self, mock_bpod_25):
-        """Each failed trial raises once; the other trials stay available."""
-        for item in (
+        """Each failed trial raises once; the other trials stay, in the order sent."""
+        self._queue(
+            mock_bpod_25,
             pl.DataFrame({'Trial': [0]}),
             BpodError('Failed to decode trial #1'),
             pl.DataFrame({'Trial': [2]}),
             BpodError('Failed to decode trial #3'),
-        ):
-            mock_bpod_25._trial_data.put(item)
+        )
         with pytest.raises(BpodError, match='trial #1'):
             mock_bpod_25.get_data()
         with pytest.raises(BpodError, match='trial #3'):
@@ -916,11 +1015,41 @@ class TestGetData:
 
     def test_failed_trial_raises_when_popped_alone(self, mock_bpod_25):
         """With `concat=False`, a failed trial raises in its turn."""
-        mock_bpod_25._trial_data.put(BpodError('Failed to decode trial #0'))
-        mock_bpod_25._trial_data.put(pl.DataFrame({'Trial': [1]}))
+        self._queue(
+            mock_bpod_25,
+            BpodError('Failed to decode trial #0'),
+            pl.DataFrame({'Trial': [1]}),
+        )
         with pytest.raises(BpodError, match='trial #0'):
             mock_bpod_25.get_data(concat=False)
         assert mock_bpod_25.get_data(concat=False)['Trial'].to_list() == [1]
+
+    def test_second_caller_is_not_left_waiting(self, mock_bpod_25):
+        """Of two callers waiting for one trial, one gets it and the other an error."""
+        (trial,) = self._queue(mock_bpod_25, pl.DataFrame({'Trial': [0]}))
+        trial.decoded.clear()
+        results = []
+
+        def get_data() -> None:
+            try:
+                results.append(mock_bpod_25.get_data().height)
+            except BpodError as e:
+                results.append(str(e))
+
+        callers = [threading.Thread(target=get_data, daemon=True) for _ in range(2)]
+        for caller in callers:
+            caller.start()
+        time.sleep(0.02)  # both wait
+        trial.decoded.set()
+        for caller in callers:
+            caller.join(2)
+        assert sorted(results, key=str) == [1, 'No trial data available']
+
+    def test_peek_before_any_trial_is_empty(self, mock_bpod_25):
+        """Without a trial yet, peek_data() returns an empty frame."""
+        frame = mock_bpod_25.peek_data()
+        assert frame.is_empty()
+        assert list(frame.schema.items()) == list(_TRIAL_DATA_SCHEMA.items())
 
     def test_raises_without_data(self, mock_bpod_25):
         """Without a trial running or being processed, there's nothing to wait for."""
@@ -1226,12 +1355,12 @@ class TestRun:
         The Bpod holds one state machine besides the running one.
         """
         mocker.patch.object(Bpod, '_run_state_machine')  # no threads outliving the test
-        blocked_reader.trial_started.clear()  # sent, but still loading on the Bpod
+        blocked_reader.trial.started.clear()  # sent, but still loading on the Bpod
         runner = threading.Thread(target=mock_bpod_2p.run, args=(fsm_basic,))
         runner.start()
         runner.join(0.05)
         assert not mock_bpod_2p.serial0.last_write.startswith(b'C')
-        blocked_reader.trial_started.set()
+        blocked_reader.trial.started.set()
         runner.join(2)
         assert mock_bpod_2p.serial0.last_write.startswith(b'C')
 
@@ -1240,7 +1369,7 @@ class TestRun:
     ):
         """A machine sent before that never starts is given up, and none is sent."""
         mocker.patch('bpod_core.bpod._START_TIMEOUT_S', 0.05)
-        blocked_reader.trial_started.clear()  # e.g. a deferred start the firmware lost
+        blocked_reader.trial.started.clear()  # e.g. a deferred start the firmware lost
         mock_bpod_2p.serial0.last_write = b''
         with pytest.raises(TimeoutError, match=r'start trial #7 within 0\.05 s'):
             mock_bpod_2p.run(fsm_basic)
@@ -1820,6 +1949,7 @@ class TestStartAnalogReader:
 @pytest.fixture
 def blocked_reader(mock_bpod_2p, blocked_thread):
     """A trial that doesn't end until the reader's `release` event is set."""
+    mock_bpod_2p._current = blocked_thread.trial
     mock_bpod_2p._read_thread = blocked_thread
     return blocked_thread
 
@@ -1828,9 +1958,7 @@ def blocked_reader(mock_bpod_2p, blocked_thread):
 def lost_reader(mock_bpod_2p):
     """A reader that ended with a serial error: the connection was lost in trial #3."""
     error = SerialException('device disconnected')
-    mock_bpod_2p._read_thread = MagicMock(
-        error=error, trial_number=3, is_alive=lambda: False
-    )
+    mock_bpod_2p._current = make_trial(3, read_error=error)
     return error
 
 
@@ -1840,7 +1968,7 @@ class TestStopStateMachine:
         mocker.patch.object(
             Bpod, 'is_running', new_callable=PropertyMock, return_value=True
         )
-        mock_bpod_2p._read_thread = None
+        mock_bpod_2p._current = None
         return mock_bpod_2p
 
     def test_timeout(self, mock_bpod_2p, blocked_reader):
@@ -1852,17 +1980,26 @@ class TestStopStateMachine:
 
     def test_reader_told_before_the_stop(self, running, mocker):
         """The reader learns of the stop before the Bpod can answer it."""
-        serial0 = running.serial0
-        serial0.last_write = b''
-        written_before = []
-        reader = mocker.MagicMock(is_alive=lambda: False)
-        reader.expect_stop.side_effect = lambda: written_before.append(
-            serial0.last_write
+        trial = make_trial()
+        running._current = trial
+        seen = []
+        mocker.patch.object(
+            running.serial0,
+            'write',
+            side_effect=lambda data: seen.append((data, trial.stop_expected)),
         )
-        running._read_thread = reader
         running.stop_state_machine()
-        assert written_before == [b'']
-        assert serial0.last_write == b'X'
+        assert seen == [(b'X', True)]
+
+    def test_stops_a_trial_that_never_started(self, mock_bpod_2p, blocked_reader):
+        """A queued trial stopped before it started ends, and counts as started."""
+        trial = blocked_reader.trial
+        trial.started.clear()
+        threading.Timer(0.02, blocked_reader.release.set).start()
+        mock_bpod_2p.stop_state_machine(timeout=2)
+        assert trial.stop_expected
+        assert trial.started.is_set()
+        assert not mock_bpod_2p.is_running
 
     def test_given_up_trial_needs_a_reopen(self, mock_bpod_2p, blocked_reader):
         """After a trial was given up, the stream is suspect until the next reopen."""
@@ -2314,9 +2451,7 @@ class TestMisreadTrial:
     def misread_reader(self, mock_bpod_2p):
         """A reader that ended on the stream of trial #3."""
         error = RuntimeError('Received unknown opcode from Bpod: 0')
-        mock_bpod_2p._read_thread = MagicMock(
-            error=error, trial_number=3, is_alive=lambda: False
-        )
+        mock_bpod_2p._current = make_trial(3, read_error=error)
         return error
 
     def test_wait_raises_and_refuses_the_next_run(
@@ -2351,7 +2486,9 @@ class TestMisreadTrial:
         join = blocked_reader.join
 
         def misread_then_join(*args, **kwargs) -> None:  # the handoff, after sending
-            blocked_reader.error = RuntimeError('Received unknown opcode from Bpod: 0')
+            blocked_reader.trial.read_error = RuntimeError(
+                'Received unknown opcode from Bpod: 0'
+            )
             blocked_reader.release.set()
             join(*args, **kwargs)
 
@@ -2359,6 +2496,50 @@ class TestMisreadTrial:
         with pytest.raises(BpodError, match='out of sync'):
             mock_bpod_2p.run(fsm)
         assert mock_bpod_2p.serial0.last_write.startswith(b'C')  # queued already
+        assert not mock_bpod_2p._undelivered  # no threads will read that trial
+        assert mock_bpod_2p._queued is None
+
+    def test_interrupted_handoff_needs_a_reopen(
+        self, mock_bpod_2p, blocked_reader, fsm, mocker
+    ):
+        """After Ctrl+C in the handoff, the Bpod holds a machine nobody reads."""
+        join = mocker.patch.object(
+            blocked_reader, 'join', side_effect=KeyboardInterrupt
+        )
+        with pytest.raises(KeyboardInterrupt):
+            mock_bpod_2p.run(fsm)
+        mocker.stop(join)
+        assert mock_bpod_2p.serial0.last_write.startswith(b'C')
+        assert not mock_bpod_2p._undelivered
+        assert mock_bpod_2p._out_of_sync  # a next run() is refused
+
+    def test_failure_after_the_reader_started_cancels_it(
+        self, mock_bpod_2p, fsm, mock_threads
+    ):
+        """A reader without an event thread doesn't stay on the port."""
+        read_thread_class, event_thread_class = mock_threads
+        event_thread_class.return_value.start.side_effect = RuntimeError
+        with pytest.raises(RuntimeError):
+            mock_bpod_2p.run(fsm)
+        read_thread_class.return_value.cancel.assert_called_once()
+        with pytest.raises(BpodError, match='out of sync'):
+            mock_bpod_2p.run(fsm)
+
+    def test_closing_forgets_the_leftover(self, mock_bpod_2p):
+        """The next connection doesn't start with what the old one read too far."""
+        trial = make_trial(leftover=b'\x01next')
+        mock_bpod_2p._current = trial
+        mock_bpod_2p._close_ports()
+        assert trial.leftover == b''
+        assert mock_bpod_2p._current is trial  # peek_data() still has it
+
+    def test_reported_once(self, mock_bpod_2p, misread_reader):
+        """wait() raises a read error once; the connection stays refused afterwards."""
+        with pytest.raises(BpodError, match='Could not read trial #3'):
+            mock_bpod_2p.wait()
+        mock_bpod_2p.wait()
+        with pytest.raises(BpodError, match='close and reopen'):
+            mock_bpod_2p.set_status_led(True)
 
     def test_closing_forgets_an_unreported_error(self, mock_bpod_2p, misread_reader):
         """The next connection doesn't fail on a misread trial nobody reported."""
@@ -2375,6 +2556,14 @@ def test_lost_connection_needs_a_reopen(mock_bpod_2p, lost_reader):
 
 
 class TestWait:
+    def test_includes_decoding(self, mock_bpod_2p):
+        """wait() returns once the trial is decoded, not just once it has ended."""
+        trial = make_trial()
+        trial.decoded.clear()
+        mock_bpod_2p._current = trial
+        with pytest.raises(TimeoutError, match='Trial #0 did not finish'):
+            mock_bpod_2p.wait(timeout=0.02)
+
     def test_timeout_while_the_trial_runs(self, mock_bpod_2p, blocked_reader):
         """wait(timeout) raises once the time is up, and returns after the trial."""
         with pytest.raises(TimeoutError, match=r'#7 did not finish within 0\.05 s'):
@@ -2435,14 +2624,8 @@ def test_close_after_lost_connection(mock_bpod_2p, mock_ext_serial, mocker):
 def test_next_reader_gets_leftover(mock_bpod_2p, mock_threads):
     """A trial's reader starts with the bytes its predecessor read beyond its trial."""
     read_thread_class, _ = mock_threads
-    mock_bpod_2p._read_thread = MagicMock(
-        leftover=b'\x01next',
-        leftover_received_ns=42,
-        error=None,
-        is_alive=lambda: False,
-    )
-    mock_bpod_2p._fsm_annotations = MagicMock()
-    mock_bpod_2p._run_state_machine(queued=False)
+    mock_bpod_2p._current = make_trial(leftover=b'\x01next', leftover_received_ns=42)
+    mock_bpod_2p._run_state_machine(make_trial(), MagicMock(), queued=False)
     kwargs = read_thread_class.call_args.kwargs
     assert kwargs['initial_bytes'] == b'\x01next'
     assert kwargs['initial_received_ns'] == 42

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doesn't load one that large, and took its bytes for commands.
 - a blocking `peek_data()` could wait forever if another caller was waiting at the
   same time.
+- a `get_data()` waiting for a trial that could not be sent no longer waits forever.
 
 ### Changed
 

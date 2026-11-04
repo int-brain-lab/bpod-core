@@ -13,12 +13,16 @@ from queue import SimpleQueue
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
+import numpy as np
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 from serial import SerialException
 
 from bpod_core.bpod._threads import (
+    _EVENT_DTYPE,
     _EVENTS_STOP,
+    _OUTPUT_ID_OFFSET,
     _SOFTCODE_STOP,
     _TRIAL_DATA_SCHEMA,
     EventThread,
@@ -26,8 +30,11 @@ from bpod_core.bpod._threads import (
     SoftcodeThread,
     _build_event_tables,
     _EventID,
+    _EventTables,
     _LateStarts,
-    join_until,
+    _Recorder,
+    _Trial,
+    wait_until,
 )
 from bpod_core.bpod.errors import BpodError
 from bpod_core.bpod.structs import (
@@ -70,13 +77,45 @@ def _opcode2(softcode: int) -> bytes:
     return bytes([2, softcode])
 
 
+def _make_event_tables(
+    names: list[str] | None = None,
+    values: list[int | None] | None = None,
+    actions: list[str] | None = None,
+    resettable: list[str] | None = None,
+) -> _EventTables:
+    """Build the lookup tables for a hardware with the given events and actions."""
+    names = names or ['Ev0', 'Tup']
+    actions = actions or []
+    return _build_event_tables(
+        _InputEvents(
+            names=names,
+            channels=[None] * len(names),
+            values=values or [None] * len(names),
+        ),
+        actions,
+        actions if resettable is None else resettable,
+    )
+
+
+def _make_trial(
+    number: int = 0,
+    fsm: _StateMachineLookup | None = None,
+    event_tables: _EventTables | None = None,
+) -> _Trial:
+    """Build a trial with a recorder, from a minimal FSM by default."""
+    fsm = fsm or _make_fsm()
+    recorder = _Recorder(
+        trial=number, fsm=fsm, event_tables=event_tables or _make_event_tables()
+    )
+    return _Trial(number=number, fsm_hash=fsm.fsm_hash, recorder=recorder)
+
+
 def _reader(serial) -> tuple[ReadThread, SimpleQueue]:
     """A ReadThread for trial 0 on `serial`, and its event queue."""
     q_events: SimpleQueue[list[_RawEvents]] = SimpleQueue()
     thread = ReadThread(
         serial=serial,
-        state_machine_hash=b'',
-        trial=0,
+        trial=_make_trial(),
         cycle_period_us=1,
         queue_events=q_events,
         queue_softcodes=SimpleQueue(),
@@ -147,8 +186,7 @@ class TestReadThread:
             q_softcodes: SimpleQueue[_RawSoftcode] = SimpleQueue()
             thread = ReadThread(
                 serial=serial or mock_ext_serial,
-                state_machine_hash=b'',
-                trial=0,
+                trial=_make_trial(),
                 cycle_period_us=cycle_period_us,
                 queue_events=q_events,
                 queue_softcodes=q_softcodes,
@@ -170,7 +208,7 @@ class TestReadThread:
         assert thread.is_alive()  # waiting for the confirmation byte
         thread.cancel()  # joins the thread
         assert not thread.is_alive()
-        assert thread.error is None
+        assert thread.trial.read_error is None
         assert q_events.get(timeout=1) is _EVENTS_STOP
 
     def test_cancel_after_the_trial_ended_withdraws_the_abort(self, pty_port):
@@ -193,7 +231,7 @@ class TestReadThread:
         serial.read_waiting.side_effect = [b'', data]
         thread, q_events = _reader(serial)
         thread.run()
-        assert thread.error is None
+        assert thread.trial.read_error is None
         assert len(_drain(q_events)) > 1  # events, not just the stop sentinel
 
     def test_initial_events_enqueued(self, make_thread):
@@ -290,8 +328,7 @@ class TestReadThread:
         calls = MagicMock()  # one parent records the order across both queues
         thread = ReadThread(
             serial=mock_ext_serial,
-            state_machine_hash=b'',
-            trial=0,
+            trial=_make_trial(),
             cycle_period_us=1,
             queue_events=calls.events,
             queue_softcodes=calls.softcodes,
@@ -314,7 +351,7 @@ class TestReadThread:
         event_indices = [i for _, i in _timed_events(q_events)]
         assert event_indices[:3] == [_EventID.START_FSM, _EventID.START_STATE, 42]
         assert event_indices[-1] == _EventID.STOP_SENTINEL
-        assert 'unknown opcode' in str(thread.error)  # kept for Bpod.wait()
+        assert 'unknown opcode' in str(thread.trial.read_error)  # kept for Bpod.wait()
 
     @pytest.mark.parametrize('softcode', [0, 3])  # 0: a global timer's value_off
     def test_softcode_enqueued(self, make_thread, softcode):
@@ -337,7 +374,7 @@ class TestReadThread:
         thread, q_events, _ = make_thread(b'', serial=_UnpluggedSerial(data))
         thread.start()
         thread.join(timeout=2)
-        assert isinstance(thread.error, SerialException)
+        assert isinstance(thread.trial.read_error, SerialException)
         events = [i for _, i in _timed_events(q_events)]
         assert 42 in events
         assert events[-1] == _EventID.STOP_SENTINEL
@@ -360,7 +397,7 @@ class TestReadThread:
         assert (105, 42) in events
         assert (105, 43) in events
         assert [item.softcode for item in _drain(q_softcodes)] == [3]
-        assert thread.leftover == b''
+        assert thread.trial.leftover == b''
 
     def test_leftover_is_handed_to_next_trial(self, make_thread):
         """Bytes read beyond a trial's end start the next reader's trial."""
@@ -375,15 +412,15 @@ class TestReadThread:
         thread, _, _ = make_thread(data)
         thread.start()
         thread.join(timeout=2)
-        assert thread.leftover == next_trial
-        assert thread.leftover_received_ns > 0
+        assert thread.trial.leftover == next_trial
+        assert thread.trial.leftover_received_ns > 0
 
         # the next reader starts from the leftover and reads the rest from the port;
         # the softcode in the leftover keeps the time it was received at
         next_thread, q_events, q_softcodes = make_thread(
             _opcode1([255], n_cycles=1) + _exit_data(1, 201),
-            initial_bytes=thread.leftover,
-            initial_received_ns=thread.leftover_received_ns,
+            initial_bytes=thread.trial.leftover,
+            initial_received_ns=thread.trial.leftover_received_ns,
         )
         next_thread.start()
         next_thread.join(timeout=2)
@@ -391,7 +428,7 @@ class TestReadThread:
         assert _timed_events(q_events)[0] == (200, _EventID.START_FSM)
         softcode = _drain(q_softcodes)[0]
         assert softcode.softcode == 4
-        assert softcode.received_ns == thread.leftover_received_ns
+        assert softcode.received_ns == thread.trial.leftover_received_ns
 
     def test_end_events_enqueued(self, make_thread):
         """END_FSM_CYCLES, END_FSM_MICROS, and STOP_SENTINEL are enqueued after exit."""
@@ -437,7 +474,6 @@ class TestReadThread:
         with caplog.at_level(logging.WARNING):
             thread.start()
             thread.join(timeout=2)
-        assert thread.backlog == len(body)
         assert f'Peak read backlog on the host: {len(body)} bytes' in caplog.text
 
     def test_timing_check_uses_exit_packet(self, make_thread, caplog):
@@ -477,7 +513,7 @@ class TestReadThread:
         assert not thread.is_alive()
         event_indices = [i for _, i in _timed_events(q_events)]
         assert event_indices == [_EventID.STOP_SENTINEL]
-        assert 'not confirmed' in str(thread.error)
+        assert 'not confirmed' in str(thread.trial.read_error)
 
     def test_trial_started_once_confirmed(self, pty_port):
         """`trial_started` is set by the confirmation, while the trial goes on."""
@@ -485,19 +521,12 @@ class TestReadThread:
         thread, _ = _reader(port)
         thread.start()
         try:
-            assert not thread.trial_started.wait(0.05)  # no confirmation yet
+            assert not thread.trial.started.wait(0.05)  # no confirmation yet
             os.write(master, _CONFIRM_OK)
-            assert thread.trial_started.wait(1)
+            assert thread.trial.started.wait(1)
             assert thread.is_alive()
         finally:
             thread.cancel()
-
-    def test_trial_started_once_ended_without_a_start(self, make_thread):
-        """An unconfirmed trial sets `trial_started` too: there is nothing to await."""
-        thread, _, _ = make_thread(_CONFIRM_FAIL)
-        thread.start()
-        thread.join(timeout=2)
-        assert thread.trial_started.is_set()
 
     def test_stop_found_the_bpod_idle(self, make_thread, caplog):
         """A stop the Bpod answers as idle, never having started the trial, ends it.
@@ -507,7 +536,7 @@ class TestReadThread:
         """
         idle_reply = _opcode1([255], n_cycles=7) + _exit_data(7, 1234)
         thread, q_events, _ = make_thread(idle_reply + b'\x99')
-        thread.expect_stop()
+        thread.trial.stop_expected = True
         thread.start()
         thread.join(timeout=2)
         assert not thread.is_alive()
@@ -519,7 +548,7 @@ class TestReadThread:
         """A stop sent while the trial runs doesn't change how the trial is read."""
         data = _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(0, 0)
         thread, q_events, _ = make_thread(data)
-        thread.expect_stop()
+        thread.trial.stop_expected = True
         thread.start()
         thread.join(timeout=2)
         assert not thread.is_alive()
@@ -558,7 +587,45 @@ class TestReadThread:
         thread.start()
         thread.join(timeout=2)
         assert thread._late_starts.count == late
-        assert thread.end_micros_us == end_us
+        assert thread.trial.end_micros_us == end_us
+
+    def test_ended_is_set_last(self, make_thread, mocker):
+        """`ended` tells that everything the reader writes to the trial is there."""
+        data = _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(0, 7)
+        thread, q_events, _ = make_thread(data)
+        trial = thread.trial
+        seen = []
+        mocker.patch.object(
+            trial.ended,
+            'set',
+            side_effect=lambda: seen.append(
+                (trial.started.is_set(), trial.end_micros_us, q_events.empty())
+            ),
+        )
+        thread.start()
+        thread.join(timeout=2)
+        assert seen == [(True, 7, False)]
+
+    @pytest.mark.parametrize(
+        ('data', 'expect_stop'),
+        [
+            (
+                _CONFIRM_OK + _start() + _opcode1([255], n_cycles=0) + _exit_data(0, 0),
+                False,
+            ),
+            (_CONFIRM_FAIL, False),  # the Bpod refused
+            (_opcode1([255], n_cycles=7) + _exit_data(7, 1234), True),  # stopped idle
+        ],
+    )
+    def test_started_and_ended_on_every_way_out(self, make_thread, data, expect_stop):
+        """Nobody is left waiting on the trial, however the reader ends."""
+        thread, _, _ = make_thread(data)
+        if expect_stop:
+            thread.trial.stop_expected = True
+        thread.start()
+        thread.join(timeout=2)
+        assert thread.trial.started.is_set()
+        assert thread.trial.ended.is_set()
 
 
 class TestLateStarts:
@@ -607,6 +674,223 @@ def _make_fsm(
     )
 
 
+def _peek_in_background(
+    peek: Callable[[list[str]], pl.DataFrame], states: list[str]
+) -> tuple[threading.Thread, list[pl.DataFrame]]:
+    """Start a peek on another thread, which puts its snapshot in the returned list."""
+    snapshots: list[pl.DataFrame] = []
+    peeker = threading.Thread(
+        target=lambda: snapshots.append(peek(states)), daemon=True
+    )
+    peeker.start()
+    time.sleep(0.02)  # let it block first
+    return peeker, snapshots
+
+
+class TestRecorder:
+    @staticmethod
+    def _make_recorder(trial: int = 7) -> _Recorder:
+        return _Recorder(
+            trial=trial,
+            fsm=_make_fsm()._replace(fsm_hash=b'\xab\xcd'),
+            event_tables=_make_event_tables(
+                ['Ev0', 'Tup', 'Low'], [None, 5, 0], ['Valve1']
+            ),
+        )
+
+    def test_to_frame_matches_a_reference(self):
+        """Each kind of event decodes to its row, values and nulls included."""
+        recorder = self._make_recorder()
+        recorder.append(1000, _EventID.START_FSM, -1)
+        recorder.append(1000, _EventID.START_STATE, 0)
+        recorder.append(1000, _OUTPUT_ID_OFFSET, 0, 1)
+        recorder.append(1100, 0, 0)  # an input without a default value
+        recorder.append(1200, 1, 1)  # one with a default value
+        recorder.append(1250, 2, 1)  # one with a default value of 0
+        recorder.append(1300, 0, 1, 3)  # one with its own value
+        recorder.append(1400, 200, 1)  # an event code the hardware doesn't name
+        recorder.append(1500, _EventID.END_FSM_CYCLES, -1)
+        expected = pl.DataFrame(
+            {
+                'Time': [1000, 1000, 1000, 1100, 1200, 1250, 1300, 1400, 1500],
+                'Trial': [7] * 9,
+                'State Machine': ['abcd'] * 9,
+                'State': [None, 'S0', 'S0', 'S0', 'S1', 'S1', 'S1', 'S1', None],
+                'Type': [
+                    'TrialStart',
+                    'StateStart',
+                    'OutputAction',
+                    'InputEvent',
+                    'InputEvent',
+                    'InputEvent',
+                    'InputEvent',
+                    None,
+                    'TrialEnd',
+                ],
+                'Event': [None, None, None, 'Ev0', 'Tup', 'Low', 'Ev0', None, None],
+                'Channel': [None, None, 'Valve1', None, None, None, None, None, None],
+                'Value': [None, None, 1, None, 5, 0, 3, None, None],
+            },
+            schema=_TRIAL_DATA_SCHEMA,
+        )
+        assert_frame_equal(recorder.to_frame(), expected, categorical_as_str=True)
+
+    def test_to_frame_without_events(self):
+        """No events give an empty frame of the right schema."""
+        frame = self._make_recorder().to_frame()
+        assert frame.is_empty()
+        assert list(frame.schema.items()) == list(_TRIAL_DATA_SCHEMA.items())
+
+    def test_trial_number_beyond_uint16(self):
+        """Trial numbers above 65535 are kept."""
+        recorder = self._make_recorder(trial=70_000)
+        recorder.append(0, _EventID.START_STATE, 0)
+        assert recorder.to_frame()['Trial'].to_list() == [70_000]
+
+    def test_buffer_doubles_and_keeps_its_rows(self, mocker):
+        """Growing keeps every row, in order."""
+        mocker.patch('bpod_core.bpod._threads._INITIAL_BUFFER_SIZE', 2)
+        recorder = self._make_recorder()
+        for time_us in range(5):
+            recorder.append(time_us, 0, 0)
+        assert len(recorder._buffer) == 8
+        assert recorder.to_frame()['Time'].dt.epoch('us').to_list() == list(range(5))
+
+    def test_one_row_frame_is_a_copy_of_the_buffer(self):
+        """A single element isn't strided, which would keep polars from copying it."""
+        recorder = self._make_recorder()
+        recorder.append(10, 0, 0)
+        frame = recorder.to_frame()
+        recorder._buffer['Time'][0] = 0
+        assert frame['Time'].dt.epoch('us').to_list() == [10]
+
+    def test_peek_without_states_returns_the_events_so_far(self):
+        """Without trigger states, peek returns at once."""
+        recorder = self._make_recorder()
+        recorder.append(10, 0, 0)
+        assert recorder.peek().height == 1
+
+    @pytest.mark.parametrize(
+        ('states', 'message'),
+        [
+            (['nope'], "Unknown trigger state: 'nope'"),
+            (['S0', 'x', 'y'], "Unknown trigger states: 'x', 'y'"),
+        ],
+    )
+    def test_peek_rejects_unknown_states(self, states, message):
+        """Trigger states must be part of the state machine."""
+        recorder = self._make_recorder()
+        recorder.finish()  # so that a missing check fails rather than waits
+        with pytest.raises(ValueError, match=message):
+            recorder.peek(states)
+
+    def test_peek_returns_at_once_if_the_state_was_entered(self):
+        """A state entered before the call needs no wake-up."""
+        recorder = self._make_recorder()
+        recorder.append(10, _EventID.START_STATE, 1)
+        peeker, snapshots = _peek_in_background(recorder.peek, ['S1'])
+        peeker.join(timeout=2)
+        assert snapshots[0].height == 1
+
+    def test_peek_waits_for_its_state(self, mocker):
+        """Another state's wake-up doesn't end the wait; its own state's does."""
+        # long enough that only the wake-up can end its wait within the test
+        mocker.patch('bpod_core.bpod._threads._PEEK_RECHECK_S', 60)
+        recorder = self._make_recorder()
+        peeker, snapshots = _peek_in_background(recorder.peek, ['S1'])
+        recorder.append(10, _EventID.START_STATE, 0)
+        recorder.state_entered()
+        time.sleep(0.02)
+        assert not snapshots
+        recorder.append(20, _EventID.START_STATE, 1)
+        recorder.state_entered()
+        peeker.join(timeout=2)
+        assert snapshots[0]['State'].to_list() == ['S0', 'S1']
+
+    def test_finish_ends_the_wait(self, mocker):
+        """A state that's never entered doesn't leave peek waiting after the trial."""
+        mocker.patch('bpod_core.bpod._threads._PEEK_RECHECK_S', 60)
+        recorder = self._make_recorder()
+        peeker, snapshots = _peek_in_background(recorder.peek, ['S1'])
+        recorder.append(10, 0, 0)
+        recorder.finish()
+        peeker.join(timeout=2)
+        assert snapshots[0].height == 1
+
+    def test_peek_recovers_from_a_lost_wake_up(self):
+        """Another caller's clear() can't leave a blocking peek waiting."""
+        recorder = self._make_recorder()
+        peeker, snapshots = _peek_in_background(recorder.peek, ['S1'])
+        recorder._finished = True  # its final set() went to the other caller's clear()
+        peeker.join(timeout=2)
+        assert snapshots[0].is_empty()
+
+    def test_decode_frees_the_buffer_and_answers_with_the_frame(self):
+        """Once decoded, reads return the decoded frame, whatever is asked."""
+        recorder = self._make_recorder()
+        recorder.append(10, 0, 1)
+        frame = recorder.to_frame()
+        recorder.finish()
+        recorder.decode()
+        assert recorder._buffer.size == 0
+        assert recorder._buffer.base is None
+        for snapshot in (recorder.to_frame(), recorder.peek(), recorder.peek(['S0'])):
+            assert_frame_equal(snapshot, frame, categorical_as_str=True)
+
+    def test_decoded_frame_is_independent_of_its_copies(self):
+        """Changing a frame it returned in place changes nothing in the recorder."""
+        recorder = self._make_recorder()
+        recorder.append(10, 0, 1)
+        recorder.decode()
+        recorder.to_frame().drop_in_place('Time')
+        recorder.peek().drop_in_place('Time')
+        assert 'Time' in recorder.peek().columns
+
+    def test_read_overtaken_by_decode_returns_the_frame(self, mocker):
+        """A read that finds the buffer already emptied still gets the trial's rows."""
+        recorder = self._make_recorder()
+        recorder.append(10, 0, 1)
+        frame = recorder.to_frame()
+
+        def decoded_first():
+            recorder._frame = frame
+            recorder._buffer = np.empty(0, dtype=_EVENT_DTYPE)
+            return recorder._buffer
+
+        mocker.patch.object(
+            _Recorder,
+            '_buffer_view',
+            new_callable=mocker.PropertyMock,
+            side_effect=decoded_first,
+        )
+        assert recorder.to_frame().height == 1
+
+    def test_snapshots_only_see_rows_written_in_full(self, mocker):
+        """A snapshot at any moment holds each row once, also while the buffer grows."""
+        mocker.patch('bpod_core.bpod._threads._INITIAL_BUFFER_SIZE', 2)
+        real_empty = np.empty
+
+        class Buffer(np.ndarray):
+            """Takes a snapshot just before each write."""
+
+            def __setitem__(self, key, value):
+                times = recorder.peek()['Time'].dt.epoch('us').to_list()
+                assert times == list(range(len(times)))
+                super().__setitem__(key, value)
+
+        def empty(shape, dtype=float, **kwargs):
+            if dtype is _EVENT_DTYPE:
+                return np.zeros(shape, dtype=dtype).view(Buffer)
+            return real_empty(shape, dtype=dtype, **kwargs)
+
+        mocker.patch('bpod_core.bpod._threads.np.empty', empty)
+        recorder = self._make_recorder()
+        for time_us in range(9):
+            recorder.append(time_us, 0, 0)
+        assert len(recorder._buffer) == 16
+        assert recorder.peek().height == 9
+
+
 class TestEventThread:
     @pytest.fixture
     def make_thread(self):
@@ -619,30 +903,19 @@ class TestEventThread:
             action_names: list[str] | None = None,
             resettable_actions: list[str] | None = None,
             event_names: list[str] | None = None,
-            event_values: list[int | None] | None = None,
             time_reference: _TimeReferences | None = None,
             publish: Callable[[list[BpodEventUnion]], object] | None = None,
             should_publish: Callable[[], bool] | None = None,
             on_trial_start: Callable[[int], None] | None = None,
             trial: int = 0,
-        ) -> tuple[EventThread, SimpleQueue[pl.DataFrame | BpodError]]:
-            action_names = action_names or []
-            event_names = event_names or ['Ev0', 'Tup']
-            input_events = _InputEvents(
-                names=event_names,
-                channels=[None] * len(event_names),
-                values=event_values or [None] * len(event_names),
+        ) -> EventThread:
+            fsm = fsm or _make_fsm()
+            event_tables = _make_event_tables(
+                event_names, None, action_names, resettable_actions
             )
-            data_queue: SimpleQueue[pl.DataFrame | BpodError] = SimpleQueue()
             thread = EventThread(
-                trial=trial,
-                fsm=fsm or _make_fsm(),
-                data_queue=data_queue,
-                event_tables=_build_event_tables(
-                    input_events,
-                    action_names,
-                    action_names if resettable_actions is None else resettable_actions,
-                ),
+                trial=_make_trial(trial, fsm, event_tables),
+                fsm=fsm,
                 time_reference=time_reference or _TimeReferences(0, 0, 0),
                 publish=publish if publish is not None else lambda _: None,
                 publish_gate=should_publish
@@ -652,7 +925,7 @@ class TestEventThread:
             )
             thread.start()
             threads.append(thread)
-            return thread, data_queue
+            return thread
 
         yield _make
 
@@ -660,45 +933,21 @@ class TestEventThread:
             t.stop()
             t.join(timeout=2)
 
-    def _next_trial(
-        self, data_queue: SimpleQueue[pl.DataFrame | BpodError]
-    ) -> pl.DataFrame | BpodError:
-        return data_queue.get(timeout=2)
+    def _next_trial(self, thread: EventThread) -> pl.DataFrame | BpodError:
+        assert thread.trial.decoded.wait(2)
+        return thread.trial.decode_error or thread.trial.recorder.to_frame()
 
     def test_stop_exits_thread(self, make_thread):
         """stop() causes the thread to exit cleanly."""
-        thread, _ = make_thread()
+        thread = make_thread()
         thread.stop()
         thread.join(timeout=2)
         assert not thread.is_alive()
 
-    def test_output_schema_matches_trial_data_schema(self, make_thread):
-        """Collected DataFrame schema matches _TRIAL_DATA_SCHEMA exactly."""
-        thread, data_queue = make_thread()
-        thread.stop()
-        thread.join(timeout=2)
-        df = self._next_trial(data_queue)
-        assert list(df.schema.items()) == list(_TRIAL_DATA_SCHEMA.items())
-
-    def test_trial_number_beyond_uint16(self, make_thread):
-        """Trial numbers above 65535 are kept."""
-        thread, data_queue = make_thread(trial=70_000)
-        thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,))])
-        thread.stop()
-        thread.join(timeout=2)
-        assert self._next_trial(data_queue)['Trial'].unique().to_list() == [70_000]
-
-    def test_data_enqueued_on_stop(self, make_thread):
-        """A trial is pushed to data_queue when the thread exits."""
-        thread, data_queue = make_thread()
-        thread.stop()
-        thread.join(timeout=2)
-        assert not data_queue.empty()
-
     def test_on_trial_start_fires_regardless_of_publish_gate(self, make_thread):
         """on_trial_start fires with the absolute time even when publish_gate=False."""
         captured = []
-        thread, _data_queue = make_thread(
+        thread = make_thread(
             time_reference=_TimeReferences(0, 0, 5_000_000),  # +5000 us offset
             should_publish=lambda: False,
             on_trial_start=captured.append,
@@ -726,11 +975,11 @@ class TestEventThread:
         """Published messages mirror the trial DataFrame's event rows in order."""
         published = []
         fsm = _make_fsm(transitions={(0, 0): 1})
-        thread, data_queue = make_thread(fsm=fsm, publish=published.extend)
+        thread = make_thread(fsm=fsm, publish=published.extend)
         self._put_full_trial(thread)
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
 
         # the stream is framed by TrialStart / TrialEnd, terminated by the
         # trailing TrialEndControl record
@@ -761,47 +1010,21 @@ class TestEventThread:
     def test_should_publish_gates_all_messages(self, make_thread):
         """should_publish=False skips publishing entirely; trial data remains."""
         published = []
-        thread, data_queue = make_thread(
-            publish=published.extend, should_publish=lambda: False
-        )
+        thread = make_thread(publish=published.extend, should_publish=lambda: False)
         self._put_full_trial(thread)
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         assert df.height > 0, 'trial data must be unaffected by the gate'
         assert published == []
 
-    def test_event_value_defaults_to_the_events_own(self, make_thread):
-        """An input event without a logged value reports its default, if it has one."""
-        thread, data_queue = make_thread(
-            event_names=['High', 'Low', 'Tup'],
-            event_values=[1, 0, None],
-            should_publish=lambda: False,
-        )
-        thread.queue.put(
-            [_RawEvents(micros_us=i, event_ids=(i,)) for i in range(3)],
-        )
-        thread.stop()
-        thread.join(timeout=2)
-        assert self._next_trial(data_queue)['Value'].to_list() == [1, 0, None]
-
-    def test_one_row_frame_is_a_copy_of_the_buffer(self, make_thread):
-        """A single element isn't strided, which would keep polars from copying it."""
-        thread, data_queue = make_thread()
-        thread.queue.put([_RawEvents(micros_us=10, event_ids=(0,))])
-        thread.stop()
-        thread.join(timeout=2)
-        frame = self._next_trial(data_queue)
-        thread._buffer['Time'][0] = 0
-        assert frame['Time'].dt.epoch('us').to_list() == [10]
-
     def test_unknown_event_id_decodes_to_nulls(self, make_thread):
         """An event code the hardware doesn't name is kept, with nothing to report."""
-        thread, data_queue = make_thread(should_publish=lambda: False)
+        thread = make_thread(should_publish=lambda: False)
         thread.queue.put([_RawEvents(micros_us=10, event_ids=(200,))])
         thread.stop()
         thread.join(timeout=2)
-        row = self._next_trial(data_queue).row(0, named=True)
+        row = self._next_trial(thread).row(0, named=True)
         assert row['Time'].timestamp() == pytest.approx(10e-6)
         assert row['Trial'] == 0
         assert row['State'] == 'S0'
@@ -810,22 +1033,74 @@ class TestEventThread:
     @pytest.mark.parametrize('error', [RuntimeError(), pl.exceptions.PanicException()])
     def test_failed_decode_queues_the_error(self, mocker, make_thread, caplog, error):
         """A trial that can't be decoded is logged; get_data() isn't left waiting."""
-        thread, data_queue = make_thread()
-        mocker.patch.object(thread, '_to_frame', side_effect=error)
+        thread = make_thread()
+        mocker.patch.object(thread.trial.recorder, 'to_frame', side_effect=error)
         thread.stop()
         thread.join(timeout=2)
-        item = self._next_trial(data_queue)
+        item = self._next_trial(thread)
         assert isinstance(item, BpodError)
         assert 'Failed to decode trial #0' in str(item)
         assert item.__cause__ is error
         assert 'Failed to decode trial #0' in caplog.text
-        assert thread._finished  # a blocking peek_data() isn't left waiting either
+        assert thread.trial.recorder._finished  # a blocking peek isn't left waiting
+        assert thread.trial.decoded.is_set()
+        assert thread.trial.decode_error is item
+        assert thread.trial.recorder._buffer.size > 0  # a later peek raises, too
+
+    @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
+    def test_decoded_is_set_however_the_thread_dies(self, mocker, make_thread):
+        """A failure before decoding doesn't leave a waiting caller hanging."""
+        thread = make_thread()
+        mocker.patch.object(thread.trial.recorder, 'finish', side_effect=SystemExit)
+        thread.stop()
+        thread.join(timeout=2)
+        assert thread.trial.decoded.is_set()
+
+    def test_recorder_keeps_the_decoded_frame(self, make_thread):
+        """The recorder holds the decoded frame, and the buffer is freed."""
+        thread = make_thread()
+        thread.queue.put([_RawEvents(micros_us=10, event_ids=(0,))])
+        thread.stop()
+        thread.join(timeout=2)
+        recorder = thread.trial.recorder
+        assert thread.trial.decoded.is_set()
+        assert thread.trial.decode_error is None
+        assert recorder._buffer.size == 0
+        assert recorder.to_frame().height == 1
+
+    def test_recording_is_finished_before_decoding(self, mocker, make_thread):
+        """A slow or stuck decode can't hold up a blocking peek."""
+        thread = make_thread()
+        recorder = thread.trial.recorder
+        finished = []
+        mocker.patch.object(
+            recorder,
+            'decode',
+            side_effect=lambda: finished.append(recorder._finished),
+        )
+        thread.stop()
+        thread.join(timeout=2)
+        assert finished == [True]
+
+    def test_trial_start_message_names_the_trial_and_its_machine(self, make_thread):
+        """The published trial start carries the trial's number and machine's hash."""
+        published = []
+        thread = make_thread(
+            fsm=_make_fsm()._replace(fsm_hash=b'\xab\xcd'),
+            publish=published.extend,
+            trial=3,
+        )
+        thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_FSM,))])
+        thread.stop()
+        thread.join(timeout=2)
+        start = next(m for m in published if isinstance(m, EventTrialStart))
+        assert (start.trial, start.fsm_hash) == (3, 'abcd')
 
     def test_publish_gate_is_checked_once_per_batch(self, mocker, make_thread):
         """The gate's answer holds for one batch: subscribers can come and go."""
         published = []
         gate = mocker.Mock(side_effect=[False, True, False])
-        thread, _ = make_thread(publish=published.extend, should_publish=gate)
+        thread = make_thread(publish=published.extend, should_publish=gate)
         thread.queue.put(
             [
                 _RawEvents(micros_us=10, event_ids=(0,)),
@@ -851,15 +1126,11 @@ class TestEventThread:
         """A waiting peek_data returns once the state starts, before the trial ends."""
         # long enough that only the wake-up can end its wait within the test
         mocker.patch('bpod_core.bpod._threads._PEEK_RECHECK_S', 60)
-        thread, _ = make_thread(fsm=_make_fsm(transitions={(0, 0): 1}))
-        snapshots = []
-        peeker = threading.Thread(
-            target=lambda: snapshots.append(thread.peek_data([state])), daemon=True
-        )
-        peeker.start()
+        thread = make_thread(fsm=_make_fsm(transitions={(0, 0): 1}))
+        peeker, snapshots = _peek_in_background(thread.trial.recorder.peek, [state])
         for event_ids in batches:
-            time.sleep(0.02)  # let it block first, so that it depends on the wake-up
             thread.queue.put([_RawEvents(micros_us=0, event_ids=event_ids)])
+            time.sleep(0.02)  # let it block again, so that it depends on the wake-up
         peeker.join(timeout=2)
         assert snapshots
         assert state in snapshots[0]['State'].to_list()
@@ -870,7 +1141,7 @@ class TestEventThread:
         # event 0 in S0 exits without a successor (target == n_states)
         fsm = _make_fsm(transitions={(0, 0): 2})
         with caplog.at_level(logging.ERROR, logger='bpod_core.bpod._threads'):
-            thread, data_queue = make_thread(fsm=fsm, publish=published.extend)
+            thread = make_thread(fsm=fsm, publish=published.extend)
             thread.queue.put(
                 [_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,))]
             )
@@ -878,7 +1149,7 @@ class TestEventThread:
             thread.queue.put([_RawEvents(micros_us=20, event_ids=(0,))])  # after exit
             thread.stop()
             thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
 
         # the post-exit event is published but triggers no phantom transition
         state_messages = [
@@ -897,12 +1168,12 @@ class TestEventThread:
     def test_aborted_trial_publishes_no_trial_end(self, make_thread):
         """Without a hardware exit packet, no end messages are published."""
         published = []
-        thread, data_queue = make_thread(publish=published.extend)
+        thread = make_thread(publish=published.extend)
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_FSM,))])
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         assert df.height > 0
         assert isinstance(published[0], EventTrialStart)
         assert not any(
@@ -916,33 +1187,31 @@ class TestEventThread:
             raise RuntimeError('boom')
 
         with caplog.at_level(logging.ERROR, logger='bpod_core.bpod._threads'):
-            thread, data_queue = make_thread(publish=broken_publish)
+            thread = make_thread(publish=broken_publish)
             thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
             thread.stop()
             thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         assert df.height > 0
         assert any('publish' in record.message for record in caplog.records)
 
     def test_hardware_event_recorded(self, make_thread):
         """Hardware event appears in output with correct event name."""
-        thread, data_queue = make_thread(event_names=['Ev0', 'Tup'])
+        thread = make_thread(event_names=['Ev0', 'Tup'])
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         assert 'Ev0' in df.filter(pl.col('Type') == 'InputEvent')['Event'].to_list()
 
     def test_event_timestamp(self, make_thread):
         """Event timestamp equals reset_system_time_ns // 1000 + micros_us."""
         time_ref = _TimeReferences(0, 0, reset_system_time_ns=5_000_000)
-        thread, data_queue = make_thread(
-            event_names=['Ev0', 'Tup'], time_reference=time_ref
-        )
+        thread = make_thread(event_names=['Ev0', 'Tup'], time_reference=time_ref)
         thread.queue.put([_RawEvents(micros_us=100, event_ids=(0,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         ev = df.filter(pl.col('Event') == 'Ev0')
         assert (
             ev['Time'][0]
@@ -953,11 +1222,11 @@ class TestEventThread:
         """State transition generates StateEnd for old state and StateStart for new."""
         # event 0 triggers S0 → S1
         fsm = _make_fsm(transitions={(0, 0): 1})
-        thread, data_queue = make_thread(fsm=fsm)
+        thread = make_thread(fsm=fsm)
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         types = df['Type'].cast(pl.String).to_list()
         assert 'StateEnd' in types
         assert 'StateStart' in types
@@ -965,11 +1234,11 @@ class TestEventThread:
     def test_state_names_in_output(self, make_thread):
         """State column contains the correct state names after a transition."""
         fsm = _make_fsm(transitions={(0, 0): 1})
-        thread, data_queue = make_thread(fsm=fsm)
+        thread = make_thread(fsm=fsm)
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         states = df['State'].drop_nulls().cast(pl.String).to_list()
         assert 'S0' in states
         assert 'S1' in states
@@ -987,11 +1256,11 @@ class TestEventThread:
     def test_one_transition_per_cycle(self, make_thread, transitions, target):
         """Only the first of a cycle's events leading elsewhere makes a transition."""
         fsm = _make_fsm(n_states=3, transitions=transitions)
-        thread, data_queue = make_thread(fsm=fsm, event_names=['Ev0', 'Ev1', 'Tup'])
+        thread = make_thread(fsm=fsm, event_names=['Ev0', 'Ev1', 'Tup'])
         thread.queue.put([_RawEvents(micros_us=10, event_ids=(0, 1))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         rows = df.select(
             pl.col('Type').cast(pl.String),
             pl.col('Event').cast(pl.String),
@@ -1008,12 +1277,12 @@ class TestEventThread:
         """An event in the cycle of a transition can't end the state it leads to."""
         # in S0, Ev0 leads to S1; in S1, Tup leads to >exit
         fsm = _make_fsm(transitions={(0, 0): 1, (1, 1): 2})
-        thread, data_queue = make_thread(fsm=fsm)
+        thread = make_thread(fsm=fsm)
         thread.queue.put([_RawEvents(micros_us=10, event_ids=(0, 1))])  # Tup ignored
         thread.queue.put([_RawEvents(micros_us=20, event_ids=(1,))])  # S1's Tup, exits
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         rows = df.select(
             pl.col('Time').dt.epoch(time_unit='us'),
             pl.col('Type').cast(pl.String),
@@ -1030,11 +1299,11 @@ class TestEventThread:
     def test_exit_waits_for_end_of_cycle(self, make_thread):
         """Events in the cycle of an exit are recorded in the state that exits."""
         fsm = _make_fsm(transitions={(0, 0): 2})  # in S0, Ev0 leads to >exit
-        thread, data_queue = make_thread(fsm=fsm)
+        thread = make_thread(fsm=fsm)
         thread.queue.put([_RawEvents(micros_us=10, event_ids=(0, 1))])  # Ev0, then Tup
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         rows = df.select(
             pl.col('Type').cast(pl.String), pl.col('State').cast(pl.String)
         ).rows()
@@ -1047,23 +1316,23 @@ class TestEventThread:
     def test_output_action_recorded(self, make_thread):
         """Output actions for the current state are recorded on START_STATE."""
         fsm = _make_fsm(state_action_indices=[{0: 128}, {}])
-        thread, data_queue = make_thread(fsm=fsm, action_names=['PWM1'])
+        thread = make_thread(fsm=fsm, action_names=['PWM1'])
         # START_STATE triggers initial output recording for S0
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         output = df.filter(pl.col('Type') == 'OutputAction')
         assert 'PWM1' in output['Channel'].cast(pl.String).to_list()
 
     def test_output_action_value_above_uint8_range(self, make_thread):
         """Output values above 255 (e.g. scaled FlexIO analog-output counts) survive."""
         fsm = _make_fsm(state_action_indices=[{0: 2048}, {}])
-        thread, data_queue = make_thread(fsm=fsm, action_names=['Flex4'])
+        thread = make_thread(fsm=fsm, action_names=['Flex4'])
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,))])
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         output = df.filter(pl.col('Channel') == 'Flex4')
         assert output['Value'].to_list() == [2048]
 
@@ -1074,13 +1343,13 @@ class TestEventThread:
             transitions={(0, 0): 1},
             state_action_indices=[{0: 1}, {}],
         )
-        thread, data_queue = make_thread(fsm=fsm, action_names=['TTL1'])
+        thread = make_thread(fsm=fsm, action_names=['TTL1'])
         # START_STATE seeds active_outputs with TTL1=1 for S0
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,))])
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])  # S0 → S1
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         ttl = df.filter(
             (pl.col('Type') == 'OutputAction') & (pl.col('Channel') == 'TTL1')
         )
@@ -1089,69 +1358,23 @@ class TestEventThread:
     def test_non_resettable_action_not_reset(self, make_thread):
         """An action the Bpod doesn't reset, e.g. a module message, isn't reset."""
         fsm = _make_fsm(transitions={(0, 0): 1}, state_action_indices=[{0: 3}, {}])
-        thread, data_queue = make_thread(
-            fsm=fsm, action_names=['Module1'], resettable_actions=[]
-        )
+        thread = make_thread(fsm=fsm, action_names=['Module1'], resettable_actions=[])
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,))])
         thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])  # S0 → S1
         thread.stop()
         thread.join(timeout=2)
-        df = self._next_trial(data_queue)
+        df = self._next_trial(thread)
         module = df.filter(pl.col('Channel') == 'Module1')
         assert module['Value'].to_list() == [3]
 
-    def test_peek_data_mid_trial(self, make_thread):
-        """peek_data returns a non-empty snapshot while the trial is running."""
-        thread, _ = make_thread()
-        thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_FSM,))])
-        deadline = time.monotonic() + 2.0
-        while thread._n_events == 0 and time.monotonic() < deadline:
-            time.sleep(0.001)
-        df = thread.peek_data()
-        assert len(df) > 0
-
-    def test_peek_data_after_last_wake_up(self, mocker, make_thread):
-        """A blocking peek_data() returns once the thread is done, while still alive."""
-        thread, _ = make_thread()
+    def test_peek_data_after_the_thread_ended(self, make_thread):
+        """A blocking peek_data() returns once the thread is done."""
+        thread = make_thread()
         thread.stop()
         thread.join(timeout=2)
-        mocker.patch.object(thread, 'is_alive', return_value=True)  # just after set()
-        snapshots = []
-        peek = threading.Thread(
-            target=lambda: snapshots.append(thread.peek_data(['S1'])), daemon=True
-        )
-        peek.start()
-        peek.join(timeout=1)
+        peeker, snapshots = _peek_in_background(thread.trial.recorder.peek, ['S1'])
+        peeker.join(timeout=1)
         assert snapshots
-
-    def test_peek_data_recovers_from_a_lost_wake_up(self, make_thread):
-        """Another caller's clear() can't leave a blocking peek_data() waiting."""
-        thread, _ = make_thread()
-        snapshots = []
-        peeker = threading.Thread(
-            target=lambda: snapshots.append(thread.peek_data(['S1'])), daemon=True
-        )
-        peeker.start()
-        time.sleep(0.02)  # let it block first
-        thread._finished = True  # its final set() went to the other caller's clear()
-        peeker.join(timeout=2)
-        assert snapshots
-        assert snapshots[0].is_empty()
-
-    def test_buffer_growth(self, mocker, make_thread):
-        """Buffer doubles correctly."""
-        init_buffer_size = 10
-        mocker.patch('bpod_core.bpod._threads._INITIAL_BUFFER_SIZE', init_buffer_size)
-        n = init_buffer_size + 1
-        thread, data_queue = make_thread(event_names=['Ev0', 'Tup'])
-        assert len(thread._buffer) == init_buffer_size
-        for _ in range(n):
-            thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
-        thread.stop()
-        thread.join(timeout=2)
-        assert len(thread._buffer) == init_buffer_size * 2
-        df = self._next_trial(data_queue)
-        assert len(df.filter(pl.col('Event') == 'Ev0')) == n
 
 
 class TestSoftcodeThread:
@@ -1345,34 +1568,35 @@ class TestSoftcodeThread:
         assert done.wait(timeout=2)
 
 
-class TestJoinUntil:
-    def test_true_once_the_thread_ends(self, blocked_thread):
-        threading.Timer(0.02, blocked_thread.release.set).start()
-        assert join_until(blocked_thread, time.monotonic() + 2)
-        assert not blocked_thread.is_alive()
+class TestWaitUntil:
+    def test_true_once_the_event_is_set(self):
+        """A wait with a deadline returns True as soon as the event is set."""
+        event = threading.Event()
+        threading.Timer(0.02, event.set).start()
+        assert wait_until(event, time.monotonic() + 2)
 
-    def test_false_at_the_deadline(self, blocked_thread):
+    def test_false_at_the_deadline(self):
+        """An event that never comes: False once the deadline has passed."""
         t0 = time.monotonic()
-        assert not join_until(blocked_thread, t0 + 0.05)
+        assert not wait_until(threading.Event(), t0 + 0.05)
         assert 0.05 <= time.monotonic() - t0 < 0.5
-        assert blocked_thread.is_alive()
 
-    def test_joins_in_slices(self, blocked_thread, mocker):
+    def test_waits_in_slices(self, mocker):
         """Even an unbounded wait returns to Python regularly: Ctrl+C gets through."""
-        mocker.patch('bpod_core.bpod._threads._JOIN_SLICE_S', 0.01)
+        mocker.patch('bpod_core.bpod._threads._WAIT_SLICE_S', 0.01)
+        event = threading.Event()
         timeouts = []
-        join = blocked_thread.join
+        wait = event.wait
 
-        def counted_join(timeout=None):
+        def counted_wait(timeout=None):
             timeouts.append(timeout)
-            if len(timeouts) == 3:  # the thread ends only after a few slices
-                blocked_thread.release.set()
-            join(timeout)
+            if len(timeouts) == 3:  # the event is only set after a few slices
+                event.set()
+            return wait(timeout)
 
-        mocker.patch.object(blocked_thread, 'join', side_effect=counted_join)
-        assert join_until(blocked_thread, None)
-        assert len(timeouts) >= 3
-        assert all(timeout <= 0.01 for timeout in timeouts)
+        mocker.patch.object(event, 'wait', side_effect=counted_wait)
+        assert wait_until(event, None)
+        assert timeouts == [0.01, 0.01, 0.01]
 
 
 def test_polars_imports_numpy_ma_lazily():
