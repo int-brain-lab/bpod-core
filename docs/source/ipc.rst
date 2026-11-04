@@ -281,6 +281,13 @@ of these structs. The callback still receives them one at a time. To subscribe w
    expensive belongs in a queue that another thread drains. Exceptions raised inside
    the callback are logged and otherwise ignored.
 
+.. note::
+
+   Drive a :class:`~bpod_core.bpod.Bpod` object from one thread at a time. Its serial
+   port is safe to share — writes don't interleave, and a command that needs a reply is
+   refused while a trial's reader or another thread owns the port's replies — but the
+   object's own state is not protected.
+
 Two properties of the ``PUB``/``SUB`` pattern are worth keeping in mind:
 
 * Events published before a client's subscription registers are lost (ZeroMQ's

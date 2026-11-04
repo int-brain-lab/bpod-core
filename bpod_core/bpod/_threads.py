@@ -492,6 +492,11 @@ class _Trial:
     stop_expected: bool = False
     """Whether a stop command is about to be sent."""
 
+    # written by run() under the port's write lock, read by ReadThread under it
+    successor_sent: bool = False
+    """Whether the next trial's state machine has been sent: the reader keeps the
+    port's replies for it, see :attr:`~bpod_core.com.ExtendedSerial.read_lock`."""
+
 
 class ReadThread(threading.Thread):
     """Serial reader thread for one Bpod trial.
@@ -818,6 +823,12 @@ class ReadThread(threading.Thread):
             logger.debug(
                 'Exiting state machine %s / trial #%d', self._fsm_hash, trial.number
             )
+            # the port's replies go back to the commands, unless the next trial's
+            # machine was sent: its reader takes over. run() sets that mark under the
+            # write lock, so the check can't miss it.
+            with self._serial.write_lock:
+                if not trial.successor_sent:
+                    self._serial.read_lock.release()
             trial.ended.set()
 
 

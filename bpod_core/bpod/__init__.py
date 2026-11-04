@@ -65,7 +65,7 @@ from bpod_core.bpod.constants import (
     USB_IDS_BPOD,
     FlexIOChannelType,
 )
-from bpod_core.bpod.errors import BpodError, BpodKeyError
+from bpod_core.bpod.errors import BpodError, BpodKeyError, owning_replies
 from bpod_core.bpod.flexio import (
     FlexIO,
     _counts_to_mv,
@@ -90,6 +90,7 @@ from bpod_core.bpod.structs import (
 from bpod_core.com import (
     ChunkedSerialReader,
     ExtendedSerial,
+    PortBusyError,
     SerialDevice,
     _filter_ports,
     _read_bcd_device,
@@ -146,25 +147,24 @@ def _requires_idle(
 ) -> Callable[Concatenate[_S, _P], _R]:
     """Refuse calls to `method` while a state machine runs or the stream is suspect.
 
-    While a trial runs, its read thread owns the Bpod's serial port: a command that
-    expects a reply would steal the trial's event bytes or corrupt them with its reply,
-    and reconfiguring the hardware mid-trial is unsafe. After a trial was given up (see
-    :meth:`Bpod.stop_state_machine`) or couldn't be read, the Bpod's stream can't be
-    trusted, so commands are refused until the connection is closed and reopened.
-    Applies to methods of
-    :class:`Bpod` and of objects that refer to one as ``_bpod`` (channels, modules).
-    Decorated methods are marked with ``requires_idle = True``.
+    While a trial runs, its read thread owns the Bpod's serial port's replies (see
+    :attr:`~bpod_core.com.ExtendedSerial.read_lock`): a command that expects a reply
+    would steal the trial's event bytes or corrupt them with its reply, and
+    reconfiguring the hardware mid-trial is unsafe. The method owns the replies for
+    its duration, so a `run()` from another thread is refused meanwhile. After a trial
+    was given up (see :meth:`Bpod.stop_state_machine`) or couldn't be read, the Bpod's
+    stream can't be trusted, so commands are refused until the connection is closed
+    and reopened. Applies to methods of :class:`Bpod` and of objects that refer to one
+    as ``_bpod`` (channels, modules). Decorated methods are marked with
+    ``requires_idle = True``.
     """
 
     @functools.wraps(method)
     def wrapper(self: _S, *args: _P.args, **kwargs: _P.kwargs) -> _R:
         bpod = cast('Bpod', getattr(self, '_bpod', self))
-        if bpod.is_running:
-            raise BpodError(
-                f'Cannot use {method.__qualname__} while a state machine is running.'
-            )
         bpod._check_in_sync()  # noqa: SLF001 - same module
-        return method(self, *args, **kwargs)
+        with owning_replies(bpod.serial0, f'use {method.__qualname__}'):  # reads nest
+            return method(self, *args, **kwargs)
 
     wrapper.requires_idle = True  # type: ignore[attr-defined]
     return wrapper
@@ -510,6 +510,8 @@ class Bpod(SerialDevice, AbstractBpod):
         serial0_open = hasattr(self, '_serial') and getattr(
             self._serial, 'is_open', False
         )
+        if serial0_open:
+            self._free_orphaned_replies()
         if serial0_open and self._out_of_sync:
             # a given-up trial may still be running on the Bpod: stop it (and analog
             # sampling with it) and swallow everything it sends, so that the next
@@ -562,6 +564,24 @@ class Bpod(SerialDevice, AbstractBpod):
             for module in getattr(self, 'modules', {}).values():
                 module._relay_is_enabled = False  # noqa: SLF001 - same module
             self._late_starts.summarize()
+
+    def _free_orphaned_replies(self) -> None:
+        """Free the port's replies if a trial that was dropped or given up left them.
+
+        The reader they were meant for never started, or ended keeping them for a
+        successor that was then dropped. A live reader or a conversation on another
+        thread releases its own. Afterwards, the teardown's reads go through.
+        """
+        serial0 = self._serial
+        reader = self._read_thread
+        with serial0.write_lock:
+            orphaned = (
+                serial0.read_lock.locked()
+                and serial0._read_owner is None  # noqa: SLF001 - the port's protocol
+                and (reader is None or not reader.is_alive())
+            )
+            if orphaned:
+                serial0.read_lock.release()
 
     @staticmethod
     def _stop_and_drain(serial: ExtendedSerial) -> None:
@@ -830,7 +850,6 @@ class Bpod(SerialDevice, AbstractBpod):
                 n=self._hardware.n_flexio,
                 cycle_frequency=self._hardware.cycle_frequency,
                 on_input_events_changed=self._recompile_hardware_tables,
-                is_running=lambda: self.is_running,
                 configuration_locked=lambda: self._state_machine_started,
             )
 
@@ -1382,6 +1401,10 @@ class Bpod(SerialDevice, AbstractBpod):
         # count the trial only now, so that a rejected call doesn't use up its number
         self._next_fsm_index = trial_number
 
+        # The trial's reader will own the port's replies. Unless the running trial's
+        # reader holds them already (then this trial is queued behind it, and run()
+        # marks it as its successor below), they must be free: a command from another
+        # thread may be mid-conversation.
         # Send state machine to Bpod; always queue for immediate back-to-back execution.
         # The Bpod may start it at any time from here on - register the trial first, so
         # that is_running doesn't drop out while the previous trial's threads finish.
@@ -1403,27 +1426,42 @@ class Bpod(SerialDevice, AbstractBpod):
             ),
         )
         sent = False
+        serial0 = self.serial0
         try:
             self._queued = trial
             with self._undelivered_lock:
                 self._undelivered.append(trial)
             self._state_machine_started = True
             message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
-            sent = True  # from here on, the Bpod may hold the machine
-            # record the trial number before the Bpod can start the state machine:
-            # analog samples only carry the firmware's positional trial counter, so
-            # decoding looks the number up by position from the trial's first sample on
-            self._analog_trial_number_by_sequence.append(self._next_fsm_index)
-            if debugging:
-                t0 = perf_counter_ns()
-                self.serial0.write(message)
-                logger.debug(
-                    'Sent state machine %s to Bpod (%d μs)',
-                    fsm_hash.hex(),
-                    (perf_counter_ns() - t0) // 1000,
-                )
-            else:
-                self.serial0.write(message)
+            # the trial's reader will stream the port's replies: take them for it, or
+            # inherit them from the running trial's reader, which must learn of its
+            # successor before it ends. Both under the lock that end checks under.
+            with serial0.write_lock:
+                try:
+                    claimed = serial0.claim_replies()
+                except PortBusyError as e:
+                    raise BpodError(
+                        'Cannot run a state machine while another thread is using '
+                        'the Bpod'
+                    ) from e
+                if not claimed and previous is not None:
+                    previous.successor_sent = True
+                sent = True  # from here on, the Bpod may hold the machine
+                # record the trial number before the Bpod can start the state machine:
+                # analog samples only carry the firmware's positional trial counter,
+                # so decoding looks the number up by position from the trial's first
+                # sample on
+                self._analog_trial_number_by_sequence.append(self._next_fsm_index)
+                if debugging:
+                    t0 = perf_counter_ns()
+                    serial0.write(message)
+                    logger.debug(
+                        'Sent state machine %s to Bpod (%d μs)',
+                        fsm_hash.hex(),
+                        (perf_counter_ns() - t0) // 1000,
+                    )
+                else:
+                    serial0.write(message)
 
             # Start threads
             self._run_state_machine(trial, lookup, queued=queued)
@@ -1438,7 +1476,8 @@ class Bpod(SerialDevice, AbstractBpod):
         """Give up a trial whose threads didn't all start: get_data() then skips it.
 
         Once `sent`, this can't be undone: the Bpod may hold the state machine, or be
-        running it, so the connection is out of sync.
+        running it, so the connection is out of sync; the port's replies stay taken
+        until it is reopened.
         """
         if sent:
             self._out_of_sync = True
@@ -1496,6 +1535,8 @@ class Bpod(SerialDevice, AbstractBpod):
             late_starts=self._late_starts,
             previous_end_us=previous_end_us,
         )
+        # the reader streams the port's replies (run() took the lock for it, or the
+        # previous reader keeps it for its successor), and releases them at its end
         read_thread.start()
         self._read_thread = read_thread
 

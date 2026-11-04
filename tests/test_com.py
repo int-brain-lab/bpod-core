@@ -15,6 +15,8 @@ from serial.tools.list_ports_common import numsplit
 from bpod_core import com
 from bpod_core.constants import STRUCT_UINT64_LE, TeensyPID
 
+from .conftest import held_by_another_thread, take_replies
+
 
 @pytest.fixture
 def mock_serial(mocker):
@@ -140,6 +142,65 @@ class TestExtendedSerial:
         mock_serial.super_read.side_effect = lambda _: bytes([mock_serial.timeout])
         assert mock_serial.verify(b'x', b'\x02', timeout=2) is True
         assert mock_serial.timeout == 5
+
+    def test_write_waits_for_the_write_lock(self, pty_port):
+        """A write waits until another thread's hold on the write lock ends."""
+        master, port = pty_port
+        writer = threading.Thread(target=port.write, args=(b'x',), daemon=True)
+        with held_by_another_thread(port.write_lock):
+            writer.start()
+            writer.join(0.05)
+            assert writer.is_alive()  # waiting for the lock
+        writer.join(1)
+        assert os.read(master, 10) == b'x'
+
+    def test_replies_owned_by_another_thread_are_refused(self, mock_serial):
+        """Reads and queries raise while another thread owns the replies; writes go."""
+        with held_by_another_thread(mock_serial.exclusive_reads()):
+            for read in (
+                lambda: mock_serial.read(1),
+                lambda: mock_serial.query(b'x'),
+                lambda: mock_serial.verify(b'x'),
+                mock_serial.read_uint8,
+            ):
+                with pytest.raises(com.PortBusyError):
+                    read()
+            mock_serial.super_write.assert_not_called()  # a refused query sends nothing
+            mock_serial.write(b'y')
+        mock_serial.super_write.assert_called_once_with(b'y')
+
+    def test_exclusive_reads_nests_for_the_owner(self, mock_serial):
+        """The owner's reads and queries go through, however deeply nested."""
+        mock_serial.super_read.return_value = b'\x01'
+        with mock_serial.exclusive_reads():
+            with mock_serial.exclusive_reads():
+                assert mock_serial.query(b'x') == b'\x01'
+            assert mock_serial.read(1) == b'\x01'
+            assert mock_serial.read_lock.locked()
+        assert not mock_serial.read_lock.locked()
+
+    def test_claim_replies(self, mock_serial):
+        """Taken when free; joined when a streaming thread holds them; else refused."""
+        assert mock_serial.claim_replies()
+        assert not mock_serial.claim_replies()  # a streaming thread has them
+        mock_serial.read_lock.release()
+        with (
+            held_by_another_thread(mock_serial.exclusive_reads()),
+            pytest.raises(com.PortBusyError),
+        ):
+            mock_serial.claim_replies()
+
+    def test_read_waiting_ignores_the_locks(self, pty_port):
+        """A reader streams on, and can be cancelled, whatever the locks' state."""
+        master, port = pty_port
+        take_replies(port)
+        with held_by_another_thread(port.write_lock):
+            os.write(master, b'abc')
+            assert port.read_waiting() == b'abc'
+            threading.Timer(0.02, port.cancel_read).start()
+            with pytest.raises(com.ReadCancelled):
+                port.read_waiting()
+        port.read_lock.release()
 
     def test_temporary_timeout(self, mock_serial):
         """Temporary timeout is applied within the context and restored after."""
