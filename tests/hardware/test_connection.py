@@ -8,6 +8,7 @@ import pytest
 
 from bpod_core.bpod import _SESSION_CLOCK_MAX_ERROR_NS, Bpod, discover_bpod
 from bpod_core.bpod.constants import DISCOVERY_BYTE
+from bpod_core.bpod.errors import BpodError
 from bpod_core.com import find_ports, verify_serial_discovery
 from bpod_core.fsm import StateMachine
 
@@ -142,3 +143,30 @@ def test_reopen_realigns_clock(bpod):
     bpod.close()
     bpod.open()
     _assert_trial_aligned(bpod)
+
+
+def test_command_from_another_thread_is_refused_during_a_trial(bpod):
+    """A command needing a reply, sent mid-trial from another thread, is refused.
+
+    The trial's reader owns the port's replies; the trial's data stays intact.
+    """
+    fsm = StateMachine()
+    fsm.add_state('a', timer=0.2, transitions={'Tup': '>exit'})
+    bpod.run(fsm)
+    errors: list[BaseException] = []
+
+    def command() -> None:
+        try:
+            bpod.update_modules()
+        except BpodError as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=command)
+    thread.start()
+    thread.join(2)
+    bpod.wait()
+    assert len(errors) == 1
+    assert 'while a state machine is running' in str(errors[0])
+    types = bpod.get_data()['Type'].to_list()
+    assert types[0] == 'TrialStart'
+    assert types[-1] == 'TrialEndControl'

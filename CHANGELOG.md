@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - a blocking `peek_data()` could wait forever if another caller was waiting at the
   same time.
 - a `get_data()` waiting for a trial that could not be sent no longer waits forever.
+- commands sent from several threads could interleave on the serial port; a command
+  that needs a reply is now refused while another thread owns the port's replies.
 
 ### Changed
 

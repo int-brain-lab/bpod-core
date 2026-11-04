@@ -6,6 +6,7 @@ import os
 import re
 import select
 import sys
+import threading
 import weakref
 from collections.abc import Callable, Collection, Iterable, Iterator
 from contextlib import AbstractContextManager
@@ -49,17 +50,109 @@ class ReadCancelled(Exception):  # noqa: N818 - not an error
     """Raised by :meth:`ExtendedSerial.read_waiting` when the wait was cancelled."""
 
 
+class PortBusyError(SerialException):
+    """Another thread owns the port's replies, see :meth:`.exclusive_reads`."""
+
+
 class ExtendedSerial(Serial):
-    """Enhances pySerial's :class:`~serial.Serial` with additional functionality."""
+    """Enhances pySerial's :class:`~serial.Serial` with additional functionality.
+
+    Safe to share between threads: writes don't interleave (:attr:`write_lock`), and
+    the replies belong to one thread at a time (:meth:`exclusive_reads`).
+    """
 
     _read_cancelled: bool = False
     """A :meth:`cancel_read` that no read has reported yet."""
+
+    write_lock: threading.RLock
+    """Held while writing; take it to make several writes one. pySerial writes large
+    buffers in pieces on POSIX, and doesn't support concurrent writes on Windows."""
+
+    read_lock: threading.Lock
+    """Taken by whoever the port's replies belong to: a thread in a conversation (see
+    :meth:`exclusive_reads`), or a thread streaming them (see :meth:`claim_replies`)."""
+
+    _read_owner: int | None = None
+    """The thread owning the replies through :meth:`exclusive_reads`, if any."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.write_lock = threading.RLock()
+        self.read_lock = threading.Lock()
+        super().__init__(*args, **kwargs)
 
     @override
     def cancel_read(self) -> None:
         """Cancel a blocking read; :meth:`read_waiting` reports it as ReadCancelled."""
         self._read_cancelled = True
         super().cancel_read()
+
+    @override
+    def write(self, data: Buffer, /) -> int | None:
+        """Write to the port, as one piece: no other thread's write gets in between."""
+        with self.write_lock:
+            return super().write(data)
+
+    @override
+    def read(self, size: int = 1) -> bytes:
+        """Read from the port; the replies must not belong to another thread.
+
+        Raises
+        ------
+        PortBusyError
+            If another thread owns the port's replies, see :attr:`read_lock`.
+        """
+        if self._read_owner == threading.get_ident():  # inside a conversation
+            return super().read(size)
+        with self.exclusive_reads():
+            return super().read(size)
+
+    @contextlib.contextmanager
+    def exclusive_reads(self) -> Iterator[None]:
+        """Own the port's replies for a conversation of several writes and reads.
+
+        Nests: a thread that owns them already keeps them until the outermost exit.
+
+        Raises
+        ------
+        PortBusyError
+            If another thread owns the port's replies, or a reader streams them.
+        """
+        me = threading.get_ident()
+        if self._read_owner == me:  # already ours, e.g. a query inside an exchange
+            yield
+            return
+        # the owner changes under the write lock: claim_replies() runs under it and
+        # must not take a conversation whose owner isn't recorded yet for a reader
+        with self.write_lock:
+            if not self.read_lock.acquire(blocking=False):
+                raise PortBusyError("Another thread owns the port's replies")
+            self._read_owner = me
+        try:
+            yield
+        finally:
+            with self.write_lock:
+                self._read_owner = None
+                self.read_lock.release()
+
+    def claim_replies(self) -> bool:
+        """Take the replies for a thread that streams them with :meth:`read_waiting`.
+
+        The streaming thread doesn't own them (:attr:`_read_owner` stays unset): it
+        releases :attr:`read_lock` from its own thread when done. Returns False if a
+        streaming thread holds them already; it is then that thread's job to pass them
+        on. Call under :attr:`write_lock` when that thread ends under it too, so its
+        end can't slip in between.
+
+        Raises
+        ------
+        PortBusyError
+            If a thread owns the replies for a conversation.
+        """
+        if self.read_lock.acquire(blocking=False):
+            return True
+        if self._read_owner is None:
+            return False
+        raise PortBusyError("Another thread owns the port's replies")
 
     def write_int8(self, value: int) -> int | None:
         """
@@ -366,8 +459,8 @@ class ExtendedSerial(Serial):
         SerialException
             If the port is closed, or if it reports pending bytes but returns none.
         """
-        if not _DIRECT_READ:
-            data = self.read(max(1, self.in_waiting))
+        if not _DIRECT_READ:  # a streaming thread holds the replies without owning them
+            data = super().read(max(1, self.in_waiting))
             if not data and self._read_cancelled:
                 self._read_cancelled = False
                 raise ReadCancelled
@@ -490,7 +583,7 @@ class ExtendedSerial(Serial):
         :mod:`struct` module.
         """
         s = fmt if isinstance(fmt, Struct) else Struct(fmt)
-        return s.unpack(super().read(s.size))
+        return s.unpack(self.read(s.size))
 
     @overload
     def read_struct_iter(
@@ -651,8 +744,9 @@ class ExtendedSerial(Serial):
 
             response = serial_port.query(b'\x4A', size=4)
         """
-        self.write(query)
-        return self.read(size)
+        with self.exclusive_reads():  # before the write: no query to another's stream
+            self.write(query)
+            return self.read(size)
 
     def query_struct(
         self,

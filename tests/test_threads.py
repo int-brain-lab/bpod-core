@@ -55,6 +55,8 @@ from bpod_core.bpod.structs import (
 from bpod_core.constants import STRUCT_UINT32_LE, STRUCT_UINT64_LE
 from bpod_core.misc import _HandlerSlot
 
+from .conftest import take_replies
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -113,6 +115,7 @@ def _make_trial(
 def _reader(serial) -> tuple[ReadThread, SimpleQueue]:
     """A ReadThread for trial 0 on `serial`, and its event queue."""
     q_events: SimpleQueue[list[_RawEvents]] = SimpleQueue()
+    take_replies(serial)
     thread = ReadThread(
         serial=serial,
         trial=_make_trial(),
@@ -129,11 +132,22 @@ def _exit_data(n_cycles: int, end_micros_us: int) -> bytes:
     return struct.pack('<IQ', n_cycles, end_micros_us)
 
 
+_SHORT_TRIAL = (
+    _CONFIRM_OK + _start(100) + _opcode1([255], n_cycles=10) + _exit_data(10, 110)
+)
+"""A complete trial of one state, read from start to end."""
+
+
 class _TrickleSerial:
     """Fake serial port that hands out its data one byte per read."""
 
     def __init__(self, data: bytes) -> None:
         self._data = bytearray(data)
+        self.write_lock = threading.RLock()
+        self.read_lock = threading.Lock()
+
+    def claim_replies(self) -> bool:
+        return self.read_lock.acquire(blocking=False)
 
     def read_waiting(self) -> bytes:
         chunk = bytes(self._data[:1])
@@ -184,8 +198,10 @@ class TestReadThread:
             mock_ext_serial.response_buffer.extend(data)
             q_events: SimpleQueue[list[_RawEvents]] = SimpleQueue()
             q_softcodes: SimpleQueue[_RawSoftcode] = SimpleQueue()
+            serial = serial or mock_ext_serial
+            take_replies(serial)
             thread = ReadThread(
-                serial=serial or mock_ext_serial,
+                serial=serial,
                 trial=_make_trial(),
                 cycle_period_us=cycle_period_us,
                 queue_events=q_events,
@@ -198,6 +214,40 @@ class TestReadThread:
             return thread, q_events, q_softcodes
 
         return _make
+
+    def test_releases_the_replies_at_the_end(self, make_thread, mock_ext_serial):
+        """A reader gives the port's replies back once its trial is read."""
+        thread, _, _ = make_thread(_SHORT_TRIAL)
+        thread.start()
+        thread.join(timeout=2)
+        assert not mock_ext_serial.read_lock.locked()
+
+    def test_keeps_the_replies_for_a_successor(self, make_thread, mock_ext_serial):
+        """With the next trial's machine sent, the replies stay taken for its reader."""
+        thread, _, _ = make_thread(_SHORT_TRIAL)
+        thread.trial.successor_sent = True
+        thread.start()
+        thread.join(timeout=2)
+        assert mock_ext_serial.read_lock.locked()
+
+    def test_releases_the_replies_after_a_failure(self, make_thread):
+        """A failed reader without a successor releases the replies like any other."""
+        serial = _UnpluggedSerial(_CONFIRM_OK + _start(100))
+        thread, _, _ = make_thread(b'', serial=serial)
+        thread.start()
+        thread.join(timeout=2)
+        assert thread.trial.read_error is not None
+        assert not serial.read_lock.locked()
+
+    def test_keeps_the_replies_for_a_successor_when_cancelled(self, pty_port):
+        """The successor rule holds however the reader ends: the reopen frees them."""
+        _, port = pty_port
+        thread, _ = _reader(port)
+        thread.trial.successor_sent = True
+        thread.start()
+        thread.join(timeout=0.05)
+        thread.cancel()
+        assert port.read_lock.locked()
 
     def test_cancel_ends_the_thread_without_the_bpod(self, pty_port):
         """cancel() ends a reader waiting on a silent port; no error is recorded."""
@@ -326,6 +376,7 @@ class TestReadThread:
         )
         mock_ext_serial.response_buffer.extend(data)
         calls = MagicMock()  # one parent records the order across both queues
+        take_replies(mock_ext_serial)
         thread = ReadThread(
             serial=mock_ext_serial,
             trial=_make_trial(),

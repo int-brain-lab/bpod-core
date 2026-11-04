@@ -64,7 +64,7 @@ from bpod_core.constants import (
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ErrorData, RemoteError, ServiceHost
 
-from .conftest import make_trial
+from .conftest import held_by_another_thread, make_trial, take_replies
 
 # the Bpod fixtures patch this method; keep the original for testing it directly
 _DETECT_ADDITIONAL_SERIAL_PORTS = Bpod._detect_additional_serial_ports
@@ -559,7 +559,7 @@ class TestResetSessionClock:
         assert len(caplog.records) == 1
         assert caplog.records[0].levelname == 'DEBUG'
         assert 'Resetting' in caplog.records[0].message
-        mock_bpod.is_running = True
+        take_replies(mock_bpod.serial0)
         with pytest.raises(BpodError, match=r'Cannot use Bpod.reset_session_clock'):
             Bpod.reset_session_clock(mock_bpod)
 
@@ -688,11 +688,9 @@ class TestRequiresIdle:
         assert requires_idle.keys() - idle_only == _ALLOWED_WHILE_RUNNING
 
     @pytest.mark.parametrize('name', sorted(_IDLE_ONLY_CALLS))
-    def test_refused_while_running(self, name, mock_bpod_25, mock_ext_serial, mocker):
+    def test_refused_while_running(self, name, mock_bpod_25, mock_ext_serial):
         """Refused members raise and send nothing to the Bpod."""
-        mocker.patch.object(
-            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
-        )
+        take_replies(mock_ext_serial)
         mock_ext_serial.mock_responses.clear()  # any write would raise AssertionError
         with pytest.raises(BpodError, match=f'Cannot use {re.escape(name)} while'):
             _IDLE_ONLY_CALLS[name](mock_bpod_25)
@@ -808,7 +806,7 @@ class TestSendSoftcode:
 
 
 @pytest.fixture
-def mock_threads(mocker):
+def mock_threads(mocker, mock_ext_serial):
     """Replace the trial threads with mocks that have finished once created.
 
     Returns the ReadThread and EventThread class mocks.
@@ -816,6 +814,7 @@ def mock_threads(mocker):
 
     def read(*, trial: _Trial, **_) -> object:
         trial.started.set()
+        mock_ext_serial.read_lock.release()  # as a reader at its end
         trial.ended.set()
         read_thread_class.return_value.trial = trial
         return DEFAULT
@@ -882,6 +881,8 @@ class TestIsRunning:
         assert not mock_bpod_25.is_running
         assert not mock_bpod_25.is_ready
         assert not mock_bpod_25._undelivered
+        # the Bpod may hold the machine: the replies stay taken until the reopen
+        assert mock_ext_serial.read_lock.locked()
 
     def test_false_after_interrupted_registration(self, fsm, mock_bpod_25):
         """Ctrl+C while the trial is being registered doesn't leave it running.
@@ -1069,12 +1070,8 @@ class TestResettableActions:
         ]
 
 
+@pytest.mark.usefixtures('mock_threads')  # no real trial threads in wire-format tests
 class TestRun:
-    @pytest.fixture(autouse=True)
-    def patch_run_state_machine(self, mocker):
-        """Prevent _run_state_machine from starting threads in wire-format tests."""
-        mocker.patch.object(Bpod, '_run_state_machine')
-
     @pytest.fixture
     def fsm_basic(self):
         fsm = StateMachine()
@@ -1339,13 +1336,36 @@ class TestRun:
         with pytest.raises(ValueError, match='must not exceed 255'):
             bpod.validate_state_machine(fsm)
 
-    def test_run_while_running(self, fsm_basic, mock_bpod_25, mocker):
-        """A state machine can be queued while another one is running."""
-        mocker.patch.object(
-            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
-        )
+    def test_run_while_running(self, fsm_basic, mock_bpod_2p, blocked_reader, mocker):
+        """A state machine can be queued while another one is running.
+
+        The running trial's reader keeps the port's replies for the next one.
+        """
+        mocker.patch.object(Bpod, '_run_state_machine')  # the running reader stays
+        mock_bpod_2p.run(fsm_basic)
+        assert mock_bpod_2p.serial0.last_write.startswith(b'C')
+        assert blocked_reader.trial.successor_sent
+
+    def test_run_takes_the_replies_for_the_reader(
+        self, fsm_basic, mock_bpod_25, mocker
+    ):
+        """Before sending, run() takes the port's replies for the trial's reader."""
+        mocker.patch.object(Bpod, '_run_state_machine')  # no reader to release them
         mock_bpod_25.run(fsm_basic)
-        assert mock_bpod_25.serial0.last_write.startswith(b'C')
+        assert mock_bpod_25.serial0.read_lock.locked()
+        mock_bpod_25.serial0.read_lock.release()
+
+    def test_run_refused_while_another_thread_uses_the_bpod(
+        self, fsm_basic, mock_bpod_25
+    ):
+        """A command on another thread refuses run(); nothing is sent."""
+        mock_bpod_25.serial0.last_write = b''
+        with (
+            held_by_another_thread(mock_bpod_25.serial0.exclusive_reads()),
+            pytest.raises(BpodError, match='another thread is using the Bpod'),
+        ):
+            mock_bpod_25.run(fsm_basic)
+        assert not mock_bpod_25.serial0.last_write.startswith(b'C')
 
     def test_waits_for_the_machine_sent_before_to_start(
         self, fsm_basic, mock_bpod_2p, blocked_reader, mocker
@@ -1456,9 +1476,8 @@ class TestRun:
 class TestFlexIOSettings:
     """Tests for Bpod.flex_io's configuration properties."""
 
-    def test_run_locks_channel_types_and_rate(self, mock_bpod_2p, mocker):
+    def test_run_locks_channel_types_and_rate(self, mock_bpod_2p, mock_threads):
         """Running a state machine fixes channel types and the sampling rate."""
-        mocker.patch.object(Bpod, '_run_state_machine')
         fsm = StateMachine()
         fsm.add_state('a', 0, {'Tup': '>exit'})
         mock_bpod_2p.run(fsm)
@@ -1632,15 +1651,13 @@ class TestFlexIOSettings:
         mock_bpod_2p.flex_io.n_reads_per_sample = 2
         assert mock_bpod_2p.serial0.last_write == struct.pack('<cB', b'o', 2)
 
-    def test_flexio_setters_raise_while_running(self, mock_bpod_2p, mocker):
+    def test_flexio_setters_raise_while_running(self, mock_bpod_2p):
         """FlexIO setters refuse to write to serial0 while a trial is running.
 
         A running trial's read thread also owns serial0; interleaving a FlexIO
         settings write/ack with the live event stream would corrupt it.
         """
-        mocker.patch.object(
-            Bpod, 'is_running', new_callable=PropertyMock
-        ).return_value = True
+        take_replies(mock_bpod_2p.serial0)
         with pytest.raises(BpodError, match='Cannot change FlexIO settings'):
             mock_bpod_2p.flex_io.n_reads_per_sample = 2
         with pytest.raises(BpodError, match='Cannot re-arm an analog threshold'):
@@ -1949,6 +1966,8 @@ class TestStartAnalogReader:
 @pytest.fixture
 def blocked_reader(mock_bpod_2p, blocked_thread):
     """A trial that doesn't end until the reader's `release` event is set."""
+    take_replies(mock_bpod_2p.serial0)
+    blocked_thread.read_lock = mock_bpod_2p.serial0.read_lock
     mock_bpod_2p._current = blocked_thread.trial
     mock_bpod_2p._read_thread = blocked_thread
     return blocked_thread
@@ -2533,6 +2552,46 @@ class TestMisreadTrial:
         assert trial.leftover == b''
         assert mock_bpod_2p._current is trial  # peek_data() still has it
 
+    def test_closing_frees_orphaned_replies(self, mock_bpod_2p):
+        """Replies a dropped trial left taken are freed before the teardown's reads.
+
+        Otherwise the disconnect request and the drain would be refused, silently.
+        """
+        mock_bpod_2p.serial0.is_open = True  # the mock port is never really open
+        mock_bpod_2p.serial0.mock_responses[rb'Z'] = b'1'
+        take_replies(mock_bpod_2p.serial0)  # for a reader that never started
+        mock_bpod_2p.serial0.last_write = b''
+        mock_bpod_2p._close_ports()
+        assert not mock_bpod_2p.serial0.read_lock.locked()
+        assert mock_bpod_2p.serial0.last_write == b'Z'  # the disconnect request
+
+    def test_closing_leaves_a_live_reader_its_replies(
+        self, mock_bpod_2p, blocked_reader
+    ):
+        """A reader still alive at close releases its own replies; close doesn't."""
+        mock_bpod_2p.serial0.is_open = True
+        mock_bpod_2p._close_ports()
+        assert mock_bpod_2p.serial0.read_lock.locked()
+        blocked_reader.cancel()  # the reader's own release
+        assert not mock_bpod_2p.serial0.read_lock.locked()
+
+    def test_refusal_names_the_other_thread(self, mock_bpod_2p):
+        """A command refused because another thread uses the Bpod says so."""
+        with (
+            held_by_another_thread(mock_bpod_2p.serial0.exclusive_reads()),
+            pytest.raises(BpodError, match='while another thread is using the Bpod'),
+        ):
+            mock_bpod_2p.update_modules()
+
+    def test_out_of_sync_is_reported_before_busy_replies(self, mock_bpod_2p):
+        """After a dropped trial, commands say 'reopen', not 'running'."""
+        take_replies(
+            mock_bpod_2p.serial0
+        )  # as a trial dropped after sending leaves them
+        mock_bpod_2p._out_of_sync = True
+        with pytest.raises(BpodError, match='close and reopen'):
+            mock_bpod_2p.update_modules()
+
     def test_reported_once(self, mock_bpod_2p, misread_reader):
         """wait() raises a read error once; the connection stays refused afterwards."""
         with pytest.raises(BpodError, match='Could not read trial #3'):
@@ -2625,6 +2684,7 @@ def test_next_reader_gets_leftover(mock_bpod_2p, mock_threads):
     """A trial's reader starts with the bytes its predecessor read beyond its trial."""
     read_thread_class, _ = mock_threads
     mock_bpod_2p._current = make_trial(leftover=b'\x01next', leftover_received_ns=42)
+    take_replies(mock_bpod_2p.serial0)
     mock_bpod_2p._run_state_machine(make_trial(), MagicMock(), queued=False)
     kwargs = read_thread_class.call_args.kwargs
     assert kwargs['initial_bytes'] == b'\x01next'

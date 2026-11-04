@@ -5,6 +5,7 @@ import re
 import struct
 import threading
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock
 
@@ -202,6 +203,8 @@ def mock_ext_serial(mocker):
     mocker.patch(f'{tmp}.close')
     mocker.patch(f'{tmp}.write', side_effect=write)
     mocker.patch(f'{tmp}.read', side_effect=read)
+    # a spy on the port's own write(), so tests can inspect the calls made through it
+    mocker.patch.object(extended_serial, 'write', side_effect=extended_serial.write)
     mocker.patch(f'{tmp}.reset_input_buffer')
     mocker.patch(f'{tmp}._reconfigure_port')  # e.g. a timeout set while open
     mocker.patch(f'{tmp}.in_waiting', new_callable=PropertyMock, side_effect=in_waiting)
@@ -230,8 +233,39 @@ def pty_port() -> Iterator[tuple[int, ExtendedSerial]]:
         os.close(slave)
 
 
-def finish_trial(trial: _Trial) -> None:
-    """Set what a trial's reader and event thread set once they have ended."""
+@contextlib.contextmanager
+def held_by_another_thread(context: AbstractContextManager) -> Iterator[None]:
+    """Another thread holds `context` (a lock or exclusive_reads()) meanwhile."""
+    held = threading.Event()
+    done = threading.Event()
+
+    def hold() -> None:
+        with context:
+            held.set()
+            done.wait()
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    assert held.wait(1)
+    try:
+        yield
+    finally:
+        done.set()
+        holder.join(1)
+
+
+def take_replies(serial: ExtendedSerial) -> None:
+    """A trial's reader holds `serial`'s replies from here on, as after run()."""
+    assert serial.claim_replies()
+
+
+def finish_trial(trial: _Trial, read_lock: 'threading.Lock | None' = None) -> None:
+    """Set what a trial's reader and event thread set once they have ended.
+
+    With `read_lock`, the port's replies the reader held are released first.
+    """
+    if read_lock is not None:
+        read_lock.release()
     for event in (trial.started, trial.ended, trial.decoded):
         event.set()
 
@@ -249,6 +283,8 @@ def make_trial(number: int = 0, *, ended: bool = True, **fields) -> _Trial:
 class BlockedThread(threading.Thread):
     """A trial's reader that ends once `release` is set: `trial` runs until then."""
 
+    read_lock = None  # set to the port's, taken, to hold its replies like a reader
+
     def __init__(self) -> None:
         super().__init__(daemon=True)
         self.release = threading.Event()
@@ -258,7 +294,7 @@ class BlockedThread(threading.Thread):
         try:
             self.release.wait()
         finally:
-            finish_trial(self.trial)
+            finish_trial(self.trial, self.read_lock)
 
     def cancel(self) -> None:
         self.release.set()
