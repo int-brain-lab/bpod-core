@@ -558,8 +558,6 @@ class Bpod(SerialDevice, AbstractBpod):
             if (trial := self._current) is not None:  # kept for peek_data()
                 trial.read_error = None  # an error nobody reported is moot now
                 trial.leftover = b''  # what the old connection read
-            self._read_thread = None  # both have ended with the connection
-            self._event_thread = None
             # the disconnect disabled the relays (no modules if the setup failed early)
             for module in getattr(self, 'modules', {}).values():
                 module._relay_is_enabled = False  # noqa: SLF001 - same module
@@ -1404,16 +1402,18 @@ class Bpod(SerialDevice, AbstractBpod):
                 event_tables=self._compiler.event_tables,
             ),
         )
+        sent = False
         try:
             self._queued = trial
             with self._undelivered_lock:
                 self._undelivered.append(trial)
             self._state_machine_started = True
+            message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
+            sent = True  # from here on, the Bpod may hold the machine
             # record the trial number before the Bpod can start the state machine:
             # analog samples only carry the firmware's positional trial counter, so
             # decoding looks the number up by position from the trial's first sample on
             self._analog_trial_number_by_sequence.append(self._next_fsm_index)
-            message = struct.pack('<c?', b'C', b'\x01') + fsm_bytes
             if debugging:
                 t0 = perf_counter_ns()
                 self.serial0.write(message)
@@ -1428,18 +1428,20 @@ class Bpod(SerialDevice, AbstractBpod):
             # Start threads
             self._run_state_machine(trial, lookup, queued=queued)
         except BaseException:
-            self._drop(trial)
+            self._drop(trial, sent=sent)
             raise
         finally:
             # only now that _current is updated: is_running has no gap
             self._queued = None
 
-    def _drop(self, trial: _Trial) -> None:
+    def _drop(self, trial: _Trial, *, sent: bool) -> None:
         """Give up a trial whose threads didn't all start: get_data() then skips it.
 
-        This can't be undone: the Bpod may hold its state machine, or be running it.
+        Once `sent`, this can't be undone: the Bpod may hold the state machine, or be
+        running it, so the connection is out of sync.
         """
-        self._out_of_sync = True
+        if sent:
+            self._out_of_sync = True
         with self._undelivered_lock, contextlib.suppress(ValueError):
             self._undelivered.remove(trial)  # unless it was never registered
         trial.decoded.set()  # whoever waits for it moves on
@@ -1520,7 +1522,7 @@ class Bpod(SerialDevice, AbstractBpod):
 
     @property
     def is_ready(self) -> bool:
-        """Check if a compiled state machine is loaded and ready to run."""
+        """Check if a state machine is being sent, its threads not yet started."""
         return self._queued is not None
 
     @property

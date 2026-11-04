@@ -1054,16 +1054,16 @@ class EventThread(threading.Thread):
                         if idx in resettable_indices and val > 0:
                             active_outputs[idx] = val  # noqa: PERF403
         finally:
-            recorder.finish()  # the rows are final: no peek needs to wait for the rest
-            if self._pending:
-                self._flush()
-            self._decode()
+            try:
+                recorder.finish()  # the rows are final: no peek waits for the rest
+                if self._pending:
+                    self._flush()
+                self._decode()
+            finally:
+                self.trial.decoded.set()  # whoever waits for the trial moves on
 
     def _decode(self) -> None:
-        """Decode the recorded events, or keep the error doing so.
-
-        Whoever waits for the trial's data gets an answer.
-        """
+        """Decode the recorded events, or keep the error doing so."""
         trial = self.trial
         try:
             self._recorder.decode()
@@ -1072,7 +1072,6 @@ class EventThread(threading.Thread):
             logger.exception('Failed to decode trial #%d', trial.number)
             trial.decode_error = BpodError(f'Failed to decode trial #{trial.number}')
             trial.decode_error.__cause__ = error
-        trial.decoded.set()
 
 
 class SoftcodeThread(threading.Thread):

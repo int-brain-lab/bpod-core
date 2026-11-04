@@ -1047,6 +1047,15 @@ class TestEventThread:
         assert thread.trial.decode_error is item
         assert thread.trial.recorder._buffer.size > 0  # a later peek raises, too
 
+    @pytest.mark.filterwarnings('ignore::pytest.PytestUnhandledThreadExceptionWarning')
+    def test_decoded_is_set_however_the_thread_dies(self, mocker, make_thread):
+        """A failure before decoding doesn't leave a waiting caller hanging."""
+        thread = make_thread()
+        mocker.patch.object(thread.trial.recorder, 'finish', side_effect=SystemExit)
+        thread.stop()
+        thread.join(timeout=2)
+        assert thread.trial.decoded.is_set()
+
     def test_recorder_keeps_the_decoded_frame(self, make_thread):
         """The recorder holds the decoded frame, and the buffer is freed."""
         thread = make_thread()

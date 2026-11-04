@@ -884,7 +884,10 @@ class TestIsRunning:
         assert not mock_bpod_25._undelivered
 
     def test_false_after_interrupted_registration(self, fsm, mock_bpod_25):
-        """Ctrl+C while the trial is being registered doesn't leave it running."""
+        """Ctrl+C while the trial is being registered doesn't leave it running.
+
+        Nothing was sent, so the connection stays in sync.
+        """
         lock = MagicMock()
         lock.__enter__.side_effect = [KeyboardInterrupt, None]  # the 2nd: _drop
         mock_bpod_25._undelivered_lock = lock
@@ -892,6 +895,8 @@ class TestIsRunning:
             mock_bpod_25.run(fsm)
         assert not mock_bpod_25.is_running
         assert not mock_bpod_25._undelivered
+        assert not mock_bpod_25._out_of_sync
+        assert not mock_bpod_25._analog_trial_number_by_sequence
 
     def test_get_data_moves_on_after_failed_send(
         self, fsm, mock_bpod_25, mock_ext_serial, mocker
@@ -2527,7 +2532,6 @@ class TestMisreadTrial:
         mock_bpod_2p._close_ports()
         assert trial.leftover == b''
         assert mock_bpod_2p._current is trial  # peek_data() still has it
-        assert mock_bpod_2p._read_thread is None
 
     def test_reported_once(self, mock_bpod_2p, misread_reader):
         """wait() raises a read error once; the connection stays refused afterwards."""
