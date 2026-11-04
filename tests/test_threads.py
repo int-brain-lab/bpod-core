@@ -13,12 +13,16 @@ from queue import SimpleQueue
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
+import numpy as np
 import polars as pl
 import pytest
+from polars.testing import assert_frame_equal
 from serial import SerialException
 
 from bpod_core.bpod._threads import (
+    _EVENT_DTYPE,
     _EVENTS_STOP,
+    _OUTPUT_ID_OFFSET,
     _SOFTCODE_STOP,
     _TRIAL_DATA_SCHEMA,
     EventThread,
@@ -27,6 +31,7 @@ from bpod_core.bpod._threads import (
     _build_event_tables,
     _EventID,
     _LateStarts,
+    _Recorder,
     join_until,
 )
 from bpod_core.bpod.errors import BpodError
@@ -607,6 +612,189 @@ def _make_fsm(
     )
 
 
+def _peek_in_background(
+    peek: Callable[[list[str]], pl.DataFrame], states: list[str]
+) -> tuple[threading.Thread, list[pl.DataFrame]]:
+    """Start a peek on another thread, which puts its snapshot in the returned list."""
+    snapshots: list[pl.DataFrame] = []
+    peeker = threading.Thread(
+        target=lambda: snapshots.append(peek(states)), daemon=True
+    )
+    peeker.start()
+    time.sleep(0.02)  # let it block first
+    return peeker, snapshots
+
+
+class TestRecorder:
+    @staticmethod
+    def _make_recorder(trial: int = 7) -> _Recorder:
+        return _Recorder(
+            trial=trial,
+            fsm=_make_fsm()._replace(fsm_hash=b'\xab\xcd'),
+            event_tables=_build_event_tables(
+                _InputEvents(
+                    names=['Ev0', 'Tup', 'Low'],
+                    channels=[None, None, None],
+                    values=[None, 5, 0],
+                ),
+                ['Valve1'],
+                ['Valve1'],
+            ),
+        )
+
+    def test_to_frame_matches_a_reference(self):
+        """Each kind of event decodes to its row, values and nulls included."""
+        recorder = self._make_recorder()
+        recorder.append(1000, _EventID.START_FSM, -1)
+        recorder.append(1000, _EventID.START_STATE, 0)
+        recorder.append(1000, _OUTPUT_ID_OFFSET, 0, 1)
+        recorder.append(1100, 0, 0)  # an input without a default value
+        recorder.append(1200, 1, 1)  # one with a default value
+        recorder.append(1250, 2, 1)  # one with a default value of 0
+        recorder.append(1300, 0, 1, 3)  # one with its own value
+        recorder.append(1400, 200, 1)  # an event code the hardware doesn't name
+        recorder.append(1500, _EventID.END_FSM_CYCLES, -1)
+        expected = pl.DataFrame(
+            {
+                'Time': [1000, 1000, 1000, 1100, 1200, 1250, 1300, 1400, 1500],
+                'Trial': [7] * 9,
+                'State Machine': ['abcd'] * 9,
+                'State': [None, 'S0', 'S0', 'S0', 'S1', 'S1', 'S1', 'S1', None],
+                'Type': [
+                    'TrialStart',
+                    'StateStart',
+                    'OutputAction',
+                    'InputEvent',
+                    'InputEvent',
+                    'InputEvent',
+                    'InputEvent',
+                    None,
+                    'TrialEnd',
+                ],
+                'Event': [None, None, None, 'Ev0', 'Tup', 'Low', 'Ev0', None, None],
+                'Channel': [None, None, 'Valve1', None, None, None, None, None, None],
+                'Value': [None, None, 1, None, 5, 0, 3, None, None],
+            },
+            schema=_TRIAL_DATA_SCHEMA,
+        )
+        assert_frame_equal(recorder.to_frame(), expected, categorical_as_str=True)
+
+    def test_to_frame_without_events(self):
+        """No events give an empty frame of the right schema."""
+        frame = self._make_recorder().to_frame()
+        assert frame.is_empty()
+        assert list(frame.schema.items()) == list(_TRIAL_DATA_SCHEMA.items())
+
+    def test_trial_number_beyond_uint16(self):
+        """Trial numbers above 65535 are kept."""
+        recorder = self._make_recorder(trial=70_000)
+        recorder.append(0, _EventID.START_STATE, 0)
+        assert recorder.to_frame()['Trial'].to_list() == [70_000]
+
+    def test_buffer_doubles_and_keeps_its_rows(self, mocker):
+        """Growing keeps every row, in order."""
+        mocker.patch('bpod_core.bpod._threads._INITIAL_BUFFER_SIZE', 2)
+        recorder = self._make_recorder()
+        for time_us in range(5):
+            recorder.append(time_us, 0, 0)
+        assert len(recorder._buffer) == 8
+        assert recorder.to_frame()['Time'].dt.epoch('us').to_list() == list(range(5))
+
+    def test_one_row_frame_is_a_copy_of_the_buffer(self):
+        """A single element isn't strided, which would keep polars from copying it."""
+        recorder = self._make_recorder()
+        recorder.append(10, 0, 0)
+        frame = recorder.to_frame()
+        recorder._buffer['Time'][0] = 0
+        assert frame['Time'].dt.epoch('us').to_list() == [10]
+
+    def test_peek_without_states_returns_the_events_so_far(self):
+        """Without trigger states, peek returns at once."""
+        recorder = self._make_recorder()
+        recorder.append(10, 0, 0)
+        assert recorder.peek().height == 1
+
+    @pytest.mark.parametrize(
+        ('states', 'message'),
+        [
+            (['nope'], "Unknown trigger state: 'nope'"),
+            (['S0', 'x', 'y'], "Unknown trigger states: 'x', 'y'"),
+        ],
+    )
+    def test_peek_rejects_unknown_states(self, states, message):
+        """Trigger states must be part of the state machine."""
+        recorder = self._make_recorder()
+        recorder.finish()  # so that a missing check fails rather than waits
+        with pytest.raises(ValueError, match=message):
+            recorder.peek(states)
+
+    def test_peek_returns_at_once_if_the_state_was_entered(self):
+        """A state entered before the call needs no wake-up."""
+        recorder = self._make_recorder()
+        recorder.append(10, _EventID.START_STATE, 1)
+        peeker, snapshots = _peek_in_background(recorder.peek, ['S1'])
+        peeker.join(timeout=2)
+        assert snapshots[0].height == 1
+
+    def test_peek_waits_for_its_state(self, mocker):
+        """Another state's wake-up doesn't end the wait; its own state's does."""
+        # long enough that only the wake-up can end its wait within the test
+        mocker.patch('bpod_core.bpod._threads._PEEK_RECHECK_S', 60)
+        recorder = self._make_recorder()
+        peeker, snapshots = _peek_in_background(recorder.peek, ['S1'])
+        recorder.append(10, _EventID.START_STATE, 0)
+        recorder.state_entered()
+        time.sleep(0.02)
+        assert not snapshots
+        recorder.append(20, _EventID.START_STATE, 1)
+        recorder.state_entered()
+        peeker.join(timeout=2)
+        assert snapshots[0]['State'].to_list() == ['S0', 'S1']
+
+    def test_finish_ends_the_wait(self, mocker):
+        """A state that's never entered doesn't leave peek waiting after the trial."""
+        mocker.patch('bpod_core.bpod._threads._PEEK_RECHECK_S', 60)
+        recorder = self._make_recorder()
+        peeker, snapshots = _peek_in_background(recorder.peek, ['S1'])
+        recorder.append(10, 0, 0)
+        recorder.finish()
+        peeker.join(timeout=2)
+        assert snapshots[0].height == 1
+
+    def test_peek_recovers_from_a_lost_wake_up(self):
+        """Another caller's clear() can't leave a blocking peek waiting."""
+        recorder = self._make_recorder()
+        peeker, snapshots = _peek_in_background(recorder.peek, ['S1'])
+        recorder._finished = True  # its final set() went to the other caller's clear()
+        peeker.join(timeout=2)
+        assert snapshots[0].is_empty()
+
+    def test_snapshots_only_see_rows_written_in_full(self, mocker):
+        """A snapshot at any moment holds each row once, also while the buffer grows."""
+        mocker.patch('bpod_core.bpod._threads._INITIAL_BUFFER_SIZE', 2)
+        real_empty = np.empty
+
+        class Buffer(np.ndarray):
+            """Takes a snapshot just before each write."""
+
+            def __setitem__(self, key, value):
+                times = recorder.peek()['Time'].dt.epoch('us').to_list()
+                assert times == list(range(len(times)))
+                super().__setitem__(key, value)
+
+        def empty(shape, dtype=float, **kwargs):
+            if dtype is _EVENT_DTYPE:
+                return np.zeros(shape, dtype=dtype).view(Buffer)
+            return real_empty(shape, dtype=dtype, **kwargs)
+
+        mocker.patch('bpod_core.bpod._threads.np.empty', empty)
+        recorder = self._make_recorder()
+        for time_us in range(9):
+            recorder.append(time_us, 0, 0)
+        assert len(recorder._buffer) == 16
+        assert recorder.peek().height == 9
+
+
 class TestEventThread:
     @pytest.fixture
     def make_thread(self):
@@ -619,7 +807,6 @@ class TestEventThread:
             action_names: list[str] | None = None,
             resettable_actions: list[str] | None = None,
             event_names: list[str] | None = None,
-            event_values: list[int | None] | None = None,
             time_reference: _TimeReferences | None = None,
             publish: Callable[[list[BpodEventUnion]], object] | None = None,
             should_publish: Callable[[], bool] | None = None,
@@ -631,7 +818,7 @@ class TestEventThread:
             input_events = _InputEvents(
                 names=event_names,
                 channels=[None] * len(event_names),
-                values=event_values or [None] * len(event_names),
+                values=[None] * len(event_names),
             )
             data_queue: SimpleQueue[pl.DataFrame | BpodError] = SimpleQueue()
             thread = EventThread(
@@ -671,22 +858,6 @@ class TestEventThread:
         thread.stop()
         thread.join(timeout=2)
         assert not thread.is_alive()
-
-    def test_output_schema_matches_trial_data_schema(self, make_thread):
-        """Collected DataFrame schema matches _TRIAL_DATA_SCHEMA exactly."""
-        thread, data_queue = make_thread()
-        thread.stop()
-        thread.join(timeout=2)
-        df = self._next_trial(data_queue)
-        assert list(df.schema.items()) == list(_TRIAL_DATA_SCHEMA.items())
-
-    def test_trial_number_beyond_uint16(self, make_thread):
-        """Trial numbers above 65535 are kept."""
-        thread, data_queue = make_thread(trial=70_000)
-        thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_STATE,))])
-        thread.stop()
-        thread.join(timeout=2)
-        assert self._next_trial(data_queue)['Trial'].unique().to_list() == [70_000]
 
     def test_data_enqueued_on_stop(self, make_thread):
         """A trial is pushed to data_queue when the thread exits."""
@@ -771,30 +942,6 @@ class TestEventThread:
         assert df.height > 0, 'trial data must be unaffected by the gate'
         assert published == []
 
-    def test_event_value_defaults_to_the_events_own(self, make_thread):
-        """An input event without a logged value reports its default, if it has one."""
-        thread, data_queue = make_thread(
-            event_names=['High', 'Low', 'Tup'],
-            event_values=[1, 0, None],
-            should_publish=lambda: False,
-        )
-        thread.queue.put(
-            [_RawEvents(micros_us=i, event_ids=(i,)) for i in range(3)],
-        )
-        thread.stop()
-        thread.join(timeout=2)
-        assert self._next_trial(data_queue)['Value'].to_list() == [1, 0, None]
-
-    def test_one_row_frame_is_a_copy_of_the_buffer(self, make_thread):
-        """A single element isn't strided, which would keep polars from copying it."""
-        thread, data_queue = make_thread()
-        thread.queue.put([_RawEvents(micros_us=10, event_ids=(0,))])
-        thread.stop()
-        thread.join(timeout=2)
-        frame = self._next_trial(data_queue)
-        thread._buffer['Time'][0] = 0
-        assert frame['Time'].dt.epoch('us').to_list() == [10]
-
     def test_unknown_event_id_decodes_to_nulls(self, make_thread):
         """An event code the hardware doesn't name is kept, with nothing to report."""
         thread, data_queue = make_thread(should_publish=lambda: False)
@@ -811,7 +958,7 @@ class TestEventThread:
     def test_failed_decode_queues_the_error(self, mocker, make_thread, caplog, error):
         """A trial that can't be decoded is logged; get_data() isn't left waiting."""
         thread, data_queue = make_thread()
-        mocker.patch.object(thread, '_to_frame', side_effect=error)
+        mocker.patch.object(thread.recorder, 'to_frame', side_effect=error)
         thread.stop()
         thread.join(timeout=2)
         item = self._next_trial(data_queue)
@@ -819,7 +966,7 @@ class TestEventThread:
         assert 'Failed to decode trial #0' in str(item)
         assert item.__cause__ is error
         assert 'Failed to decode trial #0' in caplog.text
-        assert thread._finished  # a blocking peek_data() isn't left waiting either
+        assert thread.recorder._finished  # a blocking peek isn't left waiting either
 
     def test_publish_gate_is_checked_once_per_batch(self, mocker, make_thread):
         """The gate's answer holds for one batch: subscribers can come and go."""
@@ -852,14 +999,10 @@ class TestEventThread:
         # long enough that only the wake-up can end its wait within the test
         mocker.patch('bpod_core.bpod._threads._PEEK_RECHECK_S', 60)
         thread, _ = make_thread(fsm=_make_fsm(transitions={(0, 0): 1}))
-        snapshots = []
-        peeker = threading.Thread(
-            target=lambda: snapshots.append(thread.peek_data([state])), daemon=True
-        )
-        peeker.start()
+        peeker, snapshots = _peek_in_background(thread.peek_data, [state])
         for event_ids in batches:
-            time.sleep(0.02)  # let it block first, so that it depends on the wake-up
             thread.queue.put([_RawEvents(micros_us=0, event_ids=event_ids)])
+            time.sleep(0.02)  # let it block again, so that it depends on the wake-up
         peeker.join(timeout=2)
         assert snapshots
         assert state in snapshots[0]['State'].to_list()
@@ -1100,58 +1243,14 @@ class TestEventThread:
         module = df.filter(pl.col('Channel') == 'Module1')
         assert module['Value'].to_list() == [3]
 
-    def test_peek_data_mid_trial(self, make_thread):
-        """peek_data returns a non-empty snapshot while the trial is running."""
-        thread, _ = make_thread()
-        thread.queue.put([_RawEvents(micros_us=0, event_ids=(_EventID.START_FSM,))])
-        deadline = time.monotonic() + 2.0
-        while thread._n_events == 0 and time.monotonic() < deadline:
-            time.sleep(0.001)
-        df = thread.peek_data()
-        assert len(df) > 0
-
-    def test_peek_data_after_last_wake_up(self, mocker, make_thread):
-        """A blocking peek_data() returns once the thread is done, while still alive."""
+    def test_peek_data_after_the_thread_ended(self, make_thread):
+        """A blocking peek_data() returns once the thread is done."""
         thread, _ = make_thread()
         thread.stop()
         thread.join(timeout=2)
-        mocker.patch.object(thread, 'is_alive', return_value=True)  # just after set()
-        snapshots = []
-        peek = threading.Thread(
-            target=lambda: snapshots.append(thread.peek_data(['S1'])), daemon=True
-        )
-        peek.start()
-        peek.join(timeout=1)
+        peeker, snapshots = _peek_in_background(thread.peek_data, ['S1'])
+        peeker.join(timeout=1)
         assert snapshots
-
-    def test_peek_data_recovers_from_a_lost_wake_up(self, make_thread):
-        """Another caller's clear() can't leave a blocking peek_data() waiting."""
-        thread, _ = make_thread()
-        snapshots = []
-        peeker = threading.Thread(
-            target=lambda: snapshots.append(thread.peek_data(['S1'])), daemon=True
-        )
-        peeker.start()
-        time.sleep(0.02)  # let it block first
-        thread._finished = True  # its final set() went to the other caller's clear()
-        peeker.join(timeout=2)
-        assert snapshots
-        assert snapshots[0].is_empty()
-
-    def test_buffer_growth(self, mocker, make_thread):
-        """Buffer doubles correctly."""
-        init_buffer_size = 10
-        mocker.patch('bpod_core.bpod._threads._INITIAL_BUFFER_SIZE', init_buffer_size)
-        n = init_buffer_size + 1
-        thread, data_queue = make_thread(event_names=['Ev0', 'Tup'])
-        assert len(thread._buffer) == init_buffer_size
-        for _ in range(n):
-            thread.queue.put([_RawEvents(micros_us=0, event_ids=(0,))])
-        thread.stop()
-        thread.join(timeout=2)
-        assert len(thread._buffer) == init_buffer_size * 2
-        df = self._next_trial(data_queue)
-        assert len(df.filter(pl.col('Event') == 'Ev0')) == n
 
 
 class TestSoftcodeThread:
