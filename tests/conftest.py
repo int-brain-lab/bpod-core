@@ -6,13 +6,14 @@ import struct
 import threading
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import PropertyMock
+from unittest.mock import MagicMock, PropertyMock
 
 import pytest
 from serial.tools.list_ports_common import ListPortInfo
 
 from bpod_core import ipc
 from bpod_core.bpod import Bpod
+from bpod_core.bpod._threads import _Trial
 from bpod_core.bpod.structs import _TimeReferences
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import PID_DUE_NATIVE, VID_ARDUINO, VID_TEENSY, TeensyPID
@@ -229,26 +230,35 @@ def pty_port() -> Iterator[tuple[int, ExtendedSerial]]:
         os.close(slave)
 
 
-class BlockedThread(threading.Thread):
-    """A thread that ends once `release` is set; stands in for a trial's reader."""
+def finish_trial(trial: _Trial) -> None:
+    """Set what a trial's reader and event thread set once they have ended."""
+    for event in (trial.started, trial.ended, trial.decoded):
+        event.set()
 
-    trial_number = 7
-    error: Exception | None = None
+
+def make_trial(number: int = 0, *, ended: bool = True, **fields) -> _Trial:
+    """A trial whose threads have finished, or with `ended=False` one that runs."""
+    trial = _Trial(number=number, fsm_hash=b'', recorder=MagicMock(), **fields)
+    if ended:
+        finish_trial(trial)
+    else:
+        trial.started.set()
+    return trial
+
+
+class BlockedThread(threading.Thread):
+    """A trial's reader that ends once `release` is set: `trial` runs until then."""
 
     def __init__(self) -> None:
         super().__init__(daemon=True)
         self.release = threading.Event()
-        self.trial_started = threading.Event()
-        self.trial_started.set()  # the trial runs
+        self.trial = make_trial(7, ended=False)
 
     def run(self) -> None:
         try:
             self.release.wait()
         finally:
-            self.trial_started.set()  # as a ReadThread's, once it ends
-
-    def expect_stop(self) -> None:
-        pass
+            finish_trial(self.trial)
 
     def cancel(self) -> None:
         self.release.set()

@@ -75,24 +75,24 @@ class _DrainMarker(_RawSoftcode):
 _PEEK_RECHECK_S = 0.1
 """Longest wait of a blocking ``peek()``: another caller can clear its wake-up."""
 
-_JOIN_SLICE_S = 0.5
-"""Longest single wait on a thread: between slices, Ctrl+C reaches the caller.
+_WAIT_SLICE_S = 0.5
+"""Longest single wait on an event: between slices, Ctrl+C reaches the caller.
 
 polars installs a SIGINT handler with ``SA_RESTART`` (pola-rs/polars#21739), so an
 unbounded ``Thread.join`` would swallow Ctrl+C until the thread ends.
 """
 
 
-def join_until(thread: threading.Thread, deadline: float | None) -> bool:
-    """Wait for `thread` to end, until `deadline` (:func:`time.monotonic`) if given.
+def wait_until(event: threading.Event, deadline: float | None) -> bool:
+    """Wait for `event`, until `deadline` (:func:`time.monotonic`) if given.
 
-    Returns True once the thread has ended, False if the deadline passed first.
+    Returns True once the event is set, False if the deadline passed first.
     """
-    while thread.is_alive():
-        remaining = _JOIN_SLICE_S if deadline is None else deadline - time.monotonic()
+    while not event.is_set():
+        remaining = _WAIT_SLICE_S if deadline is None else deadline - time.monotonic()
         if remaining <= 0:
             return False
-        thread.join(min(remaining, _JOIN_SLICE_S))
+        event.wait(min(remaining, _WAIT_SLICE_S))
     return True
 
 
@@ -457,7 +457,7 @@ class _Recorder:
 
 @dataclass(eq=False)
 class _Trial:
-    """One trial, from ``run()`` until ``get_data()`` has delivered it."""
+    """What is known about one trial, which ``Bpod`` asks rather than its threads."""
 
     number: int
     """Zero-based trial index."""
@@ -483,7 +483,8 @@ class _Trial:
 
     # written by EventThread
     decoded: threading.Event = field(default_factory=threading.Event)
-    """Set once the recorder holds the decoded events, or decoding them has failed."""
+    """Set once nothing more will come for this trial: the recorder holds the decoded
+    events, or there won't be any (decoding failed, or the trial was dropped)."""
     decode_error: BpodError | None = None
     """Why the events couldn't be decoded."""
 
@@ -519,7 +520,7 @@ class ReadThread(threading.Thread):
     trial and report it as usual; :meth:`cancel` ends the thread without the Bpod's
     cooperation, leaving the trial's data incomplete. If the Bpod never started the
     state machine, it answers the stop as an idle Bpod; told of the stop by
-    :meth:`expect_stop`, the thread then ends without events.
+    :attr:`_Trial.stop_expected`, the thread then ends without events.
     :attr:`_Trial.started` tells when the Bpod has started the trial, or the thread has
     ended without it.
 
@@ -591,40 +592,6 @@ class ReadThread(threading.Thread):
         self._previous_end_us = previous_end_us
         self._buffer = bytearray(initial_bytes)
         self._received_ns = initial_received_ns
-
-    # what Bpod reads, until it asks the trial itself
-    @property
-    def error(self) -> Exception | None:
-        """See :attr:`_Trial.read_error`."""
-        return self.trial.read_error
-
-    @error.setter
-    def error(self, error: Exception | None) -> None:
-        self.trial.read_error = error
-
-    @property
-    def trial_started(self) -> threading.Event:
-        """See :attr:`_Trial.started`."""
-        return self.trial.started
-
-    @property
-    def leftover(self) -> bytes:
-        """See :attr:`_Trial.leftover`."""
-        return self.trial.leftover
-
-    @property
-    def leftover_received_ns(self) -> int:
-        """See :attr:`_Trial.leftover_received_ns`."""
-        return self.trial.leftover_received_ns
-
-    @property
-    def end_micros_us(self) -> int | None:
-        """See :attr:`_Trial.end_micros_us`."""
-        return self.trial.end_micros_us
-
-    def expect_stop(self) -> None:
-        """Call just before sending the stop command."""
-        self.trial.stop_expected = True
 
     def cancel(self) -> None:
         """End the thread without waiting for the trial; its data stays incomplete."""
@@ -853,11 +820,6 @@ class ReadThread(threading.Thread):
             )
             trial.ended.set()
 
-    @property
-    def trial_number(self) -> int:
-        """The zero-based trial number."""
-        return self.trial.number
-
 
 class EventThread(threading.Thread):
     """Consumer thread that processes hardware events and builds the trial DataFrame.
@@ -871,8 +833,8 @@ class EventThread(threading.Thread):
     All events of a cycle are evaluated in the state the cycle started in; the first
     one leading elsewhere makes the transition.
 
-    When the trial ends (``STOP_SENTINEL`` received), its events are decoded and the
-    frame is pushed onto *data_queue*, for :meth:`~bpod_core.bpod.Bpod.get_data`.
+    When the trial ends (``STOP_SENTINEL`` received), its events are decoded, for
+    :meth:`~bpod_core.bpod.Bpod.get_data`.
 
     Parameters
     ----------
@@ -880,8 +842,6 @@ class EventThread(threading.Thread):
         The trial to record, which the thread writes its results to.
     fsm : _StateMachineLookup
         Compiled state machine data for this trial.
-    data_queue : SimpleQueue of DataFrame or BpodError
-        Queue to push the completed trial DataFrame into, or the error decoding it.
     time_reference : _TimeReferences
         Reference values for performance counters.
     publish : Callable
@@ -911,7 +871,6 @@ class EventThread(threading.Thread):
         *,
         trial: _Trial,
         fsm: _StateMachineLookup,
-        data_queue: SimpleQueue[pl.DataFrame | BpodError],
         time_reference: _TimeReferences,
         publish: Callable[[list[BpodEventUnion]], object],
         publish_gate: Callable[[], bool],
@@ -921,7 +880,6 @@ class EventThread(threading.Thread):
         self.queue: SimpleQueue[list[_RawEvents]] = SimpleQueue()
         self.trial = trial
         self._recorder = trial.recorder
-        self._data_queue = data_queue
         self._state_transition_matrix = fsm.state_transition_matrix
         self._use_back_op = fsm.use_back_op
         self._time_reference = time_reference
@@ -939,11 +897,6 @@ class EventThread(threading.Thread):
     def stop(self) -> None:
         """Signal the FSM thread to stop."""
         self.queue.put(_EVENTS_STOP)
-
-    @property
-    def trial_number(self) -> int:
-        """The zero-based trial number."""
-        return self.trial.number
 
     def _append_and_publish(
         self, time_us: int, event: int, state: int, value: int = -1
@@ -1106,27 +1059,19 @@ class EventThread(threading.Thread):
                 self._flush()
             self._decode()
 
-    def peek_data(self, trigger_states: Collection[str] | None = None) -> pl.DataFrame:
-        """Return a snapshot of the events so far, see :meth:`_Recorder.peek`."""
-        return self._recorder.peek(trigger_states)
-
     def _decode(self) -> None:
         """Decode the recorded events, or keep the error doing so.
 
-        Whoever waits in :meth:`~bpod_core.bpod.Bpod.get_data` gets an answer.
+        Whoever waits for the trial's data gets an answer.
         """
         trial = self.trial
-        item: pl.DataFrame | BpodError
         try:
             self._recorder.decode()
-            item = self._recorder.to_frame()
         # a panic in polars isn't an Exception
         except (Exception, pl.exceptions.PanicException) as error:
             logger.exception('Failed to decode trial #%d', trial.number)
-            item = BpodError(f'Failed to decode trial #{trial.number}')
-            item.__cause__ = error
-            trial.decode_error = item
-        self._data_queue.put(item)
+            trial.decode_error = BpodError(f'Failed to decode trial #{trial.number}')
+            trial.decode_error.__cause__ = error
         trial.decoded.set()
 
 
