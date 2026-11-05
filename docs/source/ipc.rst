@@ -204,6 +204,9 @@ remote instance:
    * - :meth:`~bpod_core.bpod.RemoteBpod.get_data`
      - Returns the trial data as a Polars :class:`~polars.DataFrame` (see
        :doc:`/data_format`).
+   * - :meth:`~bpod_core.bpod.RemoteBpod.wait`
+     - The host waits on the client's behalf. The reply is awaited a second longer
+       than ``timeout``.
    * - :meth:`~bpod_core.bpod.RemoteBpod.stop_state_machine`
      - Aborts the state machine currently running on the host. The reply is awaited a
        second longer than ``timeout``; a host busy queuing a state machine may answer
@@ -222,8 +225,10 @@ remote instance:
      - Obtained once during the handshake; reading them involves no round-trip.
 
 Only this set of methods is callable remotely — the host rejects requests for anything
-else with a :exc:`~bpod_core.bpod.errors.BpodError`. Exceptions raised on the host are
-serialized and re-raised on the client: :exc:`RuntimeError` and :exc:`ValueError` keep
+else with a :exc:`~bpod_core.bpod.errors.BpodError`. The host is designed for a single
+controlling client and serves requests one at a time: a second client's requests are
+delayed while the first one is being answered, not rejected. Exceptions raised on the
+host are serialized and re-raised on the client: :exc:`RuntimeError` and :exc:`ValueError` keep
 their type, as does :exc:`~bpod_core.bpod.errors.BpodError` for
 :meth:`~bpod_core.bpod.RemoteBpod.get_data` and
 :meth:`~bpod_core.bpod.RemoteBpod.reset_session_clock`. Everything else arrives as a

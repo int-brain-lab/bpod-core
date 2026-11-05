@@ -1494,28 +1494,8 @@ class Bpod(SerialDevice, AbstractBpod):
         """
         return not self.is_queued
 
+    @override
     def wait(self, timeout: float | None = None) -> None:
-        """
-        Wait for every state machine sent to finish: the running one and a queued one.
-
-        Blocks until their events have been recorded and published and the softcodes
-        received so far have been handled. If no state machine is running, this method
-        returns immediately.
-
-        Parameters
-        ----------
-        timeout : float or None, default: None
-            Seconds to wait before giving up. ``None`` waits indefinitely.
-
-        Raises
-        ------
-        TimeoutError
-            If the state machine hasn't finished within `timeout` seconds.
-        BpodError
-            If the connection to the Bpod was lost during the trial, or the trial
-            couldn't be read; the connection then has to be reopened. The events
-            received up to then are kept.
-        """
         deadline = None if timeout is None else monotonic() + timeout
         trial = self._last_sent  # snapshot for thread-safety
         if trial is not None:
@@ -2185,13 +2165,7 @@ class RemoteBpod(AbstractBpod):
             self._zmq.request(request_data=_RequestBye(), reply_type=str, timeout=1.0)
         self._zmq.close()
 
-    def _remote_call(
-        self,
-        method: str,
-        *args: Any,
-        reply_timeout: float | None = None,
-        **kwargs: Any,
-    ) -> Any:
+    def _remote_call(self, method: str, *args: Any, **kwargs: Any) -> Any:
         """
         Perform a remote procedure call.
 
@@ -2201,10 +2175,10 @@ class RemoteBpod(AbstractBpod):
             The name of the remote method to invoke.
         *args : Any
             Positional arguments to pass to the remote method.
-        reply_timeout : float, optional
-            Seconds to wait for the host's reply; ``None`` waits indefinitely.
         **kwargs : Any
-            Keyword arguments to pass to the remote method.
+            Keyword arguments to pass to the remote method. A ``timeout`` bounds the
+            wait for the reply as well, with a margin of ``_REMOTE_REPLY_MARGIN_S``;
+            without one, the reply is awaited indefinitely.
 
         Returns
         -------
@@ -2216,8 +2190,11 @@ class RemoteBpod(AbstractBpod):
         BpodError, RuntimeError, TimeoutError, ValueError
             As raised by the remote method.
         TimeoutError
-            If the host doesn't reply within `reply_timeout` seconds.
+            If the host doesn't reply within ``timeout`` seconds plus the margin.
         """
+        # the host's own TimeoutError arrives before the reply times out
+        timeout = kwargs.get('timeout')
+        reply_timeout = None if timeout is None else timeout + _REMOTE_REPLY_MARGIN_S
         try:
             return self._zmq.request(
                 request_data=_RequestCall(method_name=method, args=args, kwargs=kwargs),
@@ -2332,13 +2309,12 @@ class RemoteBpod(AbstractBpod):
         return self._remote_call('set_status_led', enable) or False
 
     @override
+    def wait(self, timeout: float | None = None) -> None:
+        self._remote_call('wait', timeout=timeout)
+
+    @override
     def stop_state_machine(self, timeout: float | None = 1.0) -> None:
-        self._remote_call(
-            'stop_state_machine',
-            timeout=timeout,
-            # the host's own TimeoutError arrives before the reply times out
-            reply_timeout=None if timeout is None else timeout + _REMOTE_REPLY_MARGIN_S,
-        )
+        self._remote_call('stop_state_machine', timeout=timeout)
 
     @override
     def update_modules(self) -> None:
