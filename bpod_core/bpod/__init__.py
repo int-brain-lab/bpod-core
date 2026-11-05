@@ -1497,12 +1497,14 @@ class Bpod(SerialDevice, AbstractBpod):
                 else:
                     serial0.write(message)
         except BaseException:
+            # dropped first: once the reader is cancelled, its event thread may decode
+            # the trial as empty, which a waiting get_data() must not deliver
+            self._drop(trial)
             if handed:
                 # the Bpod may hold part of the machine, and the reader waits for a
                 # trial that won't come: the connection is out of sync until reopened
                 self._out_of_sync = True
                 reader.cancel()  # not under the write lock: the reader's end takes it
-            self._drop(trial)
             raise
 
     def _drop(self, trial: _Trial) -> None:
