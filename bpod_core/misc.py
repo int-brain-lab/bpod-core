@@ -7,7 +7,10 @@ import logging
 import re
 import socket
 import struct
+import threading
+import weakref
 from collections.abc import (
+    Callable,
     Collection,
     Hashable,
     ItemsView,
@@ -804,3 +807,30 @@ class _HandlerSlot(Generic[_H]):
 
     def __init__(self, handler: _H) -> None:
         self.handler = handler
+
+
+def run_off_main_thread(
+    func: Callable[..., None], /, *args: Any, **kwargs: Any
+) -> None:
+    """Run `func` on a daemon thread, or on this thread once the main thread has ended.
+
+    For a finalizer that waits for threads or a device: the garbage collector runs it on
+    whichever thread allocates, which must not wait. At interpreter exit, when the
+    pending finalizers run, the main thread has ended and a helper thread would not get
+    to finish, so the call runs on the exiting thread instead.
+    """
+    if threading.main_thread().is_alive():
+        threading.Thread(target=func, args=args, kwargs=kwargs, daemon=True).start()
+    else:
+        func(*args, **kwargs)
+
+
+def finalize_now(finalizer: weakref.finalize, /, **overrides: Any) -> None:
+    """Run a finalizer registered through :func:`run_off_main_thread` on this thread.
+
+    For closing explicitly, which waits for the cleanup. `overrides` replace keyword
+    arguments the finalizer was registered with. Does nothing if it has run already.
+    """
+    if (info := finalizer.detach()) is not None:
+        _, _, (func, *args), kwargs = info
+        func(*args, **{**kwargs, **overrides})

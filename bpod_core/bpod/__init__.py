@@ -120,6 +120,7 @@ from bpod_core.misc import (
     SettingsDict,
     SuggestionMapping,
     _HandlerSlot,
+    run_off_main_thread,
     suppress_logging,
 )
 
@@ -379,13 +380,17 @@ class Bpod(SerialDevice, AbstractBpod):
                 self._shutdown()
             raise
 
-        # register destructors
+        # register the destructor; the collector may run it on a thread that must
+        # not wait for the connection's threads and the device, e.g. another Bpod's
+        # reader
         self._bpod_finalizer = weakref.finalize(
             self,
+            run_off_main_thread,
             Bpod._bpod_cleanup,
             self._serial,
             self._flexio_serial,
             self._connection_threads,
+            device_name=self._serial_device_name,
         )
 
     @staticmethod
@@ -393,7 +398,10 @@ class Bpod(SerialDevice, AbstractBpod):
         serial: ExtendedSerial,
         flexio_serial: ExtendedSerial | None,
         connection_threads: list[_ConnectionThread],
+        *,
+        device_name: str,
     ) -> None:
+        """End the connection of a Bpod that was dropped without being closed."""
         Bpod._stop_connection_threads(connection_threads)
         with contextlib.suppress(Exception):
             if flexio_serial is not None and flexio_serial.is_open:
@@ -401,6 +409,13 @@ class Bpod(SerialDevice, AbstractBpod):
         with contextlib.suppress(Exception):
             if serial.is_open:
                 Bpod._request_disconnect(serial)
+        Bpod._close_serial_connection(serial, device_name=device_name)
+
+    @override
+    def _rename_serial_device(self, new_name: str) -> None:
+        # the port closes with the rest of a dropped Bpod's cleanup (see open()): no
+        # serial device finalizer to re-register under the new name
+        self._serial_device_name = new_name
 
     def __exit__(
         self,
@@ -528,6 +543,11 @@ class Bpod(SerialDevice, AbstractBpod):
             self._event_thread,
             self._softcode_thread,
         ]
+        # a dropped Bpod's port closes with the rest of its cleanup, after the
+        # disconnect request: not by the serial device's own finalizer, first
+        if self._serial_device_finalizer is not None:
+            self._serial_device_finalizer.detach()
+            self._serial_device_finalizer = None
 
     def close(self) -> None:
         """

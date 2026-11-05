@@ -1,4 +1,5 @@
 import contextlib
+import gc
 import inspect
 import logging
 import re
@@ -2578,14 +2579,51 @@ def test_cleanup_runs_softcodes_before_disconnecting(mocker):
     calls = MagicMock()
     mocker.patch.object(Bpod, '_request_disconnect', calls.disconnect)
     threads = [calls.reader, calls.event_thread, calls.softcode_thread, calls.analog]
-    Bpod._bpod_cleanup(calls.serial, calls.flexio_serial, threads)
+    Bpod._bpod_cleanup(calls.serial, calls.flexio_serial, threads, device_name='Bpod')
     names = [name for name, *_ in calls.mock_calls]
     assert names.index('reader.stop') < names.index('event_thread.stop')
     assert names.index('event_thread.stop') < names.index('softcode_thread.stop')
     assert names.index('softcode_thread.stop') < names.index('analog.stop')
     assert names.index('analog.stop') < names.index('flexio_serial.close')
     assert names.index('flexio_serial.close') < names.index('disconnect')
+    assert names.index('disconnect') < names.index('serial.close')
     assert threads == []
+
+
+def test_collected_bpod_is_cleaned_up_off_the_collecting_thread(real_ipc, mocker):
+    """The collector doesn't wait for a dropped Bpod: its threads are ended and its
+    port closed on a helper thread."""
+    bpod = Bpod('COM3')
+    serial, threads = bpod.serial0, list(bpod._connection_threads)
+    serial.is_open = True  # the mock port is never opened; closing it marks it closed
+    mocker.patch.object(
+        serial, 'close', side_effect=lambda: setattr(serial, 'is_open', False)
+    )
+    stop = Bpod._stop_connection_threads
+    stopped_on = []
+
+    def record_and_stop(connection_threads):
+        stopped_on.append(threading.current_thread())
+        stop(connection_threads)
+
+    mocker.patch.object(Bpod, '_stop_connection_threads', side_effect=record_and_stop)
+    port_open_at_disconnect = []
+    mocker.patch.object(
+        Bpod,
+        '_request_disconnect',
+        side_effect=lambda s: port_open_at_disconnect.append(s.is_open),
+    )
+    bpod_ref = weakref.ref(bpod)
+    del bpod
+    gc.collect()
+    assert bpod_ref() is None
+    deadline = time.monotonic() + 2
+    while serial.is_open and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not serial.is_open
+    assert [t.name for t in threads if t.is_alive()] == []
+    assert stopped_on[0] is not threading.current_thread()
+    assert port_open_at_disconnect == [True]
 
 
 def test_wait_after_lost_connection(mock_bpod_2p, lost_reader):

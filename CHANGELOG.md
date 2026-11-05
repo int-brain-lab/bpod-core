@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `run()` raises a `ValueError` for a state machine of more than 49,999 bytes: the Bpod
   doesn't load one that large, and took its bytes for commands.
+- the garbage collector no longer waits for an unclosed `Bpod`, IPC host or client it
+  frees: the cleanup, which joins threads and talks to the device, runs on a helper
+  thread (on the exiting thread at interpreter exit). A collection on a Bpod's own
+  reader thread used to fail the cleanup.
 - a blocking `peek_data()` could wait forever if another caller was waiting at the
   same time.
 - a `get_data()` waiting for a trial that could not be sent no longer waits forever.

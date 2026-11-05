@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import struct
+import threading
 
 import pytest
 from pydantic import ValidationError
@@ -835,3 +836,29 @@ class TestPruneEmptyParentDirectories:
 
         misc.prune_empty_parent_directories(target, root)
         assert not target.exists()
+
+
+class TestRunOffMainThread:
+    def test_runs_on_a_daemon_thread(self):
+        """While the main thread lives, the call runs on a daemon thread."""
+        ran_on = []
+        done = threading.Event()
+
+        def func(arg, *, kwarg):
+            ran_on.append((arg, kwarg, threading.current_thread()))
+            done.set()
+
+        misc.run_off_main_thread(func, 1, kwarg=2)
+        assert done.wait(2)
+        ((arg, kwarg, thread),) = ran_on
+        assert (arg, kwarg) == (1, 2)
+        assert thread is not threading.current_thread()
+        assert thread.daemon
+
+    def test_runs_inline_once_the_main_thread_has_ended(self, mocker):
+        """At interpreter exit, the call runs on the calling thread."""
+        ended = mocker.Mock(is_alive=mocker.Mock(return_value=False))
+        mocker.patch.object(threading, 'main_thread', return_value=ended)
+        ran_on = []
+        misc.run_off_main_thread(lambda: ran_on.append(threading.current_thread()))
+        assert ran_on == [threading.current_thread()]

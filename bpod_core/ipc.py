@@ -54,8 +54,10 @@ from bpod_core.misc import (
     Filter,
     _HandlerSlot,
     _match_filter,
+    finalize_now,
     get_local_ipv4,
     prune_empty_parent_directories,
+    run_off_main_thread,
     to_snake_case,
 )
 
@@ -94,10 +96,10 @@ _WAKE_TIMEOUT_MS = 100
 """How long waking a client's event loop waits for its subscription, in milliseconds."""
 
 _HANDOFF_LINGER_MS = 100
-"""Linger period, in milliseconds, for sockets closed after their own event loop.
+"""Linger period, in milliseconds, for sockets closed from a helper thread.
 
-When a host or client is closed from its own event thread - e.g., by a handler or the
-garbage collector - the reply the loop sent last may still be queued. The linger period
+When a host or client is closed from its own event thread (by a handler) or by the
+garbage collector, the reply the loop sent last may still be queued. The linger period
 gives it time to go out before the sockets are closed.
 """
 
@@ -618,9 +620,9 @@ class ServiceBase(ABC):
     ) -> bool:
         """Re-run a finalizer on a helper thread if it was called on the event thread.
 
-        That happens when a handler closes its own host or client, or when the garbage
-        collector runs on the event thread. The helper thread can wait for the event
-        loop to end, and lingers so that the reply the loop sent last still goes out.
+        That happens when a handler closes its own host or client. The helper thread
+        can wait for the event loop to end, and lingers so that the reply the loop
+        sent last still goes out.
 
         Returns
         -------
@@ -633,6 +635,15 @@ class ServiceBase(ABC):
         kwargs['linger_ms'] = _HANDOFF_LINGER_MS
         threading.Thread(target=finalize, kwargs=kwargs, daemon=True).start()
         return True
+
+    def _finalize_now(self) -> None:
+        """Run the finalizer on this thread, as closing explicitly does.
+
+        The garbage collector runs it through :func:`run_off_main_thread` instead, with
+        a linger for a reply the event loop may just have sent; closing explicitly drops
+        what wasn't sent, as before.
+        """
+        finalize_now(self._finalizer, linger_ms=0)
 
     @staticmethod
     def _finalize_base(
@@ -911,9 +922,11 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 use_zeroconf=remote,
             )
 
-            # register finalizer to clean up resources on exit
+            # register finalizer to clean up resources on exit; the collector may run
+            # it on a thread that must not wait for the event loop
             self._finalizer = weakref.finalize(
                 self,
+                run_off_main_thread,
                 ServiceHost._finalize,
                 event_thread=self._event_thread,
                 stop_event=self._stop_event_loop,
@@ -924,6 +937,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 registration=ServiceHost._registrations.get(self._uuid),
                 named_pipes=named_pipes,
                 wake=ServiceHost._wake_rep,
+                linger_ms=_HANDOFF_LINGER_MS,
             )
             ServiceHost._live[self._uuid] = self
         except BaseException:
@@ -1499,7 +1513,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 return
             with self._pub_lock:  # wait for an in-flight publish()
                 self._closed = True
-            self._finalizer()
+            self._finalize_now()
 
 
 def _local_ip_addresses() -> set[IPv4Address | IPv6Address]:
@@ -1693,15 +1707,18 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
             else:
                 logger.debug('Not connecting SUB socket for lack of event handler')
 
-            # register finalizer to clean up resources on exit
+            # register finalizer to clean up resources on exit; the collector may run
+            # it on a thread that must not wait for the event loop
             self._finalizer = weakref.finalize(
                 self,
+                run_off_main_thread,
                 ServiceBase._finalize_base,  # noqa: SLF001
                 self._event_thread,
                 self._stop_event_loop,
                 [self._req_socket, self._sub_socket],
                 self._zmq_context,
                 wake=ServiceClient._wake_sub,
+                linger_ms=_HANDOFF_LINGER_MS,
             )
         except BaseException:
             # unwind partially-acquired resources when construction fails
@@ -2037,7 +2054,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
             self._closed = True
             with self._lock_req:  # wait for an in-flight request to notice _closed
                 pass
-            self._finalizer()
+            self._finalize_now()
 
     @property
     def address_req(self) -> str:
