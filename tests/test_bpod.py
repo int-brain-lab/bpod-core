@@ -2197,7 +2197,9 @@ class TestStopStateMachine:
         assert first.ended.is_set()
         assert not running.is_running
 
-    def test_stop_waits_for_the_trial_to_start(self, mock_bpod_2p, blocked_reader):
+    def test_stop_waits_for_the_trial_to_start(
+        self, mock_bpod_2p, blocked_reader, mocker
+    ):
         """A trial sent but not started yet is stopped once it has started.
 
         Stopped earlier, the Bpod would answer as idle and run the trial anyway.
@@ -2205,11 +2207,18 @@ class TestStopStateMachine:
         trial = blocked_reader.trial
         trial.started.clear()
         serial0 = mock_bpod_2p.serial0
-        serial0.last_write = b''
+        seen = []
+        write = serial0.write
+
+        def write_and_end(data):
+            seen.append((data, trial.started.is_set()))
+            write(data)
+            blocked_reader.release.set()  # the Bpod ends the trial on X
+
+        mocker.patch.object(serial0, 'write', side_effect=write_and_end)
         threading.Timer(0.02, trial.started.set).start()
-        threading.Timer(0.04, blocked_reader.release.set).start()
         mock_bpod_2p.stop_state_machine(timeout=2)
-        assert serial0.last_write == b'X'
+        assert seen == [(b'X', True)]
         assert not mock_bpod_2p.is_running
 
     def test_gives_up_a_trial_that_never_starts(self, mock_bpod_2p, blocked_reader):
