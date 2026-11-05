@@ -3,8 +3,9 @@
 import datetime as dt
 import re
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from math import inf
+from operator import attrgetter
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, cast
@@ -17,6 +18,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    RootModel,
     TypeAdapter,
     ValidationError,
     WrapValidator,
@@ -26,7 +28,7 @@ from pydantic_core import PydanticCustomError
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 from pydantic_extra_types.color import Color, ColorType
 from typing_extensions import override
-from xxhash import xxh3_64 as _xxh3_64
+from xxhash import xxh3_64_digest
 
 from bpod_core.constants import UINT16_MAX, UINT32_MAX
 from bpod_core.misc import ValidatedDict, suggest_similar
@@ -56,6 +58,35 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
 
 
 _timedelta_adapter = TypeAdapter(dt.timedelta)
+
+_msgpack = msgspec.msgpack.Encoder(order='deterministic')
+"""Encodes a state machine's field values for hashing, see :meth:`StateMachine.hash`.
+
+Mappings are encoded sorted by key, so the order their items were set in doesn't
+matter.
+"""
+
+
+def _field_values(model: type[BaseModel]) -> Callable[[BaseModel], Any]:
+    """A getter of a model's field values, for hashing.
+
+    A field holding a :class:`~pydantic.RootModel` contributes its root: msgspec
+    encodes the plain data, not the wrapper.
+    """
+    names = [
+        f'{name}.root'
+        if isinstance(field.annotation, type)
+        and issubclass(field.annotation, RootModel)
+        else name
+        for name, field in model.model_fields.items()
+    ]
+    return attrgetter(*names)
+
+
+def _indexed(values: Callable[[Any], Any], parts: Mapping[int, Any]) -> list:
+    """The (index, field values) of indexed parts, by index, for hashing."""
+    return [(index, values(parts[index])) for index in sorted(parts)]
+
 
 _STATE_NAME_PATTERN = re.compile(r'^(?!>)(?!exit$)(?!back$).+$')
 _OPERATOR_PATTERN = re.compile(r'^>.+$')
@@ -450,6 +481,13 @@ class Condition(BaseModel, title='Condition'):
         dump = self.model_dump(exclude_defaults=True)
         values = ', '.join([f'{k}={v}' for k, v in dump.items()])
         return f'{self.__class__.__name__}({values})'
+
+
+# the models' field values, for StateMachine.hash
+_state_values = _field_values(State)
+_global_timer_values = _field_values(GlobalTimer)
+_global_counter_values = _field_values(GlobalCounter)
+_condition_values = _field_values(Condition)
 
 
 class States(ValidatedDict[StateName, State], title='States'):
@@ -1102,17 +1140,34 @@ class StateMachine(BaseModel, title='State Machine'):
         return cls.from_yaml(data)
 
     def _hash(self) -> bytes:
-        try:
-            # when serializing to JSON, we first try to use Pydantic's private API,
-            # which avoids an unnecessary string conversion
-            return _xxh3_64(self.__pydantic_serializer__.to_json(self)).digest()
-        except (AttributeError, TypeError):
-            # if that fails, we fall back to the public API
-            return _xxh3_64(self.model_dump_json().encode()).digest()
+        # the models' field values, walked directly and packed with msgspec: several
+        # times faster than pydantic's serializer, which run() paid for every trial.
+        # Every field of every model takes part. The states keep their order (the
+        # first is the initial state), as two lists: map() beats a comprehension
+        # from ten states up. The indexed parts go by index, and the encoder sorts
+        # the mappings within: the order anything was set in doesn't matter.
+        states = self.states.root
+        image = (
+            self.name,
+            list(states),
+            list(map(_state_values, states.values())),
+            _indexed(_global_timer_values, self.global_timers.root),
+            _indexed(_global_counter_values, self.global_counters.root),
+            _indexed(_condition_values, self.conditions.root),
+        )
+        return xxh3_64_digest(_msgpack.encode(image))
 
     @property
     def hash(self) -> bytes:
-        """Hash of the state machine."""
+        """Hash of the state machine: 8 bytes over every field of every part of it.
+
+        Equal state machines hash equal, however they were built or loaded: the
+        order the states follow each other in matters (the first is the initial
+        state), the order anything else was set in doesn't. Any change to a name,
+        comment, timer, transition, action, global timer, counter or condition
+        changes the hash: it identifies the state machine, not only what the Bpod
+        runs of it.
+        """
         return self._hash()
 
     @property
