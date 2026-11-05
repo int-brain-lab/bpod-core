@@ -20,6 +20,7 @@ from typing import (
     Concatenate,
     NoReturn,
     ParamSpec,
+    Protocol,
     TypeVar,
     cast,
 )
@@ -69,7 +70,7 @@ from bpod_core.bpod.constants import (
 from bpod_core.bpod.errors import BpodError, BpodKeyError, owning_replies
 from bpod_core.bpod.flexio import (
     FlexIO,
-    _counts_to_mv,
+    _AnalogRecorder,
 )
 from bpod_core.bpod.structs import (
     BpodEventUnion,
@@ -124,7 +125,6 @@ from bpod_core.misc import (
 
 logger = logging.getLogger(__name__)
 
-_ANALOG_FLUSH_INTERVAL_NS = 100_000_000  # 100 ms
 # a session clock reset is aligned to the host clock by the midpoint of its round trip,
 # so its timestamps are off by up to half the round trip; a slow reset is repeated
 _SESSION_CLOCK_RESET_ATTEMPTS = 3
@@ -171,6 +171,15 @@ def _requires_idle(
     return wrapper
 
 
+class _ConnectionThread(Protocol):
+    """A thread that ends with the connection.
+
+    The reader, event and softcode threads, and the analog reader thread.
+    """
+
+    def stop(self) -> None: ...
+
+
 class Bpod(SerialDevice, AbstractBpod):
     """Interface to a Bpod Finite State Machine.
 
@@ -211,7 +220,7 @@ class Bpod(SerialDevice, AbstractBpod):
     _event_thread: EventThread | None = None
     """The connection's event thread, which records the trials the reader reads."""
     _event_callbacks: _HandlerSlot[_EventCallbacks | None]
-    _connection_threads: list[ReadThread | EventThread | SoftcodeThread]
+    _connection_threads: list[_ConnectionThread]
     """The connection's threads, for the finalizer: it must not reference the Bpod."""
     _last_sent: _Trial | None = None
     """The trial whose state machine was sent last: the one running, queued behind the
@@ -235,19 +244,14 @@ class Bpod(SerialDevice, AbstractBpod):
     serial1: ExtendedSerial | None = None
     """Secondary serial device for communication with the Bpod."""
 
-    # FlexIO analog-input reader state; see _start_analog_reader/_on_analog_chunk
+    # FlexIO analog inputs, see _start_analog_reader
     _flexio_serial: ExtendedSerial | None = None
-    _analog_reader_thread: ReaderThread | None = None
+    _analog_recorder: _AnalogRecorder | None = None
+    """The connection's analog samples, while a channel is an analog input; its reader
+    thread is one of the connection's threads."""
     _analog_recording: bool = False  # the Bpod is sampling the analog inputs
-    _analog_channel_names: tuple[str, ...] = ()
-    _analog_struct: struct.Struct | None = None
-    _analog_sample_period_us: int = 0
-    _analog_data: SimpleQueue[pl.LazyFrame]
-    _analog_buffer: list[tuple[int, ...]]
-    _analog_first_trial_time_us: int | None = None
-    _analog_trial_number_by_sequence: list[int]
-    _analog_sample_index: int = 0
-    _analog_last_flush_ns: int = 0
+    _analog_data: SimpleQueue[pl.DataFrame]
+    """The flushed samples, for :meth:`get_analog_data`; outlives the connection."""
 
     inputs: Mapping[str, 'Input']
     """Read-only mapping of available input channels, keyed by name.
@@ -286,11 +290,7 @@ class Bpod(SerialDevice, AbstractBpod):
         self._connection_threads = []
         self._undelivered = deque()
         self._undelivered_lock = threading.Lock()
-        self._analog_data: SimpleQueue[pl.LazyFrame] = SimpleQueue()
-        self._analog_buffer = []
-        self._analog_trial_number_by_sequence = []
-        self._analog_sample_index = 0
-        self._analog_last_flush_ns = perf_counter_ns()
+        self._analog_data: SimpleQueue[pl.DataFrame] = SimpleQueue()
 
         self._softcode_slot = _HandlerSlot(None)  # the handler outlives connections
         self._event_callbacks = _HandlerSlot(None)  # filled once the Bpod is set up
@@ -381,15 +381,23 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # register destructors
         self._bpod_finalizer = weakref.finalize(
-            self, Bpod._bpod_cleanup, self._serial, self._connection_threads
+            self,
+            Bpod._bpod_cleanup,
+            self._serial,
+            self._flexio_serial,
+            self._connection_threads,
         )
 
     @staticmethod
     def _bpod_cleanup(
         serial: ExtendedSerial,
-        connection_threads: list[ReadThread | EventThread | SoftcodeThread],
+        flexio_serial: ExtendedSerial | None,
+        connection_threads: list[_ConnectionThread],
     ) -> None:
         Bpod._stop_connection_threads(connection_threads)
+        with contextlib.suppress(Exception):
+            if flexio_serial is not None and flexio_serial.is_open:
+                flexio_serial.close()
         with contextlib.suppress(Exception):
             if serial.is_open:
                 Bpod._request_disconnect(serial)
@@ -444,10 +452,8 @@ class Bpod(SerialDevice, AbstractBpod):
         return None if reader is None else reader.trial
 
     @staticmethod
-    def _stop_connection_threads(
-        threads: list[ReadThread | EventThread | SoftcodeThread],
-    ) -> None:
-        """End a connection's threads, the reader first: it feeds the other two."""
+    def _stop_connection_threads(threads: list[_ConnectionThread]) -> None:
+        """End a connection's threads, the reader first: it feeds the next two."""
         for thread in threads:
             thread.stop()
         threads.clear()
@@ -557,17 +563,13 @@ class Bpod(SerialDevice, AbstractBpod):
         serial0_open = hasattr(self, '_serial') and getattr(
             self._serial, 'is_open', False
         )
-        # the threads end with the connection; the reader releases the port's replies
-        # if it held them, so the teardown's own reads go through
-        self._stop_connection_threads(self._connection_threads)
-        self._read_thread = self._event_thread = self._softcode_thread = None
         if serial0_open and self._out_of_sync:
             # a given-up trial may still be running on the Bpod: stop it (and analog
             # sampling with it) and swallow everything it sends, so that the next
             # connection's handshake is answered
             with contextlib.suppress(OSError):  # the Bpod may be unplugged
                 self._stop_and_drain(self._serial)
-        elif serial0_open and self._analog_reader_thread is not None:
+        elif serial0_open and self._analog_recorder is not None:
             # firmware keeps streaming FlexIO analog samples on its own serial port
             # until explicitly told to stop - even after a trial ends naturally via
             # '>exit' - so the next connection's discovery handshake would race stray
@@ -579,13 +581,15 @@ class Bpod(SerialDevice, AbstractBpod):
                 reply = self._serial.query(b'X', _IDLE_STOP_REPLY_SIZE)
                 if not reply.startswith(_IDLE_STOP_REPLY_HEADER):
                     logger.warning('Unexpected reply to stop command: %s', reply.hex())
-        if self._analog_reader_thread is not None:
-            self._analog_reader_thread.stop()  # thread stopped, serial still open
-            self._analog_reader_thread = None
-            self._analog_recording = False
-            self._flush_analog_buffer()  # samples since the last periodic flush
-            self._analog_channel_names = ()  # the next connection may record none
-            self._analog_sample_period_us = 0
+        # the threads end with the connection, the analog reader only now: it reads
+        # the samples streamed up to the stop. The trial reader is idle by now, or
+        # ended with the trial that was given up.
+        self._stop_connection_threads(self._connection_threads)
+        self._read_thread = self._event_thread = self._softcode_thread = None
+        self._analog_recording = False
+        if (recorder := self._analog_recorder) is not None:
+            recorder.flush()  # samples since the last periodic flush
+            self._analog_recorder = None  # the next connection may record none
         if self._flexio_serial is not None and self._flexio_serial.is_open:
             # discard any analog samples firmware sent (or was still sending) up to
             # the 'X' above, so a stale byte can't be misread as the next
@@ -1089,10 +1093,8 @@ class Bpod(SerialDevice, AbstractBpod):
 
         # firmware resets its trial counter alongside the session clock (same opcode);
         # mirror that here so the analog data pipeline's bookkeeping stays in sync
-        self._flush_analog_buffer()
-        self._analog_first_trial_time_us = None
-        self._analog_trial_number_by_sequence = []
-        self._analog_sample_index = 0
+        if (recorder := self._analog_recorder) is not None:
+            recorder.reset()
         return True
 
     def _disable_all_module_relays(self) -> None:
@@ -1221,77 +1223,23 @@ class Bpod(SerialDevice, AbstractBpod):
         n_cycles_per_sample = round(
             self._hardware.cycle_frequency / self._flex_io.analog_sampling_rate
         )
-        self._analog_sample_period_us = (
-            n_cycles_per_sample * self._hardware.cycle_period_us
-        )
-        self._analog_channel_names = names
-        n = len(names)
         serial = self._flexio_serial
         if not serial.is_open:
             serial.open()
-        self._analog_struct = struct.Struct(f'<{1 + n}H')  # trial_counter + n samples
-        chunk_size = self._analog_struct.size
-        self._analog_reader_thread = ReaderThread(
-            serial,
-            lambda: ChunkedSerialReader(chunk_size, callback=self._on_analog_chunk),
+        recorder = _AnalogRecorder(
+            channel_names=names,
+            sample_period_us=n_cycles_per_sample * self._hardware.cycle_period_us,
+            cycle_period_us=self._hardware.cycle_period_us,
+            frames=self._analog_data,
         )
-        self._analog_reader_thread.start()
-
-    def _on_analog_chunk(self, chunk: bytearray) -> None:
-        """Decode one FlexIO analog sample block and buffer it for `get_analog_data`."""
-        if self._analog_struct is None:
-            return  # reader was stopped mid-flight
-        trial_counter, *raw_counts = self._analog_struct.unpack(chunk)
-        if trial_counter < 1:
-            return  # firmware hasn't started sampling yet (pre-trial idle state)
-        # firmware's trial_counter increments before first use, so the first trial of
-        # a session reports 1, not 0 - convert to a 0-based sequence-position index
-        sequence_index = trial_counter - 1
-        if 0 <= sequence_index < len(self._analog_trial_number_by_sequence):
-            trial_number = self._analog_trial_number_by_sequence[sequence_index]
-        else:
-            trial_number = trial_counter
-
-        # buffer the sample's ordinal index rather than a computed timestamp: the
-        # anchor may not be known yet (the analog reader thread and the EventThread
-        # that sets it run on independent serial ports), and counting must not be
-        # coupled to knowing it - see _flush_analog_buffer
-        self._analog_buffer.append(
-            (self._analog_sample_index, trial_number, *raw_counts)
+        # the thread holds the recorder, not the Bpod: see _AnalogRecorder. The
+        # protocol instance is its own factory.
+        thread = ReaderThread(
+            serial, ChunkedSerialReader(recorder.chunk_size, callback=recorder.on_chunk)
         )
-        self._analog_sample_index += 1
-
-        now = perf_counter_ns()
-        if now - self._analog_last_flush_ns >= _ANALOG_FLUSH_INTERVAL_NS:
-            self._flush_analog_buffer()
-
-    def _flush_analog_buffer(self) -> None:
-        """Flush any buffered analog samples onto the analog data queue."""
-        self._analog_last_flush_ns = perf_counter_ns()
-        if self._analog_first_trial_time_us is None:
-            return  # anchor not known yet; keep buffering until it is
-        buffer, self._analog_buffer = self._analog_buffer, []
-        if not buffer or not self._analog_channel_names:
-            return
-        columns = ['k', 'Trial', *self._analog_channel_names]
-        # firmware preloads its sample clock so the first sample fires one
-        # state-machine cycle after trial start, not a full sample period
-        anchor_us = self._analog_first_trial_time_us + self._hardware.cycle_period_us
-        period_us = self._analog_sample_period_us
-        frame = (
-            pl.LazyFrame(buffer, schema=columns, orient='row')
-            .with_columns(
-                pl.from_epoch(anchor_us + pl.col('k') * period_us, time_unit='us')
-                .dt.replace_time_zone('UTC')
-                .alias('Time'),
-                pl.col('Trial').cast(pl.UInt32),
-                _counts_to_mv(pl.col(self._analog_channel_names).cast(pl.UInt32)).cast(
-                    pl.UInt16
-                ),
-            )
-            .select('Time', 'Trial', *self._analog_channel_names)
-        )
-        self._analog_data.put(frame)
+        thread.start()
+        self._connection_threads.append(thread)
+        self._analog_recorder = recorder
 
     def validate_state_machine(self, state_machine: StateMachine) -> None:
         """
@@ -1434,10 +1382,11 @@ class Bpod(SerialDevice, AbstractBpod):
             # FlexIO channel types and the sampling rate are fixed from here on,
             # and the Bpod streams analog samples from the first trial on
             self._start_analog_reader()
-        if self._analog_first_trial_time_us is None:
+        analog = self._analog_recorder
+        if analog is not None and analog.anchor_us is None:
             # the Bpod (re)starts analog sampling with the first trial after a
             # session clock reset
-            self._analog_recording = self._analog_reader_thread is not None
+            self._analog_recording = True
         if (reader := self._read_thread) is None:
             raise BpodError('Cannot run a state machine: the connection is closed')
         serial0 = self.serial0
@@ -1485,7 +1434,8 @@ class Bpod(SerialDevice, AbstractBpod):
                 # analog samples only carry the firmware's positional trial counter,
                 # so decoding looks the number up by position from the trial's first
                 # sample on
-                self._analog_trial_number_by_sequence.append(trial_number)
+                if analog is not None:
+                    analog.trial_numbers.append(trial_number)
                 if debugging:
                     t0 = perf_counter_ns()
                     serial0.write(message)
@@ -1515,8 +1465,9 @@ class Bpod(SerialDevice, AbstractBpod):
 
     def _capture_analog_anchor(self, time_us: int) -> None:
         """Capture the first trial's start time as the FlexIO analog-sample anchor."""
-        if self._analog_first_trial_time_us is None:
-            self._analog_first_trial_time_us = time_us
+        recorder = self._analog_recorder
+        if recorder is not None and recorder.anchor_us is None:
+            recorder.anchor_us = time_us
 
     @property
     def is_running(self) -> bool:
@@ -1693,7 +1644,8 @@ class Bpod(SerialDevice, AbstractBpod):
             )
         if not self._analog_recording:
             # no new samples arrive to trigger the periodic flush
-            self._flush_analog_buffer()
+            if (recorder := self._analog_recorder) is not None:
+                recorder.flush()
             if self._analog_data.empty():
                 raise BpodError('No FlexIO analog input is recording')
         frames = [self._analog_data.get()]
@@ -1701,18 +1653,15 @@ class Bpod(SerialDevice, AbstractBpod):
             with contextlib.suppress(Empty):
                 while True:
                     frames.append(self._analog_data.get(block=False))
-        data = (
+        return (
             frames[0] if len(frames) == 1 else pl.concat(frames, how='diagonal_relaxed')
         )
-        # the in-memory engine avoids the streaming engine's start-up cost (polars 2
-        # picks streaming by default)
-        return data.collect(engine='in-memory')
 
     @override
     def stop_state_machine(self, timeout: float | None = 1.0) -> None:
         if not self.is_running:
             return
-        if self._analog_channel_names:
+        if self._analog_recorder is not None:
             logger.warning(
                 'Stopping the state machine also stops FlexIO analog sampling and '
                 'threshold detection until reset_session_clock() is called and the '

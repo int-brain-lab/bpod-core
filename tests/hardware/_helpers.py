@@ -255,8 +255,9 @@ def _check_analog_samples(bpod: Bpod, data: pl.DataFrame) -> None:
     the samples by counting them, so a lost one shifts all later ones by a sample
     period, which each later trial's first sample shows nine times in ten.
     """
-    period, cycle = bpod._analog_sample_period_us, bpod._hardware.cycle_period_us
-    assert period, 'no analog recording'
+    recorder, cycle = bpod._analog_recorder, bpod._hardware.cycle_period_us
+    assert recorder is not None, 'no analog recording'
+    period = recorder.sample_period_us
     trial_starts = data.filter(pl.col('Type') == 'TrialStart')
     times = pl.col('Time').dt.epoch('us')
     samples = (

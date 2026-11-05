@@ -157,5 +157,5 @@ def test_thresholds_on_a_stepped_signal(bpod, flex_io, analog_loopback, mode):
             ('Low3', 'Flex1_Trig1'),
         ]
     assert [(state, event) for state, event, _ in events] == expected
-    period = bpod._analog_sample_period_us
+    period = bpod._analog_recorder.sample_period_us
     assert all(t < 2 * period for _, _, t in events), f'late threshold events: {events}'

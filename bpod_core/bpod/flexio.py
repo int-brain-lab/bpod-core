@@ -2,10 +2,15 @@
 
 import logging
 import struct
+import threading
 from collections.abc import Callable, Sequence
+from queue import SimpleQueue
+from time import perf_counter_ns
 from typing import TypeVar
 
 import msgspec
+import numpy as np
+import numpy.typing as npt
 import polars as pl
 from typing_extensions import override
 
@@ -15,12 +20,19 @@ from bpod_core.bpod.errors import BpodError, owning_replies
 from bpod_core.bpod.structs import _FlexIOState
 from bpod_core.com import ExtendedSerial
 from bpod_core.constants import UINT12_MAX
+from bpod_core.misc import _grown
 
 logger = logging.getLogger(__name__)
 
 _SERIAL_TIMEOUT = 0.2
 
 _ADC_DAC_FULL_SCALE_MV = 5000  # FlexIO ADC/DAC full-scale range (0-5 V), in mV
+
+_ANALOG_FLUSH_INTERVAL_NS = 100_000_000  # 100 ms
+"""How often the analog recorder turns its buffered samples into a DataFrame."""
+
+_INITIAL_ANALOG_BUFFER_SIZE = 1024
+"""Initial size of the analog recorder's sample buffer, in samples."""
 
 _CountsT = TypeVar('_CountsT', int, pl.Expr)
 
@@ -49,6 +61,132 @@ def is_flexio_threshold_ambiguous(
     also present in MATLAB.
     """
     return any(t != FlexIOChannelType.ANALOG_INPUT for t in channel_types[:index])
+
+
+class _AnalogRecorder:
+    """The FlexIO analog samples of one connection, buffered for ``get_analog_data()``.
+
+    The analog reader thread feeds :meth:`on_chunk` with one sample block at a time
+    and holds the recorder, not the Bpod: a dropped Bpod is collected while it still
+    streams. Samples go into a pre-allocated NumPy structured array that doubles when
+    full; :meth:`flush` turns them into a DataFrame on `frames` every 100 ms of
+    samples, once the first trial's start time is known (the samples are timed by
+    counting from it, so they are counted before it is known, too).
+
+    Parameters
+    ----------
+    channel_names : tuple of str
+        The channels recorded, in the firmware's order.
+    sample_period_us : int
+        The time between samples, in µs.
+    cycle_period_us : int
+        The Bpod's cycle period, in µs: the first sample of a session fires one cycle
+        after the trial start.
+    frames : SimpleQueue[pl.DataFrame]
+        Where the flushed DataFrames go: ``get_analog_data()``'s queue.
+    """
+
+    def __init__(
+        self,
+        *,
+        channel_names: tuple[str, ...],
+        sample_period_us: int,
+        cycle_period_us: int,
+        frames: SimpleQueue[pl.DataFrame],
+    ) -> None:
+        self.channel_names = channel_names
+        self.sample_period_us = sample_period_us
+        self._cycle_period_us = cycle_period_us
+        self._frames = frames
+        # a block: the firmware's trial counter, then a 12-bit count per channel
+        self._struct = struct.Struct(f'<{1 + len(channel_names)}H')
+        self.chunk_size = self._struct.size
+        """The size of one sample block on the serial port."""
+        self._buffer: npt.NDArray = np.empty(
+            _INITIAL_ANALOG_BUFFER_SIZE,
+            dtype=[
+                ('k', np.int64),  # the sample's ordinal since the session clock reset
+                ('Trial', np.uint32),
+                *((name, np.uint16) for name in channel_names),
+            ],
+        )
+        self._n = 0  # samples in the buffer
+        self._lock = threading.Lock()  # the reader thread writes, any thread flushes
+        self._next_index = 0  # of the next sample since the session clock reset
+        self._last_flush_ns = perf_counter_ns()
+        self.anchor_us: int | None = None
+        """The first trial's start since the session clock reset, in µs since the
+        epoch: the samples are timed from it. ``None`` until that trial starts."""
+        self.trial_numbers: list[int] = []
+        """The trial numbers by the firmware's trial count since the clock reset: the
+        samples only carry that count."""
+
+    def reset(self) -> None:
+        """Start over after a session clock reset: the firmware restarts its counts.
+
+        The samples buffered so far are flushed, timed by the old anchor - or dropped
+        if no trial anchored them: nothing will.
+        """
+        with self._lock:
+            if self.anchor_us is not None:
+                self._flush()
+            self._n = 0
+            self.anchor_us = None
+            self.trial_numbers = []
+            self._next_index = 0
+
+    def on_chunk(self, chunk: bytearray) -> None:
+        """Buffer one sample block from the serial port."""
+        trial_counter, *counts = self._struct.unpack(chunk)
+        if trial_counter < 1:
+            return  # the firmware hasn't started sampling yet: pre-trial idle state
+        # the firmware's trial counter increments before its first use: the first
+        # trial after a reset reports 1
+        trial_numbers = self.trial_numbers
+        sequence_index = trial_counter - 1
+        trial = (
+            trial_numbers[sequence_index]
+            if sequence_index < len(trial_numbers)
+            else trial_counter
+        )
+        with self._lock:
+            n, buffer = self._n, self._buffer
+            if n == len(buffer):
+                self._buffer = buffer = _grown(buffer)
+            buffer[n] = (self._next_index, trial, *counts)
+            self._n = n + 1
+            self._next_index += 1
+        if perf_counter_ns() - self._last_flush_ns >= _ANALOG_FLUSH_INTERVAL_NS:
+            self.flush()
+
+    def flush(self) -> None:
+        """Turn the buffered samples into a DataFrame, if their timing is known."""
+        with self._lock:
+            self._flush()
+
+    def _flush(self) -> None:
+        """:meth:`flush` under the lock: the frames are queued in sample order."""
+        self._last_flush_ns = perf_counter_ns()
+        if (anchor_us := self.anchor_us) is None:
+            return  # keep buffering until the first trial's start is known
+        rows = self._buffer[: self._n].copy()
+        self._n = 0
+        if not len(rows):
+            return
+        # the firmware preloads its sample clock, so the first sample fires one cycle
+        # after the trial start, not a full sample period
+        first_us = anchor_us + self._cycle_period_us
+        self._frames.put(
+            pl.from_numpy(rows).select(
+                pl.from_epoch(first_us + pl.col('k') * self.sample_period_us, 'us')
+                .dt.replace_time_zone('UTC')
+                .alias('Time'),
+                'Trial',
+                _counts_to_mv(pl.col(self.channel_names).cast(pl.UInt32)).cast(
+                    pl.UInt16
+                ),
+            )
+        )
 
 
 class FlexIO(AbstractFlexIO):

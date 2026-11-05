@@ -43,6 +43,7 @@ from bpod_core.bpod.constants import (
     FlexIOThresholdMode,
     FlexIOThresholdPolarity,
 )
+from bpod_core.bpod.flexio import _AnalogRecorder
 from bpod_core.bpod.structs import (
     BpodEventUnion,
     EventTrialStart,
@@ -861,7 +862,6 @@ class TestIsRunning:
         assert not mock_bpod_25.is_running
         assert not mock_bpod_25._undelivered
         assert not mock_bpod_25._out_of_sync
-        assert not mock_bpod_25._analog_trial_number_by_sequence
 
     def test_get_data_moves_on_after_failed_send(
         self, fsm, mock_bpod_25, mock_ext_serial, mocker
@@ -1800,7 +1800,7 @@ class TestClose:
         serial0 = mock_bpod_2p.serial0
         serial0.is_open = True
         serial0.mock_responses[b'X'] = b'\x01\x01\xff' + bytes(16)
-        mock_bpod_2p._analog_reader_thread = MagicMock()
+        _recording(mock_bpod_2p)
         mock_bpod_2p.close()
         assert serial0.last_write == b'X'
         assert len(serial0.response_buffer) == 0
@@ -1820,7 +1820,7 @@ class TestClose:
         mocker.patch.object(Bpod, '_request_disconnect')
         mock_bpod_2p.serial0.is_open = True
         mock_bpod_2p.serial0.mock_responses[b'X'] = b'\x02\x01'
-        mock_bpod_2p._analog_reader_thread = MagicMock()
+        _recording(mock_bpod_2p)
         mock_bpod_2p.close()
         assert 'Unexpected reply to stop command: 0201' in caplog.text
 
@@ -1837,22 +1837,29 @@ class TestClose:
         mock_bpod_2p.close()
         assert len(mock_bpod_2p.serial0.response_buffer) == 0
 
-    def test_closes_analog_reader_thread(self, mock_bpod_2p):
-        """Closing the Bpod stops an active analog reader thread, if present."""
-        reader_thread = MagicMock()
-        mock_bpod_2p._analog_reader_thread = reader_thread
+    def test_stops_the_analog_reader_after_the_stop_command(self, mock_bpod_2p, mocker):
+        """The analog reader reads the samples streamed up to the stop command."""
+        mocker.patch.object(Bpod, '_request_disconnect')
+        serial0 = mock_bpod_2p.serial0
+        serial0.is_open = True
+        serial0.mock_responses[b'X'] = b'\x01\x01\xff' + bytes(16)
+        _recording(mock_bpod_2p)
+        seen = []
+        thread = MagicMock()
+        thread.stop.side_effect = lambda: seen.append('stop')
+        mock_bpod_2p._connection_threads.append(thread)
+        write = serial0.write
+        mocker.patch.object(
+            serial0, 'write', side_effect=lambda data: (seen.append(data), write(data))
+        )
         mock_bpod_2p.close()
-        reader_thread.stop.assert_called_once()
-        assert mock_bpod_2p._analog_reader_thread is None
+        assert seen == [b'X', 'stop']
 
     def test_forgets_analog_channels(self, mock_bpod_2p):
         """Closing forgets the analog channels: the next connection may record none."""
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_channel_names = ('Flex1',)
-        mock_bpod_2p._analog_sample_period_us = 1000
+        _recording(mock_bpod_2p)
         mock_bpod_2p.close()
-        assert mock_bpod_2p._analog_channel_names == ()
-        assert mock_bpod_2p._analog_sample_period_us == 0
+        assert mock_bpod_2p._analog_recorder is None
 
     def test_resets_connection_state_if_closing_fails(self, mock_bpod_2p, mocker):
         """A port that fails to close still leaves the next connection unlocked."""
@@ -1866,25 +1873,47 @@ class TestClose:
 
     def test_keeps_buffered_analog_samples_on_close(self, mock_bpod_2p):
         """Samples buffered since the last periodic flush are kept on close."""
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_channel_names = ('Flex1',)
-        mock_bpod_2p._analog_first_trial_time_us = 0
-        mock_bpod_2p._analog_sample_period_us = 1000
-        mock_bpod_2p._analog_buffer = [(0, 0, 2048)]
+        recorder = _recording(mock_bpod_2p, anchor_us=0, trial_numbers=[0])
+        recorder.on_chunk(_sample(1, 2048))
         mock_bpod_2p.close()
         assert mock_bpod_2p.get_analog_data()['Flex1'].to_list() == [2501]
 
 
-class TestAnalogChunk:
-    """Tests for Bpod._on_analog_chunk / _flush_analog_buffer / get_analog_data."""
+def _recording(
+    bpod: Bpod,
+    names: tuple[str, ...] = ('Flex1',),
+    *,
+    period_us: int = 1000,
+    anchor_us: int | None = None,
+    trial_numbers: list[int] | None = None,
+) -> _AnalogRecorder:
+    """Set `bpod` up as recording `names`, with a stand-in for the reader thread."""
+    recorder = _AnalogRecorder(
+        channel_names=names,
+        sample_period_us=period_us,
+        cycle_period_us=bpod._hardware.cycle_period_us,
+        frames=bpod._analog_data,
+    )
+    recorder.anchor_us = anchor_us
+    recorder.trial_numbers = list(trial_numbers or [])
+    bpod._analog_recorder = recorder
+    return recorder
+
+
+def _sample(trial_counter: int, *counts: int) -> bytearray:
+    """One sample block as the firmware sends it: its trial count, then the counts."""
+    return bytearray(struct.pack(f'<{1 + len(counts)}H', trial_counter, *counts))
+
+
+class TestAnalogRecorder:
+    """Tests for _AnalogRecorder and get_analog_data."""
 
     def test_trial_counter_zero_is_dropped(self, mock_bpod_2p):
         """A trial_counter of 0 (pre-trial idle state) is dropped, uncounted."""
-        mock_bpod_2p._analog_channel_names = ('Flex3',)
-        mock_bpod_2p._analog_struct = struct.Struct('<2H')
-        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 0, 2048)))
-        assert mock_bpod_2p._analog_buffer == []
-        assert mock_bpod_2p._analog_sample_index == 0
+        recorder = _recording(mock_bpod_2p, ('Flex3',))
+        recorder.on_chunk(_sample(0, 2048))
+        assert recorder._n == 0
+        assert recorder._next_index == 0
 
     def test_samples_are_counted_before_anchor_is_known(self, mock_bpod_2p):
         """Samples are buffered/counted even before the anchor is known.
@@ -1894,39 +1923,43 @@ class TestAnalogChunk:
         is known; it must still be counted, or every later timestamp would shift
         by however many samples raced ahead of the anchor.
         """
-        mock_bpod_2p._analog_channel_names = ('Flex3',)
-        mock_bpod_2p._analog_struct = struct.Struct('<2H')
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_first_trial_time_us = None
-        mock_bpod_2p._analog_last_flush_ns = 0  # force an immediate flush attempt
-        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 2048)))
-        assert mock_bpod_2p._analog_sample_index == 1
-        assert len(mock_bpod_2p._analog_buffer) == 1
-        mock_bpod_2p._flush_analog_buffer()  # anchor unknown - must be a no-op
-        assert len(mock_bpod_2p._analog_buffer) == 1
+        recorder = _recording(mock_bpod_2p, ('Flex3',))
+        recorder.on_chunk(_sample(1, 2048))
+        assert recorder._next_index == 1
+        assert recorder._n == 1
+        recorder.flush()  # anchor unknown - must be a no-op
+        assert recorder._n == 1
+        assert mock_bpod_2p._analog_data.empty()
 
-        mock_bpod_2p._analog_first_trial_time_us = 1_000_000
-        mock_bpod_2p._analog_sample_period_us = 1000
-        mock_bpod_2p._flush_analog_buffer()
-        assert mock_bpod_2p._analog_buffer == []
+        recorder.anchor_us = 1_000_000
+        recorder.flush()
+        assert recorder._n == 0
         frame = mock_bpod_2p.get_analog_data()
         cycle_period_us = mock_bpod_2p._hardware.cycle_period_us
         assert frame['Time'].dt.epoch('us').to_list() == [1_000_000 + cycle_period_us]
 
+    def test_buffer_grows_and_keeps_its_rows(self, mock_bpod_2p, mocker):
+        """The sample buffer doubles when full, keeping the samples in order."""
+        mocker.patch('bpod_core.bpod.flexio._INITIAL_ANALOG_BUFFER_SIZE', 4)
+        recorder = _recording(mock_bpod_2p, ('Flex3',), anchor_us=0)
+        for count in range(9):
+            recorder.on_chunk(_sample(1, count))
+        assert len(recorder._buffer) == 16
+        recorder.flush()
+        frame = mock_bpod_2p.get_analog_data()
+        assert frame['Flex3'].to_list() == [(c * 5000 + 2047) // 4095 for c in range(9)]
+        assert frame['Time'].is_sorted()
+
     def test_buffers_and_flushes_decoded_samples(self, mock_bpod_2p):
-        """Decoded samples are buffered and flushed as a LazyFrame with timing."""
-        mock_bpod_2p._analog_channel_names = ('Flex3',)
-        mock_bpod_2p._analog_struct = struct.Struct('<2H')
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_first_trial_time_us = 1_000_000
-        mock_bpod_2p._analog_sample_period_us = 1000
-        mock_bpod_2p._analog_trial_number_by_sequence = [7]
-        mock_bpod_2p._analog_last_flush_ns = 0  # force an immediate flush
+        """Decoded samples are buffered and flushed as a DataFrame with timing."""
+        recorder = _recording(
+            mock_bpod_2p, ('Flex3',), anchor_us=1_000_000, trial_numbers=[7]
+        )
         # firmware's trial_counter is 1-indexed (increments before first use), so the
-        # first entry in _analog_trial_number_by_sequence corresponds to counter 1
-        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 2048)))
-        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 4095)))
-        mock_bpod_2p._flush_analog_buffer()  # flush the second sample too
+        # first entry in trial_numbers corresponds to counter 1
+        recorder.on_chunk(_sample(1, 2048))
+        recorder.on_chunk(_sample(1, 4095))
+        recorder.flush()
         frame = mock_bpod_2p.get_analog_data()
         assert frame.columns == ['Time', 'Trial', 'Flex3']
         assert frame.schema['Flex3'] == pl.UInt16
@@ -1944,15 +1977,47 @@ class TestAnalogChunk:
 
     def test_unknown_trial_counter_falls_back_to_raw_value(self, mock_bpod_2p):
         """A trial_counter with no recorded mapping is used as-is."""
-        mock_bpod_2p._analog_channel_names = ('Flex3',)
-        mock_bpod_2p._analog_struct = struct.Struct('<2H')
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_first_trial_time_us = 0
-        mock_bpod_2p._analog_trial_number_by_sequence = []
-        mock_bpod_2p._analog_last_flush_ns = 0
-        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 5, 0)))
+        recorder = _recording(mock_bpod_2p, ('Flex3',), anchor_us=0)
+        recorder.on_chunk(_sample(5, 0))
+        recorder.flush()
         frame = mock_bpod_2p.get_analog_data()
         assert frame['Trial'][0] == 5
+
+    def test_flushes_every_interval_of_samples(self, mock_bpod_2p, mocker):
+        """Samples are flushed on their own once the flush interval has passed."""
+        recorder = _recording(mock_bpod_2p, ('Flex3',), anchor_us=0)
+        recorder.on_chunk(_sample(1, 1))
+        assert mock_bpod_2p._analog_data.empty()
+        mocker.patch('bpod_core.bpod.flexio._ANALOG_FLUSH_INTERVAL_NS', 0)
+        recorder.on_chunk(_sample(1, 2))
+        assert mock_bpod_2p._analog_data.get(timeout=1)['Flex3'].to_list() == [1, 2]
+
+    def test_reset_drops_samples_no_trial_anchored(self, mock_bpod_2p):
+        """Samples buffered before any trial start are dropped by a clock reset.
+
+        Timed from a later anchor, they would get the next session's first times.
+        """
+        recorder = _recording(mock_bpod_2p, ('Flex3',))
+        recorder.on_chunk(_sample(1, 7))
+        recorder.reset()
+        assert recorder._n == 0
+        recorder.anchor_us = 0
+        recorder.on_chunk(_sample(1, 8))
+        recorder.flush()
+        assert mock_bpod_2p.get_analog_data()['Flex3'].to_list() == [10]
+
+    def test_reset_flushes_with_the_old_anchor_and_starts_over(self, mock_bpod_2p):
+        """A session clock reset flushes what was recorded and restarts the counts."""
+        recorder = _recording(
+            mock_bpod_2p, ('Flex3',), anchor_us=123, trial_numbers=[0, 1, 2]
+        )
+        recorder.on_chunk(_sample(1, 7))
+        recorder.reset()
+        assert recorder.anchor_us is None
+        assert recorder.trial_numbers == []
+        assert recorder._next_index == 0
+        assert recorder._n == 0
+        assert mock_bpod_2p.get_analog_data()['Trial'].to_list() == [0]
 
     def test_get_analog_data_raises_when_unavailable(self, mock_bpod_2p):
         """get_analog_data raises if no data exists and no reader is active."""
@@ -1961,8 +2026,8 @@ class TestAnalogChunk:
 
     def test_get_analog_data_returns_data_after_reader_stopped(self, mock_bpod_2p):
         """Data recorded before the analog reader stopped can still be retrieved."""
-        assert mock_bpod_2p._analog_reader_thread is None
-        mock_bpod_2p._analog_data.put(pl.LazyFrame({'Flex1': [1, 2]}))
+        assert mock_bpod_2p._analog_recorder is None
+        mock_bpod_2p._analog_data.put(pl.DataFrame({'Flex1': [1, 2]}))
         assert mock_bpod_2p.get_analog_data()['Flex1'].to_list() == [1, 2]
         with pytest.raises(BpodError, match='No FlexIO analog input is recording'):
             mock_bpod_2p.get_analog_data()
@@ -1975,26 +2040,47 @@ class TestStartAnalogReader:
         """No reader is started when the analog serial port wasn't detected."""
         mock_bpod_2p._flexio_serial = None
         mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        threads = list(mock_bpod_2p._connection_threads)
         mock_bpod_2p._start_analog_reader()
-        assert mock_bpod_2p._analog_reader_thread is None
+        assert mock_bpod_2p._analog_recorder is None
+        assert mock_bpod_2p._connection_threads == threads
 
     def test_noop_without_analog_input_channels(self, mock_bpod_2p):
         """No reader is started while no channel is configured as ANALOG_INPUT."""
         mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial)
+        threads = list(mock_bpod_2p._connection_threads)
         mock_bpod_2p._start_analog_reader()
-        assert mock_bpod_2p._analog_reader_thread is None
+        assert mock_bpod_2p._analog_recorder is None
+        assert mock_bpod_2p._connection_threads == threads
+
+    def test_no_recorder_if_the_port_wont_open(self, mock_bpod_2p):
+        """A FlexIO port that fails to open leaves no recorder behind."""
+        serial = MagicMock(spec=ExtendedSerial, is_open=False)
+        serial.open.side_effect = SerialException
+        mock_bpod_2p._flexio_serial = serial
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        with pytest.raises(SerialException):
+            mock_bpod_2p._start_analog_reader()
+        assert mock_bpod_2p._analog_recorder is None
 
     def test_starts_reader_for_analog_input_channels(self, mock_bpod_2p, mocker):
         """The reader decodes the ANALOG_INPUT channels at the configured rate."""
         mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial, is_open=False)
         reader_thread_cls = mocker.patch('bpod_core.bpod.ReaderThread')
-        mocker.patch('bpod_core.bpod.ChunkedSerialReader')
+        protocol_cls = mocker.patch('bpod_core.bpod.ChunkedSerialReader')
         mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
         mock_bpod_2p.flex_io.analog_sampling_rate = 500
         mock_bpod_2p._start_analog_reader()
-        reader_thread_cls.return_value.start.assert_called_once()
-        assert mock_bpod_2p._analog_channel_names == ('Flex3',)
-        assert mock_bpod_2p._analog_sample_period_us == 2000  # 500 Hz
+        thread = reader_thread_cls.return_value
+        thread.start.assert_called_once()
+        assert thread in mock_bpod_2p._connection_threads  # ended with the others
+        recorder = mock_bpod_2p._analog_recorder
+        assert recorder.channel_names == ('Flex3',)
+        assert recorder.sample_period_us == 2000  # 500 Hz
+        # the thread's protocol feeds the recorder, not the Bpod: a dropped Bpod is
+        # collected while the thread streams
+        assert reader_thread_cls.call_args.args[1] is protocol_cls.return_value
+        assert protocol_cls.call_args.kwargs['callback'].__self__ is recorder
 
     @pytest.mark.parametrize('started', [False, True])
     def test_starts_with_first_state_machine(self, mock_bpod_2p, mocker, started):
@@ -2177,7 +2263,7 @@ class TestStopStateMachine:
 
     def test_warns_about_analog_sampling(self, running, caplog):
         """With an analog input, stopping warns that analog sampling stops too."""
-        running._analog_channel_names = ('Flex1',)
+        _recording(running)
         running.stop_state_machine()
         assert running.serial0.last_write == b'X'
         assert 'also stops FlexIO analog sampling' in caplog.text
@@ -2189,12 +2275,9 @@ class TestStopStateMachine:
 
     def test_get_analog_data_after_stop(self, running):
         """After a stop, buffered samples are returned; then it raises, not waits."""
-        running._analog_reader_thread = MagicMock()
+        recorder = _recording(running, anchor_us=0)
         running._analog_recording = True
-        running._analog_channel_names = ('Flex1',)
-        running._analog_first_trial_time_us = 0
-        running._analog_sample_period_us = 1000
-        running._analog_buffer = [(0, 0, 2048)]  # not flushed yet
+        recorder.on_chunk(_sample(1, 2048))  # not flushed yet
         running.stop_state_machine()
         assert running.get_analog_data()['Flex1'].to_list() == [2501]
         with pytest.raises(BpodError, match='No FlexIO analog input is recording'):
@@ -2273,8 +2356,7 @@ class TestAnalogSessionBookkeeping:
     ):
         """After a stop, analog inputs record again only after a session clock reset."""
         mock_bpod_2p._state_machine_started = True  # stopped after an earlier trial
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_first_trial_time_us = None if clock_reset else 0
+        _recording(mock_bpod_2p, anchor_us=None if clock_reset else 0)
         fsm = StateMachine()
         fsm.add_state('a', 0, {'Tup': '>exit'})
         mock_bpod_2p.run(fsm)
@@ -2282,13 +2364,10 @@ class TestAnalogSessionBookkeeping:
 
     def test_reset_session_clock_clears_analog_bookkeeping(self, mock_bpod_2p):
         """Resetting the session clock clears the analog anchor/trial mapping."""
-        mock_bpod_2p._analog_first_trial_time_us = 123
-        mock_bpod_2p._analog_trial_number_by_sequence = [0, 1, 2]
-        mock_bpod_2p._analog_sample_index = 5
+        recorder = _recording(mock_bpod_2p, anchor_us=123, trial_numbers=[0, 1, 2])
         mock_bpod_2p.reset_session_clock()
-        assert mock_bpod_2p._analog_first_trial_time_us is None
-        assert mock_bpod_2p._analog_trial_number_by_sequence == []
-        assert mock_bpod_2p._analog_sample_index == 0
+        assert recorder.anchor_us is None
+        assert recorder.trial_numbers == []
 
     def test_run_appends_trial_number_by_sequence(self, mock_bpod_25, mocker):
         """Each run() call records its trial number at the next sequence position.
@@ -2296,13 +2375,13 @@ class TestAnalogSessionBookkeeping:
         It is recorded before the state machine is sent, since the Bpod may start it
         right away.
         """
+        recorder = _recording(mock_bpod_25)
         recorded_when_sent = []
         write = mock_bpod_25.serial0.write
 
         def record_and_write(data):
             if data[:1] == b'C':  # state machine transmission
-                trial_numbers = mock_bpod_25._analog_trial_number_by_sequence
-                recorded_when_sent.append(list(trial_numbers))
+                recorded_when_sent.append(list(recorder.trial_numbers))
             return write(data)
 
         mocker.patch.object(mock_bpod_25.serial0, 'write', side_effect=record_and_write)
@@ -2314,11 +2393,13 @@ class TestAnalogSessionBookkeeping:
 
     def test_capture_analog_anchor_sets_it_once(self, mock_bpod_2p):
         """The first captured time sets the analog anchor; later calls don't."""
-        assert mock_bpod_2p._analog_first_trial_time_us is None
+        mock_bpod_2p._capture_analog_anchor(500)  # without a recording: nothing to do
+        recorder = _recording(mock_bpod_2p)
+        assert recorder.anchor_us is None
         mock_bpod_2p._capture_analog_anchor(1000)
-        assert mock_bpod_2p._analog_first_trial_time_us == 1000
+        assert recorder.anchor_us == 1000
         mock_bpod_2p._capture_analog_anchor(2000)
-        assert mock_bpod_2p._analog_first_trial_time_us == 1000
+        assert recorder.anchor_us == 1000
 
 
 class TestRemoteCall:
@@ -2486,12 +2567,14 @@ def test_cleanup_runs_softcodes_before_disconnecting(mocker):
     queued softcodes run before disconnecting the Bpod."""
     calls = MagicMock()
     mocker.patch.object(Bpod, '_request_disconnect', calls.disconnect)
-    threads = [calls.reader, calls.event_thread, calls.softcode_thread]
-    Bpod._bpod_cleanup(calls.serial, threads)
+    threads = [calls.reader, calls.event_thread, calls.softcode_thread, calls.analog]
+    Bpod._bpod_cleanup(calls.serial, calls.flexio_serial, threads)
     names = [name for name, *_ in calls.mock_calls]
     assert names.index('reader.stop') < names.index('event_thread.stop')
     assert names.index('event_thread.stop') < names.index('softcode_thread.stop')
-    assert names.index('softcode_thread.stop') < names.index('disconnect')
+    assert names.index('softcode_thread.stop') < names.index('analog.stop')
+    assert names.index('analog.stop') < names.index('flexio_serial.close')
+    assert names.index('flexio_serial.close') < names.index('disconnect')
     assert threads == []
 
 

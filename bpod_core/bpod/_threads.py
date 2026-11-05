@@ -38,7 +38,7 @@ from bpod_core.bpod.structs import (
 )
 from bpod_core.com import ExtendedSerial, ReadCancelled
 from bpod_core.constants import STRUCT_UINT32_LE, STRUCT_UINT64_LE
-from bpod_core.misc import _HandlerSlot
+from bpod_core.misc import _grown, _HandlerSlot
 
 logger = logging.getLogger(__name__)
 
@@ -364,9 +364,7 @@ class _Recorder:
         n_events = self._n_events
         buffer = self._buffer
         if n_events == len(buffer):
-            new_buf = np.empty(n_events * 2, dtype=_EVENT_DTYPE)
-            new_buf[:n_events] = buffer
-            self._buffer = buffer = new_buf
+            self._buffer = buffer = _grown(buffer)
         buffer[n_events] = (time_us, event, state, value)
         self._n_events = n_events + 1
 
