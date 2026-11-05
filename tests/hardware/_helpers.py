@@ -99,9 +99,14 @@ def _counter_trial() -> StateMachine:
 def _trial_events(
     bpod: Bpod, fsm: StateMachine, during: Callable[[], object] | None = None
 ) -> Events:
-    """Run `fsm`: its events, and the trial's end, as (state, event, cycle)."""
+    """Run `fsm`: its events, and the trial's end, as (state, event, cycle).
+
+    `during` is called once the trial has entered its first state: run() returns as
+    soon as the machine is queued, which may be before the Bpod has started it.
+    """
     bpod.run(fsm)
     if during is not None:
+        bpod.peek_data(trigger_states=[next(iter(fsm.states))])
         during()
     bpod.wait()
     data = bpod.get_data()
@@ -269,6 +274,9 @@ def _check_analog_samples(bpod: Bpod, data: pl.DataFrame) -> None:
             f'trial {trial}: {n} analog samples in {expected:.1f} sample periods'
             f'{span}; the next trial starts {next_start - start} µs after it'
         )
-        assert first is not None and -cycle < first - start <= period + cycle, (
+        if first is None:  # a trial shorter than a sample period may get no sample
+            assert expected < 1, f'trial {trial}: no analog sample in {expected:.1f}'
+            continue
+        assert -cycle < first - start <= period + cycle, (
             f'trial {trial}: first analog sample {first - start} µs after its start'
         )

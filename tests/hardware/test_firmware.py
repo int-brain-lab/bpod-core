@@ -478,6 +478,29 @@ class TestTrials:
         assert all(abs(gap - cycle) <= 2 for gap in gaps), f'µs between trials: {gaps}'
         assert logged_warnings() == []
 
+    def test_run_returns_once_the_machine_is_queued(self, bpod, logged_warnings):
+        """run() waits only while the Bpod's spare slot is taken, and the trials are
+        read back to back.
+
+        With `a` running, `b` goes into the slot at once; `c` has to wait until `b`
+        starts, i.e. until `a` ends.
+        """
+        fsm = _chain(('A', 0.2, {}))
+        bpod.run(fsm)  # a: from idle
+        t0 = time.monotonic()
+        bpod.run(fsm)  # b: into the spare slot
+        t1 = time.monotonic()
+        assert bpod.is_queued
+        bpod.run(fsm)  # c: once b has started
+        t2 = time.monotonic()
+        bpod.wait()
+        assert t1 - t0 < 0.05, f'run(b) took {t1 - t0:.3f} s'
+        assert 0.1 < t2 - t1 < 0.3, f'run(c) took {t2 - t1:.3f} s'
+        gaps = _trial_gaps(bpod.get_data())
+        cycle = bpod._hardware.cycle_period_us
+        assert all(abs(gap - cycle) <= 2 for gap in gaps), f'µs between trials: {gaps}'
+        assert logged_warnings() == []
+
     def test_machine_sent_while_the_one_before_loads(self, bpod, run_guarded):
         """Machines run back to back from idle, the first slow to load, both run.
 

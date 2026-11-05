@@ -5,10 +5,10 @@ import struct
 import threading
 import time
 import weakref
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import IntEnum, auto
-from queue import SimpleQueue
+from enum import Enum, IntEnum, auto
+from queue import Empty, SimpleQueue
 from typing import NamedTuple, get_args
 
 import numpy as np
@@ -150,12 +150,23 @@ class _EventID(IntEnum):
     END_STATE = auto()
     END_FSM_CYCLES = auto()
     END_FSM_MICROS = auto()
-    STOP_SENTINEL = auto()
-    """Sentinel value for stopping threads."""
 
 
-_EVENTS_STOP = [_RawEvents(0, (_EventID.STOP_SENTINEL,))]
-"""Ends :class:`EventThread`'s queue: the one list it must not iterate."""
+class _Mark(Enum):
+    """Marks on :class:`EventThread`'s queue, between the trials and their events."""
+
+    TRIAL_END = auto()
+    """The trial's events are complete."""
+    STOP = auto()
+    """The thread is to end."""
+
+
+def _join_or_warn(thread: threading.Thread) -> None:
+    """Wait a second for `thread` to end, and warn if it hasn't."""
+    thread.join(timeout=1)
+    if thread.is_alive():
+        logger.warning('%s did not terminate', thread.name)
+
 
 _SYNTHETIC_EVENT_TYPES: dict[_EventID, str] = {
     _EventID.START_FSM: 'TrialStart',
@@ -457,27 +468,36 @@ class _Recorder:
 
 @dataclass(eq=False)
 class _Trial:
-    """What is known about one trial, which ``Bpod`` asks rather than its threads."""
+    """What is known about one trial, which ``Bpod`` asks rather than its threads.
+
+    Created by :meth:`~bpod_core.bpod.Bpod.run` with what the threads need to read and
+    record it, then handed to :class:`ReadThread`, which hands it on to
+    :class:`EventThread`.
+    """
 
     number: int
     """Zero-based trial index."""
-    fsm_hash: bytes
-    """The state machine's hash value."""
+    lookup: _StateMachineLookup
+    """Compiled state machine data for this trial."""
     recorder: _Recorder
     """The trial's event buffer."""
+    time_reference: _TimeReferences
+    """The session clock's reference when the trial was sent."""
+    cycle_period_us: int
+    """The cycle period of the Bpod device in microseconds."""
+    queued: bool = False
+    """Whether the trial was sent while another ran: it is then due a cycle after it."""
 
     # written by ReadThread
     started: threading.Event = field(default_factory=threading.Event)
-    """Set once the Bpod has confirmed the trial's start, or the reader has ended."""
+    """Set once the Bpod has reported the trial's start time, i.e. run its first
+    cycle, or the reader is done with the trial without it."""
     ended: threading.Event = field(default_factory=threading.Event)
-    """Set once the reader has ended, after everything else it writes here."""
+    """Set once the reader is done with the trial, after everything else it writes
+    here."""
     read_error: Exception | None = None
-    """The exception that ended the reader: a lost connection (:class:`OSError`), or a
-    stream that couldn't be read, e.g. an unknown opcode."""
-    leftover: bytes = b''
-    """Bytes read beyond the end of this trial, belonging to the next trial."""
-    leftover_received_ns: int = 0
-    """When :attr:`leftover` was received (:func:`time.perf_counter_ns`)."""
+    """The exception that ended the reader during this trial: a lost connection
+    (:class:`OSError`), or a stream that couldn't be read, e.g. an unknown opcode."""
     end_micros_us: int | None = None
     """The trial's end, in µs of the Bpod's clock, once the reader has read it."""
 
@@ -488,22 +508,27 @@ class _Trial:
     decode_error: BpodError | None = None
     """Why the events couldn't be decoded."""
 
-    # written by whoever sends a stop command, read by ReadThread
-    stop_expected: bool = False
-    """Whether a stop command is about to be sent."""
+    def finish_unread(self, error: BpodError | None = None) -> None:
+        """Settle a trial that no reader will read: nothing was or will be recorded.
 
-    # written by run() under the port's write lock, read by ReadThread under it
-    successor_sent: bool = False
-    """Whether the next trial's state machine has been sent: the reader keeps the
-    port's replies for it, see :attr:`~bpod_core.com.ExtendedSerial.read_lock`."""
+        With `error`, :meth:`~bpod_core.bpod.Bpod.get_data` raises it for the trial
+        instead of returning no data.
+        """
+        self.recorder.finish()
+        self.decode_error = error
+        self.started.set()
+        self.ended.set()
+        self.decoded.set()
 
 
 class ReadThread(threading.Thread):
-    """Serial reader thread for one Bpod trial.
+    """Serial reader thread of one connection to a Bpod.
 
-    Runs for the lifetime of a single trial. Reads the hardware confirmation and the
-    trial's start time, then parses the two-byte opcode packets the Bpod streams over
-    serial:
+    Reads the trials that :meth:`~bpod_core.bpod.Bpod.run` queues in :attr:`trials`,
+    one after the other, and sleeps on the queue in between: the port's replies are
+    then free for commands. For each trial, the thread reads the hardware confirmation
+    and the trial's start time, then parses the two-byte opcode packets the Bpod
+    streams over serial:
 
     - **Opcode 1** – hardware events: ``param`` event bytes followed by a 4-byte
       ``uInt32`` cycle count. Timestamps are derived as
@@ -520,91 +545,89 @@ class ReadThread(threading.Thread):
     in the buffer until the rest of it has arrived. This keeps the number of system
     calls per packet low at high event and softcode rates, without adding latency.
 
-    The thread runs until the Bpod reports the end of the trial. To end a trial early,
-    use :meth:`~bpod_core.bpod.Bpod.stop_state_machine`, which makes the Bpod end the
-    trial and report it as usual; :meth:`cancel` ends the thread without the Bpod's
-    cooperation, leaving the trial's data incomplete. If the Bpod never started the
-    state machine, it answers the stop as an idle Bpod; told of the stop by
-    :attr:`_Trial.stop_expected`, the thread then ends without events.
-    :attr:`_Trial.started` tells when the Bpod has started the trial, or the thread has
-    ended without it.
+    A trial is read until the Bpod reports its end. To end a trial early, use
+    :meth:`~bpod_core.bpod.Bpod.stop_state_machine`, which makes the Bpod end the
+    trial and report it as usual. :attr:`_Trial.started` tells when the Bpod has
+    started the trial, or the thread is done without it.
 
     After the loop, the thread takes the 12-byte end-of-trial packet (``uInt32`` cycle
     count + ``uInt64`` µs timestamp, unpacked via :attr:`_struct_exit`) and enqueues
     :attr:`~_EventID.END_FSM_CYCLES` and :attr:`~_EventID.END_FSM_MICROS`. Like every
     other event, :attr:`~_EventID.END_FSM_CYCLES` is timed by the exit packet's cycle
     count, and the timing check compares that same time with the µs timestamp. The
-    end-of-trial packet's own cycle count is ignored. Bytes read
-    beyond that packet belong to the next trial, which the Bpod starts right away if
-    one is queued; they are kept in :attr:`_Trial.leftover` for the next ``ReadThread``.
-    A :attr:`~_EventID.STOP_SENTINEL` is always enqueued in ``finally`` so
-    :class:`EventThread` can detect termination regardless of how the trial ended. If
-    the connection to the Bpod is lost or its stream can't be read, the exception is
-    kept in :attr:`_Trial.read_error`.
+    end-of-trial packet's own cycle count is ignored. Bytes read beyond that packet
+    belong to the next trial, which the Bpod starts right away if one is queued; they
+    stay in the buffer for it.
+
+    Each trial is handed to :class:`EventThread` as the trial itself, then its event
+    lists, then :attr:`_Mark.TRIAL_END` - always, however the trial ended. If the
+    connection to the Bpod is lost or its stream can't be read, the exception is kept
+    in :attr:`_Trial.read_error` and the thread ends: the trial being read is done
+    with what it has, the trials still queued are settled unread, and the port's
+    replies are released. :meth:`cancel` ends the thread the same way without the
+    Bpod's cooperation.
 
     Parameters
     ----------
     serial : ExtendedSerial
         The serial connection to the Bpod device.
-    trial : _Trial
-        The trial to read, which the thread writes its results to.
-    cycle_period_us : int
-        The cycle period of the Bpod device in microseconds.
-    queue_events : SimpleQueue[list[_RawEvents]]
-        Queue taking the events parsed from one read, as a list.
+    queue_events : SimpleQueue[list[_RawEvents] | _Trial | _Mark]
+        Queue taking each trial, then the events parsed from one read, as a list, then
+        :attr:`_Mark.TRIAL_END`.
     queue_softcodes : SimpleQueue[_RawSoftcode]
         Queue for storing softcodes.
-    initial_bytes : bytes, default: b''
-        Bytes of this trial that were already read from the serial port, i.e., the
-        previous trial's :attr:`_Trial.leftover`.
-    initial_received_ns : int, default: 0
-        When ``initial_bytes`` were received (:func:`time.perf_counter_ns`), i.e., the
-        previous trial's :attr:`_Trial.leftover_received_ns`.
     late_starts : _LateStarts
         Where a late start is recorded.
-    previous_end_us : int or None, default: None
-        The end of the trial before, i.e., the previous trial's
-        :attr:`_Trial.end_micros_us`, if this trial should start a cycle after it: a
-        start later than that is recorded in ``late_starts``.
     """
 
     _struct_exit = struct.Struct('<IQ')
 
-    trial: _Trial
-    """The trial being read."""
+    trials: SimpleQueue[_Trial | None]
+    """The trials to read, in the order their state machines were sent. ``None`` ends
+    the thread once it is done with the trials before."""
+
+    trial: _Trial | None
+    """The trial being read, or the last one read."""
 
     def __init__(
         self,
         *,
         serial: ExtendedSerial,
-        trial: _Trial,
-        cycle_period_us: int,
-        queue_events: SimpleQueue[list[_RawEvents]],
+        queue_events: SimpleQueue[list[_RawEvents] | _Trial | _Mark],
         queue_softcodes: SimpleQueue[_RawSoftcode],
-        initial_bytes: bytes = b'',
-        initial_received_ns: int = 0,
         late_starts: _LateStarts,
-        previous_end_us: int | None = None,
     ) -> None:
         super().__init__(name='ReadThread', daemon=True)
         self._serial = serial
-        self._fsm_hash = trial.fsm_hash.hex()
-        self.trial = trial
-        self._cycle_period_us = cycle_period_us
         self._queue_events = queue_events
         self._queue_softcodes = queue_softcodes
         self._late_starts = late_starts
-        self._previous_end_us = previous_end_us
-        self._buffer = bytearray(initial_bytes)
-        self._received_ns = initial_received_ns
+        self.trials = SimpleQueue()
+        self.trial = None
+        self._buffer = bytearray()
+        self._received_ns = 0
+        self._previous_end_us: int | None = None  # the end of the last trial read
+
+    def stop(self) -> None:
+        """End the thread, once it is done with the trials queued.
+
+        Right away instead if the Bpod won't end the trial being read, e.g. one that
+        was given up: its data stays incomplete.
+        """
+        self.trials.put(None)
+        if (trial := self.trial) is not None and not trial.ended.is_set():
+            self.cancel()
+        else:
+            _join_or_warn(self)
 
     def cancel(self) -> None:
         """End the thread without waiting for the trial; its data stays incomplete."""
         self._serial.cancel_read()
-        self.join(timeout=1)
-        if self.is_alive():
-            logger.warning('Read thread did not terminate')
-        else:  # a cancellation the thread didn't see must not end the next read
+        _join_or_warn(self)
+        # a cancellation the thread didn't see must not end a later read: it has ended,
+        # or it was done with the trial already and waits for the next
+        trial = self.trial
+        if not self.is_alive() or (trial is not None and trial.ended.is_set()):
             self._serial.discard_cancel_read()
 
     def _fill(self) -> int:
@@ -631,58 +654,89 @@ class ReadThread(threading.Thread):
         del self._buffer[:n_bytes]
         return data
 
-    def _stopped_idle(self) -> bool:
-        """Whether the Bpod answered the stop as idle, never having started the trial.
-
-        Takes the reply if so. The Bpod sends it only after the stop, so the first
-        byte tells whether a stop was expected by then. A trial that started is taken
-        for the reply if its start time begins with the reply's bytes: 1 in 65,536
-        stops that cross the trial's start.
-        """
-        self._fill_to(1)
-        if not self.trial.stop_expected:
-            return False
-        self._fill_to(len(_IDLE_STOP_REPLY_HEADER))
-        if not self._buffer.startswith(_IDLE_STOP_REPLY_HEADER):
-            return False
-        self._take(_IDLE_STOP_REPLY_SIZE)
-        return True
-
     def run(self) -> None:
         """Execute the ReadThread."""
-        trial = self.trial
-        batch: list[_RawEvents] = []  # the packets of one read, handed over together
+        trial: _Trial | None = None
+        holding = False  # the port's replies
         try:
-            if self._stopped_idle():
-                logger.warning(
-                    'Trial #%d never started: the Bpod was idle when stopped',
-                    trial.number,
-                )
-                return
+            while (trial := self.trials.get()) is not None:
+                self.trial = trial
+                # run() took the port's replies for the trial, or left them with us
+                holding = True
+                self._read_trial(trial)
+                # the replies go back to the commands, unless the next trial's machine
+                # was sent: run() queues it under the write lock, so this can't miss it
+                with self._serial.write_lock:
+                    if self.trials.empty():
+                        self._serial.read_lock.release()
+                        holding = False
+                trial.ended.set()
+        except ReadCancelled:
+            logger.debug('Reading of trial #%d cancelled', self._number(trial))
+        except Exception as error:  # noqa: BLE001 - reported by Bpod.wait()
+            logger.error(  # noqa: TRY400
+                'Reading trial #%d failed: %s', self._number(trial), error
+            )
+            if trial is not None:
+                trial.read_error = error  # e.g. SerialException when unplugged
+        finally:
+            with self._serial.write_lock:
+                if holding:
+                    self._serial.read_lock.release()
+            if trial is not None:  # the trial being read, done with what it has
+                trial.started.set()
+                trial.ended.set()
+            while True:  # the trials still queued: nobody will read them
+                try:
+                    pending = self.trials.get_nowait()
+                except Empty:
+                    break
+                if pending is not None:
+                    pending.finish_unread(
+                        BpodError(
+                            f'Trial #{pending.number} was not read: the connection '
+                            f'failed during trial #{self._number(trial)}'
+                        )
+                    )
 
+    @staticmethod
+    def _number(trial: _Trial | None) -> int:
+        """The trial's number for a log line, -1 without a trial."""
+        return -1 if trial is None else trial.number
+
+    def _read_trial(self, trial: _Trial) -> None:
+        """Read one trial, handing its events to the event thread.
+
+        Returns once the Bpod has reported the trial's end. Raises if the stream can't
+        be read; :attr:`_Mark.TRIAL_END` is queued either way.
+        """
+        fsm_hash = trial.lookup.fsm_hash.hex()
+        q_events = self._queue_events
+        batch: list[_RawEvents] = []  # the packets of one read, handed over together
+        q_events.put(trial)
+        try:
             # confirm the state machine
             if not self._take(1)[0]:
-                raise RuntimeError(  # noqa: TRY301 - kept in `error`, see below
+                raise RuntimeError(
                     f'State machine #{trial.number} not confirmed by Bpod'
                 )
-            trial.started.set()
-            logger.info(
-                'Starting state machine %s / trial #%d', self._fsm_hash, trial.number
-            )
+            logger.info('Starting state machine %s / trial #%d', fsm_hash, trial.number)
 
             # read the starting timestamps of the state machine
             # we do this early to get an accurate timestamp for the system clock
             (start_micros_us,) = STRUCT_UINT64_LE.unpack(self._take(8))
-            if (previous_end_us := self._previous_end_us) is not None:
+            # only now has the trial run its first cycle: a stop sent before the Bpod
+            # reports the start time is answered without it
+            trial.started.set()
+            cycle_period_us = trial.cycle_period_us
+            if trial.queued and (previous_end_us := self._previous_end_us) is not None:
                 # queued: due a cycle after the trial before
-                late_us = start_micros_us - previous_end_us - self._cycle_period_us
-                if late_us > self._cycle_period_us / 2:
+                late_us = start_micros_us - previous_end_us - cycle_period_us
+                if late_us > cycle_period_us / 2:
                     self._late_starts.record(trial.number, late_us)
 
             # assign members to local variables to avoid repeated attribute lookups
             buffer = self._buffer
-            cycle_period_us = self._cycle_period_us
-            q_events = self._queue_events
             q_softcodes = self._queue_softcodes
             unpack_n_cycles = STRUCT_UINT32_LE.unpack_from
             exit_event = int(_EventID.EXIT)
@@ -747,7 +801,7 @@ class ReadThread(threading.Thread):
 
                         # HANDLE UNKNOWN OPCODES
                         else:
-                            raise RuntimeError(  # noqa: TRY301 - see above
+                            raise RuntimeError(
                                 f'Received unknown opcode from Bpod: {opcode}'
                             )
                         pos += size
@@ -774,11 +828,9 @@ class ReadThread(threading.Thread):
                 q_events.put(batch)
                 batch = []
             _, end_micros_us = self._struct_exit.unpack(self._take(12))
-            trial.end_micros_us = end_micros_us
-
-            # anything beyond belongs to the next trial, if one has been queued
-            trial.leftover = bytes(buffer)
-            trial.leftover_received_ns = self._received_ns
+            trial.end_micros_us = self._previous_end_us = end_micros_us
+            # anything beyond belongs to the next trial, if one has been queued: it
+            # stays in the buffer
 
             # verify hardware timer reliability: warn if cycle-based and micros-based
             # trial durations diverge beyond the threshold.
@@ -809,111 +861,127 @@ class ReadThread(threading.Thread):
                     _RawEvents(end_micros_us, (_EventID.END_FSM_MICROS,)),
                 ]
             )
-
-        except ReadCancelled:
-            logger.debug('Reading of trial #%d cancelled', trial.number)
-        except Exception as error:  # noqa: BLE001 - reported by Bpod.wait()
-            logger.error('Reading trial #%d failed: %s', trial.number, error)  # noqa: TRY400
-            trial.read_error = error  # e.g. SerialException when unplugged
         finally:
-            trial.started.set()  # also if it never started: nothing to wait for
             if batch:  # e.g. the packets parsed before an unknown opcode
-                self._queue_events.put(batch)
-            self._queue_events.put(_EVENTS_STOP)
-            logger.debug(
-                'Exiting state machine %s / trial #%d', self._fsm_hash, trial.number
-            )
-            # the port's replies go back to the commands, unless the next trial's
-            # machine was sent: its reader takes over. run() sets that mark under the
-            # write lock, so the check can't miss it.
-            with self._serial.write_lock:
-                if not trial.successor_sent:
-                    self._serial.read_lock.release()
-            trial.ended.set()
+                q_events.put(batch)
+            q_events.put(_Mark.TRIAL_END)
+            logger.debug('Exiting state machine %s / trial #%d', fsm_hash, trial.number)
+
+
+class _EventCallbacks(NamedTuple):
+    """What :class:`EventThread` calls on its owner's behalf.
+
+    Held in a :class:`~bpod_core.misc._HandlerSlot`, so that the thread doesn't pin
+    the owner.
+    """
+
+    publish: Callable[[list[BpodEventUnion]], object]
+    """Called with a list of :class:`~bpod_core.bpod.structs.BpodEventUnion` messages
+    recorded since the previous call, once the thread has caught up with the queue.
+    Return values are ignored. Publishing is best-effort: exceptions are logged but do
+    not interrupt trial recording."""
+    publish_gate: Callable[[], bool]
+    """Consulted once per batch of queued events; returning False skips resolving
+    their messages entirely. A subscriber appearing mid-trial picks up the stream from
+    the next batch."""
+    on_trial_start: Callable[[int], None]
+    """Called once per trial, with the trial's absolute start time (microseconds since
+    epoch), when the synthetic ``TrialStart`` event is recorded. Unlike ``publish``,
+    this always fires regardless of ``publish_gate`` - for bookkeeping that needs the
+    trial-start timestamp without going through the publish/IPC path."""
+
+
+_NO_CALLBACKS = _EventCallbacks(
+    publish=lambda _: None, publish_gate=lambda: False, on_trial_start=lambda _: None
+)
+"""What :class:`EventThread` calls once its owner is gone, or before it is set up."""
+
+
+def _no_recorder(*_: int) -> None:
+    """Stands in for the recorder's ``append`` between trials."""
+    raise RuntimeError('No trial is being recorded')
 
 
 class EventThread(threading.Thread):
-    """Consumer thread that processes hardware events and builds the trial DataFrame.
+    """Consumer thread that processes hardware events and builds the trial DataFrames.
 
-    Runs for the duration of one trial. :class:`ReadThread` feeds lists of raw
-    :class:`~bpod_core.bpod.structs._RawEvents`, the packets of one read, into
-    :attr:`queue`; ``EventThread`` drains that queue, advances the FSM state, and
-    records every event — inputs, state transitions, and output actions — in the
-    trial's recorder.
+    Runs for the lifetime of one connection. :class:`ReadThread` feeds each trial into
+    :attr:`queue` as the :class:`_Trial` itself, then lists of raw
+    :class:`~bpod_core.bpod.structs._RawEvents`, the packets of one read, then
+    :attr:`_Mark.TRIAL_END`; ``EventThread`` drains that queue, advances the FSM
+    state, and records every event — inputs, state transitions, and output actions —
+    in the trial's recorder. Trials are recorded one after the other, in the order
+    they were read, so their published event streams never interleave.
 
     All events of a cycle are evaluated in the state the cycle started in; the first
     one leading elsewhere makes the transition.
 
-    When the trial ends (``STOP_SENTINEL`` received), its events are decoded, for
-    :meth:`~bpod_core.bpod.Bpod.get_data`.
+    When the trial ends (:attr:`_Mark.TRIAL_END` received), its events are decoded, for
+    :meth:`~bpod_core.bpod.Bpod.get_data`. A trial that couldn't be recorded is
+    reported through :attr:`_Trial.decode_error`; the thread goes on with the next.
 
     Parameters
     ----------
-    trial : _Trial
-        The trial to record, which the thread writes its results to.
-    fsm : _StateMachineLookup
-        Compiled state machine data for this trial.
-    time_reference : _TimeReferences
-        Reference values for performance counters.
-    publish : Callable
-        Called with a list of :class:`~bpod_core.bpod.structs.BpodEventUnion`
-        messages recorded since the previous call, once the thread has caught up with
-        the queue. Return values are ignored. Publishing is best-effort: exceptions are
-        logged but do not interrupt trial recording.
-    publish_gate : Callable
-        Zero-argument callable consulted once per batch of queued events; returning
-        False skips resolving their messages entirely. A subscriber appearing mid-trial
-        picks up the stream from the next batch.
-    on_trial_start : Callable, optional
-        Called once, with the trial's absolute start time (microseconds since epoch),
-        when the synthetic ``TrialStart`` event is recorded. Unlike ``publish``, this
-        always fires regardless of ``publish_gate`` - use it for bookkeeping that needs
-        the trial-start timestamp without going through the publish/IPC path.
+    callbacks : _HandlerSlot[_EventCallbacks | None]
+        What the thread calls on its owner's behalf, see :class:`_EventCallbacks`. The
+        thread references the slot only weakly, and its callbacks only while recording
+        a trial: once the owner and its slot are gone, or until the slot is filled,
+        trials are recorded without them.
     """
 
-    queue: SimpleQueue[list[_RawEvents]]
-    """Per-trial event queue shared with :class:`ReadThread`."""
+    queue: SimpleQueue[list[_RawEvents] | _Trial | _Mark]
+    """Event queue shared with :class:`ReadThread`."""
 
-    trial: _Trial
-    """The trial being recorded."""
+    trial: _Trial | None
+    """The trial being recorded, or the last one recorded."""
 
-    def __init__(
-        self,
-        *,
-        trial: _Trial,
-        fsm: _StateMachineLookup,
-        time_reference: _TimeReferences,
-        publish: Callable[[list[BpodEventUnion]], object],
-        publish_gate: Callable[[], bool],
-        on_trial_start: Callable[[int], None] | None = None,
-    ) -> None:
+    def __init__(self, *, callbacks: _HandlerSlot[_EventCallbacks | None]) -> None:
         super().__init__(name='EventThread', daemon=True)
-        self.queue: SimpleQueue[list[_RawEvents]] = SimpleQueue()
-        self.trial = trial
-        self._recorder = trial.recorder
-        self._state_transition_matrix = fsm.state_transition_matrix
-        self._use_back_op = fsm.use_back_op
-        self._time_reference = time_reference
-        self._publish = publish
-        self._publish_gate = publish_gate
-        self._on_trial_start = on_trial_start
-        self._event_info = trial.recorder.event_tables.event_info
-        self._resettable_indices = trial.recorder.event_tables.resettable_indices
-        self._state_names = fsm.state_names
-
-        self._state_action_indices = fsm.state_action_indices
+        self.queue = SimpleQueue()
+        self.trial = None
+        self._callbacks = weakref.ref(callbacks)
+        # the trial being recorded, flat for _append_and_publish: see _record()
+        self._append: Callable[[int, int, int, int], None] = _no_recorder
+        self._publish = _NO_CALLBACKS.publish
+        self._event_info: Mapping[
+            int, tuple[BpodEventType, str | None, str | None, int | None]
+        ] = {}
+        self._state_names: Sequence[str] = ()
+        self._trial_number = 0
+        self._fsm_hash = ''
         self._n_published: int = 0
         self._pending: list[BpodEventUnion] = []  # messages not published yet
 
     def stop(self) -> None:
-        """Signal the FSM thread to stop."""
-        self.queue.put(_EVENTS_STOP)
+        """End the thread once it has handled what is queued before the call.
+
+        A trial being recorded is finished with what it has.
+        """
+        self.queue.put(_Mark.STOP)
+        _join_or_warn(self)
+
+    def run(self) -> None:
+        """Execute the EventThread."""
+        queue = self.queue
+        while (item := queue.get()) is not _Mark.STOP:
+            if not isinstance(item, _Trial):
+                continue  # what is left of a trial that couldn't be recorded
+            self.trial = item
+            try:
+                if self._record(item):
+                    return
+            except Exception as error:  # the thread must go on
+                logger.exception('Failed to record trial #%d', item.number)
+                item.decode_error = BpodError(f'Failed to record trial #{item.number}')
+                item.decode_error.__cause__ = error
+            finally:
+                item.decoded.set()  # whoever waits for the trial moves on
 
     def _append_and_publish(
         self, time_us: int, event: int, state: int, value: int = -1
     ) -> None:
         """Append an event, and queue its message for :meth:`_flush`."""
-        self._recorder.append(time_us, event, state, value)
+        self._append(time_us, event, state, value)
         try:
             kind, name, channel, default_value = self._event_info[event]
             message: BpodEventUnion
@@ -938,15 +1006,15 @@ class EventThread(threading.Thread):
                 case 'TrialStart':
                     message = EventTrialStart(
                         time_us=time_us,
-                        trial=self.trial.number,
-                        fsm_hash=self.trial.fsm_hash.hex(),
+                        trial=self._trial_number,
+                        fsm_hash=self._fsm_hash,
                     )
                 case 'TrialEnd':
-                    message = EventTrialEnd(time_us=time_us, trial=self.trial.number)
+                    message = EventTrialEnd(time_us=time_us, trial=self._trial_number)
                 case 'TrialEndControl':
                     message = EventTrialEndControl(
                         time_us=time_us,
-                        trial=self.trial.number,
+                        trial=self._trial_number,
                         n_events=self._n_published + 1,
                     )
                 case _:
@@ -965,14 +1033,33 @@ class EventThread(threading.Thread):
         except Exception:
             logger.exception('Failed to publish trial events')
 
-    def run(self) -> None:
-        """Execute the EventThread."""
+    def _record(self, trial: _Trial) -> bool:
+        """Record `trial`'s events from the queue until its end mark, then decode.
+
+        The recorder is finished and the decoding done, or its error kept, before
+        returning - however the recording ended. Returns whether :attr:`_Mark.STOP`
+        ended the trial instead: the thread is to stop.
+        """
+        # the callbacks are held only for the trial: the owner may be dropped meanwhile
+        slot = self._callbacks()
+        callbacks = (slot.handler if slot is not None else None) or _NO_CALLBACKS
+        publish_gate = callbacks.publish_gate
+        on_trial_start = callbacks.on_trial_start
+        self._publish = callbacks.publish
+        self._n_published = 0
+        self._pending = []
+        recorder = trial.recorder
+        fsm = trial.lookup
+        self._append = recorder.append
+        self._event_info = recorder.event_tables.event_info
+        self._state_names = fsm.state_names
+        self._trial_number = trial.number
+        self._fsm_hash = fsm.fsm_hash.hex()
         event_queue = self.queue
-        state_transition_matrix = self._state_transition_matrix
-        state_action_indices = self._state_action_indices
-        resettable_indices = self._resettable_indices
-        use_back_op = self._use_back_op
-        recorder = self._recorder
+        state_transition_matrix = fsm.state_transition_matrix
+        state_action_indices = fsm.state_action_indices
+        resettable_indices = recorder.event_tables.resettable_indices
+        use_back_op = fsm.use_back_op
         state_entered = recorder.state_entered
         record = recorder.append
         record_and_publish = self._append_and_publish
@@ -982,7 +1069,7 @@ class EventThread(threading.Thread):
         previous_state = 0
         active_outputs: dict[int, int] = {}  # resettable outputs currently non-zero
 
-        base_time_bpod_us = self._time_reference.reset_system_time_ns // 1000
+        base_time_bpod_us = trial.time_reference.reset_system_time_ns // 1000
 
         try:
             while True:
@@ -990,10 +1077,18 @@ class EventThread(threading.Thread):
                 if self._pending and event_queue.empty():
                     self._flush()
 
-                if (batch := event_queue.get()) is _EVENTS_STOP:
-                    return
+                batch = event_queue.get()
+                if isinstance(batch, _Mark):  # a trial's lists end with a mark
+                    return batch is _Mark.STOP
+                if isinstance(batch, _Trial):  # can't happen: trials end with a mark
+                    batch.decode_error = BpodError(
+                        f'Trial #{batch.number} was queued before the end of trial '
+                        f'#{trial.number}'
+                    )
+                    batch.decoded.set()  # nobody waits for a trial that won't record
+                    raise TypeError(str(batch.decode_error))
                 # with nobody listening, skip building messages until the next batch
-                append = record_and_publish if self._publish_gate() else record
+                append = record_and_publish if publish_gate() else record
                 # the packets of one read: the events of each cycle, or synthetic events
                 for bpod_count_us, event_ids in batch:
                     event_index = event_ids[0]
@@ -1046,11 +1141,8 @@ class EventThread(threading.Thread):
                                 append(t_bpod_us, output_id, -1, 0)
                             active_outputs.clear()
                         append(t_bpod_us, event_index, -1)
-                        if (
-                            event_index == _EventID.START_FSM
-                            and self._on_trial_start is not None
-                        ):
-                            self._on_trial_start(t_bpod_us)
+                        if event_index == _EventID.START_FSM:
+                            on_trial_start(t_bpod_us)
                         continue
 
                     # record output actions (initial state & after state transitions):
@@ -1069,15 +1161,17 @@ class EventThread(threading.Thread):
                 recorder.finish()  # the rows are final: no peek waits for the rest
                 if self._pending:
                     self._flush()
-                self._decode()
+                self._decode(trial)
             finally:
-                self.trial.decoded.set()  # whoever waits for the trial moves on
+                # between trials, neither the recorder nor anything of the owner's
+                self._append = _no_recorder
+                self._publish = _NO_CALLBACKS.publish
 
-    def _decode(self) -> None:
+    @staticmethod
+    def _decode(trial: _Trial) -> None:
         """Decode the recorded events, or keep the error doing so."""
-        trial = self.trial
         try:
-            self._recorder.decode()
+            trial.recorder.decode()
         # a panic in polars isn't an Exception
         except (Exception, pl.exceptions.PanicException) as error:
             logger.exception('Failed to decode trial #%d', trial.number)
@@ -1141,9 +1235,7 @@ class SoftcodeThread(threading.Thread):
         self.queue.put(_SOFTCODE_STOP)
         if self is threading.current_thread():
             return  # called by a handler or the garbage collector on this thread
-        self.join(timeout=1)
-        if self.is_alive():
-            logger.warning('Softcode thread did not terminate')
+        _join_or_warn(self)
 
     def set_time_reference(self, time_ref: _TimeReferences) -> None:
         """Update the session clock reference used for Bpod-relative latency logging."""
