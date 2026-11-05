@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that needs a reply is now refused while another thread owns the port's replies.
 - a connection's threads (its reader, event thread and softcode thread) start and end
   with it, instead of two new threads per trial and one for the object's lifetime.
+- a `Bpod` dropped while recording FlexIO analog inputs is garbage-collected: the
+  analog reader thread no longer references it. Its samples are buffered in a
+  pre-allocated array rather than one tuple per sample.
 
 ### Changed
 
