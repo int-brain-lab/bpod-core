@@ -17,7 +17,7 @@ Connecting to a Device
 or — when both are omitted — by auto-discovering the first available Bpod on the system.
 In most use cases it's best to use the class as a `context manager`_: it guarantees the
 serial connection is closed and any running trial is allowed to finish on exit. An
-instance dropped without being closed is cleaned up on a helper thread once the garbage
+instance dropped without being closed is cleaned up on a cleanup thread once the garbage
 collector frees it.
 
 .. _context manager: https://docs.python.org/3/library/stdtypes.html#typecontextmanager

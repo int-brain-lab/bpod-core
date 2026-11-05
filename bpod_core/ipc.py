@@ -55,9 +55,9 @@ from bpod_core.misc import (
     _HandlerSlot,
     _match_filter,
     finalize_now,
+    finalize_off_main_thread,
     get_local_ipv4,
     prune_empty_parent_directories,
-    run_off_main_thread,
     to_snake_case,
 )
 
@@ -96,7 +96,7 @@ _WAKE_TIMEOUT_MS = 100
 """How long waking a client's event loop waits for its subscription, in milliseconds."""
 
 _HANDOFF_LINGER_MS = 100
-"""Linger period, in milliseconds, for sockets closed from a helper thread.
+"""Linger period, in milliseconds, for sockets closed off their owner's thread.
 
 When a host or client is closed from its own event thread (by a handler) or by the
 garbage collector, the reply the loop sent last may still be queued. The linger period
@@ -639,9 +639,9 @@ class ServiceBase(ABC):
     def _finalize_now(self) -> None:
         """Run the finalizer on this thread, as closing explicitly does.
 
-        The garbage collector runs it through :func:`run_off_main_thread` instead, with
-        a linger for a reply the event loop may just have sent; closing explicitly drops
-        what wasn't sent, as before.
+        The garbage collector hands it to the cleanup thread instead, with a linger for
+        a reply the event loop may just have sent; closing explicitly drops what wasn't
+        sent, as before.
         """
         finalize_now(self._finalizer, linger_ms=0)
 
@@ -924,9 +924,8 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
 
             # register finalizer to clean up resources on exit; the collector may run
             # it on a thread that must not wait for the event loop
-            self._finalizer = weakref.finalize(
+            self._finalizer = finalize_off_main_thread(
                 self,
-                run_off_main_thread,
                 ServiceHost._finalize,
                 event_thread=self._event_thread,
                 stop_event=self._stop_event_loop,
@@ -1709,9 +1708,8 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
 
             # register finalizer to clean up resources on exit; the collector may run
             # it on a thread that must not wait for the event loop
-            self._finalizer = weakref.finalize(
+            self._finalizer = finalize_off_main_thread(
                 self,
-                run_off_main_thread,
                 ServiceBase._finalize_base,  # noqa: SLF001
                 self._event_thread,
                 self._stop_event_loop,

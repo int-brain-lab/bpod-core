@@ -7,7 +7,6 @@ import os
 import re
 import struct
 import threading
-import weakref
 from collections import deque
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -120,7 +119,7 @@ from bpod_core.misc import (
     SettingsDict,
     SuggestionMapping,
     _HandlerSlot,
-    run_off_main_thread,
+    finalize_off_main_thread,
     suppress_logging,
 )
 
@@ -383,9 +382,8 @@ class Bpod(SerialDevice, AbstractBpod):
         # register the destructor; the collector may run it on a thread that must
         # not wait for the connection's threads and the device, e.g. another Bpod's
         # reader
-        self._bpod_finalizer = weakref.finalize(
+        self._bpod_finalizer = finalize_off_main_thread(
             self,
-            run_off_main_thread,
             Bpod._bpod_cleanup,
             self._serial,
             self._flexio_serial,
