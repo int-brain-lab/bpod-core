@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - building and compiling state machines takes 25-30% less time.
+- a state machine's hash is computed two to four times faster, by packing its fields
+  with msgspec instead of serialising it to JSON. Hashes differ from earlier versions.
 - the state machine caches keep the 128 most recently used machines rather than the
   last 1024. With many large machines, this and a smaller transition matrix cut
   garbage collection pauses from about 200 ms to 20-50 ms, and memory by a factor of 8.

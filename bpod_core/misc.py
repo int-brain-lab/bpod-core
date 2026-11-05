@@ -586,8 +586,8 @@ class ValidatedDict(RootModel[dict[K, V]], MutableMapping[K, V]):
         # store the validated pair: the key may have been coerced, e.g. '1' to 1
         try:
             # calling pydantic's core validator directly skips the Python wrapper of
-            # model_validate; like StateMachine._hash, fall back to the public API if
-            # the private attribute changes
+            # model_validate; fall back to the public API if the private attribute
+            # changes
             validated = type(self).__pydantic_validator__.validate_python({key: value})
         except (AttributeError, TypeError):
             validated = type(self).model_validate({key: value})
