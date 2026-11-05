@@ -200,10 +200,10 @@ def _run_guarded(
 ) -> None:
     """Run `work` on a worker thread; stop the Bpod and fail if it takes too long.
 
-    Bounds what the library can't: `work` may block in the handoff inside ``run()``,
-    for a trial that never ends. On expiry, `cancel` tells `work` not to go on, and the
-    running trial is stopped - or given up, if the Bpod ignores the stop. An error
-    raised by `work` is re-raised, as the cause of `describe`'s text if given.
+    Bounds what the library can't: `work` may block in ``wait()`` for a trial that
+    never ends. On expiry, `cancel` tells `work` not to go on, and the running trial
+    is stopped - or given up, if the Bpod ignores the stop. An error raised by `work`
+    is re-raised, as the cause of `describe`'s text if given.
     """
     errors: list[BaseException] = []
 
@@ -230,8 +230,12 @@ def _run_guarded(
     if errors:
         if describe is None:
             raise errors[0]
-        # a failed check stays one; any other error isn't taken for a firmware issue
-        failed = isinstance(errors[0], (AssertionError, pytest.fail.Exception))
+        # a failed check stays one, and so does a trial the library gave up on (the
+        # Bpod didn't start or end it in time); any other error isn't taken for a
+        # firmware issue
+        failed = isinstance(
+            errors[0], (AssertionError, pytest.fail.Exception, TimeoutError)
+        )
         raise (AssertionError if failed else RuntimeError)(describe()) from errors[0]
 
 

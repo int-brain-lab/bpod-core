@@ -766,7 +766,7 @@ class _Batch:
                 if self.cancelled.is_set():
                     break
                 self.current = index
-                bpod.run(case.fsm)  # queued: returns once the previous trial ended
+                bpod.run(case.fsm)  # queued: returns once the machine is sent
                 if self.mode == 'paced':
                     bpod.wait()
             bpod.wait()  # queued: the last machine; paced: nothing left
