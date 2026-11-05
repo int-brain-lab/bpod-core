@@ -199,16 +199,21 @@ def test_queued_large_machine_starts_on_time(bpod, run_guarded):
     """A large queued machine starts one cycle after the trial before it ends.
 
     The firmware loaded a queued machine in the timer interrupt when the trial before
-    it ended, losing the cycles it took for a large machine.
+    it ended, losing the cycles it took for a large machine. Each trial lasts long
+    enough for the next machine to arrive over full-speed USB too (Bpod r2.0).
     """
     fsm = _large()
+    fsm.states['s0'].timer = 0.06
 
     def trials() -> None:
         for _ in range(10):
             bpod.run(fsm)  # loaded while the previous trial runs
         bpod.wait()
 
-    run_guarded(trials, timeout=5)
+    try:
+        run_guarded(trials, timeout=5)
+    except TimeoutError:  # from run(), waiting for the machine before (PR #2)
+        pytest.fail('a queued state machine never started')
     gaps = _trial_gaps(bpod.get_data())
     cycle = bpod._hardware.cycle_period_us
     assert max(gaps) < 1.5 * cycle, f'µs from each trial end to the next start: {gaps}'
@@ -266,16 +271,31 @@ def test_module_relay_off_after_reconnecting(bpod, module):
     """Connecting turns every module relay off.
 
     The firmware turns off only the relay of the channel its scratch variable last
-    held, here that of the input read before disconnecting.
+    held, here that of another module port's input read before disconnecting.
     """
+    other = 'Serial2' if module.index == 0 else 'Serial1'
     module.set_relay(True)
-    bpod.inputs['Port1'].read()  # leaves the input's index in the scratch variable
+    bpod.inputs[other].read()  # leaves the input's index in the scratch variable
     bpod.close()
     bpod.open()
     try:
         assert _probe_module(bpod, module) == b'', 'the module is still relayed'
     finally:
         module.set_relay(False)  # else it stays on, the fix missing, until power-off
+
+
+# without the fix, a Bpod r2.0 stops answering until it is power-cycled
+@pytest.mark.known_firmware_issue(f'{FIRMWARE_PRS}/4', run=False)
+def test_reconnect_after_reading_an_input(bpod):
+    """After an input that isn't a module port's was read, the Bpod reconnects.
+
+    Disconnecting, the firmware clears the relay flag at the index of the input read
+    last, past the end of the flags for such an input. The stray write hangs a Bpod
+    r2.0 (Teensy 3.6); a 2+ survives it.
+    """
+    bpod.inputs['Port1'].read()  # leaves the input's index in the scratch variable
+    bpod.close()
+    bpod.open()  # raises if the Bpod doesn't answer the handshake
 
 
 @pytest.mark.known_firmware_issue(f'{FIRMWARE_PRS}/20')

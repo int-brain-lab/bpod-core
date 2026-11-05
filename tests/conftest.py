@@ -5,17 +5,27 @@ import re
 import struct
 import threading
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
-from unittest.mock import PropertyMock
+from queue import SimpleQueue
+from unittest.mock import MagicMock, PropertyMock
 
 import pytest
 from serial.tools.list_ports_common import ListPortInfo
 
 from bpod_core import ipc
 from bpod_core.bpod import Bpod
+from bpod_core.bpod._threads import _Trial
 from bpod_core.bpod.structs import _TimeReferences
-from bpod_core.com import ExtendedSerial
-from bpod_core.constants import PID_DUE_NATIVE, VID_ARDUINO, VID_TEENSY, TeensyPID
+from bpod_core.com import ExtendedSerial, ReadCancelled
+from bpod_core.constants import (
+    PID_DUE_NATIVE,
+    STRUCT_UINT32_LE,
+    STRUCT_UINT64_LE,
+    VID_ARDUINO,
+    VID_TEENSY,
+    TeensyPID,
+)
 
 _HARDWARE_TESTS = Path(__file__).parent / 'hardware'
 
@@ -62,11 +72,39 @@ def pytest_collection_modifyitems(
         items[:] = others
 
 
+# the bytes of a trial, as the Bpod sends them
+_CONFIRM_OK = b'\x01'
+_CONFIRM_FAIL = b'\x00'
+
+
+def _start(micros_us: int = 0) -> bytes:
+    """Encode the start time the Bpod sends at the beginning of a trial."""
+    return STRUCT_UINT64_LE.pack(micros_us)
+
+
+def _opcode1(events: list[int], n_cycles: int) -> bytes:
+    """Encode an opcode-1 (hardware events) packet."""
+    return bytes([1, len(events), *events]) + STRUCT_UINT32_LE.pack(n_cycles)
+
+
+def _opcode2(softcode: int) -> bytes:
+    """Encode an opcode-2 (softcode) packet."""
+    return bytes([2, softcode])
+
+
+def _exit_data(n_cycles: int, end_micros_us: int) -> bytes:
+    """Encode the 12-byte post-loop exit payload."""
+    return struct.pack('<IQ', n_cycles, end_micros_us)
+
+
+TRIAL_REPLY = _CONFIRM_OK + _start(0) + _opcode1([255], n_cycles=0) + _exit_data(0, 0)
+"""What the mock Bpod answers a state machine with: a trial that ends at once."""
+
 fixture_bpod_all = {
     b'6': b'5',
     b'f': b'\x00\x00',
     b'v': b'\x01',
-    b'C[\\x00\\x01]{2}.*': b'',
+    b'C[\\x00\\x01]{2}.*': TRIAL_REPLY,
     rb'\*': b'\x01',
     b'X': b'',  # stop state machine / analog acquisition (fire-and-forget, no ack)
     b'%': b'\x01',
@@ -172,7 +210,18 @@ def mock_comports(mocker, mock_serial_discovery, make_port_info):
 def mock_ext_serial(mocker):
     """Mock base class methods for ExtendedSerial."""
     extended_serial = ExtendedSerial()
-    extended_serial.response_buffer = bytearray()
+    bytes_arrived = threading.Condition()  # wakes a reader blocked in read_waiting()
+    cancel = threading.Event()  # a cancel_read() no read has reported yet
+
+    class ResponseBuffer(bytearray):
+        """The bytes the mock Bpod has sent; extending it wakes a blocked reader."""
+
+        def extend(self, data) -> None:
+            with bytes_arrived:
+                super().extend(data)
+                bytes_arrived.notify_all()
+
+    extended_serial.response_buffer = ResponseBuffer()
     extended_serial.mock_responses = {}
     extended_serial.last_write = b''
 
@@ -194,6 +243,21 @@ def mock_ext_serial(mocker):
     def in_waiting() -> int:
         return len(extended_serial.response_buffer)
 
+    def read_waiting() -> bytes:
+        """Block until bytes are waiting, like the real port, or a cancel."""
+        with bytes_arrived:
+            while not in_waiting():
+                if cancel.is_set():
+                    cancel.clear()
+                    raise ReadCancelled
+                bytes_arrived.wait(0.01)  # a buffer replaced wholesale isn't notified
+            return read(in_waiting())
+
+    def cancel_read() -> None:
+        with bytes_arrived:
+            cancel.set()
+            bytes_arrived.notify_all()
+
     tmp = 'bpod_core.com.Serial'
     mocker.patch(f'{tmp}.__init__', return_value=None)
     mocker.patch(f'{tmp}.__enter__', return_value=extended_serial)
@@ -201,13 +265,17 @@ def mock_ext_serial(mocker):
     mocker.patch(f'{tmp}.close')
     mocker.patch(f'{tmp}.write', side_effect=write)
     mocker.patch(f'{tmp}.read', side_effect=read)
+    # a spy on the port's own write(), so tests can inspect the calls made through it
+    mocker.patch.object(extended_serial, 'write', side_effect=extended_serial.write)
     mocker.patch(f'{tmp}.reset_input_buffer')
     mocker.patch(f'{tmp}._reconfigure_port')  # e.g. a timeout set while open
     mocker.patch(f'{tmp}.in_waiting', new_callable=PropertyMock, side_effect=in_waiting)
-    mocker.patch(  # the port isn't open, so the direct read would refuse it
-        'bpod_core.com.ExtendedSerial.read_waiting',
-        side_effect=lambda: read(max(1, in_waiting())),
-    )
+    # the port isn't open, so the real reads and the abort pipe would refuse these.
+    # On the instance, so that a reader cancelled after the test (by the finalizer of
+    # a Bpod the test didn't close) still finds them
+    extended_serial.read_waiting = read_waiting
+    extended_serial.cancel_read = cancel_read
+    extended_serial.discard_cancel_read = cancel.clear
     yield extended_serial
     # tests may mark the port open; pyserial's real close() would then run on garbage
     # collection, after the patches above are gone
@@ -229,30 +297,85 @@ def pty_port() -> Iterator[tuple[int, ExtendedSerial]]:
         os.close(slave)
 
 
-class BlockedThread(threading.Thread):
-    """A thread that ends once `release` is set; stands in for a trial's reader."""
+@contextlib.contextmanager
+def held_by_another_thread(context: AbstractContextManager) -> Iterator[None]:
+    """Another thread holds `context` (a lock or exclusive_reads()) meanwhile."""
+    held = threading.Event()
+    done = threading.Event()
 
-    trial_number = 7
-    error: Exception | None = None
+    def hold() -> None:
+        with context:
+            held.set()
+            done.wait()
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    assert held.wait(1)
+    try:
+        yield
+    finally:
+        done.set()
+        holder.join(1)
+
+
+def take_replies(serial: ExtendedSerial) -> None:
+    """A trial's reader holds `serial`'s replies from here on, as after run()."""
+    assert serial.claim_replies()
+
+
+def finish_trial(trial: _Trial, read_lock: 'threading.Lock | None' = None) -> None:
+    """Set what a trial's reader and event thread set once they have ended.
+
+    With `read_lock`, the port's replies the reader held are released first.
+    """
+    if read_lock is not None:
+        read_lock.release()
+    for event in (trial.started, trial.ended, trial.decoded):
+        event.set()
+
+
+def make_trial(number: int = 0, *, ended: bool = True, **fields) -> _Trial:
+    """A trial whose threads have finished, or with `ended=False` one that runs."""
+    trial = _Trial(
+        number=number,
+        lookup=MagicMock(fsm_hash=b''),
+        recorder=MagicMock(),
+        time_reference=_TimeReferences(0, 0, 0),
+        cycle_period_us=1,
+        **fields,
+    )
+    if ended:
+        finish_trial(trial)
+    else:
+        trial.started.set()
+    return trial
+
+
+class BlockedThread(threading.Thread):
+    """A connection's reader stuck in `trial`, which runs until `release` is set.
+
+    Trials queued behind it stay queued in `trials`.
+    """
+
+    read_lock = None  # set to the port's, taken, to hold its replies like a reader
 
     def __init__(self) -> None:
         super().__init__(daemon=True)
         self.release = threading.Event()
-        self.trial_started = threading.Event()
-        self.trial_started.set()  # the trial runs
+        self.trial = make_trial(7, ended=False)
+        self.trials: SimpleQueue[_Trial | None] = SimpleQueue()
 
     def run(self) -> None:
         try:
             self.release.wait()
         finally:
-            self.trial_started.set()  # as a ReadThread's, once it ends
-
-    def expect_stop(self) -> None:
-        pass
+            finish_trial(self.trial, self.read_lock)
 
     def cancel(self) -> None:
         self.release.set()
         self.join(timeout=2)
+
+    stop = cancel
 
 
 @pytest.fixture
@@ -350,6 +473,15 @@ def mock_settings(mocker):
     mocker.patch('bpod_core.bpod.SettingsDict', return_value=mock_settings)
 
 
+def _end_threads(bpod: Bpod) -> Iterator[Bpod]:
+    """Yield `bpod`; afterwards run its finalizer, which ends its threads.
+
+    Right away rather than at garbage collection, which may fall into a later test.
+    """
+    yield bpod
+    bpod._bpod_finalizer()
+
+
 @pytest.fixture
 def mock_bpod_20(
     mock_comports, mock_ext_serial, mock_settings, mocker, mock_advertisement
@@ -360,7 +492,7 @@ def mock_bpod_20(
         'bpod_core.bpod.Bpod._detect_additional_serial_ports', return_value=(None, None)
     )
     mocker.patch('bpod_core.bpod.ServiceHost')
-    return Bpod('COM3')
+    yield from _end_threads(Bpod('COM3'))
 
 
 @pytest.fixture
@@ -373,7 +505,7 @@ def mock_bpod_25(
         'bpod_core.bpod.Bpod._detect_additional_serial_ports', return_value=(None, None)
     )
     mocker.patch('bpod_core.bpod.ServiceHost')
-    return Bpod('COM3')
+    yield from _end_threads(Bpod('COM3'))
 
 
 @pytest.fixture
@@ -393,7 +525,7 @@ def mock_bpod_10(
     mock_ext_serial.mock_responses.update(fixture_bpod_10)
     mocker.patch('bpod_core.com.ExtendedSerial', return_value=mock_ext_serial)
     mocker.patch('bpod_core.bpod.ServiceHost')
-    return Bpod('COM3')
+    yield from _end_threads(Bpod('COM3'))
 
 
 @pytest.fixture
@@ -412,4 +544,4 @@ def mock_bpod_2p(
         'bpod_core.bpod.Bpod._detect_additional_serial_ports', return_value=(None, None)
     )
     mocker.patch('bpod_core.bpod.ServiceHost')
-    return Bpod('COM3')
+    yield from _end_threads(Bpod('COM3'))

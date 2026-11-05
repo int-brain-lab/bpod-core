@@ -21,6 +21,7 @@ from ._helpers import (
     _counted,
     _counter_trial,
     _large,
+    _largest,
     _probe_module,
     _pulse,
     _timed,
@@ -323,6 +324,7 @@ class TestInputs:
     @pytest.mark.parametrize('channel', ['Port1', 'TTLIn1'])
     def test_virtual_input_event(self, bpod, channel):
         """Overriding an input during a trial reports its edge as an event."""
+        bpod.inputs[channel].enabled = True  # the bpod fixture may have disabled it
         fsm = StateMachine()
         fsm.add_state(
             'Wait', timer=1, transitions={f'{channel}_High': '>exit', 'Tup': '>exit'}
@@ -465,8 +467,8 @@ class TestTrials:
         data = bpod.get_data()
         assert data.filter(pl.col('Type') == 'TrialEnd').height == 1
 
-    def test_queued_trials_follow_one_cycle_apart(self, bpod):
-        """A queued trial starts one cycle after the trial before it ends."""
+    def test_queued_trials_follow_one_cycle_apart(self, bpod, logged_warnings):
+        """A queued trial starts one cycle after the trial before, without warning."""
         fsm = _chain(('A', 0.003, {}))
         for _ in range(5):
             bpod.run(fsm)
@@ -474,6 +476,30 @@ class TestTrials:
         gaps = _trial_gaps(bpod.get_data())
         cycle = bpod._hardware.cycle_period_us
         assert all(abs(gap - cycle) <= 2 for gap in gaps), f'µs between trials: {gaps}'
+        assert logged_warnings() == []
+
+    def test_run_returns_once_the_machine_is_queued(self, bpod, logged_warnings):
+        """run() waits only while the Bpod's spare slot is taken, and the trials are
+        read back to back.
+
+        With `a` running, `b` goes into the slot at once; `c` has to wait until `b`
+        starts, i.e. until `a` ends.
+        """
+        fsm = _chain(('A', 0.2, {}))
+        bpod.run(fsm)  # a: from idle
+        t0 = time.monotonic()
+        bpod.run(fsm)  # b: into the spare slot
+        t1 = time.monotonic()
+        assert bpod.is_queued
+        bpod.run(fsm)  # c: once b has started
+        t2 = time.monotonic()
+        bpod.wait()
+        assert t1 - t0 < 0.05, f'run(b) took {t1 - t0:.3f} s'
+        assert 0.1 < t2 - t1 < 0.3, f'run(c) took {t2 - t1:.3f} s'
+        gaps = _trial_gaps(bpod.get_data())
+        cycle = bpod._hardware.cycle_period_us
+        assert all(abs(gap - cycle) <= 2 for gap in gaps), f'µs between trials: {gaps}'
+        assert logged_warnings() == []
 
     def test_machine_sent_while_the_one_before_loads(self, bpod, run_guarded):
         """Machines run back to back from idle, the first slow to load, both run.
@@ -494,6 +520,23 @@ class TestTrials:
         run_guarded(trials, timeout=2)
         data = bpod.get_data()
         assert (data['Type'] == 'TrialEnd').sum() == 10, 'trials read to their end'
+
+    def test_largest_machine_runs_intact(self, bpod, run_guarded):
+        """The largest state machine the Bpod takes runs as sent, alone and queued.
+
+        Its trial ends every state in turn on its timer: a table loaded wrong, or a
+        dead transition that fired, would leave that path.
+        """
+        fsm = _largest(bpod)
+
+        def trials() -> None:
+            for _ in range(4):
+                bpod.run(fsm)  # the first from idle, the others queued
+            bpod.wait()
+
+        run_guarded(trials, timeout=5)
+        tups = bpod.get_data().filter(pl.col('Event').cast(pl.String) == 'Tup')
+        assert tups['State'].cast(pl.String).to_list() == list(fsm.states) * 4
 
     def test_queued_machine_loads_intact(self, bpod, fuzz_seed, run_guarded):
         """A machine loaded during a busy trial sends exactly its own softcodes.

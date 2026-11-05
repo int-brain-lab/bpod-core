@@ -4,7 +4,6 @@ from abc import abstractmethod
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from typing import Literal, overload
 
 import msgspec
 import polars as pl
@@ -103,16 +102,8 @@ class AbstractBpod(AbstractContextManager):
         """The Bpod's unique serial number."""
         return self._serial_number
 
-    @overload
-    def get_data(
-        self, *, concat: bool = ..., lazy: Literal[False] = False
-    ) -> pl.DataFrame: ...
-
-    @overload
-    def get_data(self, *, concat: bool = ..., lazy: Literal[True]) -> pl.LazyFrame: ...
-
     @abstractmethod
-    def get_data(self, *, concat=True, lazy=False):
+    def get_data(self, *, concat: bool = True) -> pl.DataFrame:
         """Return trial data from the data queue.
 
         Parameters
@@ -122,13 +113,10 @@ class AbstractBpod(AbstractContextManager):
             a single DataFrame, blocking until at least one is available.
             If ``False``, pop and return one DataFrame, blocking until one is
             available.
-        lazy : bool, default: False
-            If ``True``, return a :class:`polars.LazyFrame`.
-            If ``False``, return a :class:`polars.DataFrame`.
 
         Returns
         -------
-        DataFrame or LazyFrame
+        DataFrame
             One trial's data, or all available trials concatenated when ``concat=True``.
 
             Columns:
@@ -146,7 +134,8 @@ class AbstractBpod(AbstractContextManager):
         Raises
         ------
         BpodError
-            If the queue is empty and no state machine is currently running.
+            If the queue is empty and no state machine is currently running, or if a
+            trial couldn't be decoded. The other trials stay queued for the next call.
         """
         ...
 
@@ -224,7 +213,10 @@ class AbstractBpod(AbstractContextManager):
         inter-trial downtime (as long as the Bpod's run queue stays filled). The Bpod
         holds one state machine besides the running one: if the one sent before hasn't
         started yet, e.g. right after a session's first trial, this method first waits
-        until it has.
+        until it has. If a trial sent while the one before runs starts over 1.5 cycles
+        after that one ends, the process connected to the Bpod logs it: as a warning if
+        it is the connection's longest delay so far, else at debug level. All are
+        counted when the connection closes.
         """
 
     @abstractmethod
@@ -244,14 +236,42 @@ class AbstractBpod(AbstractContextManager):
         """
 
     @abstractmethod
+    def wait(self, timeout: float | None = None) -> None:
+        """
+        Wait for every state machine sent to finish: the running one and a queued one.
+
+        Blocks until their events have been recorded and published and the softcodes
+        received so far have been handled. If no state machine is running, this method
+        returns immediately.
+
+        Parameters
+        ----------
+        timeout : float or None, default: None
+            Seconds to wait before giving up. ``None`` waits indefinitely.
+
+        Raises
+        ------
+        TimeoutError
+            If the state machine hasn't finished within `timeout` seconds.
+        BpodError
+            If the connection to the Bpod was lost during the trial, or the trial
+            couldn't be read; the connection then has to be reopened. The events
+            received up to then are kept.
+        """
+
+    @abstractmethod
     def stop_state_machine(self, timeout: float | None = 1.0) -> None:
         """
-        Stop the currently running state machine.
+        Stop the running state machine, and the one queued behind it, if any.
+
+        The Bpod starts a queued state machine as soon as the running one is stopped,
+        so that one is stopped in turn once it has started.
 
         Parameters
         ----------
         timeout : float or None, default: 1.0
-            Seconds to wait for the Bpod to end the trial. ``None`` waits indefinitely.
+            Seconds to wait for the Bpod to end each trial. ``None`` waits
+            indefinitely.
 
         Raises
         ------

@@ -38,6 +38,10 @@ MIN_BPOD_HW_VERSION = 2
 MAX_BPOD_HW_VERSION = 4
 """maximum supported hardware version"""
 
+MAX_STATE_MACHINE_BYTES = 49_999
+"""most bytes of a compiled state machine, after its header, that the firmware takes:
+its buffer holds 50,000, and it runs the bytes of a larger one as commands"""
+
 _CHANNEL_BASE_NAME_GLOBAL_TIMER = 'GlobalTimer'
 """Base name of global timer channels"""
 _CHANNEL_BASE_NAME_GLOBAL_COUNTER = 'GlobalCounter'
@@ -80,6 +84,7 @@ _REMOTE_CALL_METHODS = frozenset(
         'set_status_led',
         'stop_state_machine',
         'update_modules',
+        'wait',
     }
 )
 """Methods that remote clients may invoke."""

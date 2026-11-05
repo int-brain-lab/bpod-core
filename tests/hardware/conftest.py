@@ -2,6 +2,7 @@
 
 import contextlib
 import functools
+import gc
 import logging
 import os
 import random
@@ -16,6 +17,7 @@ from packaging.version import Version
 from bpod_core.bpod import Bpod, Module, discover_bpod
 from bpod_core.bpod.abc import AbstractFlexIO
 from bpod_core.bpod.constants import FlexIOChannelType
+from bpod_core.bpod.errors import BpodError
 from bpod_core.bpod.structs import BpodInfo
 
 from ._helpers import (
@@ -32,6 +34,17 @@ if pytest.version_tuple >= (9,) and (
     Version(version('pytest-benchmark')) <= Version('5.3.0')
 ):
     pytest.Function._nodeid = property(lambda self: self.nodeid)  # type: ignore[attr-defined]
+
+
+@pytest.fixture(scope='session', autouse=True)
+def _freeze_collected_objects() -> None:
+    """Keep garbage collections short while the timing-bound tests run.
+
+    With every test collected, a full collection takes 45-70 ms and can land inside a
+    timing window. Frozen objects are no longer scanned.
+    """
+    gc.collect()
+    gc.freeze()
 
 
 @pytest.fixture(scope='session')
@@ -57,10 +70,22 @@ def bpod(bpod_info: BpodInfo, pytestconfig: pytest.Config) -> Iterator[Bpod]:
                 f'{info.firmware[0]}.{info.firmware[1]}, '
                 f'serial number {bpod_info.serial_number} at {bpod_info.port}'
             )
+        if bpod.version.machine_str == 'r2.0-2.3':
+            # up to r2.2, the port inputs have no pull-up: unplugged, they pick up mains
+            # hum, whose events break the tests comparing a trial's events (r2.3 has
+            # one, but reports the same)
+            for channel in bpod.inputs.values():
+                if channel.io_type == b'P':
+                    channel.enabled = False
         yield bpod
         if bpod.is_running:  # left running by a failed test
             with contextlib.suppress(TimeoutError):  # given up; replug if it persists
                 bpod.stop_state_machine()
+        if bpod.serial0.is_open and not pytestconfig.getoption('--fixed-firmware'):
+            # without PR #4, disconnecting writes past the module relay flags at the
+            # index of the input read last, which hangs a Bpod r2.0: read one in range
+            with contextlib.suppress(BpodError):  # refused after a given-up trial
+                next(iter(bpod.inputs.values())).read()
 
 
 @pytest.fixture(scope='session')
@@ -175,10 +200,10 @@ def _run_guarded(
 ) -> None:
     """Run `work` on a worker thread; stop the Bpod and fail if it takes too long.
 
-    Bounds what the library can't: `work` may block in the handoff inside ``run()``,
-    for a trial that never ends. On expiry, `cancel` tells `work` not to go on, and the
-    running trial is stopped - or given up, if the Bpod ignores the stop. An error
-    raised by `work` is re-raised, as the cause of `describe`'s text if given.
+    Bounds what the library can't: `work` may block in ``wait()`` for a trial that
+    never ends. On expiry, `cancel` tells `work` not to go on, and the running trial
+    is stopped - or given up, if the Bpod ignores the stop. An error raised by `work`
+    is re-raised, as the cause of `describe`'s text if given.
     """
     errors: list[BaseException] = []
 
@@ -205,8 +230,12 @@ def _run_guarded(
     if errors:
         if describe is None:
             raise errors[0]
-        # a failed check stays one; any other error isn't taken for a firmware issue
-        failed = isinstance(errors[0], (AssertionError, pytest.fail.Exception))
+        # a failed check stays one, and so does a trial the library gave up on (the
+        # Bpod didn't start or end it in time); any other error isn't taken for a
+        # firmware issue
+        failed = isinstance(
+            errors[0], (AssertionError, pytest.fail.Exception, TimeoutError)
+        )
         raise (AssertionError if failed else RuntimeError)(describe()) from errors[0]
 
 

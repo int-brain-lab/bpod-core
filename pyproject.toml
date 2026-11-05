@@ -33,7 +33,8 @@ dependencies = [
   "packaging>=14",
   "pyyaml>=6",
   "platformdirs>=2.3,<5",
-  "filelock>=3.0.6",
+  "filelock>=3.0.6; python_version < '3.11'",
+  "filelock>=4.2.1; python_version >= '3.11'", # security fixes, none for Python 3.10
   "psutil>=5.9",
   "polars>=1.32.3,<3",
   "xxhash>=3",
@@ -144,7 +145,8 @@ source-exclude = [
 
 [tool.uv.dependency-groups]
 doc = { requires-python = ">=3.14" }
-tox = { requires-python = ">=3.11" }
+tox = { requires-python = ">=3.14" }
+publish = { requires-python = ">=3.14" }
 
 [tool.ruff]
 include = ["bpod_core/**/*.py", "tests/**/*.py", "examples/**/*.py", "docs/source/**/*.py"]
@@ -204,6 +206,10 @@ ignore = [
 ]
 allowed-confusables = ["–"]
 
+[tool.ruff.lint.flake8-tidy-imports]
+# imported only where needed, as they take import time but serve only a few features
+banned-module-level-imports = ["psutil", "yaml"]
+
 [tool.ruff.lint.per-file-ignores]
 "!bpod_core/**.py" = [
   "ANN", # flake8-annotations
@@ -214,6 +220,7 @@ allowed-confusables = ["–"]
   "PT"       # flake8-pytest-style
 ]
 "tests/**.py" = [
+  "TID253", # banned module-level imports: the tests' import time doesn't matter
   "ARG001", # Unused function argument
   "ARG002", # Unused method argument
   "PERF", # Perflint

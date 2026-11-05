@@ -60,14 +60,12 @@ class _StateMachineLookup(NamedTuple):
     """The state machine's hash value."""
     state_names: list[str]
     """Names of all states, indexed by state index."""
-    state_transition_matrix: list[list[int]]
-    """Target state per state and event: ``n_states`` lists of 255 state indices."""
+    state_transition_matrix: list[bytearray]
+    """Target state per state and event: ``n_states`` rows of 255 state indices."""
     state_action_indices: list[dict[int, int]]
     """Per-state mapping of action index to value."""
     use_back_op: bool
     """Whether the ``>back`` operator is used."""
-    state_lookup: dict[int, str]
-    """Mapping from state index to state name."""
 
 
 class _TimeReferences(NamedTuple):

@@ -36,7 +36,6 @@ import msgspec
 import platformdirs
 import zmq
 from filelock import FileLock
-from psutil import net_if_addrs, pid_exists
 from pydantic import validate_call
 from typing_extensions import Self, TypeForm, TypeVar, override
 from zeroconf import (
@@ -477,7 +476,9 @@ class LocalServiceAdvertisement:
                     continue
 
                 # Remove stale service file if process no longer exists
-                if not pid_exists(info.pid):
+                import psutil  # imported where needed, see pyproject.toml
+
+                if not psutil.pid_exists(info.pid):
                     with contextlib.suppress(OSError):
                         service_file.unlink(missing_ok=True)
                         lock_file.unlink(missing_ok=True)
@@ -1508,8 +1509,10 @@ def _local_ip_addresses() -> set[IPv4Address | IPv6Address]:
     per link, so a remote peer may carry the same one. If the OS refuses to list the
     interfaces, e.g. in a sandbox, only the primary address is known.
     """
+    import psutil  # imported where needed, see pyproject.toml
+
     try:
-        interfaces = net_if_addrs()
+        interfaces = psutil.net_if_addrs()
     except OSError:
         logger.debug('Could not list network interfaces', exc_info=True)
         return {ip_address(get_local_ipv4())}

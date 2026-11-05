@@ -3,20 +3,22 @@
 import datetime as dt
 import re
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from math import inf
+from operator import attrgetter
 from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NamedTuple, cast
 
 import msgspec
-import yaml
-from cachetools import FIFOCache
+from cachetools import LRUCache
 from graphviz import Digraph  # type: ignore[import-untyped]
 from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
     Field,
+    RootModel,
     TypeAdapter,
     ValidationError,
     WrapValidator,
@@ -25,13 +27,11 @@ from pydantic import (
 from pydantic_core import PydanticCustomError
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 from pydantic_extra_types.color import Color, ColorType
-from xxhash import xxh3_64 as _xxh3_64
+from typing_extensions import override
+from xxhash import xxh3_64_digest
 
 from bpod_core.constants import UINT16_MAX, UINT32_MAX
 from bpod_core.misc import ValidatedDict, suggest_similar
-
-# libyaml's C loader is about seven times faster; fall back to pure Python without it
-_YAML_LOADER = getattr(yaml, 'CSafeLoader', yaml.SafeLoader)
 
 
 class _CheckData(NamedTuple):
@@ -59,8 +59,50 @@ def dec_hook(obj_type: type, obj: dict) -> Any:
 
 _timedelta_adapter = TypeAdapter(dt.timedelta)
 
+_msgpack = msgspec.msgpack.Encoder(order='deterministic')
+"""Encodes a state machine's field values for hashing, see :meth:`StateMachine.hash`.
+
+Mappings are encoded sorted by key, so the order their items were set in doesn't
+matter.
+"""
+
+
+def _field_values(model: type[BaseModel]) -> Callable[[BaseModel], Any]:
+    """A getter of a model's field values, for hashing.
+
+    A field holding a :class:`~pydantic.RootModel` contributes its root: msgspec
+    encodes the plain data, not the wrapper.
+    """
+    names = [
+        f'{name}.root'
+        if isinstance(field.annotation, type)
+        and issubclass(field.annotation, RootModel)
+        else name
+        for name, field in model.model_fields.items()
+    ]
+    return attrgetter(*names)
+
+
+def _indexed(values: Callable[[Any], Any], parts: Mapping[int, Any]) -> list:
+    """The (index, field values) of indexed parts, by index, for hashing."""
+    return [(index, values(parts[index])) for index in sorted(parts)]
+
+
+_STATE_NAME_PATTERN = re.compile(r'^(?!>)(?!exit$)(?!back$).+$')
+_OPERATOR_PATTERN = re.compile(r'^>.+$')
+
+
+# The wrap validators below return early for values certain to pass: calling the handler
+# is what makes them slow. Anything else takes the handler, which words the errors, and
+# checks that strings beyond ASCII are valid Unicode.
+
 
 def _validate_seconds(v: Any, h: ValidatorFunctionWrapHandler) -> float:
+    # every field using this accepts these; larger ints may not convert to a float
+    if type(v) is float and 0.0 <= v < inf:
+        return v
+    if type(v) is int and 0 <= v < 2**53:
+        return float(v)
     try:
         return cast('float', h(v))
     except ValidationError as e1:
@@ -84,6 +126,8 @@ def _validate_state_timer(v: Any, h: ValidatorFunctionWrapHandler) -> float:
 
 
 def _validate_state_name(v: Any, h: ValidatorFunctionWrapHandler) -> 'StateName':
+    if type(v) is str and v.isascii() and _STATE_NAME_PATTERN.match(v):
+        return v
     try:
         return cast('StateName', h(v))
     except ValidationError as e:
@@ -129,6 +173,17 @@ def _validate_operator(v: Any, h: ValidatorFunctionWrapHandler) -> 'Operator':
             detail = f"Invalid State Machine Operator '{v}' - {detail}"
             raise PydanticCustomError(error_type, detail) from e
         raise
+
+
+def _validate_target(v: Any, h: ValidatorFunctionWrapHandler) -> 'Target':
+    # also spares operators from first failing as a state name
+    if (
+        type(v) is str
+        and v.isascii()
+        and (_STATE_NAME_PATTERN.match(v) or _OPERATOR_PATTERN.match(v))
+    ):
+        return v
+    return cast('Target', h(v))
 
 
 def _validate_binary_string(v: Any) -> Any:
@@ -310,7 +365,7 @@ StateName = Annotated[
         title='State Name',
         description='The name of the state',
         min_length=1,
-        pattern=re.compile(r'^(?!>)(?!exit$)(?!back$).+$'),
+        pattern=_STATE_NAME_PATTERN,
         strict=True,
     ),
     WrapValidator(_validate_state_name),
@@ -331,13 +386,16 @@ Operator = Annotated[
     Field(
         title='State Machine Operator',
         description='A state machine operator',
-        pattern=re.compile(r'^>.+$'),
+        pattern=_OPERATOR_PATTERN,
         min_length=2,
         examples=['>exit', '>back'],
         strict=True,
     ),
     WrapValidator(_validate_operator),
 ]
+
+Target = Annotated[StateName | Operator, WrapValidator(_validate_target)]
+"""A valid target of a state transition."""
 
 
 class Actions(ValidatedDict[OutputActionName, OutputActionValue], title='Actions'):
@@ -350,16 +408,12 @@ class Actions(ValidatedDict[OutputActionName, OutputActionValue], title='Actions
         ) -> None: ...
 
 
-class Transitions(
-    ValidatedDict[Event, StateName | Operator], title='State Transitions'
-):
+class Transitions(ValidatedDict[Event, Target], title='State Transitions'):
     """A collection of state transitions."""
 
     if TYPE_CHECKING:
 
-        def __init__(
-            self, root: dict[Event, StateName | Operator] | None = ...
-        ) -> None: ...
+        def __init__(self, root: dict[Event, Target] | None = ...) -> None: ...
 
 
 class State(BaseModel, title='State'):
@@ -429,10 +483,30 @@ class Condition(BaseModel, title='Condition'):
         return f'{self.__class__.__name__}({values})'
 
 
+# the models' field values, for StateMachine.hash
+_state_values = _field_values(State)
+_global_timer_values = _field_values(GlobalTimer)
+_global_counter_values = _field_values(GlobalCounter)
+_condition_values = _field_values(Condition)
+
+
 class States(ValidatedDict[StateName, State], title='States'):
     """A collection of states."""
 
     model_config = ConfigDict(json_schema_extra={'additionalProperties': False})
+
+    @override
+    def __setitem__(self, key: StateName, value: State) -> None:
+        # a State is valid already, so only a key that may not be needs validating
+        if (
+            type(value) is State
+            and type(key) is str
+            and key.isascii()
+            and _STATE_NAME_PATTERN.match(key)
+        ):
+            self.root[key] = value
+        else:
+            super().__setitem__(key, value)
 
     @property
     def transition_targets(self) -> set[str]:
@@ -503,7 +577,7 @@ class StateMachine(BaseModel, title='State Machine'):
     )
     """A dictionary of conditions."""
 
-    _validation_cache: ClassVar[FIFOCache[bytes, _CheckData]] = FIFOCache(maxsize=1024)
+    _validation_cache: ClassVar[LRUCache[bytes, _CheckData]] = LRUCache(maxsize=128)
     """Cache holding hashes of successfully validated state machine instances."""
 
     _validation_lock: ClassVar[threading.Lock] = threading.Lock()
@@ -521,7 +595,7 @@ class StateMachine(BaseModel, title='State Machine'):
         self,
         name: StateName,
         timer: StateTimer = 0.0,
-        transitions: Mapping[Event, StateName | Operator] | None = None,
+        transitions: Mapping[Event, Target] | None = None,
         actions: Mapping[OutputActionName, OutputActionValue] | None = None,
         comment: StateComment | None = None,
     ) -> None:
@@ -1016,8 +1090,12 @@ class StateMachine(BaseModel, title='State Machine'):
             If the YAML string is not valid or does not represent a
             :class:`StateMachine`.
         """
+        import yaml  # imported where needed, see pyproject.toml
+
+        # libyaml's C loader is about seven times faster; fall back to pure Python
+        loader = getattr(yaml, 'CSafeLoader', yaml.SafeLoader)
         try:
-            return cls.model_validate(yaml.load(yaml_str, Loader=_YAML_LOADER))  # noqa: S506
+            return cls.model_validate(yaml.load(yaml_str, Loader=loader))  # noqa: S506
         except (ValidationError, yaml.YAMLError, UnicodeError) as e:
             # libyaml raises UnicodeError for a str it can't encode, e.g. with a lone
             # surrogate, where the pure-Python loader raises a YAMLError
@@ -1062,17 +1140,34 @@ class StateMachine(BaseModel, title='State Machine'):
         return cls.from_yaml(data)
 
     def _hash(self) -> bytes:
-        try:
-            # when serializing to JSON, we first try to use Pydantic's private API,
-            # which avoids an unnecessary string conversion
-            return _xxh3_64(self.__pydantic_serializer__.to_json(self)).digest()
-        except (AttributeError, TypeError):
-            # if that fails, we fall back to the public API
-            return _xxh3_64(self.model_dump_json().encode()).digest()
+        # the models' field values, walked directly and packed with msgspec: several
+        # times faster than pydantic's serializer, which run() paid for every trial.
+        # Every field of every model takes part. The states keep their order (the
+        # first is the initial state), as two lists: map() beats a comprehension
+        # from ten states up. The indexed parts go by index, and the encoder sorts
+        # the mappings within: the order anything was set in doesn't matter.
+        states = self.states.root
+        image = (
+            self.name,
+            list(states),
+            list(map(_state_values, states.values())),
+            _indexed(_global_timer_values, self.global_timers.root),
+            _indexed(_global_counter_values, self.global_counters.root),
+            _indexed(_condition_values, self.conditions.root),
+        )
+        return xxh3_64_digest(_msgpack.encode(image))
 
     @property
     def hash(self) -> bytes:
-        """Hash of the state machine."""
+        """Hash of the state machine: 8 bytes over every field of every part of it.
+
+        Equal state machines hash equal, however they were built or loaded: the
+        order the states follow each other in matters (the first is the initial
+        state), the order anything else was set in doesn't. Any change to a name,
+        comment, timer, transition, action, global timer, counter or condition
+        changes the hash: it identifies the state machine, not only what the Bpod
+        runs of it.
+        """
         return self._hash()
 
     @property

@@ -193,7 +193,6 @@ autodoc_default_options = {
 }
 autodoc_type_aliases = {
     'polars.dataframe.frame.DataFrame': 'polars.DataFrame',
-    'polars.lazyframe.frame.LazyFrame': 'polars.LazyFrame',
 }
 
 # -- Autosummary ---------------------------------------------------------------
@@ -242,7 +241,6 @@ napoleon_type_aliases = {
     'StateMachine': '~bpod_core.fsm.StateMachine',
     'SimpleQueue': '~queue.SimpleQueue',
     'DataFrame': 'polars.DataFrame',
-    'LazyFrame': 'polars.LazyFrame',
     'BpodInfo': '~bpod_core.bpod.structs.BpodInfo',
     'Digraph': '~graphviz.Digraph',
     'ListPortInfo': '~serial.tools.list_ports.ListPortInfo',

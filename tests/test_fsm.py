@@ -1,4 +1,4 @@
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
 from pathlib import Path
 
 import msgspec
@@ -6,7 +6,15 @@ import numpy as np
 import pytest
 from pydantic import ValidationError, create_model
 
-from bpod_core.fsm import State, StateMachine, Transitions, dec_hook, enc_hook
+from bpod_core.fsm import (
+    GlobalTimer,
+    State,
+    StateMachine,
+    States,
+    Transitions,
+    dec_hook,
+    enc_hook,
+)
 
 
 class TestEncDecHooks:
@@ -499,6 +507,70 @@ class TestValidation:
         assert fsm.states['a'].actions == {'PWM1': 65535}
 
 
+def _skipping_early_returns(value: object) -> object:
+    """`value` as an instance of a subclass, which early returns don't accept."""
+    return type('Subclass', (type(value),), {})(value)
+
+
+def _set_state(name: str) -> States:
+    states = States()
+    states[name] = State()
+    return states
+
+
+def _outcome(validate: Callable[..., object], value: object) -> str:
+    """What `validate` makes of `value`; a string, to compare NaN and -0.0 as well."""
+    try:
+        return repr(validate(value))
+    except ValidationError:
+        return 'invalid'
+
+
+class TestEarlyReturns:
+    @pytest.mark.parametrize(
+        'validate',
+        [lambda s: Transitions({'Tup': s}), lambda s: States({s: State()}), _set_state],
+    )
+    @pytest.mark.parametrize(
+        'value', ['a', '>x', 'exit', 'back', '>', '', 'a\n', '>\n', 'é', 'a\ud800']
+    )
+    def test_strings(self, validate, value):
+        """A string gets the same result with an early return as without one."""
+        assert _outcome(validate, value) == _outcome(
+            validate, _skipping_early_returns(value)
+        )
+
+    @pytest.mark.parametrize(
+        'validate',
+        [
+            lambda t: State(timer=t).timer,
+            lambda t: GlobalTimer(duration=t).duration,
+            lambda t: GlobalTimer(duration=1, onset_delay=t).onset_delay,
+            lambda t: GlobalTimer(duration=1, loop_interval=t).loop_interval,
+        ],
+    )
+    @pytest.mark.parametrize(
+        'value',
+        [
+            *(0.0, -0.0, 1.5, 5e-324, -1.0, np.inf, -np.inf, np.nan),
+            *(0, 1, -1, 2**53 - 1, 2**53, 2**53 + 1, 10**309),
+        ],
+    )
+    def test_seconds(self, validate, value):
+        """A number gets the same result with an early return as without one."""
+        assert _outcome(validate, value) == _outcome(
+            validate, _skipping_early_returns(value)
+        )
+
+    def test_setting_a_state_stores_it(self):
+        """A valid name and state are stored as they are; others are still validated."""
+        states, state = States(), State()
+        states['a'] = state
+        states['b'] = {'timer': 1}
+        assert states['a'] is state
+        assert states['b'].timer == 1.0
+
+
 class TestCheck:
     def test_caching(self, mocker):
         """Check results are cached."""
@@ -549,18 +621,6 @@ class TestCheck:
 
 
 class TestHash:
-    def test_private_api_available(self):
-        """Verify that Pydantic's private serializer API is available."""
-        fsm = StateMachine()
-        assert hasattr(fsm, '__pydantic_serializer__')
-        assert hasattr(fsm.__pydantic_serializer__, 'to_json')
-        output = fsm.__pydantic_serializer__.to_json(
-            fsm,
-            exclude_defaults=True,
-            warnings=False,
-        )
-        assert isinstance(output, bytes)
-
     def test_hash_bytes_output(self):
         """_hash() should return bytes."""
         fsm = StateMachine()
@@ -582,13 +642,66 @@ class TestHash:
         fsm2.add_state('state1', timer=1.0, transitions={'tup': '>exit'})
         assert fsm1.hash == fsm2.hash, 'Hash should be consistent'
 
-    def test_hash_differs_for_different_fsms(self):
-        """Different FSMs should produce different hashes."""
-        fsm1 = StateMachine()
-        fsm1.add_state('state1')
-        fsm2 = StateMachine()
-        fsm2.add_state('state1', timer=2.0)  # Different timer (not default)
-        assert fsm1.hash != fsm2.hash, 'Hash should differ'
+    def test_hash_covers_every_field(self):
+        """A change to any field of any part of the machine changes the hash."""
+        fsm = StateMachine()
+        fsm.add_state('a', timer=1.0, transitions={'Tup': '>exit'}, actions={'PWM1': 1})
+        fsm.set_global_timer(0, 1.0)
+        fsm.set_global_counter(0, 'Tup', 2)
+        fsm.set_condition(0, 'Port1', 1)
+        reference = fsm.hash
+        changes = [
+            lambda: setattr(fsm, 'name', 'other'),
+            lambda: setattr(fsm.states['a'], 'timer', 2.0),
+            lambda: fsm.states['a'].transitions.__setitem__('Tup', 'a'),
+            lambda: fsm.states['a'].actions.__setitem__('PWM1', 2),
+            lambda: setattr(fsm.states['a'], 'comment', 'noted'),
+            lambda: setattr(fsm.global_timers[0], 'duration', 2.0),
+            lambda: setattr(fsm.global_counters[0], 'threshold', 3),
+            lambda: setattr(fsm.conditions[0], 'value', 0),
+        ]
+        hashes = [reference]
+        for change in changes:
+            change()
+            hashes.append(fsm.hash)
+        assert len(set(hashes)) == len(hashes)  # every change made a difference
+
+    def test_hash_ignores_the_order_parts_were_set_in(self):
+        """Transitions, actions, timers, counters and conditions set in another order
+        hash equal."""
+        machines = []
+        for order in ((0, 1, 2), (2, 1, 0)):
+            fsm = StateMachine()
+            transitions = [('Tup', '>exit'), ('Port1_High', '>exit'), ('BNC1_Low', 'a')]
+            actions = [('PWM1', 1), ('Valve1', 1), ('PWM2', 2)]
+            fsm.add_state(
+                'a',
+                1.0,
+                transitions=dict(transitions[i] for i in order),
+                actions=dict(actions[i] for i in order),
+            )
+            for i in order:
+                fsm.set_global_timer(i, 1.0 + i)
+                fsm.set_global_counter(i, 'Tup', 2 + i)
+                fsm.set_condition(i, 'Port1', i % 2)
+            machines.append(fsm)
+        assert machines[0] == machines[1]
+        assert machines[0].hash == machines[1].hash
+
+    def test_states_order_is_part_of_the_hash(self):
+        """The states' order matters: the first state is the initial state."""
+        first, second = StateMachine(), StateMachine()
+        first.add_state('a', 1.0, transitions={'Tup': 'b'})
+        first.add_state('b', 1.0, transitions={'Tup': '>exit'})
+        second.add_state('b', 1.0, transitions={'Tup': '>exit'})
+        second.add_state('a', 1.0, transitions={'Tup': 'b'})
+        assert first.hash != second.hash
+
+    def test_hash_is_the_same_after_a_round_trip(self, state_machine):
+        """A state machine loaded from its JSON hashes like the original."""
+        state_machine.set_global_timer(0, 1.5, channel='PWM2', value_on=255)
+        loaded = StateMachine.from_json(state_machine.to_json())
+        assert loaded.hash == state_machine.hash
 
     def test_hash_validation_caching(self):
         """Hash should be used for validation caching."""

@@ -99,9 +99,14 @@ def _counter_trial() -> StateMachine:
 def _trial_events(
     bpod: Bpod, fsm: StateMachine, during: Callable[[], object] | None = None
 ) -> Events:
-    """Run `fsm`: its events, and the trial's end, as (state, event, cycle)."""
+    """Run `fsm`: its events, and the trial's end, as (state, event, cycle).
+
+    `during` is called once the trial has entered its first state: run() returns as
+    soon as the machine is queued, which may be before the Bpod has started it.
+    """
     bpod.run(fsm)
     if during is not None:
+        bpod.peek_data(trigger_states=[next(iter(fsm.states))])
         during()
     bpod.wait()
     data = bpod.get_data()
@@ -134,6 +139,47 @@ def _large() -> StateMachine:
     fsm.states['s0'].timer = 0.02
     fsm.states['s0'].transitions['Tup'] = '>exit'
     return fsm
+
+
+def _largest(bpod: Bpod) -> StateMachine:
+    """A trial through every state in turn, in about the largest machine the Bpod takes.
+
+    Each state lasts a cycle, the last 100 ms: long enough for the next machine to
+    arrive meanwhile, also over full-speed USB. Transitions on events that never fire -
+    global timers and counters nothing starts, softcodes nobody sends, module ports
+    without a module - fill the machine up to the firmware's limit.
+    """
+    dead = [
+        event
+        for event in bpod.input_event_names
+        if event.startswith(('GlobalTimer', 'GlobalCounter', 'SoftCode'))
+    ]
+    for module in bpod.modules.values():
+        if not module.is_connected:
+            dead += module.event_names
+    names = [f's{i}' for i in range(bpod._hardware.max_states - 1)]
+
+    def machine(n_dead: int) -> StateMachine:
+        """The trial, with `n_dead` dead transitions spread over its states."""
+        fsm = _chain(*((name, 1e-4, {}) for name in names[:-1]), (names[-1], 0.1, {}))
+        for i, state in enumerate(fsm.states.values()):
+            n = n_dead // len(names) + (i < n_dead % len(names))
+            state.transitions.update(dict.fromkeys(dead[:n], names[0]))
+        return fsm
+
+    def fits(n_dead: int) -> bool:
+        fsm = machine(n_dead)
+        try:
+            bpod._compiler.compile(state_machine=fsm, validate=False)
+        except ValueError:  # more bytes than the Bpod takes
+            return False
+        return True
+
+    low, high = 0, len(names) * len(dead)  # the most dead transitions that fit
+    while low < high:
+        middle = (low + high + 1) // 2
+        low, high = (middle, high) if fits(middle) else (low, middle - 1)
+    return machine(low)
 
 
 def _timed(events: Events, prefix: str) -> list[tuple[str, int]]:
@@ -209,8 +255,9 @@ def _check_analog_samples(bpod: Bpod, data: pl.DataFrame) -> None:
     the samples by counting them, so a lost one shifts all later ones by a sample
     period, which each later trial's first sample shows nine times in ten.
     """
-    period, cycle = bpod._analog_sample_period_us, bpod._hardware.cycle_period_us
-    assert period, 'no analog recording'
+    recorder, cycle = bpod._analog_recorder, bpod._hardware.cycle_period_us
+    assert recorder is not None, 'no analog recording'
+    period = recorder.sample_period_us
     trial_starts = data.filter(pl.col('Type') == 'TrialStart')
     times = pl.col('Time').dt.epoch('us')
     samples = (
@@ -228,6 +275,9 @@ def _check_analog_samples(bpod: Bpod, data: pl.DataFrame) -> None:
             f'trial {trial}: {n} analog samples in {expected:.1f} sample periods'
             f'{span}; the next trial starts {next_start - start} µs after it'
         )
-        assert first is not None and -cycle < first - start <= period + cycle, (
+        if first is None:  # a trial shorter than a sample period may get no sample
+            assert expected < 1, f'trial {trial}: no analog sample in {expected:.1f}'
+            continue
+        assert -cycle < first - start <= period + cycle, (
             f'trial {trial}: first analog sample {first - start} µs after its start'
         )

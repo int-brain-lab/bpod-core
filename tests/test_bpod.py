@@ -1,3 +1,4 @@
+import contextlib
 import inspect
 import logging
 import re
@@ -29,7 +30,12 @@ from bpod_core.bpod import (
     _machine_name,
     discover_bpod,
 )
-from bpod_core.bpod._threads import SoftcodeThread
+from bpod_core.bpod._threads import (
+    _TRIAL_DATA_SCHEMA,
+    _WAIT_SLICE_S,
+    SoftcodeThread,
+    _Trial,
+)
 from bpod_core.bpod.constants import (
     _REMOTE_CALL_METHODS,
     _REMOTE_DATA_METHODS,
@@ -37,6 +43,7 @@ from bpod_core.bpod.constants import (
     FlexIOThresholdMode,
     FlexIOThresholdPolarity,
 )
+from bpod_core.bpod.flexio import _AnalogRecorder
 from bpod_core.bpod.structs import (
     BpodEventUnion,
     EventTrialStart,
@@ -57,6 +64,8 @@ from bpod_core.constants import (
 )
 from bpod_core.fsm import StateMachine
 from bpod_core.ipc import ErrorData, RemoteError, ServiceHost
+
+from .conftest import finish_trial, held_by_another_thread, make_trial, take_replies
 
 # the Bpod fixtures patch this method; keep the original for testing it directly
 _DETECT_ADDITIONAL_SERIAL_PORTS = Bpod._detect_additional_serial_ports
@@ -551,7 +560,7 @@ class TestResetSessionClock:
         assert len(caplog.records) == 1
         assert caplog.records[0].levelname == 'DEBUG'
         assert 'Resetting' in caplog.records[0].message
-        mock_bpod.is_running = True
+        take_replies(mock_bpod.serial0)
         with pytest.raises(BpodError, match=r'Cannot use Bpod.reset_session_clock'):
             Bpod.reset_session_clock(mock_bpod)
 
@@ -680,11 +689,9 @@ class TestRequiresIdle:
         assert requires_idle.keys() - idle_only == _ALLOWED_WHILE_RUNNING
 
     @pytest.mark.parametrize('name', sorted(_IDLE_ONLY_CALLS))
-    def test_refused_while_running(self, name, mock_bpod_25, mock_ext_serial, mocker):
+    def test_refused_while_running(self, name, mock_bpod_25, mock_ext_serial):
         """Refused members raise and send nothing to the Bpod."""
-        mocker.patch.object(
-            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
-        )
+        take_replies(mock_ext_serial)
         mock_ext_serial.mock_responses.clear()  # any write would raise AssertionError
         with pytest.raises(BpodError, match=f'Cannot use {re.escape(name)} while'):
             _IDLE_ONLY_CALLS[name](mock_bpod_25)
@@ -799,22 +806,6 @@ class TestSendSoftcode:
             mock_bpod_25.send_softcode(n_softcodes)
 
 
-@pytest.fixture
-def mock_threads(mocker):
-    """Replace the trial threads with mocks that are never alive.
-
-    Returns the ReadThread and EventThread class mocks.
-    """
-    classes = (
-        mocker.patch('bpod_core.bpod.ReadThread'),
-        mocker.patch('bpod_core.bpod.EventThread'),
-    )
-    for cls in classes:
-        cls.return_value.is_alive.return_value = False
-    classes[0].return_value.error = None  # the reader ended without an error
-    return classes
-
-
 class TestIsRunning:
     @pytest.fixture
     def fsm(self):
@@ -822,22 +813,29 @@ class TestIsRunning:
         fsm.add_state('a', 0, {'Tup': '>exit'})
         return fsm
 
-    def test_true_while_handing_over(self, fsm, mock_bpod_25, mock_threads):
-        """is_running stays true while a queued state machine's threads are set up.
+    def test_registered_before_sending(
+        self, fsm, mock_bpod_25, mock_ext_serial, mocker
+    ):
+        """A trial being sent counts as running: the Bpod may start it any time."""
+        seen = []
+        write = mock_ext_serial.write
 
-        The Bpod starts a queued state machine as soon as the previous one ends, while
-        run() still waits for the previous event thread to drain.
-        """
-        observed = []
-        mock_bpod_25._read_thread = MagicMock(
-            error=None, **{'is_alive.return_value': False}
-        )
-        mock_bpod_25._event_thread = MagicMock(**{'is_alive.return_value': True})
-        mock_bpod_25._event_thread.join.side_effect = lambda: observed.append(
-            mock_bpod_25.is_running
-        )
+        def record_and_write(data):
+            if data[:1] == b'C':
+                seen.append(mock_bpod_25.is_running)
+            return write(data)
+
+        mocker.patch.object(mock_ext_serial, 'write', side_effect=record_and_write)
         mock_bpod_25.run(fsm)
-        assert observed == [True]
+        assert seen == [True]
+        mock_bpod_25.wait(timeout=2)
+        assert not mock_bpod_25.is_running
+
+    def test_run_returns_while_the_trial_runs(self, fsm, mock_bpod_2p, blocked_reader):
+        """run() returns once the machine is sent: it doesn't wait for the trial."""
+        mock_bpod_2p.run(fsm)
+        assert mock_bpod_2p.is_running
+        assert blocked_reader.trials.get_nowait() is mock_bpod_2p._last_sent
 
     def test_false_after_failed_send(self, fsm, mock_bpod_25, mock_ext_serial, mocker):
         """A state machine that couldn't be sent doesn't count as running."""
@@ -845,20 +843,222 @@ class TestIsRunning:
         with pytest.raises(SerialException):
             mock_bpod_25.run(fsm)
         assert not mock_bpod_25.is_running
+        assert not mock_bpod_25._undelivered
+        # the Bpod may hold the machine: the reader is ended, the connection suspect
+        assert not mock_bpod_25._read_thread.is_alive()
+        assert not mock_ext_serial.read_lock.locked()
+        assert mock_bpod_25._out_of_sync
+
+    def test_false_after_interrupted_registration(self, fsm, mock_bpod_25):
+        """Ctrl+C while the trial is being registered doesn't leave it running.
+
+        Nothing was sent, so the connection stays in sync.
+        """
+        lock = MagicMock()
+        lock.__enter__.side_effect = [KeyboardInterrupt, None]  # the 2nd: _drop
+        mock_bpod_25._undelivered_lock = lock
+        with pytest.raises(KeyboardInterrupt):
+            mock_bpod_25.run(fsm)
+        assert not mock_bpod_25.is_running
+        assert not mock_bpod_25._undelivered
+        assert not mock_bpod_25._out_of_sync
+
+    def test_get_data_moves_on_after_failed_send(
+        self, fsm, mock_bpod_25, mock_ext_serial, mocker
+    ):
+        """A get_data() waiting for a trial that couldn't be sent moves on at once."""
+        # long enough that only the failure can wake it within the test
+        mocker.patch('bpod_core.bpod._threads._WAIT_SLICE_S', 60)
+        results = []
+
+        def get_data() -> None:
+            with contextlib.suppress(BpodError):
+                results.append(mock_bpod_25.get_data())
+            results.append('returned')
+
+        waiter = threading.Thread(target=get_data, daemon=True)
+        write = mock_ext_serial.write
+
+        def wait_then_fail(data):
+            if data[:1] != b'C':
+                return write(data)
+            waiter.start()
+            time.sleep(0.02)  # it waits for the trial being sent
+            raise SerialException
+
+        mocker.patch.object(mock_ext_serial, 'write', side_effect=wait_then_fail)
+        with pytest.raises(SerialException):
+            mock_bpod_25.run(fsm)
+        waiter.join(2)
+        assert results == ['returned']
+
+
+class TestSpareSlot:
+    """is_running, is_queued and is_ready follow the Bpod's spare machine slot."""
+
+    def test_idle(self, mock_bpod_2p):
+        assert not mock_bpod_2p.is_running
+        assert not mock_bpod_2p.is_queued
+        assert mock_bpod_2p.is_ready
+
+    def test_running(self, mock_bpod_2p, blocked_reader):
+        """A running trial leaves the slot free."""
+        assert mock_bpod_2p.is_running
+        assert not mock_bpod_2p.is_queued
+        assert mock_bpod_2p.is_ready
+
+    def test_queued(self, mock_bpod_2p, blocked_reader):
+        """A trial sent behind the running one takes the slot until it starts."""
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        mock_bpod_2p.run(fsm)
+        assert mock_bpod_2p.is_running
+        assert mock_bpod_2p.is_queued
+        assert not mock_bpod_2p.is_ready
+        mock_bpod_2p._last_sent.started.set()
+        assert mock_bpod_2p.is_running
+        assert not mock_bpod_2p.is_queued
+        assert mock_bpod_2p.is_ready
+
+    def test_peek_follows_the_trial_being_read(self, mock_bpod_2p, blocked_reader):
+        """peek_data() shows the trial being read, not the one queued behind it."""
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        mock_bpod_2p.run(fsm)
+        queued = mock_bpod_2p._last_sent
+        assert queued is not blocked_reader.trial
+        mock_bpod_2p.peek_data()
+        blocked_reader.trial.recorder.peek.assert_called_once_with(None)
+        assert not queued.recorder._finished  # nothing recorded yet
+
+    def test_wait_covers_a_queued_trial(self, mock_bpod_2p, blocked_reader):
+        """wait() returns once the queued trial has ended too."""
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        mock_bpod_2p.run(fsm)
+        queued = mock_bpod_2p._last_sent
+        blocked_reader.release.set()
+        with pytest.raises(TimeoutError, match=f'#{queued.number} did not finish'):
+            mock_bpod_2p.wait(timeout=0.05)
+        finish_trial(queued)
+        mock_bpod_2p.wait(timeout=2)
+        assert not mock_bpod_2p.is_running
+
+
+class TestLateStartCheck:
+    @pytest.mark.parametrize('running', [True, False])
+    def test_only_a_trial_sent_during_another_is_checked(
+        self, mock_bpod_2p, running, request
+    ):
+        """A trial sent while the one before runs is marked queued, for the check."""
+        if running:
+            request.getfixturevalue('blocked_reader')
+        fsm = StateMachine()
+        fsm.add_state('a', 0, {'Tup': '>exit'})
+        mock_bpod_2p.run(fsm)
+        assert mock_bpod_2p._last_sent.queued is running
+
+    def test_late_starts_counted_when_closing(self, mock_bpod_25, caplog):
+        """Closing the connection counts its late starts."""
+        mock_bpod_25._late_starts.record(1, 500)
+        mock_bpod_25._late_starts.record(2, 900)
+        with caplog.at_level(logging.WARNING):
+            mock_bpod_25.close()
+        assert '2 trials started late, by up to 0.9 ms' in caplog.text
 
 
 class TestGetData:
-    def test_waits_for_event_thread(self, mock_bpod_25):
-        """Data the event thread is still processing is waited for."""
+    @staticmethod
+    def _queue(bpod: Bpod, *items: pl.DataFrame | BpodError) -> list[_Trial]:
+        """Add trials, decoded into the given frames or failed with the given errors."""
+        trials = []
+        for number, item in enumerate(items):
+            trial = make_trial(number)
+            if isinstance(item, BpodError):
+                trial.decode_error = item
+            else:
+                trial.recorder = MagicMock(**{'to_frame.return_value': item})
+            trials.append(trial)
+        bpod._undelivered.extend(trials)
+        return trials
 
-        def finish():
-            time.sleep(0.05)
-            mock_bpod_25._trial_data.put(pl.LazyFrame({'Trial': [0]}))
-
-        mock_bpod_25._read_thread = None
-        mock_bpod_25._event_thread = threading.Thread(target=finish)
-        mock_bpod_25._event_thread.start()
+    def test_waits_for_the_trial_being_decoded(self, mock_bpod_25, mocker):
+        """A trial still being decoded is waited for, in slices: Ctrl+C gets through."""
+        (trial,) = self._queue(mock_bpod_25, pl.DataFrame({'Trial': [0]}))
+        trial.decoded.clear()
+        wait = mocker.spy(trial.decoded, 'wait')
+        threading.Timer(0.05, trial.decoded.set).start()
         assert mock_bpod_25.get_data()['Trial'].to_list() == [0]
+        wait.assert_called_with(_WAIT_SLICE_S)
+
+    def test_pops_queued_trials(self, mock_bpod_25):
+        """Queued trials come out one at a time, or all at once."""
+        frames = [pl.DataFrame({'Trial': [trial]}) for trial in range(3)]
+        self._queue(mock_bpod_25, *frames)
+        assert mock_bpod_25.get_data(concat=False)['Trial'].to_list() == [0]
+        assert mock_bpod_25.get_data()['Trial'].to_list() == [1, 2]
+
+    def test_concat_stops_at_a_trial_still_being_decoded(self, mock_bpod_25):
+        """Only decoded trials before it come out; the rest stay in order."""
+        frames = [pl.DataFrame({'Trial': [trial]}) for trial in range(3)]
+        trials = self._queue(mock_bpod_25, *frames)
+        trials[1].decoded.clear()
+        assert mock_bpod_25.get_data()['Trial'].to_list() == [0]
+        trials[1].decoded.set()
+        assert mock_bpod_25.get_data()['Trial'].to_list() == [1, 2]
+
+    def test_failed_trials_raise_and_keep_the_others(self, mock_bpod_25):
+        """Each failed trial raises once; the other trials stay, in the order sent."""
+        self._queue(
+            mock_bpod_25,
+            pl.DataFrame({'Trial': [0]}),
+            BpodError('Failed to decode trial #1'),
+            pl.DataFrame({'Trial': [2]}),
+            BpodError('Failed to decode trial #3'),
+        )
+        with pytest.raises(BpodError, match='trial #1'):
+            mock_bpod_25.get_data()
+        with pytest.raises(BpodError, match='trial #3'):
+            mock_bpod_25.get_data()
+        assert mock_bpod_25.get_data()['Trial'].to_list() == [0, 2]
+
+    def test_failed_trial_raises_when_popped_alone(self, mock_bpod_25):
+        """With `concat=False`, a failed trial raises in its turn."""
+        self._queue(
+            mock_bpod_25,
+            BpodError('Failed to decode trial #0'),
+            pl.DataFrame({'Trial': [1]}),
+        )
+        with pytest.raises(BpodError, match='trial #0'):
+            mock_bpod_25.get_data(concat=False)
+        assert mock_bpod_25.get_data(concat=False)['Trial'].to_list() == [1]
+
+    def test_second_caller_is_not_left_waiting(self, mock_bpod_25):
+        """Of two callers waiting for one trial, one gets it and the other an error."""
+        (trial,) = self._queue(mock_bpod_25, pl.DataFrame({'Trial': [0]}))
+        trial.decoded.clear()
+        results = []
+
+        def get_data() -> None:
+            try:
+                results.append(mock_bpod_25.get_data().height)
+            except BpodError as e:
+                results.append(str(e))
+
+        callers = [threading.Thread(target=get_data, daemon=True) for _ in range(2)]
+        for caller in callers:
+            caller.start()
+        time.sleep(0.02)  # both wait
+        trial.decoded.set()
+        for caller in callers:
+            caller.join(2)
+        assert sorted(results, key=str) == [1, 'No trial data available']
+
+    def test_peek_before_any_trial_is_empty(self, mock_bpod_25):
+        """Without a trial yet, peek_data() returns an empty frame."""
+        frame = mock_bpod_25.peek_data()
+        assert frame.is_empty()
+        assert list(frame.schema.items()) == list(_TRIAL_DATA_SCHEMA.items())
 
     def test_raises_without_data(self, mock_bpod_25):
         """Without a trial running or being processed, there's nothing to wait for."""
@@ -879,11 +1079,6 @@ class TestResettableActions:
 
 
 class TestRun:
-    @pytest.fixture(autouse=True)
-    def patch_run_state_machine(self, mocker):
-        """Prevent _run_state_machine from starting threads in wire-format tests."""
-        mocker.patch.object(Bpod, '_run_state_machine')
-
     @pytest.fixture
     def fsm_basic(self):
         fsm = StateMachine()
@@ -1131,6 +1326,7 @@ class TestRun:
         idx = mock_bpod_2p._compiler.actions.index('Flex4')
         assert struct.pack('<HHH', 1, idx, 200) in mock_bpod_2p.serial0.last_write
 
+        mock_bpod_2p.wait(timeout=2)
         mock_bpod_2p._state_machine_started = False  # as after reconnecting
         mock_bpod_2p.flex_io['Flex4'].channel_type = FlexIOChannelType.ANALOG_OUTPUT
         mock_bpod_2p.run(fsm)
@@ -1148,13 +1344,74 @@ class TestRun:
         with pytest.raises(ValueError, match='must not exceed 255'):
             bpod.validate_state_machine(fsm)
 
-    def test_run_while_running(self, fsm_basic, mock_bpod_25, mocker):
-        """A state machine can be queued while another one is running."""
-        mocker.patch.object(
-            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
-        )
+    def test_run_while_running(self, fsm_basic, mock_bpod_2p, blocked_reader):
+        """A state machine can be queued while another one is running.
+
+        The running trial's reader keeps the port's replies, and gets the trial.
+        """
+        mock_bpod_2p.run(fsm_basic)
+        assert mock_bpod_2p.serial0.last_write.startswith(b'C')
+        assert mock_bpod_2p.serial0.read_lock.locked()
+        assert blocked_reader.trials.get_nowait() is mock_bpod_2p._last_sent
+
+    def test_run_takes_the_replies_for_the_reader(
+        self, fsm_basic, mock_bpod_25, mocker
+    ):
+        """Before sending, run() takes the port's replies for the trial's reader."""
+        serial0 = mock_bpod_25.serial0
+        taken = []
+        write = serial0.write
+
+        def note_and_write(data):
+            taken.append(serial0.read_lock.locked())
+            write(data)
+
+        mocker.patch.object(serial0, 'write', side_effect=note_and_write)
         mock_bpod_25.run(fsm_basic)
-        assert mock_bpod_25.serial0.last_write.startswith(b'C')
+        assert taken == [True]
+        mock_bpod_25.wait(timeout=2)
+        assert not serial0.read_lock.locked()  # given back by the reader
+
+    def test_run_refused_while_another_thread_uses_the_bpod(
+        self, fsm_basic, mock_bpod_25
+    ):
+        """A command on another thread refuses run(); nothing is sent."""
+        mock_bpod_25.serial0.last_write = b''
+        with (
+            held_by_another_thread(mock_bpod_25.serial0.exclusive_reads()),
+            pytest.raises(BpodError, match='another thread is using the Bpod'),
+        ):
+            mock_bpod_25.run(fsm_basic)
+        assert not mock_bpod_25.serial0.last_write.startswith(b'C')
+
+    def test_run_refused_when_closed(self, fsm_basic, mock_bpod_25):
+        """run() on a closed connection is refused; the port's replies stay free."""
+        mock_bpod_25.close()
+        with pytest.raises(BpodError, match='the connection is closed'):
+            mock_bpod_25.run(fsm_basic)
+        assert not mock_bpod_25.serial0.read_lock.locked()
+
+    def test_run_refused_if_the_reader_died_meanwhile(
+        self, fsm_basic, mock_bpod_25, mocker
+    ):
+        """A reader that fails while run() compiles gets no trial, and the replies it
+        released stay free."""
+        reader = mock_bpod_25._read_thread
+        compile_ = mock_bpod_25._compiler.compile
+
+        def compile_while_the_reader_dies(**kwargs):
+            reader.trial = make_trial(3, read_error=RuntimeError('bad opcode'))
+            return compile_(**kwargs)
+
+        mocker.patch.object(
+            mock_bpod_25._compiler, 'compile', side_effect=compile_while_the_reader_dies
+        )
+        mock_bpod_25.serial0.last_write = b''
+        with pytest.raises(BpodError, match='out of sync'):
+            mock_bpod_25.run(fsm_basic)
+        assert not mock_bpod_25.serial0.last_write.startswith(b'C')
+        assert not mock_bpod_25.serial0.read_lock.locked()
+        assert reader.trials.empty()
 
     def test_waits_for_the_machine_sent_before_to_start(
         self, fsm_basic, mock_bpod_2p, blocked_reader, mocker
@@ -1163,22 +1420,24 @@ class TestRun:
 
         The Bpod holds one state machine besides the running one.
         """
-        mocker.patch.object(Bpod, '_run_state_machine')  # no threads outliving the test
-        blocked_reader.trial_started.clear()  # sent, but still loading on the Bpod
+        blocked_reader.trial.started.clear()  # sent, but still loading on the Bpod
+        assert mock_bpod_2p.is_queued
+        assert not mock_bpod_2p.is_ready
         runner = threading.Thread(target=mock_bpod_2p.run, args=(fsm_basic,))
         runner.start()
         runner.join(0.05)
         assert not mock_bpod_2p.serial0.last_write.startswith(b'C')
-        blocked_reader.trial_started.set()
+        blocked_reader.trial.started.set()
         runner.join(2)
         assert mock_bpod_2p.serial0.last_write.startswith(b'C')
+        assert mock_bpod_2p.is_queued  # the one just sent, until it starts
 
     def test_gives_up_a_machine_that_never_starts(
         self, fsm_basic, mock_bpod_2p, blocked_reader, mocker
     ):
         """A machine sent before that never starts is given up, and none is sent."""
         mocker.patch('bpod_core.bpod._START_TIMEOUT_S', 0.05)
-        blocked_reader.trial_started.clear()  # e.g. a deferred start the firmware lost
+        blocked_reader.trial.started.clear()  # e.g. a deferred start the firmware lost
         mock_bpod_2p.serial0.last_write = b''
         with pytest.raises(TimeoutError, match=r'start trial #7 within 0\.05 s'):
             mock_bpod_2p.run(fsm_basic)
@@ -1246,9 +1505,8 @@ class TestRun:
             mock_bpod_25.run(fsm, validate=False)
         assert isinstance(error.value.__cause__, KeyError)
 
-    def test_rerun_refused_after_hardware_change(self, mock_bpod_25, mocker):
+    def test_rerun_refused_after_hardware_change(self, mock_bpod_25):
         """run() without a state machine refuses bytes compiled for other hardware."""
-        mocker.patch.object(Bpod, '_run_state_machine')
         fsm = StateMachine()
         fsm.add_state('a', 0, {'Tup': '>exit'})
         mock_bpod_25.run(fsm)
@@ -1265,12 +1523,12 @@ class TestRun:
 class TestFlexIOSettings:
     """Tests for Bpod.flex_io's configuration properties."""
 
-    def test_run_locks_channel_types_and_rate(self, mock_bpod_2p, mocker):
+    def test_run_locks_channel_types_and_rate(self, mock_bpod_2p):
         """Running a state machine fixes channel types and the sampling rate."""
-        mocker.patch.object(Bpod, '_run_state_machine')
         fsm = StateMachine()
         fsm.add_state('a', 0, {'Tup': '>exit'})
         mock_bpod_2p.run(fsm)
+        mock_bpod_2p.wait(timeout=2)
         with pytest.raises(BpodError, match='Close and reopen the Bpod'):
             mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
         with pytest.raises(BpodError, match='Close and reopen the Bpod'):
@@ -1290,7 +1548,6 @@ class TestFlexIOSettings:
         mock_bpod_2p.open()
         mock_bpod_2p.flex_io['Flex1'].channel_type = FlexIOChannelType.ANALOG_INPUT
         start_reader = mocker.patch.object(Bpod, '_start_analog_reader')
-        mocker.patch.object(Bpod, '_run_state_machine')  # no trial threads
         fsm = StateMachine()
         fsm.add_state('a', 0, {'Tup': '>exit'})
         mock_bpod_2p.run(fsm)
@@ -1315,7 +1572,7 @@ class TestFlexIOSettings:
         flex1.thresholds[0].voltage = 2500
         mock_bpod_2p._state_machine_started = True  # voltages stay changeable
         flex1.thresholds[1].voltage = 1000
-        lookup = mock_bpod_2p._compiler.event_tables.lookup.filter(
+        lookup = mock_bpod_2p._compiler.event_tables.decode_table.filter(
             pl.col('Event').cast(pl.String).str.starts_with('Flex1_Trig')
         )
         values = dict(
@@ -1441,15 +1698,13 @@ class TestFlexIOSettings:
         mock_bpod_2p.flex_io.n_reads_per_sample = 2
         assert mock_bpod_2p.serial0.last_write == struct.pack('<cB', b'o', 2)
 
-    def test_flexio_setters_raise_while_running(self, mock_bpod_2p, mocker):
+    def test_flexio_setters_raise_while_running(self, mock_bpod_2p):
         """FlexIO setters refuse to write to serial0 while a trial is running.
 
         A running trial's read thread also owns serial0; interleaving a FlexIO
         settings write/ack with the live event stream would corrupt it.
         """
-        mocker.patch.object(
-            Bpod, 'is_running', new_callable=PropertyMock
-        ).return_value = True
+        take_replies(mock_bpod_2p.serial0)
         with pytest.raises(BpodError, match='Cannot change FlexIO settings'):
             mock_bpod_2p.flex_io.n_reads_per_sample = 2
         with pytest.raises(BpodError, match='Cannot re-arm an analog threshold'):
@@ -1545,7 +1800,7 @@ class TestClose:
         serial0 = mock_bpod_2p.serial0
         serial0.is_open = True
         serial0.mock_responses[b'X'] = b'\x01\x01\xff' + bytes(16)
-        mock_bpod_2p._analog_reader_thread = MagicMock()
+        _recording(mock_bpod_2p)
         mock_bpod_2p.close()
         assert serial0.last_write == b'X'
         assert len(serial0.response_buffer) == 0
@@ -1565,7 +1820,7 @@ class TestClose:
         mocker.patch.object(Bpod, '_request_disconnect')
         mock_bpod_2p.serial0.is_open = True
         mock_bpod_2p.serial0.mock_responses[b'X'] = b'\x02\x01'
-        mock_bpod_2p._analog_reader_thread = MagicMock()
+        _recording(mock_bpod_2p)
         mock_bpod_2p.close()
         assert 'Unexpected reply to stop command: 0201' in caplog.text
 
@@ -1582,22 +1837,29 @@ class TestClose:
         mock_bpod_2p.close()
         assert len(mock_bpod_2p.serial0.response_buffer) == 0
 
-    def test_closes_analog_reader_thread(self, mock_bpod_2p):
-        """Closing the Bpod stops an active analog reader thread, if present."""
-        reader_thread = MagicMock()
-        mock_bpod_2p._analog_reader_thread = reader_thread
+    def test_stops_the_analog_reader_after_the_stop_command(self, mock_bpod_2p, mocker):
+        """The analog reader reads the samples streamed up to the stop command."""
+        mocker.patch.object(Bpod, '_request_disconnect')
+        serial0 = mock_bpod_2p.serial0
+        serial0.is_open = True
+        serial0.mock_responses[b'X'] = b'\x01\x01\xff' + bytes(16)
+        _recording(mock_bpod_2p)
+        seen = []
+        thread = MagicMock()
+        thread.stop.side_effect = lambda: seen.append('stop')
+        mock_bpod_2p._connection_threads.append(thread)
+        write = serial0.write
+        mocker.patch.object(
+            serial0, 'write', side_effect=lambda data: (seen.append(data), write(data))
+        )
         mock_bpod_2p.close()
-        reader_thread.stop.assert_called_once()
-        assert mock_bpod_2p._analog_reader_thread is None
+        assert seen == [b'X', 'stop']
 
     def test_forgets_analog_channels(self, mock_bpod_2p):
         """Closing forgets the analog channels: the next connection may record none."""
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_channel_names = ('Flex1',)
-        mock_bpod_2p._analog_sample_period_us = 1000
+        _recording(mock_bpod_2p)
         mock_bpod_2p.close()
-        assert mock_bpod_2p._analog_channel_names == ()
-        assert mock_bpod_2p._analog_sample_period_us == 0
+        assert mock_bpod_2p._analog_recorder is None
 
     def test_resets_connection_state_if_closing_fails(self, mock_bpod_2p, mocker):
         """A port that fails to close still leaves the next connection unlocked."""
@@ -1611,25 +1873,47 @@ class TestClose:
 
     def test_keeps_buffered_analog_samples_on_close(self, mock_bpod_2p):
         """Samples buffered since the last periodic flush are kept on close."""
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_channel_names = ('Flex1',)
-        mock_bpod_2p._analog_first_trial_time_us = 0
-        mock_bpod_2p._analog_sample_period_us = 1000
-        mock_bpod_2p._analog_buffer = [(0, 0, 2048)]
+        recorder = _recording(mock_bpod_2p, anchor_us=0, trial_numbers=[0])
+        recorder.on_chunk(_sample(1, 2048))
         mock_bpod_2p.close()
         assert mock_bpod_2p.get_analog_data()['Flex1'].to_list() == [2501]
 
 
-class TestAnalogChunk:
-    """Tests for Bpod._on_analog_chunk / _flush_analog_buffer / get_analog_data."""
+def _recording(
+    bpod: Bpod,
+    names: tuple[str, ...] = ('Flex1',),
+    *,
+    period_us: int = 1000,
+    anchor_us: int | None = None,
+    trial_numbers: list[int] | None = None,
+) -> _AnalogRecorder:
+    """Set `bpod` up as recording `names`, with a stand-in for the reader thread."""
+    recorder = _AnalogRecorder(
+        channel_names=names,
+        sample_period_us=period_us,
+        cycle_period_us=bpod._hardware.cycle_period_us,
+        frames=bpod._analog_data,
+    )
+    recorder.anchor_us = anchor_us
+    recorder.trial_numbers = list(trial_numbers or [])
+    bpod._analog_recorder = recorder
+    return recorder
+
+
+def _sample(trial_counter: int, *counts: int) -> bytearray:
+    """One sample block as the firmware sends it: its trial count, then the counts."""
+    return bytearray(struct.pack(f'<{1 + len(counts)}H', trial_counter, *counts))
+
+
+class TestAnalogRecorder:
+    """Tests for _AnalogRecorder and get_analog_data."""
 
     def test_trial_counter_zero_is_dropped(self, mock_bpod_2p):
         """A trial_counter of 0 (pre-trial idle state) is dropped, uncounted."""
-        mock_bpod_2p._analog_channel_names = ('Flex3',)
-        mock_bpod_2p._analog_struct = struct.Struct('<2H')
-        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 0, 2048)))
-        assert mock_bpod_2p._analog_buffer == []
-        assert mock_bpod_2p._analog_sample_index == 0
+        recorder = _recording(mock_bpod_2p, ('Flex3',))
+        recorder.on_chunk(_sample(0, 2048))
+        assert recorder._n == 0
+        assert recorder._next_index == 0
 
     def test_samples_are_counted_before_anchor_is_known(self, mock_bpod_2p):
         """Samples are buffered/counted even before the anchor is known.
@@ -1639,39 +1923,43 @@ class TestAnalogChunk:
         is known; it must still be counted, or every later timestamp would shift
         by however many samples raced ahead of the anchor.
         """
-        mock_bpod_2p._analog_channel_names = ('Flex3',)
-        mock_bpod_2p._analog_struct = struct.Struct('<2H')
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_first_trial_time_us = None
-        mock_bpod_2p._analog_last_flush_ns = 0  # force an immediate flush attempt
-        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 2048)))
-        assert mock_bpod_2p._analog_sample_index == 1
-        assert len(mock_bpod_2p._analog_buffer) == 1
-        mock_bpod_2p._flush_analog_buffer()  # anchor unknown - must be a no-op
-        assert len(mock_bpod_2p._analog_buffer) == 1
+        recorder = _recording(mock_bpod_2p, ('Flex3',))
+        recorder.on_chunk(_sample(1, 2048))
+        assert recorder._next_index == 1
+        assert recorder._n == 1
+        recorder.flush()  # anchor unknown - must be a no-op
+        assert recorder._n == 1
+        assert mock_bpod_2p._analog_data.empty()
 
-        mock_bpod_2p._analog_first_trial_time_us = 1_000_000
-        mock_bpod_2p._analog_sample_period_us = 1000
-        mock_bpod_2p._flush_analog_buffer()
-        assert mock_bpod_2p._analog_buffer == []
+        recorder.anchor_us = 1_000_000
+        recorder.flush()
+        assert recorder._n == 0
         frame = mock_bpod_2p.get_analog_data()
         cycle_period_us = mock_bpod_2p._hardware.cycle_period_us
         assert frame['Time'].dt.epoch('us').to_list() == [1_000_000 + cycle_period_us]
 
+    def test_buffer_grows_and_keeps_its_rows(self, mock_bpod_2p, mocker):
+        """The sample buffer doubles when full, keeping the samples in order."""
+        mocker.patch('bpod_core.bpod.flexio._INITIAL_ANALOG_BUFFER_SIZE', 4)
+        recorder = _recording(mock_bpod_2p, ('Flex3',), anchor_us=0)
+        for count in range(9):
+            recorder.on_chunk(_sample(1, count))
+        assert len(recorder._buffer) == 16
+        recorder.flush()
+        frame = mock_bpod_2p.get_analog_data()
+        assert frame['Flex3'].to_list() == [(c * 5000 + 2047) // 4095 for c in range(9)]
+        assert frame['Time'].is_sorted()
+
     def test_buffers_and_flushes_decoded_samples(self, mock_bpod_2p):
-        """Decoded samples are buffered and flushed as a LazyFrame with timing."""
-        mock_bpod_2p._analog_channel_names = ('Flex3',)
-        mock_bpod_2p._analog_struct = struct.Struct('<2H')
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_first_trial_time_us = 1_000_000
-        mock_bpod_2p._analog_sample_period_us = 1000
-        mock_bpod_2p._analog_trial_number_by_sequence = [7]
-        mock_bpod_2p._analog_last_flush_ns = 0  # force an immediate flush
+        """Decoded samples are buffered and flushed as a DataFrame with timing."""
+        recorder = _recording(
+            mock_bpod_2p, ('Flex3',), anchor_us=1_000_000, trial_numbers=[7]
+        )
         # firmware's trial_counter is 1-indexed (increments before first use), so the
-        # first entry in _analog_trial_number_by_sequence corresponds to counter 1
-        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 2048)))
-        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 1, 4095)))
-        mock_bpod_2p._flush_analog_buffer()  # flush the second sample too
+        # first entry in trial_numbers corresponds to counter 1
+        recorder.on_chunk(_sample(1, 2048))
+        recorder.on_chunk(_sample(1, 4095))
+        recorder.flush()
         frame = mock_bpod_2p.get_analog_data()
         assert frame.columns == ['Time', 'Trial', 'Flex3']
         assert frame.schema['Flex3'] == pl.UInt16
@@ -1689,15 +1977,47 @@ class TestAnalogChunk:
 
     def test_unknown_trial_counter_falls_back_to_raw_value(self, mock_bpod_2p):
         """A trial_counter with no recorded mapping is used as-is."""
-        mock_bpod_2p._analog_channel_names = ('Flex3',)
-        mock_bpod_2p._analog_struct = struct.Struct('<2H')
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_first_trial_time_us = 0
-        mock_bpod_2p._analog_trial_number_by_sequence = []
-        mock_bpod_2p._analog_last_flush_ns = 0
-        mock_bpod_2p._on_analog_chunk(bytearray(struct.pack('<2H', 5, 0)))
+        recorder = _recording(mock_bpod_2p, ('Flex3',), anchor_us=0)
+        recorder.on_chunk(_sample(5, 0))
+        recorder.flush()
         frame = mock_bpod_2p.get_analog_data()
         assert frame['Trial'][0] == 5
+
+    def test_flushes_every_interval_of_samples(self, mock_bpod_2p, mocker):
+        """Samples are flushed on their own once the flush interval has passed."""
+        recorder = _recording(mock_bpod_2p, ('Flex3',), anchor_us=0)
+        recorder.on_chunk(_sample(1, 1))
+        assert mock_bpod_2p._analog_data.empty()
+        mocker.patch('bpod_core.bpod.flexio._ANALOG_FLUSH_INTERVAL_NS', 0)
+        recorder.on_chunk(_sample(1, 2))
+        assert mock_bpod_2p._analog_data.get(timeout=1)['Flex3'].to_list() == [1, 2]
+
+    def test_reset_drops_samples_no_trial_anchored(self, mock_bpod_2p):
+        """Samples buffered before any trial start are dropped by a clock reset.
+
+        Timed from a later anchor, they would get the next session's first times.
+        """
+        recorder = _recording(mock_bpod_2p, ('Flex3',))
+        recorder.on_chunk(_sample(1, 7))
+        recorder.reset()
+        assert recorder._n == 0
+        recorder.anchor_us = 0
+        recorder.on_chunk(_sample(1, 8))
+        recorder.flush()
+        assert mock_bpod_2p.get_analog_data()['Flex3'].to_list() == [10]
+
+    def test_reset_flushes_with_the_old_anchor_and_starts_over(self, mock_bpod_2p):
+        """A session clock reset flushes what was recorded and restarts the counts."""
+        recorder = _recording(
+            mock_bpod_2p, ('Flex3',), anchor_us=123, trial_numbers=[0, 1, 2]
+        )
+        recorder.on_chunk(_sample(1, 7))
+        recorder.reset()
+        assert recorder.anchor_us is None
+        assert recorder.trial_numbers == []
+        assert recorder._next_index == 0
+        assert recorder._n == 0
+        assert mock_bpod_2p.get_analog_data()['Trial'].to_list() == [0]
 
     def test_get_analog_data_raises_when_unavailable(self, mock_bpod_2p):
         """get_analog_data raises if no data exists and no reader is active."""
@@ -1706,8 +2026,8 @@ class TestAnalogChunk:
 
     def test_get_analog_data_returns_data_after_reader_stopped(self, mock_bpod_2p):
         """Data recorded before the analog reader stopped can still be retrieved."""
-        assert mock_bpod_2p._analog_reader_thread is None
-        mock_bpod_2p._analog_data.put(pl.LazyFrame({'Flex1': [1, 2]}))
+        assert mock_bpod_2p._analog_recorder is None
+        mock_bpod_2p._analog_data.put(pl.DataFrame({'Flex1': [1, 2]}))
         assert mock_bpod_2p.get_analog_data()['Flex1'].to_list() == [1, 2]
         with pytest.raises(BpodError, match='No FlexIO analog input is recording'):
             mock_bpod_2p.get_analog_data()
@@ -1720,31 +2040,51 @@ class TestStartAnalogReader:
         """No reader is started when the analog serial port wasn't detected."""
         mock_bpod_2p._flexio_serial = None
         mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        threads = list(mock_bpod_2p._connection_threads)
         mock_bpod_2p._start_analog_reader()
-        assert mock_bpod_2p._analog_reader_thread is None
+        assert mock_bpod_2p._analog_recorder is None
+        assert mock_bpod_2p._connection_threads == threads
 
     def test_noop_without_analog_input_channels(self, mock_bpod_2p):
         """No reader is started while no channel is configured as ANALOG_INPUT."""
         mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial)
+        threads = list(mock_bpod_2p._connection_threads)
         mock_bpod_2p._start_analog_reader()
-        assert mock_bpod_2p._analog_reader_thread is None
+        assert mock_bpod_2p._analog_recorder is None
+        assert mock_bpod_2p._connection_threads == threads
+
+    def test_no_recorder_if_the_port_wont_open(self, mock_bpod_2p):
+        """A FlexIO port that fails to open leaves no recorder behind."""
+        serial = MagicMock(spec=ExtendedSerial, is_open=False)
+        serial.open.side_effect = SerialException
+        mock_bpod_2p._flexio_serial = serial
+        mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
+        with pytest.raises(SerialException):
+            mock_bpod_2p._start_analog_reader()
+        assert mock_bpod_2p._analog_recorder is None
 
     def test_starts_reader_for_analog_input_channels(self, mock_bpod_2p, mocker):
         """The reader decodes the ANALOG_INPUT channels at the configured rate."""
         mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial, is_open=False)
         reader_thread_cls = mocker.patch('bpod_core.bpod.ReaderThread')
-        mocker.patch('bpod_core.bpod.ChunkedSerialReader')
+        protocol_cls = mocker.patch('bpod_core.bpod.ChunkedSerialReader')
         mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
         mock_bpod_2p.flex_io.analog_sampling_rate = 500
         mock_bpod_2p._start_analog_reader()
-        reader_thread_cls.return_value.start.assert_called_once()
-        assert mock_bpod_2p._analog_channel_names == ('Flex3',)
-        assert mock_bpod_2p._analog_sample_period_us == 2000  # 500 Hz
+        thread = reader_thread_cls.return_value
+        thread.start.assert_called_once()
+        assert thread in mock_bpod_2p._connection_threads  # ended with the others
+        recorder = mock_bpod_2p._analog_recorder
+        assert recorder.channel_names == ('Flex3',)
+        assert recorder.sample_period_us == 2000  # 500 Hz
+        # the thread's protocol feeds the recorder, not the Bpod: a dropped Bpod is
+        # collected while the thread streams
+        assert reader_thread_cls.call_args.args[1] is protocol_cls.return_value
+        assert protocol_cls.call_args.kwargs['callback'].__self__ is recorder
 
     @pytest.mark.parametrize('started', [False, True])
     def test_starts_with_first_state_machine(self, mock_bpod_2p, mocker, started):
         """The reader starts with the first state machine, not with later ones."""
-        mocker.patch.object(Bpod, '_run_state_machine')  # no threads outliving the test
         start = mocker.patch.object(Bpod, '_start_analog_reader')
         mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
         start.assert_not_called()
@@ -1757,28 +2097,49 @@ class TestStartAnalogReader:
 
 @pytest.fixture
 def blocked_reader(mock_bpod_2p, blocked_thread):
-    """A trial that doesn't end until the reader's `release` event is set."""
+    """The connection's reader, stuck in a trial until its `release` event is set."""
+    take_replies(mock_bpod_2p.serial0)
+    blocked_thread.read_lock = mock_bpod_2p.serial0.read_lock
+    mock_bpod_2p._read_thread.stop()  # the real one, idle
     mock_bpod_2p._read_thread = blocked_thread
+    mock_bpod_2p._connection_threads[0] = blocked_thread  # closing stops it too
+    mock_bpod_2p._last_sent = blocked_thread.trial
+    mock_bpod_2p._undelivered.append(blocked_thread.trial)
     return blocked_thread
+
+
+def _ended_in(bpod: Bpod, error: Exception) -> None:
+    """The connection's reader ended with `error` in trial #3."""
+    trial = make_trial(3, read_error=error)
+    assert bpod._read_thread is not None
+    bpod._read_thread.trial = trial
+    bpod._last_sent = trial
 
 
 @pytest.fixture
 def lost_reader(mock_bpod_2p):
     """A reader that ended with a serial error: the connection was lost in trial #3."""
     error = SerialException('device disconnected')
-    mock_bpod_2p._read_thread = MagicMock(
-        error=error, trial_number=3, is_alive=lambda: False
-    )
+    _ended_in(mock_bpod_2p, error)
     return error
 
 
 class TestStopStateMachine:
     @pytest.fixture
     def running(self, mock_bpod_2p, mocker):
-        mocker.patch.object(
-            Bpod, 'is_running', new_callable=PropertyMock, return_value=True
-        )
-        mock_bpod_2p._read_thread = None
+        """A Bpod running trial #0, which the mock Bpod ends when stopped."""
+        trial = make_trial(ended=False)
+        mock_bpod_2p._last_sent = trial
+        mock_bpod_2p._read_thread.trial = trial
+        mock_bpod_2p._undelivered.append(trial)
+        write = mock_bpod_2p.serial0.write
+
+        def write_and_end(data):
+            write(data)
+            if data == b'X':
+                trial.ended.set()
+
+        mocker.patch.object(mock_bpod_2p.serial0, 'write', side_effect=write_and_end)
         return mock_bpod_2p
 
     def test_timeout(self, mock_bpod_2p, blocked_reader):
@@ -1788,19 +2149,86 @@ class TestStopStateMachine:
         assert mock_bpod_2p.serial0.last_write == b'X'
         assert not mock_bpod_2p.is_running  # the reader was cancelled
 
-    def test_reader_told_before_the_stop(self, running, mocker):
-        """The reader learns of the stop before the Bpod can answer it."""
-        serial0 = running.serial0
-        serial0.last_write = b''
-        written_before = []
-        reader = mocker.MagicMock(is_alive=lambda: False)
-        reader.expect_stop.side_effect = lambda: written_before.append(
-            serial0.last_write
-        )
-        running._read_thread = reader
-        running.stop_state_machine()
-        assert written_before == [b'']
-        assert serial0.last_write == b'X'
+    def test_stops_the_queued_trial_too(self, running, mocker):
+        """With a trial queued, the stop is repeated once that trial has started.
+
+        The Bpod starts the queued state machine as soon as the running one is
+        stopped.
+        """
+        first = running._last_sent
+        second = make_trial(1, ended=False)
+        second.started.clear()
+        running._last_sent = second
+        running._undelivered.append(second)
+        seen = []
+        write = running.serial0.write
+
+        def write_and_advance(data):
+            write(data)  # ends `first` on X
+            seen.append((first.ended.is_set(), second.started.is_set()))
+            if first.ended.is_set() and not second.started.is_set():
+                threading.Timer(0.02, second.started.set).start()
+            elif second.started.is_set():
+                second.ended.set()
+
+        mocker.patch.object(running.serial0, 'write', side_effect=write_and_advance)
+        running.stop_state_machine(timeout=2)
+        assert seen == [(True, False), (True, True)]
+        assert not running.is_running
+
+    def test_no_second_stop_for_a_trial_the_first_one_ended(self, running, mocker):
+        """If the stop meant for the running trial ended the queued one instead, the
+        queued one isn't stopped again: an idle Bpod would answer that stop."""
+        first = running._last_sent
+        second = make_trial(1, ended=False)
+        running._last_sent = second
+        running._undelivered.append(second)
+        stops = []
+        write = running.serial0.write
+
+        def write_and_end_both(data):
+            write(data)  # ends `first` on X
+            stops.append(data)
+            second.ended.set()  # as if the X had hit `second`, `first` ending by itself
+
+        mocker.patch.object(running.serial0, 'write', side_effect=write_and_end_both)
+        running.stop_state_machine(timeout=2)
+        assert stops == [b'X']
+        assert first.ended.is_set()
+        assert not running.is_running
+
+    def test_stop_waits_for_the_trial_to_start(
+        self, mock_bpod_2p, blocked_reader, mocker
+    ):
+        """A trial sent but not started yet is stopped once it has started.
+
+        Stopped earlier, the Bpod would answer as idle and run the trial anyway.
+        """
+        trial = blocked_reader.trial
+        trial.started.clear()
+        serial0 = mock_bpod_2p.serial0
+        seen = []
+        write = serial0.write
+
+        def write_and_end(data):
+            seen.append((data, trial.started.is_set()))
+            write(data)
+            blocked_reader.release.set()  # the Bpod ends the trial on X
+
+        mocker.patch.object(serial0, 'write', side_effect=write_and_end)
+        threading.Timer(0.02, trial.started.set).start()
+        mock_bpod_2p.stop_state_machine(timeout=2)
+        assert seen == [(b'X', True)]
+        assert not mock_bpod_2p.is_running
+
+    def test_gives_up_a_trial_that_never_starts(self, mock_bpod_2p, blocked_reader):
+        """A trial that doesn't start within the timeout is given up, without a stop."""
+        blocked_reader.trial.started.clear()
+        mock_bpod_2p.serial0.last_write = b''
+        with pytest.raises(TimeoutError, match=r'start trial #7 within 0\.05 s'):
+            mock_bpod_2p.stop_state_machine(timeout=0.05)
+        assert mock_bpod_2p.serial0.last_write == b''
+        assert mock_bpod_2p._out_of_sync
 
     def test_given_up_trial_needs_a_reopen(self, mock_bpod_2p, blocked_reader):
         """After a trial was given up, the stream is suspect until the next reopen."""
@@ -1844,7 +2272,7 @@ class TestStopStateMachine:
 
     def test_warns_about_analog_sampling(self, running, caplog):
         """With an analog input, stopping warns that analog sampling stops too."""
-        running._analog_channel_names = ('Flex1',)
+        _recording(running)
         running.stop_state_machine()
         assert running.serial0.last_write == b'X'
         assert 'also stops FlexIO analog sampling' in caplog.text
@@ -1856,12 +2284,9 @@ class TestStopStateMachine:
 
     def test_get_analog_data_after_stop(self, running):
         """After a stop, buffered samples are returned; then it raises, not waits."""
-        running._analog_reader_thread = MagicMock()
+        recorder = _recording(running, anchor_us=0)
         running._analog_recording = True
-        running._analog_channel_names = ('Flex1',)
-        running._analog_first_trial_time_us = 0
-        running._analog_sample_period_us = 1000
-        running._analog_buffer = [(0, 0, 2048)]  # not flushed yet
+        recorder.on_chunk(_sample(1, 2048))  # not flushed yet
         running.stop_state_machine()
         assert running.get_analog_data()['Flex1'].to_list() == [2501]
         with pytest.raises(BpodError, match='No FlexIO analog input is recording'):
@@ -1939,10 +2364,8 @@ class TestAnalogSessionBookkeeping:
         self, mock_bpod_2p, mocker, clock_reset
     ):
         """After a stop, analog inputs record again only after a session clock reset."""
-        mocker.patch.object(Bpod, '_run_state_machine')
         mock_bpod_2p._state_machine_started = True  # stopped after an earlier trial
-        mock_bpod_2p._analog_reader_thread = MagicMock()
-        mock_bpod_2p._analog_first_trial_time_us = None if clock_reset else 0
+        _recording(mock_bpod_2p, anchor_us=None if clock_reset else 0)
         fsm = StateMachine()
         fsm.add_state('a', 0, {'Tup': '>exit'})
         mock_bpod_2p.run(fsm)
@@ -1950,29 +2373,24 @@ class TestAnalogSessionBookkeeping:
 
     def test_reset_session_clock_clears_analog_bookkeeping(self, mock_bpod_2p):
         """Resetting the session clock clears the analog anchor/trial mapping."""
-        mock_bpod_2p._analog_first_trial_time_us = 123
-        mock_bpod_2p._analog_trial_number_by_sequence = [0, 1, 2]
-        mock_bpod_2p._analog_sample_index = 5
+        recorder = _recording(mock_bpod_2p, anchor_us=123, trial_numbers=[0, 1, 2])
         mock_bpod_2p.reset_session_clock()
-        assert mock_bpod_2p._analog_first_trial_time_us is None
-        assert mock_bpod_2p._analog_trial_number_by_sequence == []
-        assert mock_bpod_2p._analog_sample_index == 0
+        assert recorder.anchor_us is None
+        assert recorder.trial_numbers == []
 
-    def test_run_appends_trial_number_by_sequence(
-        self, mock_bpod_25, mock_threads, mocker
-    ):
+    def test_run_appends_trial_number_by_sequence(self, mock_bpod_25, mocker):
         """Each run() call records its trial number at the next sequence position.
 
         It is recorded before the state machine is sent, since the Bpod may start it
         right away.
         """
+        recorder = _recording(mock_bpod_25)
         recorded_when_sent = []
         write = mock_bpod_25.serial0.write
 
         def record_and_write(data):
             if data[:1] == b'C':  # state machine transmission
-                trial_numbers = mock_bpod_25._analog_trial_number_by_sequence
-                recorded_when_sent.append(list(trial_numbers))
+                recorded_when_sent.append(list(recorder.trial_numbers))
             return write(data)
 
         mocker.patch.object(mock_bpod_25.serial0, 'write', side_effect=record_and_write)
@@ -1984,11 +2402,13 @@ class TestAnalogSessionBookkeeping:
 
     def test_capture_analog_anchor_sets_it_once(self, mock_bpod_2p):
         """The first captured time sets the analog anchor; later calls don't."""
-        assert mock_bpod_2p._analog_first_trial_time_us is None
+        mock_bpod_2p._capture_analog_anchor(500)  # without a recording: nothing to do
+        recorder = _recording(mock_bpod_2p)
+        assert recorder.anchor_us is None
         mock_bpod_2p._capture_analog_anchor(1000)
-        assert mock_bpod_2p._analog_first_trial_time_us == 1000
+        assert recorder.anchor_us == 1000
         mock_bpod_2p._capture_analog_anchor(2000)
-        assert mock_bpod_2p._analog_first_trial_time_us == 1000
+        assert recorder.anchor_us == 1000
 
 
 class TestRemoteCall:
@@ -2026,15 +2446,16 @@ class TestRemoteCall:
         remote = RemoteBpod(address='tcp://127.0.0.1:1')
         return remote, mock_client.return_value.request
 
+    @pytest.mark.parametrize('method', ['stop_state_machine', 'wait'])
     @pytest.mark.parametrize(
         ('timeout', 'reply_timeout'), [(2, 3.0), (None, None)], ids=['bounded', 'none']
     )
-    def test_stop_forwards_timeout(self, remote, timeout, reply_timeout):
-        """stop_state_machine(timeout) waits an extra second for the host's reply."""
+    def test_timed_call_forwards_timeout(self, remote, method, timeout, reply_timeout):
+        """A method's timeout is forwarded, and its reply awaited a second longer."""
         remote_bpod, request = remote
-        remote_bpod.stop_state_machine(timeout=timeout)
+        getattr(remote_bpod, method)(timeout=timeout)
         kwargs = request.call_args.kwargs
-        assert kwargs['request_data'].method_name == 'stop_state_machine'
+        assert kwargs['request_data'].method_name == method
         assert kwargs['request_data'].kwargs == {'timeout': timeout}
         assert kwargs['timeout'] == reply_timeout
 
@@ -2048,20 +2469,22 @@ class TestRemoteCall:
 
 
 def test_exit_cleans_up(mock_bpod_2p):
-    """Leaving the context ends the IPC service and softcode thread."""
+    """Leaving the context ends the IPC service and the connection's threads."""
+    threads = list(mock_bpod_2p._connection_threads)
     with mock_bpod_2p:
         pass
     mock_bpod_2p._zmq.close.assert_called_once()
-    assert not mock_bpod_2p._softcode_thread.is_alive()
+    assert len(threads) == 3
+    assert not any(thread.is_alive() for thread in threads)
+    assert mock_bpod_2p._softcode_thread is None
 
 
 def test_exit_cleans_up_if_close_fails(mock_bpod_2p, mocker):
-    """Leaving the context ends the IPC service and softcode thread if close fails."""
+    """Leaving the context ends the IPC service if close fails."""
     mocker.patch.object(mock_bpod_2p, 'close', side_effect=SerialException)
     with pytest.raises(SerialException), mock_bpod_2p:
         pass
     mock_bpod_2p._zmq.close.assert_called_once()
-    assert not mock_bpod_2p._softcode_thread.is_alive()
 
 
 @pytest.fixture
@@ -2123,7 +2546,12 @@ def test_dropped_task_cleans_up(real_ipc, assert_collected):
     with RemoteBpod(address=task.bpod.address):  # requests for the IPC service
         pass
     bpod_ref = weakref.ref(task.bpod)
-    threads = task.bpod._zmq._event_thread, task.bpod._softcode_thread
+    threads = (
+        task.bpod._zmq._event_thread,
+        task.bpod._softcode_thread,
+        task.bpod._read_thread,
+        task.bpod._event_thread,
+    )
     del task
     assert_collected(bpod_ref, *threads, close=lambda b: b.__exit__(None, None, None))
 
@@ -2145,12 +2573,19 @@ def test_dropped_remote_bpod_cleans_up(real_ipc, assert_collected):
 
 
 def test_cleanup_runs_softcodes_before_disconnecting(mocker):
-    """The finalizer lets queued softcodes run before disconnecting the Bpod."""
+    """The finalizer ends the connection's threads in order, the reader first, so
+    queued softcodes run before disconnecting the Bpod."""
     calls = MagicMock()
     mocker.patch.object(Bpod, '_request_disconnect', calls.disconnect)
-    Bpod._bpod_cleanup(calls.serial, calls.softcode_thread)
+    threads = [calls.reader, calls.event_thread, calls.softcode_thread, calls.analog]
+    Bpod._bpod_cleanup(calls.serial, calls.flexio_serial, threads)
     names = [name for name, *_ in calls.mock_calls]
-    assert names.index('softcode_thread.stop') < names.index('disconnect')
+    assert names.index('reader.stop') < names.index('event_thread.stop')
+    assert names.index('event_thread.stop') < names.index('softcode_thread.stop')
+    assert names.index('softcode_thread.stop') < names.index('analog.stop')
+    assert names.index('analog.stop') < names.index('flexio_serial.close')
+    assert names.index('flexio_serial.close') < names.index('disconnect')
+    assert threads == []
 
 
 def test_wait_after_lost_connection(mock_bpod_2p, lost_reader):
@@ -2252,9 +2687,7 @@ class TestMisreadTrial:
     def misread_reader(self, mock_bpod_2p):
         """A reader that ended on the stream of trial #3."""
         error = RuntimeError('Received unknown opcode from Bpod: 0')
-        mock_bpod_2p._read_thread = MagicMock(
-            error=error, trial_number=3, is_alive=lambda: False
-        )
+        _ended_in(mock_bpod_2p, error)
         return error
 
     def test_wait_raises_and_refuses_the_next_run(
@@ -2274,7 +2707,7 @@ class TestMisreadTrial:
         with pytest.raises(BpodError, match='out of sync'):
             mock_bpod_2p.run(fsm)
         assert not mock_bpod_2p.serial0.last_write.startswith(b'C')
-        assert not mock_bpod_2p.is_ready
+        assert not mock_bpod_2p.is_running
 
     def test_commands_leave_the_error_to_wait(self, mock_bpod_2p, misread_reader):
         """Other commands refuse to run, and wait() still reports the trial."""
@@ -2284,19 +2717,74 @@ class TestMisreadTrial:
         with pytest.raises(BpodError, match='Could not read trial #3'):
             mock_bpod_2p.wait()
 
-    def test_handoff_raises(self, mock_bpod_2p, blocked_reader, fsm, mocker):
-        """A trial misread while the next one is queued fails that run(), once sent."""
-        join = blocked_reader.join
+    def test_closing_ends_the_threads_and_frees_the_replies(
+        self, mock_bpod_2p, blocked_reader
+    ):
+        """Closing ends the connection's threads; the reader frees the replies.
 
-        def misread_then_join(*args, **kwargs) -> None:  # the handoff, after sending
-            blocked_reader.error = RuntimeError('Received unknown opcode from Bpod: 0')
-            blocked_reader.release.set()
-            join(*args, **kwargs)
+        Before the teardown's own reads: otherwise the disconnect request and the
+        drain would be refused, silently.
+        """
+        event_thread = mock_bpod_2p._event_thread
+        mock_bpod_2p.serial0.is_open = True  # the mock port is never really open
+        mock_bpod_2p.serial0.mock_responses[rb'Z'] = b'1'
+        mock_bpod_2p.serial0.last_write = b''
+        mock_bpod_2p._close_ports()
+        assert not blocked_reader.is_alive()
+        assert not event_thread.is_alive()
+        assert mock_bpod_2p._read_thread is None
+        assert mock_bpod_2p._event_thread is None
+        assert not mock_bpod_2p.serial0.read_lock.locked()
+        assert mock_bpod_2p.serial0.last_write == b'Z'  # the disconnect request
 
-        mocker.patch.object(blocked_reader, 'join', side_effect=misread_then_join)
-        with pytest.raises(BpodError, match='out of sync'):
-            mock_bpod_2p.run(fsm)
-        assert mock_bpod_2p.serial0.last_write.startswith(b'C')  # queued already
+    def test_reopening_starts_new_threads(self, mock_bpod_2p):
+        """Each connection has its own reader, event thread and softcode thread."""
+        old = list(mock_bpod_2p._connection_threads)
+        mock_bpod_2p.close()
+        assert mock_bpod_2p._connection_threads == []
+        mock_bpod_2p.wait()  # nothing to drain without a connection
+        mock_bpod_2p.open()
+        new = mock_bpod_2p._connection_threads
+        assert len(old) == len(new) == 3
+        assert not any(a is b for a, b in zip(old, new, strict=True))
+        assert not any(thread.is_alive() for thread in old)
+        assert all(thread.is_alive() for thread in new)
+        assert mock_bpod_2p._softcode_thread is new[-1]
+
+    def test_softcode_handler_outlives_the_connection(self, mock_bpod_2p):
+        """The handler set before a reconnect still runs afterwards."""
+        handled = []
+        mock_bpod_2p.set_softcode_handler(handled.append)
+        mock_bpod_2p.close()
+        mock_bpod_2p.open()
+        mock_bpod_2p._softcode_thread.queue.put(_RawSoftcode(5, 0, 0))
+        mock_bpod_2p.wait(timeout=2)
+        assert handled == [5]
+
+    def test_refusal_names_the_other_thread(self, mock_bpod_2p):
+        """A command refused because another thread uses the Bpod says so."""
+        with (
+            held_by_another_thread(mock_bpod_2p.serial0.exclusive_reads()),
+            pytest.raises(BpodError, match='while another thread is using the Bpod'),
+        ):
+            mock_bpod_2p.update_modules()
+
+    def test_out_of_sync_is_reported_before_busy_replies(self, mock_bpod_2p):
+        """After a dropped trial, commands say 'reopen', not 'running'."""
+        take_replies(
+            mock_bpod_2p.serial0
+        )  # as a trial dropped after sending leaves them
+        mock_bpod_2p._out_of_sync = True
+        with pytest.raises(BpodError, match='close and reopen'):
+            mock_bpod_2p.update_modules()
+
+    def test_reported_once(self, mock_bpod_2p, misread_reader):
+        """wait() raises a read error once; the connection stays refused afterwards."""
+        with pytest.raises(BpodError, match='Could not read trial #3'):
+            mock_bpod_2p.wait()
+        mock_bpod_2p.wait()
+        with pytest.raises(BpodError, match='close and reopen'):
+            mock_bpod_2p.set_status_led(True)
 
     def test_closing_forgets_an_unreported_error(self, mock_bpod_2p, misread_reader):
         """The next connection doesn't fail on a misread trial nobody reported."""
@@ -2313,6 +2801,14 @@ def test_lost_connection_needs_a_reopen(mock_bpod_2p, lost_reader):
 
 
 class TestWait:
+    def test_includes_decoding(self, mock_bpod_2p):
+        """wait() returns once the trial is decoded, not just once it has ended."""
+        trial = make_trial()
+        trial.decoded.clear()
+        mock_bpod_2p._last_sent = trial
+        with pytest.raises(TimeoutError, match='Trial #0 did not finish'):
+            mock_bpod_2p.wait(timeout=0.02)
+
     def test_timeout_while_the_trial_runs(self, mock_bpod_2p, blocked_reader):
         """wait(timeout) raises once the time is up, and returns after the trial."""
         with pytest.raises(TimeoutError, match=r'#7 did not finish within 0\.05 s'):
@@ -2368,22 +2864,6 @@ def test_close_after_lost_connection(mock_bpod_2p, mock_ext_serial, mocker):
     close = mocker.spy(mock_ext_serial, 'close')  # this port only, not other mocks
     mock_bpod_2p.close()
     close.assert_called_once()
-
-
-def test_next_reader_gets_leftover(mock_bpod_2p, mock_threads):
-    """A trial's reader starts with the bytes its predecessor read beyond its trial."""
-    read_thread_class, _ = mock_threads
-    mock_bpod_2p._read_thread = MagicMock(
-        leftover=b'\x01next',
-        leftover_received_ns=42,
-        error=None,
-        is_alive=lambda: False,
-    )
-    mock_bpod_2p._fsm_annotations = MagicMock()
-    mock_bpod_2p._run_state_machine()
-    kwargs = read_thread_class.call_args.kwargs
-    assert kwargs['initial_bytes'] == b'\x01next'
-    assert kwargs['initial_received_ns'] == 42
 
 
 class TestBpodSubscriberWait:

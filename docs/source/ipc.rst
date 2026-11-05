@@ -203,7 +203,10 @@ remote instance:
        and enqueues it. The call returns once the host has accepted it.
    * - :meth:`~bpod_core.bpod.RemoteBpod.get_data`
      - Returns the trial data as a Polars :class:`~polars.DataFrame` (see
-       :doc:`/data_format`), or a :class:`~polars.LazyFrame` with ``lazy=True``.
+       :doc:`/data_format`).
+   * - :meth:`~bpod_core.bpod.RemoteBpod.wait`
+     - The host waits on the client's behalf. The reply is awaited a second longer
+       than ``timeout``.
    * - :meth:`~bpod_core.bpod.RemoteBpod.stop_state_machine`
      - Aborts the state machine currently running on the host. The reply is awaited a
        second longer than ``timeout``; a host busy queuing a state machine may answer
@@ -222,8 +225,10 @@ remote instance:
      - Obtained once during the handshake; reading them involves no round-trip.
 
 Only this set of methods is callable remotely — the host rejects requests for anything
-else with a :exc:`~bpod_core.bpod.errors.BpodError`. Exceptions raised on the host are
-serialized and re-raised on the client: :exc:`RuntimeError` and :exc:`ValueError` keep
+else with a :exc:`~bpod_core.bpod.errors.BpodError`. The host is designed for a single
+controlling client and serves requests one at a time: a second client's requests are
+delayed while the first one is being answered, not rejected. Exceptions raised on the
+host are serialized and re-raised on the client: :exc:`RuntimeError` and :exc:`ValueError` keep
 their type, as does :exc:`~bpod_core.bpod.errors.BpodError` for
 :meth:`~bpod_core.bpod.RemoteBpod.get_data` and
 :meth:`~bpod_core.bpod.RemoteBpod.reset_session_clock`. Everything else arrives as a
@@ -280,6 +285,13 @@ of these structs. The callback still receives them one at a time. To subscribe w
    The callback runs on the client's subscription thread. It must not block — anything
    expensive belongs in a queue that another thread drains. Exceptions raised inside
    the callback are logged and otherwise ignored.
+
+.. note::
+
+   Drive a :class:`~bpod_core.bpod.Bpod` object from one thread at a time. Its serial
+   port is safe to share — writes don't interleave, and a command that needs a reply is
+   refused while a trial's reader or another thread owns the port's replies — but the
+   object's own state is not protected.
 
 Two properties of the ``PUB``/``SUB`` pattern are worth keeping in mind:
 

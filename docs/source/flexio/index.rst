@@ -151,19 +151,19 @@ picture, right before port 1 lights up:
       │ ---                            ┆ ---   ┆ ---              ┆ ---           ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat           ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪═══════════════╪═════════════════╪═══════╪═════════╪═══════╡
-      │ 2026-10-22 15:12:38.348493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ null          ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:38.348493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ TriggerCamera ┆ StateStart      ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:38.348493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ TriggerCamera ┆ OutputAction    ┆ null  ┆ Flex1   ┆ 1     │
-      │ 2026-10-22 15:12:38.358493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ TriggerCamera ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:38.358493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ TriggerCamera ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:38.358493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ LightOn       ┆ StateStart      ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:38.358493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ LightOn       ┆ OutputAction    ┆ null  ┆ Flex1   ┆ 0     │
-      │ 2026-10-22 15:12:38.358493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ LightOn       ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 255   │
-      │ 2026-10-22 15:12:39.358493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ LightOn       ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:39.358493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ LightOn       ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:39.358493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ null          ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
-      │ 2026-10-22 15:12:39.358493 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ null          ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:39.358495 UTC ┆ 0     ┆ 86d5ab27f2ecd65d ┆ null          ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:38.348493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ null          ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:38.348493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ TriggerCamera ┆ StateStart      ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:38.348493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ TriggerCamera ┆ OutputAction    ┆ null  ┆ Flex1   ┆ 1     │
+      │ 2026-10-22 15:12:38.358493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ TriggerCamera ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:38.358493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ TriggerCamera ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:38.358493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ LightOn       ┆ StateStart      ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:38.358493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ LightOn       ┆ OutputAction    ┆ null  ┆ Flex1   ┆ 0     │
+      │ 2026-10-22 15:12:38.358493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ LightOn       ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 255   │
+      │ 2026-10-22 15:12:39.358493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ LightOn       ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:39.358493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ LightOn       ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:39.358493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ null          ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
+      │ 2026-10-22 15:12:39.358493 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ null          ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:39.358495 UTC ┆ 0     ┆ 7cd6ed6e3154dde4 ┆ null          ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
       └────────────────────────────────┴───────┴──────────────────┴───────────────┴─────────────────┴───────┴─────────┴───────┘
 
 The pulse shows up as two output actions on ``Flex1``: on when ``TriggerCamera`` begins,
@@ -235,18 +235,18 @@ light beam, and then lights up port 1 for a second:
       │ ---                            ┆ ---   ┆ ---              ┆ ---              ┆ ---             ┆ ---        ┆ ---     ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat              ┆ enum            ┆ cat        ┆ cat     ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪══════════════════╪═════════════════╪════════════╪═════════╪═══════╡
-      │ 2026-10-22 15:12:39.706105 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ null             ┆ TrialStart      ┆ null       ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:39.706105 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ WaitForBeamBreak ┆ StateStart      ┆ null       ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:41.006205 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ WaitForBeamBreak ┆ InputEvent      ┆ Flex1_High ┆ Flex1   ┆ 1     │
-      │ 2026-10-22 15:12:41.006205 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ WaitForBeamBreak ┆ StateEnd        ┆ null       ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:41.006205 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ LightOn          ┆ StateStart      ┆ null       ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:41.006205 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ LightOn          ┆ OutputAction    ┆ null       ┆ PWM1    ┆ 255   │
-      │ 2026-10-22 15:12:41.256205 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ LightOn          ┆ InputEvent      ┆ Flex1_Low  ┆ Flex1   ┆ 0     │
-      │ 2026-10-22 15:12:42.006205 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ LightOn          ┆ InputEvent      ┆ Tup        ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:42.006205 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ LightOn          ┆ StateEnd        ┆ null       ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:42.006205 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ null             ┆ OutputAction    ┆ null       ┆ PWM1    ┆ 0     │
-      │ 2026-10-22 15:12:42.006205 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ null             ┆ TrialEnd        ┆ null       ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:42.006207 UTC ┆ 0     ┆ 0c7473529cdbc1e6 ┆ null             ┆ TrialEndControl ┆ null       ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:39.706105 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ null             ┆ TrialStart      ┆ null       ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:39.706105 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ WaitForBeamBreak ┆ StateStart      ┆ null       ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:41.006205 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ WaitForBeamBreak ┆ InputEvent      ┆ Flex1_High ┆ Flex1   ┆ 1     │
+      │ 2026-10-22 15:12:41.006205 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ WaitForBeamBreak ┆ StateEnd        ┆ null       ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:41.006205 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ LightOn          ┆ StateStart      ┆ null       ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:41.006205 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ LightOn          ┆ OutputAction    ┆ null       ┆ PWM1    ┆ 255   │
+      │ 2026-10-22 15:12:41.256205 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ LightOn          ┆ InputEvent      ┆ Flex1_Low  ┆ Flex1   ┆ 0     │
+      │ 2026-10-22 15:12:42.006205 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ LightOn          ┆ InputEvent      ┆ Tup        ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:42.006205 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ LightOn          ┆ StateEnd        ┆ null       ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:42.006205 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ null             ┆ OutputAction    ┆ null       ┆ PWM1    ┆ 0     │
+      │ 2026-10-22 15:12:42.006205 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ null             ┆ TrialEnd        ┆ null       ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:42.006207 UTC ┆ 0     ┆ ee93e7bcb6a89086 ┆ null             ┆ TrialEndControl ┆ null       ┆ null    ┆ null  │
       └────────────────────────────────┴───────┴──────────────────┴──────────────────┴─────────────────┴────────────┴─────────┴───────┘
 
 The beam break is recorded as a ``Flex1_High`` event, which ends ``WaitForBeamBreak``
@@ -323,22 +323,22 @@ output. The LED is dim, brighter and fully bright, one second each:
       │ ---                            ┆ ---   ┆ ---              ┆ ---         ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat         ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪═════════════╪═════════════════╪═══════╪═════════╪═══════╡
-      │ 2026-10-22 15:12:42.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ null        ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:42.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ Dim         ┆ StateStart      ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:42.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ Dim         ┆ OutputAction    ┆ null  ┆ Flex4   ┆ 1000  │
-      │ 2026-10-22 15:12:43.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ Dim         ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:43.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ Dim         ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:43.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ Brighter    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:43.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ Brighter    ┆ OutputAction    ┆ null  ┆ Flex4   ┆ 2501  │
-      │ 2026-10-22 15:12:44.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ Brighter    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:44.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ Brighter    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:44.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ FullyBright ┆ StateStart      ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:44.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ FullyBright ┆ OutputAction    ┆ null  ┆ Flex4   ┆ 5000  │
-      │ 2026-10-22 15:12:45.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ FullyBright ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:45.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ FullyBright ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:45.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ null        ┆ OutputAction    ┆ null  ┆ Flex4   ┆ 0     │
-      │ 2026-10-22 15:12:45.248130 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ null        ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 15:12:45.248132 UTC ┆ 0     ┆ df3e710ec2d09d79 ┆ null        ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:42.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ null        ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:42.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ Dim         ┆ StateStart      ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:42.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ Dim         ┆ OutputAction    ┆ null  ┆ Flex4   ┆ 1000  │
+      │ 2026-10-22 15:12:43.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ Dim         ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:43.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ Dim         ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:43.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ Brighter    ┆ StateStart      ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:43.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ Brighter    ┆ OutputAction    ┆ null  ┆ Flex4   ┆ 2501  │
+      │ 2026-10-22 15:12:44.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ Brighter    ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:44.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ Brighter    ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:44.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ FullyBright ┆ StateStart      ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:44.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ FullyBright ┆ OutputAction    ┆ null  ┆ Flex4   ┆ 5000  │
+      │ 2026-10-22 15:12:45.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ FullyBright ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:45.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ FullyBright ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:45.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ null        ┆ OutputAction    ┆ null  ┆ Flex4   ┆ 0     │
+      │ 2026-10-22 15:12:45.248130 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ null        ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 15:12:45.248132 UTC ┆ 0     ┆ cd4c9fc605ef9e42 ┆ null        ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
       └────────────────────────────────┴───────┴──────────────────┴─────────────┴─────────────────┴───────┴─────────┴───────┘
 
 Each voltage shows up as an output action on ``Flex4`` when its state begins, followed
@@ -436,14 +436,14 @@ second:
       │ ---                            ┆ ---   ┆ ---              ┆ ---     ┆ ---             ┆ ---   ┆ ---     ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat     ┆ enum            ┆ cat   ┆ cat     ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪═════════╪═════════════════╪═══════╪═════════╪═══════╡
-      │ 2026-10-22 13:21:02.457608 UTC ┆ 0     ┆ b181e204b461e294 ┆ null    ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 13:21:02.457608 UTC ┆ 0     ┆ b181e204b461e294 ┆ LightOn ┆ StateStart      ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 13:21:02.457608 UTC ┆ 0     ┆ b181e204b461e294 ┆ LightOn ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 255   │
-      │ 2026-10-22 13:21:07.457608 UTC ┆ 0     ┆ b181e204b461e294 ┆ LightOn ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
-      │ 2026-10-22 13:21:07.457608 UTC ┆ 0     ┆ b181e204b461e294 ┆ LightOn ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 13:21:07.457608 UTC ┆ 0     ┆ b181e204b461e294 ┆ null    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
-      │ 2026-10-22 13:21:07.457608 UTC ┆ 0     ┆ b181e204b461e294 ┆ null    ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
-      │ 2026-10-22 13:21:07.457610 UTC ┆ 0     ┆ b181e204b461e294 ┆ null    ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 13:21:02.457608 UTC ┆ 0     ┆ 19601a205311d4a4 ┆ null    ┆ TrialStart      ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 13:21:02.457608 UTC ┆ 0     ┆ 19601a205311d4a4 ┆ LightOn ┆ StateStart      ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 13:21:02.457608 UTC ┆ 0     ┆ 19601a205311d4a4 ┆ LightOn ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 255   │
+      │ 2026-10-22 13:21:07.457608 UTC ┆ 0     ┆ 19601a205311d4a4 ┆ LightOn ┆ InputEvent      ┆ Tup   ┆ null    ┆ null  │
+      │ 2026-10-22 13:21:07.457608 UTC ┆ 0     ┆ 19601a205311d4a4 ┆ LightOn ┆ StateEnd        ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 13:21:07.457608 UTC ┆ 0     ┆ 19601a205311d4a4 ┆ null    ┆ OutputAction    ┆ null  ┆ PWM1    ┆ 0     │
+      │ 2026-10-22 13:21:07.457608 UTC ┆ 0     ┆ 19601a205311d4a4 ┆ null    ┆ TrialEnd        ┆ null  ┆ null    ┆ null  │
+      │ 2026-10-22 13:21:07.457610 UTC ┆ 0     ┆ 19601a205311d4a4 ┆ null    ┆ TrialEndControl ┆ null  ┆ null    ┆ null  │
       └────────────────────────────────┴───────┴──────────────────┴─────────┴─────────────────┴───────┴─────────┴───────┘
 
 .. testcode:: recording
@@ -624,17 +624,17 @@ rises when the subject presses the lever, so ``Flex1`` gets a rising threshold a
       │ ---                            ┆ ---   ┆ ---              ┆ ---          ┆ ---             ┆ ---         ┆ ---     ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat          ┆ enum            ┆ cat         ┆ cat     ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪══════════════╪═════════════════╪═════════════╪═════════╪═══════╡
-      │ 2026-10-22 14:41:33.213841 UTC ┆ 0     ┆ 56b7e20aca4f280e ┆ null         ┆ TrialStart      ┆ null        ┆ null    ┆ null  │
-      │ 2026-10-22 14:41:33.213841 UTC ┆ 0     ┆ 56b7e20aca4f280e ┆ WaitForPress ┆ StateStart      ┆ null        ┆ null    ┆ null  │
-      │ 2026-10-22 14:41:34.513941 UTC ┆ 0     ┆ 56b7e20aca4f280e ┆ WaitForPress ┆ InputEvent      ┆ Flex1_Trig0 ┆ Flex1   ┆ 2500  │
-      │ 2026-10-22 14:41:34.513941 UTC ┆ 0     ┆ 56b7e20aca4f280e ┆ WaitForPress ┆ StateEnd        ┆ null        ┆ null    ┆ null  │
-      │ 2026-10-22 14:41:34.513941 UTC ┆ 0     ┆ 56b7e20aca4f280e ┆ Reward       ┆ StateStart      ┆ null        ┆ null    ┆ null  │
-      │ 2026-10-22 14:41:34.513941 UTC ┆ 0     ┆ 56b7e20aca4f280e ┆ Reward       ┆ OutputAction    ┆ null        ┆ Valve1  ┆ 1     │
-      │ 2026-10-22 14:41:34.613941 UTC ┆ 0     ┆ 56b7e20aca4f280e ┆ Reward       ┆ InputEvent      ┆ Tup         ┆ null    ┆ null  │
-      │ 2026-10-22 14:41:34.613941 UTC ┆ 0     ┆ 56b7e20aca4f280e ┆ Reward       ┆ StateEnd        ┆ null        ┆ null    ┆ null  │
-      │ 2026-10-22 14:41:34.613941 UTC ┆ 0     ┆ 56b7e20aca4f280e ┆ null         ┆ OutputAction    ┆ null        ┆ Valve1  ┆ 0     │
-      │ 2026-10-22 14:41:34.613941 UTC ┆ 0     ┆ 56b7e20aca4f280e ┆ null         ┆ TrialEnd        ┆ null        ┆ null    ┆ null  │
-      │ 2026-10-22 14:41:34.613959 UTC ┆ 0     ┆ 56b7e20aca4f280e ┆ null         ┆ TrialEndControl ┆ null        ┆ null    ┆ null  │
+      │ 2026-10-22 14:41:33.213841 UTC ┆ 0     ┆ ddab9876fc269a60 ┆ null         ┆ TrialStart      ┆ null        ┆ null    ┆ null  │
+      │ 2026-10-22 14:41:33.213841 UTC ┆ 0     ┆ ddab9876fc269a60 ┆ WaitForPress ┆ StateStart      ┆ null        ┆ null    ┆ null  │
+      │ 2026-10-22 14:41:34.513941 UTC ┆ 0     ┆ ddab9876fc269a60 ┆ WaitForPress ┆ InputEvent      ┆ Flex1_Trig0 ┆ Flex1   ┆ 2500  │
+      │ 2026-10-22 14:41:34.513941 UTC ┆ 0     ┆ ddab9876fc269a60 ┆ WaitForPress ┆ StateEnd        ┆ null        ┆ null    ┆ null  │
+      │ 2026-10-22 14:41:34.513941 UTC ┆ 0     ┆ ddab9876fc269a60 ┆ Reward       ┆ StateStart      ┆ null        ┆ null    ┆ null  │
+      │ 2026-10-22 14:41:34.513941 UTC ┆ 0     ┆ ddab9876fc269a60 ┆ Reward       ┆ OutputAction    ┆ null        ┆ Valve1  ┆ 1     │
+      │ 2026-10-22 14:41:34.613941 UTC ┆ 0     ┆ ddab9876fc269a60 ┆ Reward       ┆ InputEvent      ┆ Tup         ┆ null    ┆ null  │
+      │ 2026-10-22 14:41:34.613941 UTC ┆ 0     ┆ ddab9876fc269a60 ┆ Reward       ┆ StateEnd        ┆ null        ┆ null    ┆ null  │
+      │ 2026-10-22 14:41:34.613941 UTC ┆ 0     ┆ ddab9876fc269a60 ┆ null         ┆ OutputAction    ┆ null        ┆ Valve1  ┆ 0     │
+      │ 2026-10-22 14:41:34.613941 UTC ┆ 0     ┆ ddab9876fc269a60 ┆ null         ┆ TrialEnd        ┆ null        ┆ null    ┆ null  │
+      │ 2026-10-22 14:41:34.613959 UTC ┆ 0     ┆ ddab9876fc269a60 ┆ null         ┆ TrialEndControl ┆ null        ┆ null    ┆ null  │
       └────────────────────────────────┴───────┴──────────────────┴──────────────┴─────────────────┴─────────────┴─────────┴───────┘
 
 The press is recorded as a ``Flex1_Trig0`` event, which ends ``WaitForPress`` and
@@ -730,21 +730,21 @@ as before, but left disabled: the state machine enables it.
       │ ---                            ┆ ---   ┆ ---              ┆ ---          ┆ ---             ┆ ---         ┆ ---                ┆ ---   │
       │ datetime[μs, UTC]              ┆ u32   ┆ cat              ┆ cat          ┆ enum            ┆ cat         ┆ cat                ┆ u16   │
       ╞════════════════════════════════╪═══════╪══════════════════╪══════════════╪═════════════════╪═════════════╪════════════════════╪═══════╡
-      │ 2026-10-22 13:50:27.805215 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ null         ┆ TrialStart      ┆ null        ┆ null               ┆ null  │
-      │ 2026-10-22 13:50:27.805215 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ Delay        ┆ StateStart      ┆ null        ┆ null               ┆ null  │
-      │ 2026-10-22 13:50:29.805215 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ Delay        ┆ InputEvent      ┆ Tup         ┆ null               ┆ null  │
-      │ 2026-10-22 13:50:29.805215 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ Delay        ┆ StateEnd        ┆ null        ┆ null               ┆ null  │
-      │ 2026-10-22 13:50:29.805215 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ WaitForPress ┆ StateStart      ┆ null        ┆ null               ┆ null  │
-      │ 2026-10-22 13:50:29.805215 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ WaitForPress ┆ OutputAction    ┆ null        ┆ AnalogThreshEnable ┆ 1     │
-      │ 2026-10-22 13:50:30.805315 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ WaitForPress ┆ InputEvent      ┆ Flex1_Trig0 ┆ Flex1              ┆ 2500  │
-      │ 2026-10-22 13:50:30.805315 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ WaitForPress ┆ StateEnd        ┆ null        ┆ null               ┆ null  │
-      │ 2026-10-22 13:50:30.805315 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ Reward       ┆ StateStart      ┆ null        ┆ null               ┆ null  │
-      │ 2026-10-22 13:50:30.805315 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ Reward       ┆ OutputAction    ┆ null        ┆ Valve1             ┆ 1     │
-      │ 2026-10-22 13:50:30.905315 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ Reward       ┆ InputEvent      ┆ Tup         ┆ null               ┆ null  │
-      │ 2026-10-22 13:50:30.905315 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ Reward       ┆ StateEnd        ┆ null        ┆ null               ┆ null  │
-      │ 2026-10-22 13:50:30.905315 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ null         ┆ OutputAction    ┆ null        ┆ Valve1             ┆ 0     │
-      │ 2026-10-22 13:50:30.905315 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ null         ┆ TrialEnd        ┆ null        ┆ null               ┆ null  │
-      │ 2026-10-22 13:50:30.905333 UTC ┆ 0     ┆ 51ca9d9ab0f63fda ┆ null         ┆ TrialEndControl ┆ null        ┆ null               ┆ null  │
+      │ 2026-10-22 13:50:27.805215 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ null         ┆ TrialStart      ┆ null        ┆ null               ┆ null  │
+      │ 2026-10-22 13:50:27.805215 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ Delay        ┆ StateStart      ┆ null        ┆ null               ┆ null  │
+      │ 2026-10-22 13:50:29.805215 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ Delay        ┆ InputEvent      ┆ Tup         ┆ null               ┆ null  │
+      │ 2026-10-22 13:50:29.805215 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ Delay        ┆ StateEnd        ┆ null        ┆ null               ┆ null  │
+      │ 2026-10-22 13:50:29.805215 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ WaitForPress ┆ StateStart      ┆ null        ┆ null               ┆ null  │
+      │ 2026-10-22 13:50:29.805215 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ WaitForPress ┆ OutputAction    ┆ null        ┆ AnalogThreshEnable ┆ 1     │
+      │ 2026-10-22 13:50:30.805315 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ WaitForPress ┆ InputEvent      ┆ Flex1_Trig0 ┆ Flex1              ┆ 2500  │
+      │ 2026-10-22 13:50:30.805315 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ WaitForPress ┆ StateEnd        ┆ null        ┆ null               ┆ null  │
+      │ 2026-10-22 13:50:30.805315 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ Reward       ┆ StateStart      ┆ null        ┆ null               ┆ null  │
+      │ 2026-10-22 13:50:30.805315 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ Reward       ┆ OutputAction    ┆ null        ┆ Valve1             ┆ 1     │
+      │ 2026-10-22 13:50:30.905315 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ Reward       ┆ InputEvent      ┆ Tup         ┆ null               ┆ null  │
+      │ 2026-10-22 13:50:30.905315 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ Reward       ┆ StateEnd        ┆ null        ┆ null               ┆ null  │
+      │ 2026-10-22 13:50:30.905315 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ null         ┆ OutputAction    ┆ null        ┆ Valve1             ┆ 0     │
+      │ 2026-10-22 13:50:30.905315 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ null         ┆ TrialEnd        ┆ null        ┆ null               ┆ null  │
+      │ 2026-10-22 13:50:30.905333 UTC ┆ 0     ┆ 6a62f3827fc09f41 ┆ null         ┆ TrialEndControl ┆ null        ┆ null               ┆ null  │
       └────────────────────────────────┴───────┴──────────────────┴──────────────┴─────────────────┴─────────────┴────────────────────┴───────┘
 
 ``AnalogThreshEnable`` shows up as an output action when ``WaitForPress`` begins,
