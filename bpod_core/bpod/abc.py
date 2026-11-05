@@ -236,6 +236,30 @@ class AbstractBpod(AbstractContextManager):
         """
 
     @abstractmethod
+    def wait(self, timeout: float | None = None) -> None:
+        """
+        Wait for every state machine sent to finish: the running one and a queued one.
+
+        Blocks until their events have been recorded and published and the softcodes
+        received so far have been handled. If no state machine is running, this method
+        returns immediately.
+
+        Parameters
+        ----------
+        timeout : float or None, default: None
+            Seconds to wait before giving up. ``None`` waits indefinitely.
+
+        Raises
+        ------
+        TimeoutError
+            If the state machine hasn't finished within `timeout` seconds.
+        BpodError
+            If the connection to the Bpod was lost during the trial, or the trial
+            couldn't be read; the connection then has to be reopened. The events
+            received up to then are kept.
+        """
+
+    @abstractmethod
     def stop_state_machine(self, timeout: float | None = 1.0) -> None:
         """
         Stop the running state machine, and the one queued behind it, if any.

@@ -2446,15 +2446,16 @@ class TestRemoteCall:
         remote = RemoteBpod(address='tcp://127.0.0.1:1')
         return remote, mock_client.return_value.request
 
+    @pytest.mark.parametrize('method', ['stop_state_machine', 'wait'])
     @pytest.mark.parametrize(
         ('timeout', 'reply_timeout'), [(2, 3.0), (None, None)], ids=['bounded', 'none']
     )
-    def test_stop_forwards_timeout(self, remote, timeout, reply_timeout):
-        """stop_state_machine(timeout) waits an extra second for the host's reply."""
+    def test_timed_call_forwards_timeout(self, remote, method, timeout, reply_timeout):
+        """A method's timeout is forwarded, and its reply awaited a second longer."""
         remote_bpod, request = remote
-        remote_bpod.stop_state_machine(timeout=timeout)
+        getattr(remote_bpod, method)(timeout=timeout)
         kwargs = request.call_args.kwargs
-        assert kwargs['request_data'].method_name == 'stop_state_machine'
+        assert kwargs['request_data'].method_name == method
         assert kwargs['request_data'].kwargs == {'timeout': timeout}
         assert kwargs['timeout'] == reply_timeout
 

@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - a warning when a queued trial starts late, because its state machine wasn't ready
   when the trial before ended.
+- `RemoteBpod.wait()`: a remote client can wait for the state machines sent to
+  finish, like a local `Bpod`.
 
 ### Fixed
 

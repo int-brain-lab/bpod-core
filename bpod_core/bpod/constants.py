@@ -84,6 +84,7 @@ _REMOTE_CALL_METHODS = frozenset(
         'set_status_led',
         'stop_state_machine',
         'update_modules',
+        'wait',
     }
 )
 """Methods that remote clients may invoke."""
