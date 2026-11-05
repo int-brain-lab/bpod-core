@@ -399,6 +399,7 @@ hardware are known:
        self._serial_device_finalizer = SimpleNamespace(detach=lambda: None)
        self._softcode_thread = MagicMock()
        self._late_starts = MagicMock()
+       self._connection_threads = []
        self.run = types.MethodType(original_run, self)
        self.validate_state_machine = types.MethodType(original_validate, self)
 

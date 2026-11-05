@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - a `get_data()` waiting for a trial that could not be sent no longer waits forever.
 - commands sent from several threads could interleave on the serial port; a command
   that needs a reply is now refused while another thread owns the port's replies.
+- a connection's threads (its reader, event thread and softcode thread) start and end
+  with it, instead of two new threads per trial and one for the object's lifetime.
 
 ### Changed
 
@@ -31,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   garbage collection pauses from about 200 ms to 20-50 ms, and memory by a factor of 8.
 - trial data is decoded as each trial ends rather than when it's fetched, so
   `get_data()` returns sooner.
+- `run()` returns once the state machine is queued on the Bpod, as documented; it
+  used to wait for the previous trial to end. It waits only while the state machine
+  sent before hasn't started.
+- `wait()` waits for every state machine sent, and `stop_state_machine()` also stops
+  one queued behind the running one. It stops a state machine only once it has
+  started: stopped earlier, the Bpod answers as if idle and runs it anyway.
+- `is_queued` tells whether a state machine was sent and hasn't started yet (the
+  Bpod's spare slot is taken), and `is_ready` whether `run()` would return at once.
 
 ### Removed
 
