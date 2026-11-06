@@ -1,12 +1,10 @@
 """Tests for bpod_core.misc utilities and helpers."""
 
 import errno
-import gc
 import logging
 import os
 import re
 import struct
-import threading
 
 import pytest
 from pydantic import ValidationError
@@ -839,53 +837,7 @@ class TestPruneEmptyParentDirectories:
         assert not target.exists()
 
 
-class TestFinalizeOffMainThread:
-    class Owner:
-        """Something to collect; a plain object can't be weakly referenced."""
-
-    def test_runs_on_the_cleanup_thread(self):
-        """A collected object's cleanup runs on the daemon cleanup thread."""
-        ran_on = []
-        done = threading.Event()
-
-        def func(arg, *, kwarg):
-            ran_on.append((arg, kwarg, threading.current_thread()))
-            done.set()
-
-        owner = self.Owner()
-        finalizer = misc.finalize_off_main_thread(owner, func, 1, kwarg=2)
-        del owner
-        gc.collect()
-        assert not finalizer.alive
-        assert done.wait(2)
-        ((arg, kwarg, thread),) = ran_on
-        assert (arg, kwarg) == (1, 2)
-        assert thread is not threading.current_thread()
-        assert thread.daemon
-        assert thread.name == 'CleanupThread'
-
-    def test_runs_inline_once_the_main_thread_has_ended(self, mocker):
-        """At interpreter exit, the cleanup runs on the thread the finalizer ran on."""
-        ended = mocker.Mock(is_alive=mocker.Mock(return_value=False))
-        mocker.patch.object(threading, 'main_thread', return_value=ended)
-        ran_on = []
-        finalizer = misc.finalize_off_main_thread(
-            self.Owner(), lambda: ran_on.append(threading.current_thread())
-        )
-        finalizer()
-        assert ran_on == [threading.current_thread()]
-
-    def test_finalize_now_runs_inline_with_overrides(self):
-        """finalize_now() runs the cleanup on this thread, once, with overrides."""
-        calls = []
-        owner = self.Owner()  # kept alive: the finalizer must not fire on its own
-        finalizer = misc.finalize_off_main_thread(
-            owner,
-            lambda *a, **k: calls.append((a, k, threading.current_thread())),
-            1,
-            x=2,
-        )
-        misc.finalize_now(finalizer, x=3)
-        misc.finalize_now(finalizer, x=4)  # ran already
-        assert calls == [((1,), {'x': 3}, threading.current_thread())]
-        del owner
+def test_warn_unclosed():
+    """warn_unclosed() emits a ResourceWarning that names the dropped object."""
+    with pytest.warns(ResourceWarning, match='^unclosed Bpod on COM3$'):
+        misc.warn_unclosed('Bpod on COM3')

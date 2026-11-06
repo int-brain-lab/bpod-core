@@ -7,6 +7,7 @@ import os
 import re
 import struct
 import threading
+import weakref
 from collections import deque
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -119,8 +120,8 @@ from bpod_core.misc import (
     SettingsDict,
     SuggestionMapping,
     _HandlerSlot,
-    finalize_off_main_thread,
     suppress_logging,
+    warn_unclosed,
 )
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,21 @@ class _ConnectionThread(Protocol):
     """
 
     def stop(self) -> None: ...
+
+
+class _AnalogReadThread(ReaderThread):
+    """pyserial's reader thread, which may be stopped from itself.
+
+    The garbage collector may run a dropped Bpod's cleanup on this thread, from the
+    recorder's callback; the loop then ends with the chunk instead of joining itself.
+    """
+
+    @override
+    def stop(self) -> None:
+        if self is threading.current_thread():
+            self.alive = False
+            return
+        super().stop()
 
 
 class Bpod(SerialDevice, AbstractBpod):
@@ -379,10 +395,8 @@ class Bpod(SerialDevice, AbstractBpod):
                 self._shutdown()
             raise
 
-        # register the destructor; the collector may run it on a thread that must
-        # not wait for the connection's threads and the device, e.g. another Bpod's
-        # reader
-        self._bpod_finalizer = finalize_off_main_thread(
+        # register destructors
+        self._bpod_finalizer = weakref.finalize(
             self,
             Bpod._bpod_cleanup,
             self._serial,
@@ -399,7 +413,13 @@ class Bpod(SerialDevice, AbstractBpod):
         *,
         device_name: str,
     ) -> None:
-        """End the connection of a Bpod that was dropped without being closed."""
+        """End the connection of a Bpod that was dropped without being closed.
+
+        Runs on whichever thread collects the Bpod - one of its own connection threads
+        included, which is then signalled rather than joined and ends on its own.
+        """
+        if serial.is_open:
+            warn_unclosed(f'{device_name} on {serial.port}')
         Bpod._stop_connection_threads(connection_threads)
         with contextlib.suppress(Exception):
             if flexio_serial is not None and flexio_serial.is_open:
@@ -1252,7 +1272,7 @@ class Bpod(SerialDevice, AbstractBpod):
         )
         # the thread holds the recorder, not the Bpod: see _AnalogRecorder. The
         # protocol instance is its own factory.
-        thread = ReaderThread(
+        thread = _AnalogReadThread(
             serial, ChunkedSerialReader(recorder.chunk_size, callback=recorder.on_chunk)
         )
         thread.start()

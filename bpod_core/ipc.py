@@ -54,11 +54,10 @@ from bpod_core.misc import (
     Filter,
     _HandlerSlot,
     _match_filter,
-    finalize_now,
-    finalize_off_main_thread,
     get_local_ipv4,
     prune_empty_parent_directories,
     to_snake_case,
+    warn_unclosed,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,10 +95,10 @@ _WAKE_TIMEOUT_MS = 100
 """How long waking a client's event loop waits for its subscription, in milliseconds."""
 
 _HANDOFF_LINGER_MS = 100
-"""Linger period, in milliseconds, for sockets closed off their owner's thread.
+"""Linger period, in milliseconds, for sockets closed after their own event loop.
 
-When a host or client is closed from its own event thread (by a handler) or by the
-garbage collector, the reply the loop sent last may still be queued. The linger period
+When a host or client is closed from its own event thread - e.g., by a handler or the
+garbage collector - the reply the loop sent last may still be queued. The linger period
 gives it time to go out before the sockets are closed.
 """
 
@@ -608,6 +607,9 @@ class ServiceBase(ABC):
     _event_thread: threading.Thread | None = None
     _closed = False
     _finalizer: weakref.finalize
+    _unclosed_warning: weakref.finalize
+    """Warns if the object is dropped without being closed; registered after the
+    finalizer, so that it runs first."""
 
     def __init__(self) -> None:
         self._lock_close = threading.Lock()
@@ -620,9 +622,9 @@ class ServiceBase(ABC):
     ) -> bool:
         """Re-run a finalizer on a helper thread if it was called on the event thread.
 
-        That happens when a handler closes its own host or client. The helper thread
-        can wait for the event loop to end, and lingers so that the reply the loop
-        sent last still goes out.
+        That happens when a handler closes its own host or client, or when the garbage
+        collector runs on the event thread. The helper thread can wait for the event
+        loop to end, and lingers so that the reply the loop sent last still goes out.
 
         Returns
         -------
@@ -637,13 +639,9 @@ class ServiceBase(ABC):
         return True
 
     def _finalize_now(self) -> None:
-        """Run the finalizer on this thread, as closing explicitly does.
-
-        The garbage collector hands it to the cleanup thread instead, with a linger for
-        a reply the event loop may just have sent; closing explicitly drops what wasn't
-        sent, as before.
-        """
-        finalize_now(self._finalizer, linger_ms=0)
+        """Release the resources on this thread, without the unclosed warning."""
+        self._unclosed_warning.detach()
+        self._finalizer()
 
     @staticmethod
     def _finalize_base(
@@ -922,9 +920,8 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 use_zeroconf=remote,
             )
 
-            # register finalizer to clean up resources on exit; the collector may run
-            # it on a thread that must not wait for the event loop
-            self._finalizer = finalize_off_main_thread(
+            # register finalizer to clean up resources on exit
+            self._finalizer = weakref.finalize(
                 self,
                 ServiceHost._finalize,
                 event_thread=self._event_thread,
@@ -936,7 +933,9 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 registration=ServiceHost._registrations.get(self._uuid),
                 named_pipes=named_pipes,
                 wake=ServiceHost._wake_rep,
-                linger_ms=_HANDOFF_LINGER_MS,
+            )
+            self._unclosed_warning = weakref.finalize(
+                self, warn_unclosed, f'ServiceHost {service_name!r}'
             )
             ServiceHost._live[self._uuid] = self
         except BaseException:
@@ -1706,9 +1705,8 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
             else:
                 logger.debug('Not connecting SUB socket for lack of event handler')
 
-            # register finalizer to clean up resources on exit; the collector may run
-            # it on a thread that must not wait for the event loop
-            self._finalizer = finalize_off_main_thread(
+            # register finalizer to clean up resources on exit
+            self._finalizer = weakref.finalize(
                 self,
                 ServiceBase._finalize_base,  # noqa: SLF001
                 self._event_thread,
@@ -1716,7 +1714,9 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
                 [self._req_socket, self._sub_socket],
                 self._zmq_context,
                 wake=ServiceClient._wake_sub,
-                linger_ms=_HANDOFF_LINGER_MS,
+            )
+            self._unclosed_warning = weakref.finalize(
+                self, warn_unclosed, f'ServiceClient for {self.address_req}'
             )
         except BaseException:
             # unwind partially-acquired resources when construction fails

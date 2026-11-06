@@ -7,10 +7,8 @@ import logging
 import re
 import socket
 import struct
-import threading
-import weakref
+import warnings
 from collections.abc import (
-    Callable,
     Collection,
     Hashable,
     ItemsView,
@@ -26,7 +24,6 @@ from contextlib import contextmanager
 from enum import IntEnum
 from os import PathLike, strerror
 from pathlib import Path
-from queue import SimpleQueue
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Generic, TypeAlias, TypeVar, cast, overload
 
@@ -810,69 +807,11 @@ class _HandlerSlot(Generic[_H]):
         self.handler = handler
 
 
-_cleanups: SimpleQueue[tuple[Callable[..., None], tuple[Any, ...], dict[str, Any]]] = (
-    SimpleQueue()
-)
-"""The cleanups handed off by finalizers, for the cleanup thread."""
+def warn_unclosed(what: str) -> None:
+    """Warn that `what` was dropped without being closed.
 
-
-class _CleanupThread(threading.Thread):
-    """The one daemon thread running the cleanups that finalizers hand off."""
-
-    _instance: '_CleanupThread | None' = None
-    _instance_lock = threading.Lock()
-
-    def __init__(self) -> None:
-        super().__init__(name='CleanupThread', daemon=True)
-
-    @classmethod
-    def ensure_running(cls) -> None:
-        with cls._instance_lock:
-            if cls._instance is None:
-                cls._instance = cls()
-                cls._instance.start()
-
-    def run(self) -> None:
-        while True:
-            func, args, kwargs = _cleanups.get()
-            try:
-                func(*args, **kwargs)
-            except Exception:
-                logger.exception(
-                    'Cleanup %s failed', getattr(func, '__qualname__', func)
-                )
-
-
-def _queue_cleanup(func: Callable[..., None], /, *args: Any, **kwargs: Any) -> None:
-    """Hand the call to the cleanup thread; see :func:`finalize_off_main_thread`."""
-    if threading.main_thread().is_alive():
-        _cleanups.put((func, args, kwargs))  # lock-free, so safe inside a collection
-    else:  # interpreter exit: the cleanup thread would not get to finish
-        func(*args, **kwargs)
-
-
-def finalize_off_main_thread(
-    obj: object, func: Callable[..., None], /, *args: Any, **kwargs: Any
-) -> weakref.finalize:
-    """Register `func(*args, **kwargs)` to run on the cleanup thread once `obj` is dead.
-
-    For a cleanup that waits for threads or a device: the garbage collector runs
-    finalizers on whichever thread allocates, which must not wait, and inside the
-    collection, where taking a lock could deadlock. The single daemon cleanup thread is
-    started here, outside any collection; the finalizer only queues the call. At
-    interpreter exit, when the pending finalizers run, the main thread has ended and the
-    cleanup thread would not get to finish, so the call runs on the exiting thread then.
+    A ``ResourceWarning``, which Python ignores unless asked for (``-X dev`` or ``-W
+    default::ResourceWarning``): for the finalizer of an object that should have been
+    closed explicitly, as the standard library does for files and sockets.
     """
-    _CleanupThread.ensure_running()
-    return weakref.finalize(obj, _queue_cleanup, func, *args, **kwargs)
-
-
-def finalize_now(finalizer: weakref.finalize, /, **overrides: Any) -> None:
-    """Run a finalizer from :func:`finalize_off_main_thread` on this thread, now.
-
-    For closing explicitly, which waits for the cleanup. `overrides` replace keyword
-    arguments the finalizer was registered with. Does nothing if it has run already.
-    """
-    if (info := finalizer.detach()) is not None:
-        _, _, (func, *args), kwargs = info
-        func(*args, **{**kwargs, **overrides})
+    warnings.warn(f'unclosed {what}', ResourceWarning, stacklevel=2)

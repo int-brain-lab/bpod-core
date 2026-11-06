@@ -54,23 +54,6 @@ def _publish_until(host, message, predicate, timeout=2.0):
     raise AssertionError('published message was not received in time')
 
 
-def _collect(service):
-    """Run the finalizer of `service` as the garbage collector would, on this thread;
-    return the thread it closed the sockets on, once the event thread has ended."""
-    event_thread = service._event_thread
-    _, run, args, kwargs = service._finalizer.detach()
-    closed_on = []
-
-    def wake(context):
-        closed_on.append(threading.current_thread())
-        kwargs['wake'](context)
-
-    run(*args, **{**kwargs, 'wake': wake})
-    event_thread.join(timeout=2)
-    assert not event_thread.is_alive()
-    return closed_on[0]
-
-
 def _wait_until(predicate, timeout=2.0):
     """Poll `predicate` until it is true or `timeout` elapses."""
     deadline = time.monotonic() + timeout
@@ -605,16 +588,8 @@ class TestClient:
         owner_ref = weakref.ref(owner)
         event_thread = owner.client._event_thread
         del owner
-        assert_collected(owner_ref, event_thread, close=lambda o: o.client.close())
-
-    def test_collected_client_is_finalized_on_a_helper_thread(
-        self, host, mock_service_browser
-    ):
-        """The collector doesn't wait for a dropped client's event thread."""
-        client = ipc.ServiceClient(
-            'dualtest', address=host.rep_tcp_addr, event_handler=lambda _: None
-        )
-        assert _collect(client) is not threading.current_thread()
+        with pytest.warns(ResourceWarning, match='unclosed ServiceClient'):
+            assert_collected(owner_ref, event_thread, close=lambda o: o.client.close())
 
     def test_close_from_a_worker_thread_waits(self, host, mock_service_browser):
         """Closing explicitly on a worker thread waits for the event thread to end."""
@@ -1007,12 +982,14 @@ class TestHost:
         owner_ref = weakref.ref(owner)
         event_thread = owner.host._event_thread
         del owner
-        assert_collected(owner_ref, event_thread, close=lambda o: o.host.close())
+        with pytest.warns(ResourceWarning, match='unclosed ServiceHost'):
+            assert_collected(owner_ref, event_thread, close=lambda o: o.host.close())
 
-    def test_collected_host_is_finalized_on_a_helper_thread(self, mock_advertisement):
-        """The collector doesn't wait for a dropped host's event thread."""
+    def test_close_detaches_the_unclosed_warning(self, mock_advertisement):
+        """A closed host doesn't warn when it is dropped later."""
         host = ipc.ServiceHost('test', 'test_service', _noop_handler, remote=False)
-        assert _collect(host) is not threading.current_thread()
+        host.close()
+        assert not host._unclosed_warning.alive
 
     def test_close_is_idempotent(self, mock_advertisement):
         """close() can be called multiple times without error."""

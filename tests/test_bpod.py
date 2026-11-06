@@ -26,6 +26,7 @@ from bpod_core.bpod import (
     Output,
     RemoteBpod,
     _allocate_module_events,
+    _AnalogReadThread,
     _discover_bpod_ports,
     _find_bpod_ports,
     _machine_name,
@@ -52,7 +53,7 @@ from bpod_core.bpod.structs import (
     _RequestCall,
     _RequestData,
 )
-from bpod_core.com import ExtendedSerial, SerialDevice
+from bpod_core.com import ChunkedSerialReader, ExtendedSerial, SerialDevice
 from bpod_core.constants import (
     PID_DUE_NATIVE,
     STRUCT_INT16_LE,
@@ -2067,7 +2068,7 @@ class TestStartAnalogReader:
     def test_starts_reader_for_analog_input_channels(self, mock_bpod_2p, mocker):
         """The reader decodes the ANALOG_INPUT channels at the configured rate."""
         mock_bpod_2p._flexio_serial = MagicMock(spec=ExtendedSerial, is_open=False)
-        reader_thread_cls = mocker.patch('bpod_core.bpod.ReaderThread')
+        reader_thread_cls = mocker.patch('bpod_core.bpod._AnalogReadThread')
         protocol_cls = mocker.patch('bpod_core.bpod.ChunkedSerialReader')
         mock_bpod_2p.flex_io['Flex3'].channel_type = FlexIOChannelType.ANALOG_INPUT
         mock_bpod_2p.flex_io.analog_sampling_rate = 500
@@ -2590,40 +2591,56 @@ def test_cleanup_runs_softcodes_before_disconnecting(mocker):
     assert threads == []
 
 
-def test_collected_bpod_is_cleaned_up_off_the_collecting_thread(real_ipc, mocker):
-    """The collector doesn't wait for a dropped Bpod: its threads are ended and its
-    port closed on a helper thread."""
+def test_dropped_bpod_warns_and_is_cleaned_up(real_ipc, mocker):
+    """A Bpod dropped with its port open warns when the collector frees it; its threads
+    have ended and its port is closed once the collection returns."""
     bpod = Bpod('COM3')
     serial, threads = bpod.serial0, list(bpod._connection_threads)
     serial.is_open = True  # the mock port is never opened; closing it marks it closed
     mocker.patch.object(
         serial, 'close', side_effect=lambda: setattr(serial, 'is_open', False)
     )
-    stop = Bpod._stop_connection_threads
-    stopped_on = []
-
-    def record_and_stop(connection_threads):
-        stopped_on.append(threading.current_thread())
-        stop(connection_threads)
-
-    mocker.patch.object(Bpod, '_stop_connection_threads', side_effect=record_and_stop)
-    port_open_at_disconnect = []
-    mocker.patch.object(
-        Bpod,
-        '_request_disconnect',
-        side_effect=lambda s: port_open_at_disconnect.append(s.is_open),
-    )
+    mocker.patch.object(Bpod, '_request_disconnect')
     bpod_ref = weakref.ref(bpod)
     del bpod
-    gc.collect()
+    with pytest.warns(ResourceWarning, match='unclosed Bpod Finite State Machine'):
+        gc.collect()
     assert bpod_ref() is None
-    deadline = time.monotonic() + 2
-    while serial.is_open and time.monotonic() < deadline:
-        time.sleep(0.01)
     assert not serial.is_open
     assert [t.name for t in threads if t.is_alive()] == []
-    assert stopped_on[0] is not threading.current_thread()
-    assert port_open_at_disconnect == [True]
+
+
+def test_cleanup_on_a_connection_thread(mock_bpod_2p):
+    """The collector may run a dropped Bpod's cleanup on one of its threads - here
+    the softcode thread, from a handler. That thread ends on its own, the others are
+    joined, and nothing raises."""
+    bpod = mock_bpod_2p
+    threads = list(bpod._connection_threads)
+    done = threading.Event()
+
+    def handler(code):
+        bpod._bpod_finalizer()  # as the collector would, on this thread
+        done.set()
+
+    bpod.set_softcode_handler(handler)
+    bpod._softcode_thread.queue.put(_RawSoftcode(1, 0, 0))
+    assert done.wait(timeout=2)
+    for thread in threads:
+        thread.join(timeout=2)
+    assert [t.name for t in threads if t.is_alive()] == []
+
+
+def test_analog_read_thread_stops_from_itself():
+    """stop() from the thread's own callback ends the loop instead of joining itself."""
+    serial = MagicMock(is_open=True, in_waiting=0)
+    serial.read.return_value = bytes(8)
+    thread = _AnalogReadThread(
+        serial, ChunkedSerialReader(8, callback=lambda _chunk: thread.stop())
+    )
+    thread.start()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert serial.read.call_count == 1
 
 
 def test_wait_after_lost_connection(mock_bpod_2p, lost_reader):

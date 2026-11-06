@@ -30,6 +30,7 @@ from bpod_core.bpod._threads import (
     _EventCallbacks,
     _EventID,
     _EventTables,
+    _join_or_warn,
     _LateStarts,
     _Mark,
     _Recorder,
@@ -193,6 +194,13 @@ def _timed_events(items: SimpleQueue[_Queued] | list[_Queued]) -> list[tuple[int
         for item in batch
         for i in item.event_ids
     ]
+
+
+def test_join_or_warn_returns_on_the_current_thread(caplog):
+    """The current thread can't be joined: the call returns, without a warning."""
+    with caplog.at_level(logging.WARNING):
+        _join_or_warn(threading.current_thread())
+    assert not caplog.records
 
 
 class TestReadThread:

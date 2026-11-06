@@ -26,7 +26,6 @@ from bpod_core.constants import (
     VID_TEENSY,
     TeensyPID,
 )
-from bpod_core.misc import finalize_now
 
 _HARDWARE_TESTS = Path(__file__).parent / 'hardware'
 
@@ -400,8 +399,6 @@ def assert_collected():
         gc.collect()
         try:
             assert ref() is None
-            for thread in threads:  # the cleanup runs on a helper thread
-                thread.join(timeout=2)
             assert not any(thread.is_alive() for thread in threads)
         finally:
             if (obj := ref()) is not None:
@@ -482,7 +479,7 @@ def _end_threads(bpod: Bpod) -> Iterator[Bpod]:
     Right away rather than at garbage collection, which may fall into a later test.
     """
     yield bpod
-    finalize_now(bpod._bpod_finalizer)
+    bpod._bpod_finalizer()
 
 
 @pytest.fixture
