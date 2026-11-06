@@ -162,7 +162,13 @@ class _Mark(Enum):
 
 
 def _join_or_warn(thread: threading.Thread) -> None:
-    """Wait a second for `thread` to end, and warn if it hasn't."""
+    """Wait a second for `thread` to end, and warn if it hasn't.
+
+    Not for the current thread, which ends on its own once it is back in its loop: the
+    garbage collector may run a dropped Bpod's cleanup on any of its threads.
+    """
+    if thread is threading.current_thread():
+        return
     thread.join(timeout=1)
     if thread.is_alive():
         logger.warning('%s did not terminate', thread.name)
@@ -1231,8 +1237,6 @@ class SoftcodeThread(threading.Thread):
     def stop(self) -> None:
         """Process the softcodes still queued, then end the thread."""
         self.queue.put(_SOFTCODE_STOP)
-        if self is threading.current_thread():
-            return  # called by a handler or the garbage collector on this thread
         _join_or_warn(self)
 
     def set_time_reference(self, time_ref: _TimeReferences) -> None:

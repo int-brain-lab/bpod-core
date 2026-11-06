@@ -7,6 +7,7 @@ import logging
 import re
 import socket
 import struct
+import warnings
 from collections.abc import (
     Collection,
     Hashable,
@@ -804,3 +805,13 @@ class _HandlerSlot(Generic[_H]):
 
     def __init__(self, handler: _H) -> None:
         self.handler = handler
+
+
+def warn_unclosed(what: str) -> None:
+    """Warn that `what` was dropped without being closed.
+
+    A ``ResourceWarning``, which Python ignores unless asked for (``-X dev`` or ``-W
+    default::ResourceWarning``): for the finalizer of an object that should have been
+    closed explicitly, as the standard library does for files and sockets.
+    """
+    warnings.warn(f'unclosed {what}', ResourceWarning, stacklevel=2)

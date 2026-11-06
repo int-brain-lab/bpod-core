@@ -588,7 +588,19 @@ class TestClient:
         owner_ref = weakref.ref(owner)
         event_thread = owner.client._event_thread
         del owner
-        assert_collected(owner_ref, event_thread, close=lambda o: o.client.close())
+        with pytest.warns(ResourceWarning, match='unclosed ServiceClient'):
+            assert_collected(owner_ref, event_thread, close=lambda o: o.client.close())
+
+    def test_close_from_a_worker_thread_waits(self, host, mock_service_browser):
+        """Closing explicitly on a worker thread waits for the event thread to end."""
+        client = ipc.ServiceClient(
+            'dualtest', address=host.rep_tcp_addr, event_handler=lambda _: None
+        )
+        event_thread = client._event_thread
+        worker = threading.Thread(target=client.close)
+        worker.start()
+        worker.join(timeout=2)
+        assert not event_thread.is_alive()
 
     def test_request_after_close_raises(self, mock_advertisement, mock_service_browser):
         """Requests on a closed client raise ServiceError."""
@@ -970,7 +982,14 @@ class TestHost:
         owner_ref = weakref.ref(owner)
         event_thread = owner.host._event_thread
         del owner
-        assert_collected(owner_ref, event_thread, close=lambda o: o.host.close())
+        with pytest.warns(ResourceWarning, match='unclosed ServiceHost'):
+            assert_collected(owner_ref, event_thread, close=lambda o: o.host.close())
+
+    def test_close_detaches_the_unclosed_warning(self, mock_advertisement):
+        """A closed host doesn't warn when it is dropped later."""
+        host = ipc.ServiceHost('test', 'test_service', _noop_handler, remote=False)
+        host.close()
+        assert not host._unclosed_warning.alive
 
     def test_close_is_idempotent(self, mock_advertisement):
         """close() can be called multiple times without error."""

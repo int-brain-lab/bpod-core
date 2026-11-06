@@ -835,3 +835,9 @@ class TestPruneEmptyParentDirectories:
 
         misc.prune_empty_parent_directories(target, root)
         assert not target.exists()
+
+
+def test_warn_unclosed():
+    """warn_unclosed() emits a ResourceWarning that names the dropped object."""
+    with pytest.warns(ResourceWarning, match='^unclosed Bpod on COM3$'):
+        misc.warn_unclosed('Bpod on COM3')

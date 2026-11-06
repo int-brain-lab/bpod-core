@@ -57,6 +57,7 @@ from bpod_core.misc import (
     get_local_ipv4,
     prune_empty_parent_directories,
     to_snake_case,
+    warn_unclosed,
 )
 
 logger = logging.getLogger(__name__)
@@ -606,6 +607,9 @@ class ServiceBase(ABC):
     _event_thread: threading.Thread | None = None
     _closed = False
     _finalizer: weakref.finalize
+    _unclosed_warning: weakref.finalize
+    """Warns if the object is dropped without being closed; registered after the
+    finalizer, so that it runs first."""
 
     def __init__(self) -> None:
         self._lock_close = threading.Lock()
@@ -633,6 +637,11 @@ class ServiceBase(ABC):
         kwargs['linger_ms'] = _HANDOFF_LINGER_MS
         threading.Thread(target=finalize, kwargs=kwargs, daemon=True).start()
         return True
+
+    def _finalize_now(self) -> None:
+        """Release the resources on this thread, without the unclosed warning."""
+        self._unclosed_warning.detach()
+        self._finalizer()
 
     @staticmethod
     def _finalize_base(
@@ -924,6 +933,9 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 registration=ServiceHost._registrations.get(self._uuid),
                 named_pipes=named_pipes,
                 wake=ServiceHost._wake_rep,
+            )
+            self._unclosed_warning = weakref.finalize(
+                self, warn_unclosed, f'ServiceHost {service_name!r}'
             )
             ServiceHost._live[self._uuid] = self
         except BaseException:
@@ -1499,7 +1511,7 @@ class ServiceHost(ServiceBase, Generic[Q, E]):
                 return
             with self._pub_lock:  # wait for an in-flight publish()
                 self._closed = True
-            self._finalizer()
+            self._finalize_now()
 
 
 def _local_ip_addresses() -> set[IPv4Address | IPv6Address]:
@@ -1702,6 +1714,9 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
                 [self._req_socket, self._sub_socket],
                 self._zmq_context,
                 wake=ServiceClient._wake_sub,
+            )
+            self._unclosed_warning = weakref.finalize(
+                self, warn_unclosed, f'ServiceClient for {self.address_req}'
             )
         except BaseException:
             # unwind partially-acquired resources when construction fails
@@ -2037,7 +2052,7 @@ class ServiceClient(ServiceBase, Generic[Q, R, E]):
             self._closed = True
             with self._lock_req:  # wait for an in-flight request to notice _closed
                 pass
-            self._finalizer()
+            self._finalize_now()
 
     @property
     def address_req(self) -> str:

@@ -14,11 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when the trial before ended.
 - `RemoteBpod.wait()`: a remote client can wait for the state machines sent to
   finish, like a local `Bpod`.
+- a `ResourceWarning` for a `Bpod`, IPC host or client dropped without being closed.
 
 ### Fixed
 
 - `run()` raises a `ValueError` for a state machine of more than 49,999 bytes: the Bpod
   doesn't load one that large, and took its bytes for commands.
+- the cleanup of a dropped `Bpod` failed when the garbage collector ran it on one of
+  the Bpod's own threads, which it tried to join.
 - a blocking `peek_data()` could wait forever if another caller was waiting at the
   same time.
 - a `get_data()` waiting for a trial that could not be sent no longer waits forever.
